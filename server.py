@@ -32,6 +32,7 @@ BOT_REPLY_TARGETS_FILE = DATA_DIR / "bot_reply_targets.json"
 BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
 THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
 STATIC_DIR = ROOT / "static"
+BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 
 
 class Project(BaseModel):
@@ -1286,6 +1287,21 @@ def _slack_socket_url(app_token: str) -> str:
     return str(response["url"])
 
 
+def _set_runtime_status(connection: BotConnection, status: str, **details: Any) -> None:
+    current = BOT_RUNTIME_STATUS.get(connection.id, {})
+    current.update(
+        {
+            "connectionId": connection.id,
+            "provider": connection.provider,
+            "name": connection.name,
+            "status": status,
+            "updatedAt": time.time(),
+            **details,
+        }
+    )
+    BOT_RUNTIME_STATUS[connection.id] = current
+
+
 class BotRuntime:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task[None]] = {}
@@ -1318,6 +1334,12 @@ class BotRuntime:
     async def _stop_locked(self, connection_id: str) -> None:
         task = self.tasks.pop(connection_id, None)
         self.fingerprints.pop(connection_id, None)
+        if connection_id in BOT_RUNTIME_STATUS:
+            BOT_RUNTIME_STATUS[connection_id] = {
+                **BOT_RUNTIME_STATUS[connection_id],
+                "status": "stopped",
+                "updatedAt": time.time(),
+            }
         if not task:
             return
         task.cancel()
@@ -1334,6 +1356,7 @@ class BotRuntime:
     async def _run_connection(self, connection: BotConnection) -> None:
         while True:
             try:
+                _set_runtime_status(connection, "starting", lastError=None)
                 if connection.provider == "slack":
                     await self._run_slack(connection)
                 elif connection.provider == "telegram":
@@ -1343,6 +1366,7 @@ class BotRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                _set_runtime_status(connection, "error", lastError=str(exc), lastErrorAt=time.time())
                 _append_bot_event(
                     {
                         "type": "runtime_error",
@@ -1365,18 +1389,28 @@ class BotRuntime:
     async def _run_slack(self, connection: BotConnection) -> None:
         assert connection.slack_app_token
         socket_url = await asyncio.to_thread(_slack_socket_url, connection.slack_app_token)
+        _set_runtime_status(connection, "connecting", lastError=None)
         await hub.publish({"type": "bot.runtime", "provider": "slack", "connectionId": connection.id, "status": "connected"})
         async with websockets.connect(socket_url, ping_interval=20) as websocket:
+            _set_runtime_status(connection, "connected", connectedAt=time.time(), lastError=None)
             async for raw in websocket:
                 envelope = json.loads(raw)
                 envelope_id = envelope.get("envelope_id")
                 if envelope_id:
                     await websocket.send(json.dumps({"envelope_id": envelope_id}))
                 payload = envelope.get("payload") or {}
+                _set_runtime_status(
+                    connection,
+                    "connected",
+                    lastEnvelopeAt=time.time(),
+                    lastPayloadType=payload.get("type"),
+                )
                 if payload.get("type") == "block_actions":
                     await _handle_slack_interaction(connection, payload)
                     continue
                 event = payload.get("event") or {}
+                if event:
+                    _set_runtime_status(connection, "connected", lastEventAt=time.time(), lastEventType=event.get("type"))
                 if event.get("type") not in {"message", "app_mention"}:
                     continue
                 if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
@@ -1409,6 +1443,7 @@ class BotRuntime:
     async def _run_telegram(self, connection: BotConnection) -> None:
         assert connection.bot_token
         offset = connection.telegram_update_offset
+        _set_runtime_status(connection, "polling", connectedAt=time.time(), lastError=None)
         await hub.publish({"type": "bot.runtime", "provider": "telegram", "connectionId": connection.id, "status": "polling"})
         while True:
             url = f"https://api.telegram.org/bot{connection.bot_token}/getUpdates?timeout=0"
@@ -1418,6 +1453,7 @@ class BotRuntime:
             if not response.get("ok"):
                 raise RuntimeError(f"Telegram getUpdates failed: {response}")
             for update in response.get("result") or []:
+                _set_runtime_status(connection, "polling", lastEnvelopeAt=time.time(), lastPayloadType="update")
                 update_id = update.get("update_id")
                 if update_id is not None:
                     offset = int(update_id) + 1
@@ -1708,6 +1744,7 @@ async def bot_status() -> dict[str, Any]:
         "connections": len(connections),
         "bindings": len(bindings),
         "runtimeConnections": len(bot_runtime.tasks),
+        "runtimeStatus": list(BOT_RUNTIME_STATUS.values()),
     }
 
 
