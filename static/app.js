@@ -5,6 +5,7 @@ const state = {
   threadId: null,
   activeAgentMessage: null,
   approvals: new Map(),
+  activeTurnsByThread: new Map(),
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
@@ -390,6 +391,85 @@ function setWaiting(waiting, label = "Waiting for Codex") {
   text.textContent = waiting ? label : "Idle";
 }
 
+function ensureActiveTurns(threadId) {
+  if (!threadId) return null;
+  if (!state.activeTurnsByThread.has(threadId)) {
+    state.activeTurnsByThread.set(threadId, new Set());
+  }
+  return state.activeTurnsByThread.get(threadId);
+}
+
+function markThreadBusy(threadId, turnId = "__active__") {
+  const turns = ensureActiveTurns(threadId);
+  if (turns) turns.add(turnId || "__active__");
+  updateWaitingFromState();
+}
+
+function clearThreadBusy(threadId, turnId = null) {
+  if (!threadId || !state.activeTurnsByThread.has(threadId)) return;
+  if (turnId) {
+    state.activeTurnsByThread.get(threadId).delete(turnId);
+  } else {
+    state.activeTurnsByThread.delete(threadId);
+    updateWaitingFromState();
+    return;
+  }
+  if (state.activeTurnsByThread.get(threadId).size === 0) {
+    state.activeTurnsByThread.delete(threadId);
+  }
+  updateWaitingFromState();
+}
+
+function isThreadBusy(threadId) {
+  return Boolean(threadId && state.activeTurnsByThread.get(threadId)?.size);
+}
+
+function approvalThreadId(request) {
+  return request?.params?.threadId || request?.params?.turn?.threadId || null;
+}
+
+function activeApprovalForThread(threadId) {
+  for (const request of state.approvals.values()) {
+    const approvalThread = approvalThreadId(request);
+    if (!approvalThread || approvalThread === threadId) return true;
+  }
+  return false;
+}
+
+function updateWaitingFromState() {
+  if (activeApprovalForThread(state.threadId)) {
+    setWaiting(true, "Waiting for approval");
+  } else if (isThreadBusy(state.threadId)) {
+    setWaiting(true, "Waiting for Codex");
+  } else {
+    setWaiting(false);
+  }
+}
+
+function hydrateThreadActivity(thread) {
+  if (!thread?.id) return;
+  clearThreadBusy(thread.id);
+  if (thread.status?.type === "active") {
+    markThreadBusy(thread.id);
+  }
+  (thread.turns || []).forEach((turn) => {
+    if (turn?.status === "inProgress") markThreadBusy(thread.id, turn.id);
+  });
+  updateWaitingFromState();
+}
+
+function hydrateThreadListActivity(threads) {
+  (threads || []).forEach((thread) => {
+    if (!thread?.id || !thread.status?.type) return;
+    if (thread.status.type === "active") {
+      markThreadBusy(thread.id);
+    } else if (thread.status.type === "idle" || thread.status.type === "systemError" || thread.status.type === "notLoaded") {
+      clearThreadBusy(thread.id);
+    }
+  });
+  updateWaitingFromState();
+}
+
 function clearMessages() {
   $("messages").innerHTML = "";
   state.activeAgentMessage = null;
@@ -534,6 +614,8 @@ async function refresh() {
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
   state.threads = await api(`/api/threads?${qs}`);
+  const threads = state.threads?.data || state.threads?.threads || state.threads || [];
+  hydrateThreadListActivity(threads);
   renderProjects();
   renderThreads();
 }
@@ -676,13 +758,16 @@ async function saveBotIntegration(event) {
 
 async function loadThread(threadId) {
   state.threadId = threadId;
-  setWaiting(false);
+  updateWaitingFromState();
   renderTokenUsage();
   await api(`/api/threads/${threadId}/resume?project_id=${encodeURIComponent(state.projectId)}`, { method: "POST" });
   const data = await api(`/api/threads/${threadId}`);
-  renderThread(data.thread || data);
+  const thread = data.thread || data;
+  hydrateThreadActivity(thread);
+  renderThread(thread);
   renderThreads();
   renderTokenUsage();
+  updateWaitingFromState();
 }
 
 async function newThread() {
@@ -705,7 +790,7 @@ async function sendPrompt() {
   $("prompt").value = "";
   state.activeAgentMessage = null;
   addMessage("You", prompt, "user");
-  setWaiting(true, "Waiting for Codex");
+  markThreadBusy(state.threadId);
   try {
     await api(`/api/threads/${state.threadId}/turns`, {
       method: "POST",
@@ -717,7 +802,7 @@ async function sendPrompt() {
       }),
     });
   } catch (error) {
-    setWaiting(false);
+    clearThreadBusy(state.threadId);
     addMessage("Error", error.message, "tool");
   }
 }
@@ -748,6 +833,7 @@ function connectEvents() {
   ws.onerror = () => logEvent("ws.error", {});
   ws.onclose = () => {
     logEvent("ws.close", {});
+    state.activeTurnsByThread.clear();
     setWaiting(false);
     setTimeout(connectEvents, 1000);
   };
@@ -763,24 +849,26 @@ function handleEvent(event) {
     return;
   }
   if (event.type === "approval.request") {
-    setWaiting(true, "Waiting for approval");
     state.approvals.set(String(event.request.id), event.request);
     renderApprovals();
+    updateWaitingFromState();
     return;
   }
   if (event.type === "approval.resolved") {
     state.approvals.delete(String(event.id));
     renderApprovals();
-    setWaiting(true, "Waiting for Codex");
+    updateWaitingFromState();
     return;
   }
   if (event.type === "codex.closed" || event.type === "codex.error") {
+    state.activeTurnsByThread.clear();
     setWaiting(false);
     return;
   }
   if (event.type !== "codex.event") return;
   const message = event.message;
   const threadId = eventThreadId(message);
+  updateThreadActivityFromEvent(message);
   if (message.method === "thread/tokenUsage/updated") {
     const params = message.params || {};
     if (params.threadId && params.tokenUsage) {
@@ -796,12 +884,16 @@ function handleEvent(event) {
     if (message.method === "thread/name/updated" || message.method === "thread/status/changed") {
       refresh().catch(console.error);
     }
+    updateWaitingFromState();
     return;
   }
   if (message.method === "item/agentMessage/delta") {
     appendAgentDelta(message.params?.delta || "");
+  } else if (message.method === "turn/started") {
+    setWaiting(true, "Waiting for Codex");
   } else if (message.method === "item/started") {
     const item = message.params?.item;
+    setWaiting(true, "Waiting for Codex");
     if (item?.type === "commandExecution") addCommandMessage("Command started", item.command || "", "", false);
   } else if (message.method === "item/completed") {
     const item = message.params?.item;
@@ -814,18 +906,44 @@ function handleEvent(event) {
     }
   } else if (message.method === "turn/completed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
-    setWaiting(false);
+    updateWaitingFromState();
     refresh().catch(console.error);
   } else if (message.method === "turn/failed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
-    setWaiting(false);
+    updateWaitingFromState();
   } else if (message.method === "thread/name/updated") {
     refresh().catch(console.error);
+  } else if (message.method === "thread/status/changed") {
+    refresh().catch(console.error);
+    updateWaitingFromState();
   }
 }
 
 function eventThreadId(message) {
   return message?.params?.threadId || message?.params?.turn?.threadId || null;
+}
+
+function eventTurnId(message) {
+  return message?.params?.turnId || message?.params?.turn?.id || null;
+}
+
+function updateThreadActivityFromEvent(message) {
+  const threadId = eventThreadId(message);
+  if (!threadId) return;
+  const method = message.method;
+  const turnId = eventTurnId(message);
+  if (method === "turn/started" || method === "item/started") {
+    markThreadBusy(threadId, turnId);
+  } else if (method === "turn/completed" || method === "turn/failed") {
+    clearThreadBusy(threadId, turnId);
+  } else if (method === "thread/status/changed") {
+    const statusType = message.params?.status?.type;
+    if (statusType === "active") {
+      markThreadBusy(threadId);
+    } else if (statusType === "idle" || statusType === "systemError" || statusType === "notLoaded") {
+      clearThreadBusy(threadId);
+    }
+  }
 }
 
 function isActiveThreadEvent(message) {

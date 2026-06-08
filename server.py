@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import urllib.error
@@ -33,6 +34,7 @@ BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
 THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
 STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
+WATCHDOG_TASK: asyncio.Task[None] | None = None
 
 
 class Project(BaseModel):
@@ -1665,8 +1667,81 @@ app = FastAPI(title="Codex Web Local")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _sd_notify(message: str) -> bool:
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        return False
+    address: str | bytes = notify_socket
+    if notify_socket.startswith("@"):
+        address = "\0" + notify_socket[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.connect(address)
+            client.sendall(message.encode())
+        return True
+    except OSError:
+        return False
+
+
+def _watchdog_interval() -> float:
+    try:
+        usec = int(os.environ.get("WATCHDOG_USEC") or "0")
+    except ValueError:
+        return 0
+    if usec <= 0:
+        return 0
+    return max(5.0, min(30.0, usec / 2_000_000))
+
+
+def _daemon_health() -> dict[str, Any]:
+    now = time.time()
+    problems: list[str] = []
+    configured_runtime_ids = set(bot_runtime.fingerprints)
+    running_runtime_ids = set(bot_runtime.tasks)
+
+    if not codex.proc or codex.proc.poll() is not None:
+        problems.append("codex app-server process is not running")
+
+    missing_runtimes = configured_runtime_ids - running_runtime_ids
+    if missing_runtimes:
+        problems.append(f"bot runtime task missing for: {', '.join(sorted(missing_runtimes))}")
+
+    for connection_id, task in bot_runtime.tasks.items():
+        if task.done():
+            problems.append(f"bot runtime task stopped for: {connection_id}")
+            continue
+        status = BOT_RUNTIME_STATUS.get(connection_id, {})
+        if status.get("status") == "error":
+            error_at = float(status.get("lastErrorAt") or status.get("updatedAt") or now)
+            if now - error_at > 120:
+                problems.append(f"bot runtime has been in error for {int(now - error_at)}s: {connection_id}")
+
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "codexReady": codex.ready.is_set(),
+        "codexPid": codex.proc.pid if codex.proc else None,
+        "runtimeConnections": len(bot_runtime.tasks),
+        "runtimeStatus": list(BOT_RUNTIME_STATUS.values()),
+    }
+
+
+async def _watchdog_loop() -> None:
+    interval = _watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        health = _daemon_health()
+        if health["ok"]:
+            _sd_notify("WATCHDOG=1\nSTATUS=codex-web healthy")
+        else:
+            _sd_notify("STATUS=codex-web unhealthy: " + "; ".join(health["problems"]))
+        await asyncio.sleep(interval)
+
+
 @app.on_event("startup")
 async def startup() -> None:
+    global WATCHDOG_TASK
     _load_projects()
     _dedupe_bot_integrations()
     try:
@@ -1675,10 +1750,19 @@ async def startup() -> None:
         # Keep the HTTP UI up so it can report the app-server failure.
         pass
     await bot_runtime.sync()
+    _sd_notify("READY=1\nSTATUS=codex-web started")
+    WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global WATCHDOG_TASK
+    _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
+    if WATCHDOG_TASK:
+        WATCHDOG_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await WATCHDOG_TASK
+        WATCHDOG_TASK = None
     await bot_runtime.stop()
     await codex.stop()
 
@@ -1711,6 +1795,14 @@ async def status() -> dict[str, Any]:
         "error": codex.last_error,
         "pendingApprovals": list(codex.pending_approvals.values()),
     }
+
+
+@app.get("/api/healthz")
+async def healthz() -> dict[str, Any]:
+    health = _daemon_health()
+    if not health["ok"]:
+        raise HTTPException(status_code=503, detail=health)
+    return health
 
 
 @app.get("/api/account/rate-limits")

@@ -4,7 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=nbingester
 WorkingDirectory=/home/nbingester/codex-web
 Environment=CODEX_WEB_HOST=127.0.0.1
@@ -13,8 +14,9 @@ Environment=HOME=/home/nbingester
 Environment=PATH=/home/nbingester/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 Environment=PYTHONPATH=/home/nbingester/codex-web/.venv/lib64/python3.14/site-packages:/home/nbingester/codex-web/.venv/lib/python3.14/site-packages
 ExecStart=/usr/bin/python3 /home/nbingester/codex-web/server.py
-Restart=on-failure
+Restart=always
 RestartSec=5
+WatchdogSec=60s
 
 [Install]
 WantedBy=multi-user.target
