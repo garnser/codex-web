@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime state. These files can include thread state, bot tokens, logs,
+# Slack timestamps, project paths, and other host-specific details.
+data/
+
+# Local secrets and environment overrides.
+.env
+.env.*
+*.pem
+*.key
+CODEX-SECRETS.md
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/

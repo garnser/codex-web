@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Web Local</title>
+    <script>
+      (() => {
+        const stored = localStorage.getItem("codex-web-theme");
+        const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = stored || preferred;
+      })();
+    </script>
+    <link rel="stylesheet" href="static/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-lockup">
+          <div class="app-mark">C</div>
+          <div>
+            <strong>Codex Web</strong>
+            <span>Local app-server client</span>
+          </div>
+        </div>
+        <button id="refresh" class="icon-button" title="Refresh">↻</button>
+      </div>
+
+      <section>
+        <div class="section-title">
+          <span>Projects</span>
+          <button id="new-project" class="icon-button" title="Add project">+</button>
+        </div>
+        <div id="projects" class="list"></div>
+      </section>
+
+      <section class="threads-section">
+        <div class="section-title">
+          <span>Threads</span>
+          <button id="new-thread" class="icon-button" title="New thread">+</button>
+        </div>
+        <input id="thread-search" class="search" placeholder="Search threads" />
+        <div id="threads" class="list threads"></div>
+      </section>
+
+      <details class="token-footer">
+        <summary class="section-title">
+          <span>Token Utilization</span>
+          <button id="refresh-token-usage" class="icon-button" type="button" title="Refresh token usage">↻</button>
+        </summary>
+        <div class="token-panel">
+          <div class="token-row">
+            <span>Context</span>
+            <strong id="token-context">Waiting for usage</strong>
+          </div>
+          <div class="token-meter" aria-hidden="true">
+            <span id="token-context-fill"></span>
+          </div>
+          <div class="token-stats">
+            <div>
+              <span>Last</span>
+              <strong id="token-last">--</strong>
+            </div>
+            <div>
+              <span>Total</span>
+              <strong id="token-total">--</strong>
+            </div>
+            <div>
+              <span>Output</span>
+              <strong id="token-output">--</strong>
+            </div>
+          </div>
+          <div class="limit-grid">
+            <div class="limit-card">
+              <div class="token-row">
+                <span>5 hour limit</span>
+                <strong id="token-limit-5h">--</strong>
+              </div>
+              <div class="token-meter limit-meter" aria-hidden="true">
+                <span id="token-limit-5h-fill"></span>
+              </div>
+              <small id="token-limit-5h-reset">Rate limit unavailable</small>
+            </div>
+            <div class="limit-card">
+              <div class="token-row">
+                <span>Weekly limit</span>
+                <strong id="token-limit-weekly">--</strong>
+              </div>
+              <div class="token-meter limit-meter" aria-hidden="true">
+                <span id="token-limit-weekly-fill"></span>
+              </div>
+              <small id="token-limit-weekly-reset">Rate limit unavailable</small>
+            </div>
+          </div>
+        </div>
+      </details>
+    </aside>
+    <button id="sidebar-toggle" class="sidebar-toggle" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" title="Resize sidebar"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="thread-heading">
+          <h1 id="thread-title">No thread selected</h1>
+          <p id="thread-meta">Create or select a thread.</p>
+        </div>
+        <div id="codex-status" class="codex-status idle" aria-live="polite">
+          <span class="status-spinner" aria-hidden="true"></span>
+          <span id="codex-status-text">Idle</span>
+        </div>
+        <div class="controls">
+          <details id="developer-panel" class="developer-menu">
+            <summary>
+              <span>Developer</span>
+              <small id="developer-summary">Daemon and logs</small>
+            </summary>
+            <div class="developer-content">
+              <div class="developer-toolbar">
+                <button id="refresh-developer" type="button" class="ghost-button">Refresh</button>
+                <span id="developer-last-refresh"></span>
+              </div>
+              <div class="developer-grid">
+                <div class="developer-card">
+                  <h2>Daemon</h2>
+                  <pre id="daemon-info">Open to load daemon information.</pre>
+                </div>
+                <div class="developer-card">
+                  <h2>Communication</h2>
+                  <div id="comm-log" class="comm-log"></div>
+                </div>
+              </div>
+            </div>
+          </details>
+          <button id="theme-toggle" class="icon-button theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode" aria-pressed="false">◐</button>
+          <select id="sandbox">
+            <option value="workspace-write">Workspace write</option>
+            <option value="read-only">Read only</option>
+            <option value="danger-full-access">Full access</option>
+          </select>
+          <select id="approval-policy">
+            <option value="on-request">Ask on request</option>
+            <option value="untrusted">Ask untrusted</option>
+            <option value="never">Never ask</option>
+          </select>
+          <button id="rename-thread" class="ghost-button">Rename</button>
+          <button id="archive-thread" class="ghost-button">Archive</button>
+        </div>
+      </header>
+
+      <div id="approvals" class="approvals"></div>
+      <section id="messages" class="messages"></section>
+
+      <footer class="composer">
+        <textarea id="prompt" rows="3" placeholder="Ask Codex to work in the selected project..."></textarea>
+        <button id="send" class="primary-button">Send</button>
+      </footer>
+    </main>
+
+    <dialog id="project-dialog">
+      <form method="dialog" class="dialog-form">
+        <h2>Add project</h2>
+        <label>Name <input id="project-name" required /></label>
+        <label>Path <input id="project-path" required placeholder="/home/nbingester/veridataops-platform" /></label>
+        <label>Model <input id="project-model" placeholder="Use Codex default" /></label>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button id="save-project" value="default">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="bot-dialog">
+      <form method="dialog" id="bot-form" class="dialog-form bot-form">
+        <div class="dialog-heading">
+          <h2>Bot Integration</h2>
+          <button id="close-bot-dialog" class="icon-button" type="button" title="Close bot integration" aria-label="Close bot integration">×</button>
+        </div>
+        <p id="bot-context" class="dialog-subtitle">Attach a bot connection to this thread or project.</p>
+
+        <div class="form-grid">
+          <label>Provider
+            <select id="bot-provider">
+              <option value="slack">Slack</option>
+              <option value="telegram">Telegram</option>
+            </select>
+          </label>
+          <label>Saved connection
+            <select id="bot-connection">
+              <option value="">New connection</option>
+            </select>
+          </label>
+        </div>
+
+        <label>Connection name <input id="bot-name" required placeholder="Team Slack bot" /></label>
+        <label>Bot token <input id="bot-token" type="password" autocomplete="off" placeholder="Stored locally; leave blank to keep existing" /></label>
+
+        <div id="slack-fields" class="provider-fields">
+          <label>Slack app token <input id="bot-slack-app-token" type="password" autocomplete="off" placeholder="xapp token for Socket Mode" /></label>
+          <label>Slack signing secret <input id="bot-signing-secret" type="password" autocomplete="off" placeholder="Used to verify Slack events" /></label>
+          <label>Slack channel ID <input id="bot-conversation-id" placeholder="C0123456789" /></label>
+        </div>
+
+        <div id="telegram-fields" class="provider-fields" hidden>
+          <label>Telegram webhook secret <input id="bot-webhook-secret" type="password" autocomplete="off" placeholder="Secret token sent by Telegram" /></label>
+          <label>Telegram chat ID <input id="bot-telegram-chat-id" placeholder="-1001234567890" /></label>
+        </div>
+
+        <div class="form-grid">
+          <label>Conversation name <input id="bot-external-name" placeholder="#codex or team chat" /></label>
+          <label>Message prefix <input id="bot-route-prefix" placeholder="Thread name" /></label>
+        </div>
+
+        <label class="checkbox-label">
+          <input id="bot-bind-existing-thread" type="checkbox" />
+          <span>Bind to selected thread</span>
+        </label>
+
+        <div id="bot-result" class="form-result" hidden></div>
+
+        <menu>
+          <button id="cancel-bot-integration" value="cancel" type="button">Cancel</button>
+          <button id="save-bot-integration" value="default" class="primary-button">Save integration</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="static/app.js" type="module"></script>
+  </body>
+</html>
