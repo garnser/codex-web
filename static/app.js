@@ -12,6 +12,7 @@ const state = {
   accountRateLimits: null,
   botConnections: [],
   botIntegrationTarget: null,
+  openItemMenu: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -253,6 +254,14 @@ function applySidebarPreference(preference = loadSidebarPreference()) {
 function setupSidebarControls() {
   const toggle = $("sidebar-toggle");
   const resizer = $("sidebar-resizer");
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".item-menu")) closeItemMenu();
+  });
+  window.addEventListener("resize", () => {
+    if (state.openItemMenu) positionItemMenu(state.openItemMenu);
+  });
+  $("projects").addEventListener("scroll", closeItemMenu);
+  $("threads").addEventListener("scroll", closeItemMenu);
   toggle.addEventListener("click", () => {
     const preference = loadSidebarPreference();
     preference.collapsed = !preference.collapsed;
@@ -283,6 +292,7 @@ function setupSidebarControls() {
 }
 
 function renderProjects() {
+  closeItemMenu();
   $("projects").innerHTML = "";
   state.projects.forEach((project) => {
     const item = document.createElement("div");
@@ -292,12 +302,12 @@ function renderProjects() {
         <strong>${escapeHtml(project.name)}</strong>
         <span>${escapeHtml(project.path)}</span>
       </div>
-      <details class="item-menu">
-        <summary title="Project actions">...</summary>
+      <div class="item-menu">
+        <button type="button" class="item-menu-trigger" title="Project actions" aria-label="Project actions">...</button>
         <div class="item-menu-popover">
           <button type="button" data-action="bot">Bot Integration</button>
         </div>
-      </details>
+      </div>
     `;
     item.querySelector(".item-main").addEventListener("click", async () => {
       state.projectId = project.id;
@@ -306,17 +316,20 @@ function renderProjects() {
     });
     item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
       event.stopPropagation();
+      closeItemMenu();
       openBotIntegration({
         scope: "project",
         projectId: project.id,
         title: project.name,
       });
     });
+    item.querySelector(".item-menu-trigger").addEventListener("click", (event) => toggleItemMenu(event.currentTarget));
     $("projects").appendChild(item);
   });
 }
 
 function renderThreads() {
+  closeItemMenu();
   $("threads").innerHTML = "";
   const threads = state.threads?.data || state.threads?.threads || state.threads || [];
   threads.forEach((thread) => {
@@ -329,16 +342,17 @@ function renderThreads() {
         <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(updated || "No activity yet")}</span>
       </div>
-      <details class="item-menu">
-        <summary title="Thread actions">...</summary>
+      <div class="item-menu">
+        <button type="button" class="item-menu-trigger" title="Thread actions" aria-label="Thread actions">...</button>
         <div class="item-menu-popover">
           <button type="button" data-action="bot">Bot Integration</button>
         </div>
-      </details>
+      </div>
     `;
     item.querySelector(".item-main").addEventListener("click", () => loadThread(thread.id));
     item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
       event.stopPropagation();
+      closeItemMenu();
       openBotIntegration({
         scope: "thread",
         projectId: state.projectId,
@@ -346,8 +360,41 @@ function renderThreads() {
         title,
       });
     });
+    item.querySelector(".item-menu-trigger").addEventListener("click", (event) => toggleItemMenu(event.currentTarget));
     $("threads").appendChild(item);
   });
+}
+
+function closeItemMenu() {
+  if (!state.openItemMenu) return;
+  state.openItemMenu.classList.remove("open");
+  state.openItemMenu.querySelector(".item-menu-trigger")?.setAttribute("aria-expanded", "false");
+  state.openItemMenu = null;
+}
+
+function toggleItemMenu(trigger) {
+  const menu = trigger.closest(".item-menu");
+  if (!menu) return;
+  const willOpen = state.openItemMenu !== menu;
+  closeItemMenu();
+  if (!willOpen) return;
+  menu.classList.add("open");
+  trigger.setAttribute("aria-expanded", "true");
+  state.openItemMenu = menu;
+  positionItemMenu(menu);
+}
+
+function positionItemMenu(menu) {
+  const trigger = menu.querySelector(".item-menu-trigger");
+  const popover = menu.querySelector(".item-menu-popover");
+  if (!trigger || !popover) return;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.max(168, popover.offsetWidth || 168);
+  const left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.right - width));
+  const belowTop = rect.bottom + 6;
+  const top = belowTop + 44 > window.innerHeight ? Math.max(8, rect.top - 44) : belowTop;
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
 }
 
 function renderApprovals() {
@@ -641,10 +688,25 @@ function renderBotConnectionOptions() {
 
 function applyBotProvider(provider) {
   const isSlack = provider === "slack";
+  $("bot-token-label").textContent = isSlack ? "Slack bot token" : "Telegram bot token";
+  $("bot-token").placeholder = isSlack
+    ? "xoxb token; leave blank to keep existing"
+    : "Telegram bot token; leave blank to keep existing";
   $("slack-fields").hidden = !isSlack;
   $("telegram-fields").hidden = isSlack;
+  $("bot-slack-app-token").required = isSlack && !$("bot-connection").value;
   $("bot-conversation-id").required = isSlack;
   $("bot-telegram-chat-id").required = !isSlack;
+  $("bot-signing-secret").required = false;
+  $("bot-webhook-secret").required = false;
+  if (isSlack) {
+    $("bot-telegram-chat-id").value = "";
+    $("bot-webhook-secret").value = "";
+  } else {
+    $("bot-conversation-id").value = "";
+    $("bot-slack-app-token").value = "";
+    $("bot-signing-secret").value = "";
+  }
 }
 
 function selectedBotConnection() {
@@ -664,15 +726,17 @@ function fillBotDialogFromConnection(connection) {
   applyBotProvider(connection.provider);
   $("bot-name").value = connection.name || "";
   $("bot-token").value = "";
-  $("bot-token").placeholder = connection.bot_token ? `${connection.bot_token} stored` : "Stored locally; leave blank to keep existing";
+  $("bot-token").placeholder = connection.bot_token
+    ? `${connection.bot_token} stored`
+    : (connection.provider === "slack" ? "xoxb token; leave blank to keep existing" : "Telegram bot token; leave blank to keep existing");
   $("bot-slack-app-token").value = "";
   $("bot-slack-app-token").placeholder = connection.slack_app_token ? `${connection.slack_app_token} stored` : "xapp token for Socket Mode";
   $("bot-signing-secret").value = "";
   $("bot-signing-secret").placeholder = connection.signing_secret ? `${connection.signing_secret} stored` : "Used to verify Slack events";
   $("bot-webhook-secret").value = "";
   $("bot-webhook-secret").placeholder = connection.webhook_secret ? `${connection.webhook_secret} stored` : "Secret token sent by Telegram";
-  $("bot-conversation-id").value = connection.default_external_conversation_id || "";
-  $("bot-telegram-chat-id").value = connection.default_external_conversation_id || "";
+  $("bot-conversation-id").value = connection.provider === "slack" ? (connection.default_external_conversation_id || "") : "";
+  $("bot-telegram-chat-id").value = connection.provider === "telegram" ? (connection.default_external_conversation_id || "") : "";
   $("bot-external-name").value = connection.default_external_name || "";
 }
 
@@ -681,8 +745,8 @@ async function openBotIntegration(target) {
   const bindExisting = target.scope === "thread";
   $("bot-context").textContent = `${target.scope === "thread" ? "Thread" : "Project"}: ${target.title}`;
   $("bot-provider").value = "slack";
-  applyBotProvider("slack");
   $("bot-connection").value = "";
+  applyBotProvider("slack");
   $("bot-name").value = `${target.title} bot`;
   $("bot-token").value = "";
   $("bot-slack-app-token").value = "";
