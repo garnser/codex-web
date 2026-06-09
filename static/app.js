@@ -16,6 +16,7 @@ const state = {
   botChannels: [],
   botIntegrationTarget: null,
   expandedItems: new Set(),
+  threadRenderPending: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -451,6 +452,11 @@ function renderThreads() {
     const slackIconMarkup = slackIcon
       ? `<span class="slack-thread-icon" title="${escapeHtml(`Slack icon ${slackIcon}`)}" aria-label="${escapeHtml(`Slack icon ${slackIcon}`)}">${escapeHtml(slackIconGlyph(slackIcon))}</span>`
       : "";
+    const waiting = isThreadBusy(thread.id);
+    const depth = queuedDepth(thread.id);
+    const threadStatus = waiting
+      ? `<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
+      : (depth > 0 ? `<span class="thread-state queued">Queued ${depth}</span>` : "");
     const isPrimary = primaryThreadIds.has(thread.id);
     const primaryChannel = state.botBindings.find((binding) => (
       binding.project_id === state.projectId
@@ -465,7 +471,7 @@ function renderThreads() {
       <div class="item-header">
         <div class="item-main">
           <span class="thread-title-line">${slackIconMarkup}<strong>${escapeHtml(title)}</strong></span>
-          <span>${escapeHtml(updated || "No activity yet")}</span>
+          <span class="thread-meta-line"><span>${escapeHtml(updated || "No activity yet")}</span>${threadStatus}</span>
         </div>
         <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
       </div>
@@ -530,6 +536,15 @@ function renderThreads() {
   });
 }
 
+function scheduleRenderThreads() {
+  if (!$("threads") || state.threadRenderPending) return;
+  state.threadRenderPending = true;
+  requestAnimationFrame(() => {
+    state.threadRenderPending = false;
+    renderThreads();
+  });
+}
+
 function renderApprovals() {
   const container = $("approvals");
   container.innerHTML = "";
@@ -583,6 +598,7 @@ function setThreadQueueDepth(threadId, depth) {
   } else {
     state.queuedDepthByThread.delete(threadId);
   }
+  scheduleRenderThreads();
   updateWaitingFromState();
 }
 
@@ -597,6 +613,7 @@ function ensureActiveTurns(threadId) {
 function markThreadBusy(threadId, turnId = "__active__") {
   const turns = ensureActiveTurns(threadId);
   if (turns) turns.add(turnId || "__active__");
+  scheduleRenderThreads();
   updateWaitingFromState();
 }
 
@@ -606,12 +623,14 @@ function clearThreadBusy(threadId, turnId = null) {
     state.activeTurnsByThread.get(threadId).delete(turnId);
   } else {
     state.activeTurnsByThread.delete(threadId);
+    scheduleRenderThreads();
     updateWaitingFromState();
     return;
   }
   if (state.activeTurnsByThread.get(threadId).size === 0) {
     state.activeTurnsByThread.delete(threadId);
   }
+  scheduleRenderThreads();
   updateWaitingFromState();
 }
 

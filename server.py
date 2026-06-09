@@ -1583,7 +1583,8 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     provider = message.provider.lower()
     bindings = _bindings_for_connection(provider, message.external_conversation_id)
     project_id = message.project_id or (bindings[0].project_id if bindings else "home")
-    exact_binding = _binding_for_external_target(
+    steer_now, route_message = _steer_route_message(message)
+    exact_binding = None if steer_now else _binding_for_external_target(
         provider,
         project_id,
         message.external_conversation_id,
@@ -1595,16 +1596,21 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             if exact_binding.external_conversation_id == message.external_conversation_id
             else _clone_binding_for_conversation(exact_binding, message)
         )
-        routed_text = message.text
+        routed_text = route_message.text
         route_error = False
     else:
-        binding, routed_text, route_error = _resolve_bot_binding(bindings, message)
+        binding, routed_text, route_error = _resolve_bot_binding(
+            bindings,
+            route_message,
+            prefer_external_thread=not steer_now,
+            allow_master_fallback=not steer_now,
+        )
     if binding is None:
         cross_binding, cross_text, cross_ambiguous = _cross_channel_binding_for_message(
             provider,
             project_id,
             bindings,
-            message,
+            route_message,
         )
         if cross_binding is not None:
             binding = (
@@ -1648,7 +1654,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                 external_name=message.external_name,
             )
         )
-        routed_text = message.text
+        routed_text = route_message.text
     elif message.connection_id and not binding.connection_id:
         binding.connection_id = message.connection_id
         binding.updated_at = time.time()
@@ -1662,7 +1668,11 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         delivery = await _send_bot_details(binding)
         return {"ok": True, "threadId": binding.thread_id, "details": True, "delivery": delivery}
     prompt = _format_bot_prompt(message, provider, routed_text)
-    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+    if steer_now and _thread_is_active(binding.thread_id):
+        with contextlib.suppress(Exception):
+            await codex.request("turn/interrupt", {"threadId": binding.thread_id})
+        _clear_thread_active(binding.thread_id)
+    if not steer_now and (_thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id)):
         queued = _enqueue_turn(
             thread_id=binding.thread_id,
             project_id=project.id,
@@ -1780,19 +1790,20 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         project_id=binding.project_id,
         sandbox=binding.sandbox,
         approval_policy=binding.approval_policy,
-        source=provider,
+        source=f"steer:{provider}" if steer_now else provider,
         reply_target=reply_target,
     )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
     _append_bot_event(
         {
-            "type": "inbound_turn_started",
+            "type": "inbound_turn_steered" if steer_now else "inbound_turn_started",
             "provider": provider,
             "external_conversation_id": message.external_conversation_id,
             "message_id": message.message_id,
             "thread_id": binding.thread_id,
             "sender_id": message.sender_id,
+            "steered": steer_now,
         }
     )
     await hub.publish(
@@ -1805,9 +1816,10 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             "senderId": message.sender_id,
             "senderName": message.sender_name,
             "messageId": message.message_id,
+            "steered": steer_now,
         }
     )
-    return {"ok": True, "threadId": binding.thread_id, "turn": turn}
+    return {"ok": True, "threadId": binding.thread_id, "turn": turn, "steered": steer_now}
 
 
 def _is_stale_thread_error(exc: Exception) -> bool:
@@ -1820,13 +1832,30 @@ def _is_transient_websocket_disconnect(exc: Exception) -> bool:
     return isinstance(exc, ConnectionClosed) or "keepalive ping timeout" in text or "no close frame received" in text
 
 
-def _resolve_bot_binding(bindings: list[BotBinding], message: BotInboundMessage) -> tuple[BotBinding | None, str, bool]:
+def _steer_route_message(message: BotInboundMessage) -> tuple[bool, BotInboundMessage]:
+    match = re.match(r"^\s*steer(?:\s+|:\s*)(.+)$", message.text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return False, message
+    routed_text = match.group(1).strip()
+    if not routed_text:
+        return False, message
+    return True, message.model_copy(update={"text": routed_text})
+
+
+def _resolve_bot_binding(
+    bindings: list[BotBinding],
+    message: BotInboundMessage,
+    *,
+    prefer_external_thread: bool = True,
+    allow_master_fallback: bool = True,
+) -> tuple[BotBinding | None, str, bool]:
     text = message.text
     if not bindings:
         return None, text, False
-    thread_binding = _binding_for_external_thread(bindings, message.external_thread_id)
-    if thread_binding:
-        return thread_binding, text, False
+    if prefer_external_thread:
+        thread_binding = _binding_for_external_thread(bindings, message.external_thread_id)
+        if thread_binding:
+            return thread_binding, text, False
     for binding in sorted(bindings, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
         prefix = _binding_prefix(binding)
         if not prefix:
@@ -1834,10 +1863,11 @@ def _resolve_bot_binding(bindings: list[BotBinding], message: BotInboundMessage)
         stripped = _strip_prefix(text, prefix)
         if stripped is not None:
             return binding, stripped, False
-    masters = [binding for binding in bindings if binding.is_master]
-    if len(masters) == 1:
-        return masters[0], text, False
-    return None, text, True
+    if allow_master_fallback:
+        masters = [binding for binding in bindings if binding.is_master]
+        if len(masters) == 1:
+            return masters[0], text, False
+    return None, text, allow_master_fallback
 
 
 def _binding_for_external_thread(bindings: list[BotBinding], external_thread_id: str | None) -> BotBinding | None:
