@@ -11,6 +11,8 @@ const state = {
   eventLog: [],
   tokenUsageByThread: {},
   accountRateLimits: null,
+  models: [],
+  threadSettings: {},
   botConnections: [],
   botBindings: [],
   botChannels: [],
@@ -87,6 +89,15 @@ const SLACK_ICON_MAP = {
   ":compass:": "🧭",
   ":anchor:": "⚓",
 };
+const REASONING_EFFORTS = [
+  ["", "Default reasoning"],
+  ["none", "None"],
+  ["minimal", "Minimal"],
+  ["low", "Low"],
+  ["medium", "Medium"],
+  ["high", "High"],
+  ["xhigh", "Extra high"],
+];
 
 function preferredTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -164,6 +175,48 @@ function currentRunSettings() {
   };
 }
 
+function threadRunSettings(threadId = state.threadId) {
+  return state.threadSettings?.[threadId] || {};
+}
+
+function selectedThreadTurnOptions(threadId = state.threadId) {
+  const settings = threadRunSettings(threadId);
+  return {
+    model: settings.model || null,
+    reasoningEffort: settings.reasoning_effort || null,
+  };
+}
+
+function modelOptionLabel(model) {
+  return model.displayName || model.display_name || model.model || model.id || "Unnamed model";
+}
+
+function modelOptionValue(model) {
+  return model.model || model.id || "";
+}
+
+function renderModelOptions(selectedModel) {
+  const options = [`<option value="">Project/default model</option>`];
+  const seen = new Set([""]);
+  if (selectedModel && !state.models.some((model) => modelOptionValue(model) === selectedModel)) {
+    options.push(`<option value="${escapeHtml(selectedModel)}" selected>${escapeHtml(selectedModel)}</option>`);
+    seen.add(selectedModel);
+  }
+  state.models.forEach((model) => {
+    const value = modelOptionValue(model);
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    options.push(`<option value="${escapeHtml(value)}" ${selectedModel === value ? "selected" : ""}>${escapeHtml(modelOptionLabel(model))}</option>`);
+  });
+  return options.join("");
+}
+
+function renderReasoningOptions(selectedEffort) {
+  return REASONING_EFFORTS
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${selectedEffort === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
 function applyRunSettings() {
   const settings = currentRunSettings();
   $("sandbox").value = settings.sandbox;
@@ -184,13 +237,44 @@ function persistRunSettings() {
 async function syncThreadRunSettings() {
   if (!state.threadId) return;
   const settings = currentRunSettings();
-  await api(`/api/threads/${state.threadId}/settings`, {
+  const response = await api(`/api/threads/${state.threadId}/settings`, {
     method: "POST",
     body: JSON.stringify({
       sandbox: settings.sandbox,
       approval_policy: settings.approvalPolicy,
     }),
   });
+  state.threadSettings[state.threadId] = {
+    ...threadRunSettings(state.threadId),
+    sandbox: response.sandbox || null,
+    approval_policy: response.approval_policy || null,
+    model: response.model || null,
+    reasoning_effort: response.reasoning_effort || null,
+  };
+  renderThreads();
+}
+
+async function updateThreadRunSettings(threadId, updates) {
+  if (!threadId) return;
+  const current = threadRunSettings(threadId);
+  const response = await api(`/api/threads/${threadId}/settings`, {
+    method: "POST",
+    body: JSON.stringify({
+      sandbox: current.sandbox || null,
+      approval_policy: current.approval_policy || null,
+      model: current.model || "",
+      reasoning_effort: current.reasoning_effort || "",
+      ...updates,
+    }),
+  });
+  state.threadSettings[threadId] = {
+    ...current,
+    sandbox: response.sandbox || current.sandbox || null,
+    approval_policy: response.approval_policy || current.approval_policy || null,
+    model: response.model || null,
+    reasoning_effort: response.reasoning_effort || null,
+  };
+  renderThreads();
 }
 
 function loadTokenUsageCache() {
@@ -459,6 +543,9 @@ function renderThreads() {
       ? `<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
       : (depth > 0 ? `<span class="thread-state queued">Queued ${depth}</span>` : "");
     const isPrimary = primaryThreadIds.has(thread.id);
+    const settings = threadRunSettings(thread.id);
+    const selectedModel = settings.model || "";
+    const selectedReasoningEffort = settings.reasoning_effort || "";
     const primaryChannel = state.botBindings.find((binding) => (
       binding.project_id === state.projectId
       && binding.thread_id === thread.id
@@ -478,6 +565,18 @@ function renderThreads() {
       </div>
       <div class="item-actions" aria-label="Thread actions" ${expanded ? "" : "hidden"}>
         <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
+        <label class="item-action-select">
+          <span>Model</span>
+          <select data-action="thread-model">
+            ${renderModelOptions(selectedModel)}
+          </select>
+        </label>
+        <label class="item-action-select">
+          <span>Reasoning</span>
+          <select data-action="thread-reasoning">
+            ${renderReasoningOptions(selectedReasoningEffort)}
+          </select>
+        </label>
         <label class="item-action-check">
           <input type="checkbox" data-action="primary" ${isPrimary ? "checked" : ""} />
           Primary catch-all
@@ -505,6 +604,14 @@ function renderThreads() {
         threadId: thread.id,
         title,
       });
+    });
+    item.querySelector('[data-action="thread-model"]').addEventListener("change", async (event) => {
+      event.stopPropagation();
+      await updateThreadRunSettings(thread.id, { model: event.target.value });
+    });
+    item.querySelector('[data-action="thread-reasoning"]').addEventListener("change", async (event) => {
+      event.stopPropagation();
+      await updateThreadRunSettings(thread.id, { reasoning_effort: event.target.value });
     });
     item.querySelector('[data-action="primary"]').addEventListener("change", async (event) => {
       event.stopPropagation();
@@ -937,6 +1044,10 @@ function renderItem(item, turn = {}) {
 async function refresh() {
   state.projects = await api("/api/projects");
   state.botBindings = await api("/api/bots/bindings");
+  state.threadSettings = await api("/api/thread-settings");
+  if (!state.models.length) {
+    await refreshModels();
+  }
   applyRunSettings();
   state.botChannels = await api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`);
   const search = $("thread-search").value.trim();
@@ -947,6 +1058,16 @@ async function refresh() {
   hydrateThreadListActivity(threads);
   renderProjects();
   renderThreads();
+}
+
+async function refreshModels() {
+  try {
+    const response = await api("/api/models");
+    state.models = Array.isArray(response.data) ? response.data : [];
+  } catch (error) {
+    logEvent("models.error", { message: error.message });
+    state.models = [];
+  }
 }
 
 async function refreshBotConnections() {
@@ -1125,7 +1246,15 @@ async function loadThread(threadId) {
   updateWaitingFromState();
   renderTokenUsage();
   const settings = currentRunSettings();
-  await api(`/api/threads/${threadId}/resume?project_id=${encodeURIComponent(state.projectId)}&sandbox=${encodeURIComponent(settings.sandbox)}&approval_policy=${encodeURIComponent(settings.approvalPolicy)}`, { method: "POST" });
+  const threadOptions = selectedThreadTurnOptions(threadId);
+  const qs = new URLSearchParams({
+    project_id: state.projectId,
+    sandbox: settings.sandbox,
+    approval_policy: settings.approvalPolicy,
+  });
+  if (threadOptions.model) qs.set("model", threadOptions.model);
+  if (threadOptions.reasoningEffort) qs.set("reasoning_effort", threadOptions.reasoningEffort);
+  await api(`/api/threads/${threadId}/resume?${qs}`, { method: "POST" });
   const data = await api(`/api/threads/${threadId}`);
   const thread = data.thread || data;
   hydrateThreadActivity(thread);
@@ -1139,7 +1268,12 @@ async function loadThread(threadId) {
 async function newThread() {
   persistRunSettings();
   const settings = currentRunSettings();
-  const data = await api(`/api/threads?project_id=${encodeURIComponent(state.projectId)}&sandbox=${encodeURIComponent(settings.sandbox)}&approval_policy=${encodeURIComponent(settings.approvalPolicy)}`, { method: "POST" });
+  const qs = new URLSearchParams({
+    project_id: state.projectId,
+    sandbox: settings.sandbox,
+    approval_policy: settings.approvalPolicy,
+  });
+  const data = await api(`/api/threads?${qs}`, { method: "POST" });
   const thread = data.thread || data;
   state.threadId = thread.id;
   setWaiting(false);
@@ -1166,6 +1300,7 @@ async function sendPrompt() {
     markThreadBusy(threadId);
   }
   try {
+    const threadOptions = selectedThreadTurnOptions(threadId);
     const response = await api(`/api/threads/${threadId}/turns`, {
       method: "POST",
       body: JSON.stringify({
@@ -1173,6 +1308,8 @@ async function sendPrompt() {
         project_id: state.projectId,
         sandbox: currentRunSettings().sandbox,
         approval_policy: currentRunSettings().approvalPolicy,
+        model: threadOptions.model,
+        reasoning_effort: threadOptions.reasoningEffort,
       }),
     });
     if (response.queued) {

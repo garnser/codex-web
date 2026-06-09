@@ -608,6 +608,8 @@ def _remember_thread_run_settings(
     *,
     sandbox: str | None = None,
     approval_policy: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> ThreadRunSettings:
     all_settings = _load_thread_settings()
     current = all_settings.get(thread_id, ThreadRunSettings())
@@ -615,6 +617,10 @@ def _remember_thread_run_settings(
         current.sandbox = sandbox
     if approval_policy is not None:
         current.approval_policy = approval_policy
+    if model is not None:
+        current.model = model or None
+    if reasoning_effort is not None:
+        current.reasoning_effort = reasoning_effort or None
     all_settings[thread_id] = current
     _save_thread_settings(all_settings)
     _sync_bot_binding_settings(thread_id, current)
@@ -629,7 +635,10 @@ def _thread_run_settings(thread_id: str | None) -> ThreadRunSettings:
         return settings
     bindings = _bindings_for_thread(thread_id)
     if bindings:
-        return ThreadRunSettings(sandbox=bindings[0].sandbox, approval_policy=bindings[0].approval_policy)
+        return ThreadRunSettings(
+            sandbox=bindings[0].sandbox,
+            approval_policy=bindings[0].approval_policy,
+        )
     return ThreadRunSettings()
 
 
@@ -714,6 +723,7 @@ def _enqueue_turn(
     sandbox: str | None = None,
     approval_policy: str | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     source: str = "web",
     reply_target: BotReplyTarget | None = None,
 ) -> QueuedTurn:
@@ -726,6 +736,7 @@ def _enqueue_turn(
         sandbox=sandbox,
         approval_policy=approval_policy,
         model=model,
+        reasoning_effort=reasoning_effort,
         source=source,
         reply_target=reply_target,
         created_at=time.time(),
@@ -813,6 +824,8 @@ def _mark_thread_active(
     project_id: str | None = None,
     sandbox: str | None = None,
     approval_policy: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
     source: str | None = None,
     reply_target: BotReplyTarget | None = None,
 ) -> None:
@@ -828,6 +841,8 @@ def _mark_thread_active(
         project_id=project_id or (current.project_id if current else None),
         sandbox=sandbox or settings.sandbox or (current.sandbox if current else None),
         approval_policy=approval_policy or settings.approval_policy or (current.approval_policy if current else None),
+        model=model or settings.model or (current.model if current else None),
+        reasoning_effort=reasoning_effort or settings.reasoning_effort or (current.reasoning_effort if current else None),
         source=source or (current.source if current else None),
         reply_target=reply_target or (current.reply_target if current else None),
         started_at=current.started_at if current else now,
@@ -888,9 +903,13 @@ async def _start_thread_turn_now(
     sandbox: str | None,
     approval_policy: str | None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     source: str = "web",
     reply_target: BotReplyTarget | None = None,
 ) -> dict[str, Any]:
+    settings = _thread_run_settings(thread_id)
+    effective_model = model or settings.model or project.model
+    effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
     await codex.request(
         "thread/resume",
         {
@@ -900,6 +919,7 @@ async def _start_thread_turn_now(
                 {
                     "sandbox": sandbox,
                     "approvalPolicy": approval_policy,
+                    "model": effective_model,
                 },
             ),
         },
@@ -909,8 +929,10 @@ async def _start_thread_turn_now(
         "input": [{"type": "text", "text": message, "text_elements": []}],
         "cwd": project.path,
     }
-    if model or project.model:
-        params["model"] = model or project.model
+    if effective_model:
+        params["model"] = effective_model
+    if effective_reasoning_effort:
+        params["effort"] = effective_reasoning_effort
     if approval_policy:
         params["approvalPolicy"] = approval_policy
     if sandbox:
@@ -923,6 +945,8 @@ async def _start_thread_turn_now(
         project_id=project.id,
         sandbox=sandbox,
         approval_policy=approval_policy,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
         source=source,
         reply_target=reply_target,
     )
@@ -956,6 +980,7 @@ async def _drain_thread_queue(thread_id: str) -> None:
             sandbox=queued.sandbox or project.sandbox,
             approval_policy=queued.approval_policy or project.approval_policy,
             model=queued.model,
+            reasoning_effort=queued.reasoning_effort,
             source=f"queued:{queued.source}",
             reply_target=queued.reply_target,
         )
@@ -1026,6 +1051,8 @@ async def _resume_active_threads_after_startup(thread_ids: set[str] | None = Non
         settings = _thread_run_settings(thread_id)
         sandbox = active.sandbox or settings.sandbox or project.sandbox
         approval_policy = active.approval_policy or settings.approval_policy or project.approval_policy
+        model = active.model or settings.model or project.model
+        reasoning_effort = active.reasoning_effort or settings.reasoning_effort
         active.resume_attempts += 1
         active.last_resume_at = time.time()
         active.updated_at = time.time()
@@ -1043,6 +1070,8 @@ async def _resume_active_threads_after_startup(thread_ids: set[str] | None = Non
                 ),
                 sandbox=sandbox,
                 approval_policy=approval_policy,
+                model=model,
+                reasoning_effort=reasoning_effort,
                 source=f"restart-recovery:{active.source or 'unknown'}",
                 reply_target=active.reply_target,
             )
@@ -1052,6 +1081,8 @@ async def _resume_active_threads_after_startup(thread_ids: set[str] | None = Non
                 project_id=project.id,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
+                model=model,
+                reasoning_effort=reasoning_effort,
                 source=f"restart-recovery:{active.source or 'unknown'}",
                 reply_target=active.reply_target,
             )
@@ -1664,6 +1695,9 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         binding = _upsert_bot_binding(binding)
 
     project = _project(binding.project_id)
+    settings = _thread_run_settings(binding.thread_id)
+    effective_model = settings.model or project.model
+    effective_reasoning_effort = settings.reasoning_effort
     if not routed_text.strip():
         return {"ok": False, "empty": True, "threadId": binding.thread_id}
     reply_target = _remember_bot_reply_target(binding, message)
@@ -1682,6 +1716,8 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             message=prompt,
             sandbox=binding.sandbox,
             approval_policy=binding.approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
             source=provider,
             reply_target=reply_target,
         )
@@ -1736,16 +1772,18 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                     ),
                 },
             )
-            turn = await codex.request(
-                "turn/start",
-                {
-                    "threadId": binding.thread_id,
-                    "input": [{"type": "text", "text": _with_relay_guard(prompt, provider), "text_elements": []}],
-                    "cwd": project.path,
-                    "approvalPolicy": binding.approval_policy,
-                    "sandboxPolicy": _sandbox_policy(binding.sandbox, project.path),
-                },
-            )
+            turn_params = {
+                "threadId": binding.thread_id,
+                "input": [{"type": "text", "text": _with_relay_guard(prompt, provider), "text_elements": []}],
+                "cwd": project.path,
+                "approvalPolicy": binding.approval_policy,
+                "sandboxPolicy": _sandbox_policy(binding.sandbox, project.path),
+            }
+            if effective_model:
+                turn_params["model"] = effective_model
+            if effective_reasoning_effort:
+                turn_params["effort"] = effective_reasoning_effort
+            turn = await codex.request("turn/start", turn_params)
             break
         except Exception as exc:
             if attempt or not _is_stale_thread_error(exc):
@@ -1786,6 +1824,9 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                     )
                 )
             project = _project(binding.project_id)
+            settings = _thread_run_settings(binding.thread_id)
+            effective_model = settings.model or project.model
+            effective_reasoning_effort = settings.reasoning_effort
             reply_target = _remember_bot_reply_target(binding, message) or reply_target
     _mark_thread_active(
         binding.thread_id,
@@ -1793,6 +1834,8 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         project_id=binding.project_id,
         sandbox=binding.sandbox,
         approval_policy=binding.approval_policy,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
         source=f"steer:{provider}" if steer_now else provider,
         reply_target=reply_target,
     )
@@ -3518,6 +3561,15 @@ async def account_rate_limits() -> dict[str, Any]:
     return await codex.request("account/rateLimits/read")
 
 
+@app.get("/api/models")
+async def list_models(include_hidden: bool = False) -> dict[str, Any]:
+    try:
+        return await codex.request("model/list", {"includeHidden": include_hidden, "limit": 100})
+    except Exception as exc:
+        _append_bot_event({"type": "model_list_failed", "error": str(exc)})
+        return {"data": [], "nextCursor": None, "error": str(exc)}
+
+
 @app.get("/api/bots")
 async def bot_status() -> dict[str, Any]:
     bindings = _load_bot_bindings()
@@ -3763,6 +3815,7 @@ async def create_thread(
     sandbox: str | None = None,
     approval_policy: str | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     project = _project(project_id)
     response = await codex.request(
@@ -3784,6 +3837,8 @@ async def create_thread(
             thread_id,
             sandbox=sandbox or project.sandbox,
             approval_policy=approval_policy or project.approval_policy,
+            model=model or project.model,
+            reasoning_effort=reasoning_effort,
         )
     return response
 
@@ -3805,12 +3860,22 @@ async def resume_thread(
     project_id: str | None = None,
     sandbox: str | None = None,
     approval_policy: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     project = _project(project_id)
     remembered = _thread_run_settings(thread_id)
     effective_sandbox = sandbox or remembered.sandbox or project.sandbox
     effective_approval_policy = approval_policy or remembered.approval_policy or project.approval_policy
-    _remember_thread_run_settings(thread_id, sandbox=effective_sandbox, approval_policy=effective_approval_policy)
+    effective_model = model or remembered.model or project.model
+    effective_reasoning_effort = reasoning_effort or remembered.reasoning_effort
+    _remember_thread_run_settings(
+        thread_id,
+        sandbox=effective_sandbox,
+        approval_policy=effective_approval_policy,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
+    )
     params = {
         "threadId": thread_id,
         **_project_params(
@@ -3818,6 +3883,7 @@ async def resume_thread(
             {
                 "sandbox": effective_sandbox,
                 "approvalPolicy": effective_approval_policy,
+                "model": effective_model,
             },
         ),
     }
@@ -3830,7 +3896,15 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
     remembered = _thread_run_settings(thread_id)
     effective_sandbox = payload.sandbox or remembered.sandbox or project.sandbox
     effective_approval_policy = payload.approval_policy or remembered.approval_policy or project.approval_policy
-    _remember_thread_run_settings(thread_id, sandbox=effective_sandbox, approval_policy=effective_approval_policy)
+    effective_model = payload.model or remembered.model or project.model
+    effective_reasoning_effort = payload.reasoning_effort or remembered.reasoning_effort
+    _remember_thread_run_settings(
+        thread_id,
+        sandbox=effective_sandbox,
+        approval_policy=effective_approval_policy,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
+    )
     if _thread_is_active(thread_id) or _thread_queue_depth(thread_id):
         queued = _enqueue_turn(
             thread_id=thread_id,
@@ -3838,7 +3912,8 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
             message=payload.message,
             sandbox=effective_sandbox,
             approval_policy=effective_approval_policy,
-            model=payload.model,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
         )
         await _publish_queue_status(thread_id)
         return {
@@ -3853,7 +3928,8 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
         message=payload.message,
         sandbox=effective_sandbox,
         approval_policy=effective_approval_policy,
-        model=payload.model,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
     )
 
 
@@ -3904,6 +3980,7 @@ async def _steer_queued_turn(thread_id: str, queued: QueuedTurn) -> dict[str, An
         sandbox=queued.sandbox or project.sandbox,
         approval_policy=queued.approval_policy or project.approval_policy,
         model=queued.model,
+        reasoning_effort=queued.reasoning_effort,
         source=f"steer:{queued.source}",
         reply_target=queued.reply_target,
     )
@@ -3921,8 +3998,20 @@ async def update_thread_settings(thread_id: str, payload: ThreadRunSettings) -> 
         thread_id,
         sandbox=payload.sandbox,
         approval_policy=payload.approval_policy,
+        model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
     )
     return {"ok": True, "threadId": thread_id, **settings.model_dump()}
+
+
+@app.get("/api/thread-settings")
+async def list_thread_settings() -> dict[str, Any]:
+    return {thread_id: settings.model_dump() for thread_id, settings in _load_thread_settings().items()}
+
+
+@app.get("/api/threads/{thread_id}/settings")
+async def get_thread_settings(thread_id: str) -> dict[str, Any]:
+    return {"threadId": thread_id, **_thread_run_settings(thread_id).model_dump()}
 
 
 @app.post("/api/threads/{thread_id}/primary")

@@ -24,6 +24,7 @@ class TurnCreate(BaseModel):
     message: str = Field(min_length=1)
     project_id: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     approval_policy: str | None = None
     sandbox: str | None = None
 
@@ -46,6 +47,8 @@ class ThreadPrimaryChannelUpdate(BaseModel):
 class ThreadRunSettings(BaseModel):
     sandbox: str | None = None
     approval_policy: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
 
 
 class BotReplyTarget(BaseModel):
@@ -63,6 +66,8 @@ class ActiveThreadTurn(BaseModel):
     project_id: str | None = None
     sandbox: str | None = None
     approval_policy: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     source: str | None = None
     reply_target: BotReplyTarget | None = None
     started_at: float
@@ -79,6 +84,7 @@ class QueuedTurn(BaseModel):
     sandbox: str | None = None
     approval_policy: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     source: str = "web"
     reply_target: BotReplyTarget | None = None
     attempts: int = 0
