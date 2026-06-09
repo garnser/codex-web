@@ -12,6 +12,7 @@ const state = {
   tokenUsageByThread: {},
   accountRateLimits: null,
   botConnections: [],
+  botBindings: [],
   botIntegrationTarget: null,
   expandedItems: new Set(),
 };
@@ -361,6 +362,11 @@ function renderThreads() {
     const title = thread.name || thread.preview || "Untitled thread";
     const updated = thread.updatedAt ? new Date(thread.updatedAt * 1000).toLocaleString() : "";
     const expanded = isItemExpanded("thread", thread.id);
+    const isPrimary = state.botBindings.some((binding) => (
+      binding.project_id === state.projectId
+      && binding.thread_id === thread.id
+      && binding.is_master
+    ));
     item.className = `item ${thread.id === state.threadId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
       <div class="item-header">
@@ -372,6 +378,10 @@ function renderThreads() {
       </div>
       <div class="item-actions" aria-label="Thread actions" ${expanded ? "" : "hidden"}>
         <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
+        <label class="item-action-check">
+          <input type="checkbox" data-action="primary" ${isPrimary ? "checked" : ""} />
+          Primary catch-all
+        </label>
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", () => loadThread(thread.id));
@@ -388,6 +398,18 @@ function renderThreads() {
         threadId: thread.id,
         title,
       });
+    });
+    item.querySelector('[data-action="primary"]').addEventListener("change", async (event) => {
+      event.stopPropagation();
+      const response = await api(`/api/threads/${thread.id}/primary`, {
+        method: "POST",
+        body: JSON.stringify({
+          primary: event.target.checked,
+          project_id: state.projectId,
+        }),
+      });
+      state.botBindings = response.bindings || state.botBindings;
+      await refresh();
     });
     $("threads").appendChild(item);
   });
@@ -430,10 +452,8 @@ function setWaiting(waiting, label = "Waiting for Codex", mode = waiting ? "wait
   const text = $("codex-status-text");
   if (!status || !text) return;
   status.classList.toggle("waiting", waiting);
-  status.classList.toggle("queued", mode === "queued");
   status.classList.toggle("idle", !waiting);
   text.textContent = waiting ? label : "Idle";
-  updateSteerButton();
 }
 
 function queuedDepth(threadId) {
@@ -449,14 +469,6 @@ function setThreadQueueDepth(threadId, depth) {
     state.queuedDepthByThread.delete(threadId);
   }
   updateWaitingFromState();
-}
-
-function updateSteerButton() {
-  const button = $("steer-queued");
-  if (!button) return;
-  const depth = queuedDepth(state.threadId);
-  button.hidden = depth === 0;
-  button.textContent = depth > 1 ? `Steer now (${depth})` : "Steer now";
 }
 
 function ensureActiveTurns(threadId) {
@@ -507,8 +519,6 @@ function activeApprovalForThread(threadId) {
 function updateWaitingFromState() {
   if (activeApprovalForThread(state.threadId)) {
     setWaiting(true, "Waiting for approval");
-  } else if (queuedDepth(state.threadId)) {
-    setWaiting(true, queuedDepth(state.threadId) > 1 ? `Queued (${queuedDepth(state.threadId)})` : "Queued", "queued");
   } else if (isThreadBusy(state.threadId)) {
     setWaiting(true, "Waiting for Codex");
   } else {
@@ -610,6 +620,39 @@ function addMessage(role, text, type = role, timestamp = new Date()) {
   $("messages").appendChild(message);
   $("messages").scrollTop = $("messages").scrollHeight;
   return message;
+}
+
+function attachQueuedSteer(message, threadId, queuedId = null) {
+  if (!message || !threadId) return;
+  message.classList.add("queued-message");
+  message.dataset.threadId = threadId;
+  if (queuedId) message.dataset.queuedId = queuedId;
+  let actions = message.querySelector(".message-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "message-actions";
+    message.appendChild(actions);
+  }
+  let button = actions.querySelector("[data-action='steer']");
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-action";
+    button.dataset.action = "steer";
+    button.textContent = "Steer now";
+    button.addEventListener("click", () => steerQueuedMessage(message).catch((error) => {
+      addMessage("Queue", error.message, "tool", new Date());
+    }));
+    actions.appendChild(button);
+  }
+  button.disabled = !message.dataset.queuedId;
+  button.title = button.disabled ? "Waiting for queue id" : "Interrupt current turn and send this message now";
+}
+
+function setQueuedMessageId(message, queuedId) {
+  if (!message || !queuedId) return;
+  message.dataset.queuedId = queuedId;
+  attachQueuedSteer(message, message.dataset.threadId || state.threadId, queuedId);
 }
 
 function addFileChangeMessage(changes, timestamp = new Date()) {
@@ -743,6 +786,7 @@ function renderItem(item, turn = {}) {
 
 async function refresh() {
   state.projects = await api("/api/projects");
+  state.botBindings = await api("/api/bots/bindings");
   applyRunSettings();
   const search = $("thread-search").value.trim();
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
@@ -962,9 +1006,10 @@ async function sendPrompt() {
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   state.activeAgentMessage = null;
-  addMessage(willQueue ? "You (queued)" : "You", prompt, "user", new Date());
+  const message = addMessage(willQueue ? "You (queued)" : "You", prompt, "user", new Date());
   if (willQueue) {
     setThreadQueueDepth(threadId, queuedDepth(threadId) + 1);
+    attachQueuedSteer(message, threadId);
   } else {
     markThreadBusy(threadId);
   }
@@ -979,6 +1024,8 @@ async function sendPrompt() {
       }),
     });
     if (response.queued) {
+      attachQueuedSteer(message, threadId, response.queuedId);
+      setQueuedMessageId(message, response.queuedId);
       setThreadQueueDepth(threadId, response.queueDepth || queuedDepth(threadId) || 1);
     }
   } catch (error) {
@@ -991,14 +1038,26 @@ async function sendPrompt() {
   }
 }
 
-async function steerQueuedMessage() {
-  if (!state.threadId || !queuedDepth(state.threadId)) return;
-  const threadId = state.threadId;
+async function steerQueuedMessage(message) {
+  const threadId = message?.dataset?.threadId || state.threadId;
+  const queuedId = message?.dataset?.queuedId;
+  if (!threadId || !queuedId) return;
+  const button = message.querySelector("[data-action='steer']");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Steering...";
+  }
   markThreadBusy(threadId);
   try {
-    const response = await api(`/api/threads/${threadId}/queue/steer`, { method: "POST" });
+    const response = await api(`/api/threads/${threadId}/queue/${queuedId}/steer`, { method: "POST" });
     setThreadQueueDepth(threadId, response.queueDepth || 0);
+    if (button) button.textContent = "Steered";
+    message.classList.remove("queued-message");
   } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Steer now";
+    }
     addMessage("Queue", error.message, "tool", new Date());
     await refreshQueueStatus(threadId);
   }
@@ -1039,8 +1098,9 @@ function connectEvents() {
 function handleEvent(event) {
   if (event.type === "bot.inbound") {
     if (event.threadId === state.threadId) {
-      addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user", new Date());
+      const message = addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user", new Date());
       if (event.queued) {
+        attachQueuedSteer(message, event.threadId, event.queuedId);
         setThreadQueueDepth(event.threadId, event.queueDepth || 1);
       } else {
         setWaiting(true, "Waiting for Codex");
@@ -1265,7 +1325,6 @@ function escapeHtml(value) {
 $("refresh").addEventListener("click", refresh);
 $("new-thread").addEventListener("click", newThread);
 $("send").addEventListener("click", sendPrompt);
-$("steer-queued").addEventListener("click", steerQueuedMessage);
 $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });

@@ -551,6 +551,24 @@ section {
   transform: none;
 }
 
+.item-action-check {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.item-action-check input {
+  margin: 0;
+}
+
 .search {
   width: 100%;
   height: 38px;
@@ -644,16 +662,6 @@ h1 {
   color: var(--accent);
 }
 
-.codex-status.queued {
-  border-color: var(--amber-line);
-  background: var(--amber-soft);
-  color: var(--amber);
-}
-
-.steer-button {
-  flex: 0 0 auto;
-}
-
 .status-spinner {
   width: 14px;
   height: 14px;
@@ -674,13 +682,6 @@ h1 {
 .codex-status.waiting .status-spinner {
   opacity: 1;
   animation: spin 800ms linear infinite;
-}
-
-.codex-status.queued .status-spinner {
-  animation: none;
-  border-color: currentColor;
-  border-right-color: currentColor;
-  opacity: 0.85;
 }
 
 @keyframes spin {
@@ -936,6 +937,32 @@ select {
   color: var(--faint);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.message.queued-message {
+  border-color: var(--amber-line);
+}
+
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-action {
+  min-height: 30px;
+  border: 1px solid var(--amber-line);
+  border-radius: 6px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-action:disabled {
+  opacity: 0.6;
 }
 
 .message.tool .role {

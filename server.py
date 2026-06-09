@@ -33,6 +33,7 @@ BOTS_EVENTS_FILE = DATA_DIR / "bot_events.jsonl"
 BOT_REPLY_TARGETS_FILE = DATA_DIR / "bot_reply_targets.json"
 BOT_DELIVERY_TARGETS_FILE = DATA_DIR / "bot_delivery_targets.json"
 BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
+APPROVAL_MESSAGES_FILE = DATA_DIR / "approval_messages.json"
 THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
 THREAD_SETTINGS_FILE = DATA_DIR / "thread_settings.json"
 ACTIVE_TURNS_FILE = DATA_DIR / "active_turns.json"
@@ -72,6 +73,11 @@ class TurnCreate(BaseModel):
 
 class ApprovalDecision(BaseModel):
     decision: str
+
+
+class ThreadPrimaryUpdate(BaseModel):
+    primary: bool = True
+    project_id: str = "home"
 
 
 class ThreadRunSettings(BaseModel):
@@ -178,6 +184,16 @@ class BotThreadDetail(BaseModel):
     item_type: str
     title: str
     text: str
+    created_at: float
+
+
+class ApprovalSlackMessage(BaseModel):
+    request_id: str
+    connection_id: str
+    channel: str
+    message_ts: str
+    context: str
+    thread_id: str | None = None
     created_at: float
 
 
@@ -395,6 +411,66 @@ def _save_bot_details(details: dict[str, list[BotThreadDetail]]) -> None:
         )
         + "\n"
     )
+
+
+def _load_approval_messages() -> dict[str, list[ApprovalSlackMessage]]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not APPROVAL_MESSAGES_FILE.exists():
+        return {}
+    payload = json.loads(APPROVAL_MESSAGES_FILE.read_text())
+    return {
+        request_id: [ApprovalSlackMessage.model_validate(item) for item in items]
+        for request_id, items in payload.items()
+    }
+
+
+def _save_approval_messages(messages: dict[str, list[ApprovalSlackMessage]]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    APPROVAL_MESSAGES_FILE.write_text(
+        json.dumps(
+            {
+                request_id: [message.model_dump() for message in items]
+                for request_id, items in messages.items()
+                if items
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _remember_approval_message(
+    request_id: int | str,
+    *,
+    connection_id: str,
+    channel: str,
+    message_ts: str,
+    context: str,
+    thread_id: str | None = None,
+) -> None:
+    messages = _load_approval_messages()
+    key = str(request_id)
+    current = messages.setdefault(key, [])
+    if any(item.connection_id == connection_id and item.channel == channel and item.message_ts == message_ts for item in current):
+        return
+    current.append(
+        ApprovalSlackMessage(
+            request_id=key,
+            connection_id=connection_id,
+            channel=channel,
+            message_ts=message_ts,
+            context=context,
+            thread_id=thread_id,
+            created_at=time.time(),
+        )
+    )
+    _save_approval_messages(messages)
+
+
+def _forget_approval_messages(request_id: int | str) -> None:
+    messages = _load_approval_messages()
+    if messages.pop(str(request_id), None) is not None:
+        _save_approval_messages(messages)
 
 
 def _record_bot_detail(thread_id: str, item_type: str, title: str, text: str) -> None:
@@ -799,6 +875,22 @@ def _pop_latest_queued_turn(thread_id: str) -> QueuedTurn | None:
         queues.pop(thread_id, None)
     _save_turn_queues(queues)
     return queued
+
+
+def _pop_queued_turn(thread_id: str, queued_id: str) -> QueuedTurn | None:
+    queues = _load_turn_queues()
+    items = queues.get(thread_id) or []
+    for index, queued in enumerate(items):
+        if queued.id != queued_id:
+            continue
+        items.pop(index)
+        if items:
+            queues[thread_id] = items
+        else:
+            queues.pop(thread_id, None)
+        _save_turn_queues(queues)
+        return queued
+    return None
 
 
 def _requeue_turn_front(queued: QueuedTurn) -> None:
@@ -1208,6 +1300,27 @@ def _remove_bot_binding(binding_id: str) -> None:
     _save_bot_bindings(bindings)
 
 
+async def _set_thread_primary(thread_id: str, project_id: str, primary: bool) -> list[BotBinding]:
+    project = _project(project_id)
+    bindings = _load_bot_bindings()
+    if primary and not any(binding.thread_id == thread_id and binding.project_id == project.id for binding in bindings):
+        await _project_scoped_bindings_for_thread(thread_id)
+        bindings = _load_bot_bindings()
+    changed = False
+    now = time.time()
+    for binding in bindings:
+        if binding.project_id != project.id:
+            continue
+        next_master = bool(primary and binding.thread_id == thread_id)
+        if binding.is_master != next_master:
+            binding.is_master = next_master
+            binding.updated_at = now
+            changed = True
+    if changed:
+        _save_bot_bindings(bindings)
+    return [binding for binding in bindings if binding.project_id == project.id]
+
+
 def _forget_bot_reply_target(thread_id: str) -> None:
     for loader, saver in (
         (_load_bot_reply_targets, _save_bot_reply_targets),
@@ -1404,6 +1517,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                 "senderName": message.sender_name,
                 "messageId": message.message_id,
                 "queued": True,
+                "queuedId": queued.id,
                 "queueDepth": _thread_queue_depth(binding.thread_id),
             }
         )
@@ -1918,14 +2032,8 @@ def _slack_reply_icon(binding: BotBinding) -> str:
     thread_id = binding.thread_id
     assignments = _load_slack_thread_icons()
     assigned = assignments.get(thread_id)
-    duplicate_assigned = assigned and any(
-        other_thread_id != thread_id and icon == assigned
-        for other_thread_id, icon in assignments.items()
-    )
-    if assigned and not duplicate_assigned:
+    if assigned:
         return assigned
-    if duplicate_assigned:
-        assignments.pop(thread_id, None)
     used = set(assignments.values())
     seed = f"{_binding_prefix(binding)}:{thread_id}"
     start = int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) % len(icons)
@@ -2185,6 +2293,16 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
             thread_ts=thread_ts,
             blocks=_approval_blocks(request, binding),
         )
+        response = delivery.get("providerResponse") or {}
+        if delivery.get("sent") and response.get("ts"):
+            _remember_approval_message(
+                request.get("id"),
+                connection_id=connection.id,
+                channel=binding.external_conversation_id,
+                message_ts=str(response["ts"]),
+                context=_binding_prefix(binding) or thread_id,
+                thread_id=thread_id,
+            )
         _append_bot_event(
             {
                 "type": "approval_request_sent",
@@ -2195,6 +2313,51 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
                 "delivery": delivery,
             }
         )
+
+
+async def _update_slack_approval_messages(
+    request_id: int | str,
+    request: dict[str, Any],
+    *,
+    decision: str,
+    actor: str,
+) -> None:
+    key = str(request_id)
+    messages = _load_approval_messages().get(key, [])
+    status = f"{actor} selected `{decision}`."
+    for message in messages:
+        with contextlib.suppress(Exception):
+            connection = _bot_connection(message.connection_id)
+            if not connection.bot_token:
+                continue
+            await asyncio.to_thread(
+                _update_slack_message,
+                connection.bot_token,
+                message.channel,
+                message.message_ts,
+                f"{actor} selected {decision} for approval request {request_id}.",
+                blocks=_approval_resolved_blocks(request, message.context, status),
+            )
+    _forget_approval_messages(request_id)
+
+
+async def _resolve_approval_request(request_id: int | str, decision: str, *, actor: str) -> dict[str, bool]:
+    request = codex.pending_approvals.get(request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    result = _approval_result(request["method"], decision)
+    await codex.respond_to_server_request(request_id, result)
+    await _update_slack_approval_messages(request_id, request, decision=decision, actor=actor)
+    _append_bot_event(
+        {
+            "type": "approval_resolved",
+            "request_id": request_id,
+            "decision": decision,
+            "actor": actor,
+            "thread_id": _approval_thread_id(request),
+        }
+    )
+    return {"ok": True}
 
 
 async def _handle_slack_interaction(connection: BotConnection, payload: dict[str, Any]) -> None:
@@ -2224,17 +2387,7 @@ async def _handle_slack_interaction(connection: BotConnection, payload: dict[str
                     blocks=_approval_resolved_blocks(None, context, "Already resolved."),
                 )
             return
-        result = _approval_result(request["method"], decision)
-        await codex.respond_to_server_request(request_id, result)
-        if channel and message_ts and connection.bot_token:
-            await asyncio.to_thread(
-                _update_slack_message,
-                connection.bot_token,
-                channel,
-                message_ts,
-                f"{user} selected {decision} for approval request {request_id}.",
-                blocks=_approval_resolved_blocks(request, context, f"{user} selected `{decision}`."),
-            )
+        await _resolve_approval_request(request_id, decision, actor=user)
         _append_bot_event(
             {
                 "type": "approval_resolved_from_slack",
@@ -3283,6 +3436,18 @@ async def steer_queued_turn(thread_id: str) -> dict[str, Any]:
     queued = _pop_latest_queued_turn(thread_id)
     if not queued:
         raise HTTPException(status_code=404, detail="No queued message for this thread")
+    return await _steer_queued_turn(thread_id, queued)
+
+
+@app.post("/api/threads/{thread_id}/queue/{queued_id}/steer")
+async def steer_specific_queued_turn(thread_id: str, queued_id: str) -> dict[str, Any]:
+    queued = _pop_queued_turn(thread_id, queued_id)
+    if not queued:
+        raise HTTPException(status_code=404, detail="Queued message not found for this thread")
+    return await _steer_queued_turn(thread_id, queued)
+
+
+async def _steer_queued_turn(thread_id: str, queued: QueuedTurn) -> dict[str, Any]:
     if _thread_is_active(thread_id):
         with contextlib.suppress(Exception):
             await codex.request("turn/interrupt", {"threadId": thread_id})
@@ -3315,6 +3480,18 @@ async def update_thread_settings(thread_id: str, payload: ThreadRunSettings) -> 
     return {"ok": True, "threadId": thread_id, **settings.model_dump()}
 
 
+@app.post("/api/threads/{thread_id}/primary")
+async def update_thread_primary(thread_id: str, payload: ThreadPrimaryUpdate) -> dict[str, Any]:
+    bindings = await _set_thread_primary(thread_id, payload.project_id, payload.primary)
+    return {
+        "ok": True,
+        "threadId": thread_id,
+        "projectId": payload.project_id,
+        "primary": payload.primary,
+        "bindings": [binding.model_dump() for binding in bindings],
+    }
+
+
 @app.post("/api/threads/{thread_id}/archive")
 async def archive_thread(thread_id: str) -> dict[str, Any]:
     return await codex.request("thread/archive", {"threadId": thread_id})
@@ -3338,12 +3515,7 @@ async def approvals() -> list[dict[str, Any]]:
 @app.post("/api/approvals/{request_id}")
 async def decide_approval(request_id: str, payload: ApprovalDecision) -> dict[str, bool]:
     normalized_id = _request_id_value(request_id)
-    request = codex.pending_approvals.get(normalized_id)
-    if not request:
-        raise HTTPException(status_code=404, detail="Approval request not found")
-    result = _approval_result(request["method"], payload.decision)
-    await codex.respond_to_server_request(normalized_id, result)
-    return {"ok": True}
+    return await _resolve_approval_request(normalized_id, payload.decision, actor="Codex Web")
 
 
 def _sandbox_policy(mode: str, cwd: str) -> dict[str, Any]:
