@@ -3344,7 +3344,7 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
         "status": {
             "ok": codex.ready.is_set(),
             "pid": codex.proc.pid if codex.proc else None,
-            "error": codex.last_error,
+            "error": None if codex.ready.is_set() else codex.last_error,
             "pendingApprovals": len(codex.pending_approvals),
             "activeTurns": len(active_turns),
             "queuedTurns": sum(len(items) for items in queues.values()),
@@ -3463,7 +3463,7 @@ async def status() -> dict[str, Any]:
     return {
         "ok": codex.ready.is_set(),
         "pid": codex.proc.pid if codex.proc else None,
-        "error": codex.last_error,
+        "error": None if codex.ready.is_set() else codex.last_error,
         "version": _static_version(),
         "pendingApprovals": list(codex.pending_approvals.values()),
         "activeTurns": len(_load_active_turns()),
