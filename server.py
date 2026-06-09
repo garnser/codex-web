@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -159,6 +160,7 @@ class BotInboundMessage(BaseModel):
     provider: str = Field(min_length=1)
     external_conversation_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    connection_id: str | None = None
     sender_id: str | None = None
     sender_name: str | None = None
     project_id: str | None = None
@@ -235,11 +237,15 @@ def _save_bot_reply_targets(targets: dict[str, BotReplyTarget]) -> None:
     )
 
 
+def _reply_target_key(binding: BotBinding) -> str:
+    return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
+
+
 def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) -> None:
     if not message.external_thread_id and not message.message_id:
         return
     targets = _load_bot_reply_targets()
-    targets[binding.thread_id] = BotReplyTarget(
+    targets[_reply_target_key(binding)] = BotReplyTarget(
         thread_id=binding.thread_id,
         provider=binding.provider,
         external_conversation_id=binding.external_conversation_id,
@@ -251,7 +257,8 @@ def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) 
 
 
 def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
-    target = _load_bot_reply_targets().get(binding.thread_id)
+    targets = _load_bot_reply_targets()
+    target = targets.get(_reply_target_key(binding)) or targets.get(binding.thread_id)
     if not target:
         return None
     if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
@@ -340,6 +347,13 @@ def _bot_connection(connection_id: str) -> BotConnection:
         if connection.id == connection_id:
             return connection
     raise HTTPException(status_code=404, detail="Bot connection not found")
+
+
+def _bot_connection_for_conversation(provider: str, external_conversation_id: str) -> BotConnection | None:
+    for connection in _load_bot_connections():
+        if connection.provider == provider and connection.default_external_conversation_id == external_conversation_id:
+            return connection
+    return None
 
 
 def _mask_secret(value: str | None) -> str | None:
@@ -453,7 +467,7 @@ def _dedupe_bot_integrations() -> None:
         kept_connections.append(connection)
 
     bindings = sorted(_load_bot_bindings(), key=lambda item: item.created_at)
-    seen_binding_routes: set[tuple[str, str, str]] = set()
+    seen_binding_routes: set[tuple[str, str, str, str]] = set()
     kept_bindings: list[BotBinding] = []
     for binding in bindings:
         if binding.connection_id in connection_rewrites:
@@ -461,6 +475,7 @@ def _dedupe_bot_integrations() -> None:
         route_key = (
             binding.provider,
             binding.external_conversation_id,
+            binding.thread_id,
             (_binding_prefix(binding) or "").lower(),
         )
         if route_key in seen_binding_routes:
@@ -529,6 +544,89 @@ def _bindings_for_thread(thread_id: str) -> list[BotBinding]:
     return [binding for binding in _load_bot_bindings() if binding.thread_id == thread_id]
 
 
+def _bindings_for_project(provider: str, project_id: str) -> list[BotBinding]:
+    normalized_provider = provider.lower()
+    return [
+        binding
+        for binding in _load_bot_bindings()
+        if binding.provider == normalized_provider and binding.project_id == project_id
+    ]
+
+
+def _clone_binding_for_conversation(source: BotBinding, message: BotInboundMessage) -> BotBinding:
+    now = time.time()
+    return _upsert_bot_binding(
+        BotBinding(
+            id=uuid.uuid4().hex[:12],
+            connection_id=message.connection_id or source.connection_id,
+            provider=source.provider,
+            external_conversation_id=message.external_conversation_id,
+            thread_id=source.thread_id,
+            project_id=source.project_id,
+            external_name=message.external_name or source.external_name,
+            thread_name=source.thread_name,
+            route_prefix=source.route_prefix,
+            is_master=False,
+            sandbox=source.sandbox,
+            approval_policy=source.approval_policy,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+def _cross_channel_binding_for_message(
+    provider: str,
+    project_id: str,
+    current_bindings: list[BotBinding],
+    message: BotInboundMessage,
+) -> tuple[BotBinding | None, str, bool]:
+    current_by_thread_id = {binding.thread_id: binding for binding in current_bindings}
+    candidates = [
+        binding
+        for binding in _bindings_for_project(provider, project_id)
+        if binding.external_conversation_id != message.external_conversation_id
+    ]
+    matches: dict[str, tuple[BotBinding, str]] = {}
+    for binding in sorted(candidates, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
+        prefix = _binding_prefix(binding)
+        if not prefix:
+            continue
+        stripped = _strip_prefix(message.text, prefix)
+        if stripped is None:
+            continue
+        if binding.thread_id in current_by_thread_id:
+            return current_by_thread_id[binding.thread_id], stripped, False
+        matches.setdefault(binding.thread_id, (binding, stripped))
+    if len(matches) == 1:
+        return next(iter(matches.values()))[0], next(iter(matches.values()))[1], False
+    if len(matches) > 1:
+        return None, message.text, True
+    if current_bindings:
+        return None, message.text, False
+    masters = [binding for binding in candidates if binding.is_master]
+    if len(masters) == 1:
+        return masters[0], message.text, False
+    return None, message.text, len(masters) > 1
+
+
+def _fallback_binding_for_stale(binding: BotBinding, message: BotInboundMessage) -> BotBinding | None:
+    candidates = [
+        candidate
+        for candidate in _bindings_for_project(binding.provider, binding.project_id)
+        if candidate.thread_id != binding.thread_id
+    ]
+    prefix = _binding_prefix(binding)
+    if prefix:
+        for candidate in candidates:
+            if _binding_prefix(candidate).lower() == prefix.lower():
+                return candidate
+    masters = [candidate for candidate in candidates if candidate.is_master]
+    if len(masters) == 1:
+        return masters[0]
+    return None
+
+
 def _upsert_bot_binding(new_binding: BotBinding) -> BotBinding:
     bindings = _load_bot_bindings()
     updated = False
@@ -555,6 +653,22 @@ def _upsert_bot_binding(new_binding: BotBinding) -> BotBinding:
     _save_bot_bindings(bindings)
     _dedupe_bot_integrations()
     return new_binding
+
+
+def _remove_bot_binding(binding_id: str) -> None:
+    bindings = [binding for binding in _load_bot_bindings() if binding.id != binding_id]
+    _save_bot_bindings(bindings)
+
+
+def _forget_bot_reply_target(thread_id: str) -> None:
+    targets = _load_bot_reply_targets()
+    removed = False
+    for key, target in list(targets.items()):
+        if key == thread_id or target.thread_id == thread_id:
+            targets.pop(key, None)
+            removed = True
+    if removed:
+        _save_bot_reply_targets(targets)
 
 
 def _project(project_id: str | None) -> Project:
@@ -639,31 +753,61 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     provider = message.provider.lower()
     bindings = _bindings_for_connection(provider, message.external_conversation_id)
     binding, routed_text, route_error = _resolve_bot_binding(bindings, message)
+    project_id = message.project_id or (bindings[0].project_id if bindings else "home")
+    if binding is None:
+        cross_binding, cross_text, cross_ambiguous = _cross_channel_binding_for_message(
+            provider,
+            project_id,
+            bindings,
+            message,
+        )
+        if cross_binding is not None:
+            binding = (
+                cross_binding
+                if cross_binding.external_conversation_id == message.external_conversation_id
+                else _clone_binding_for_conversation(cross_binding, message)
+            )
+            routed_text = cross_text
+            route_error = False
+        elif cross_ambiguous:
+            route_error = True
     if route_error:
+        available_prefixes = [_binding_prefix(binding) for binding in bindings]
+        if not available_prefixes:
+            available_prefixes = [
+                _binding_prefix(binding)
+                for binding in _bindings_for_project(provider, project_id)
+                if _binding_prefix(binding)
+            ]
         _append_bot_event(
             {
                 "type": "inbound_ambiguous",
                 "provider": provider,
                 "external_conversation_id": message.external_conversation_id,
                 "message_id": message.message_id,
-                "available_prefixes": [_binding_prefix(binding) for binding in bindings],
+                "available_prefixes": available_prefixes,
             }
         )
         return {
             "ok": False,
             "ambiguous": True,
-            "availablePrefixes": [_binding_prefix(binding) for binding in bindings],
+            "availablePrefixes": available_prefixes,
         }
     if binding is None:
         binding = await _start_bot_thread(
             BotBindingCreate(
+                connection_id=message.connection_id,
                 provider=provider,
                 external_conversation_id=message.external_conversation_id,
-                project_id=message.project_id or "home",
+                project_id=project_id,
                 external_name=message.external_name,
             )
         )
         routed_text = message.text
+    elif message.connection_id and not binding.connection_id:
+        binding.connection_id = message.connection_id
+        binding.updated_at = time.time()
+        binding = _upsert_bot_binding(binding)
 
     project = _project(binding.project_id)
     if not routed_text.strip():
@@ -673,17 +817,59 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         delivery = await _send_bot_details(binding)
         return {"ok": True, "threadId": binding.thread_id, "details": True, "delivery": delivery}
     prompt = _format_bot_prompt(message, provider, routed_text)
-    await codex.request("thread/resume", {"threadId": binding.thread_id, **_project_params(project)})
-    turn = await codex.request(
-        "turn/start",
-        {
-            "threadId": binding.thread_id,
-            "input": [{"type": "text", "text": prompt, "text_elements": []}],
-            "cwd": project.path,
-            "approvalPolicy": binding.approval_policy,
-            "sandboxPolicy": _sandbox_policy(binding.sandbox, project.path),
-        },
-    )
+    for attempt in range(2):
+        try:
+            await codex.request("thread/resume", {"threadId": binding.thread_id, **_project_params(project)})
+            turn = await codex.request(
+                "turn/start",
+                {
+                    "threadId": binding.thread_id,
+                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                    "cwd": project.path,
+                    "approvalPolicy": binding.approval_policy,
+                    "sandboxPolicy": _sandbox_policy(binding.sandbox, project.path),
+                },
+            )
+            break
+        except Exception as exc:
+            if attempt or not _is_stale_thread_error(exc):
+                raise
+            stale_thread_id = binding.thread_id
+            fallback_binding = _fallback_binding_for_stale(binding, message)
+            _remove_bot_binding(binding.id)
+            _forget_bot_reply_target(stale_thread_id)
+            _append_bot_event(
+                {
+                    "type": "stale_binding_repair",
+                    "provider": provider,
+                    "external_conversation_id": message.external_conversation_id,
+                    "old_thread_id": stale_thread_id,
+                    "error": str(exc),
+                }
+            )
+            if fallback_binding:
+                binding = (
+                    fallback_binding
+                    if fallback_binding.external_conversation_id == message.external_conversation_id
+                    else _clone_binding_for_conversation(fallback_binding, message)
+                )
+            else:
+                binding = await _start_bot_thread(
+                    BotBindingCreate(
+                        connection_id=message.connection_id or binding.connection_id,
+                        provider=provider,
+                        external_conversation_id=message.external_conversation_id,
+                        project_id=message.project_id or binding.project_id,
+                        external_name=message.external_name or binding.external_name,
+                        thread_name=binding.thread_name,
+                        route_prefix=binding.route_prefix,
+                        is_master=binding.is_master,
+                        sandbox=binding.sandbox,
+                        approval_policy=binding.approval_policy,
+                    )
+                )
+            project = _project(binding.project_id)
+            _remember_bot_reply_target(binding, message)
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
     _append_bot_event(
@@ -709,6 +895,16 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         }
     )
     return {"ok": True, "threadId": binding.thread_id, "turn": turn}
+
+
+def _is_stale_thread_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "no rollout found for thread id" in text or "thread not found" in text
+
+
+def _is_transient_websocket_disconnect(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, ConnectionClosed) or "keepalive ping timeout" in text or "no close frame received" in text
 
 
 def _resolve_bot_binding(bindings: list[BotBinding], message: BotInboundMessage) -> tuple[BotBinding | None, str, bool]:
@@ -738,6 +934,11 @@ def _binding_for_external_thread(bindings: list[BotBinding], external_thread_id:
         return None
     by_thread_id = {binding.thread_id: binding for binding in bindings}
     for target in _load_bot_reply_targets().values():
+        if not any(
+            target.provider == binding.provider and target.external_conversation_id == binding.external_conversation_id
+            for binding in bindings
+        ):
+            continue
         if target.external_thread_id != external_thread_id and target.message_id != external_thread_id:
             continue
         binding = by_thread_id.get(target.thread_id)
@@ -864,7 +1065,7 @@ def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any])
     if not delivery.get("sent") or not ts:
         return
     targets = _load_bot_reply_targets()
-    targets[binding.thread_id] = BotReplyTarget(
+    targets[_reply_target_key(binding)] = BotReplyTarget(
         thread_id=binding.thread_id,
         provider=binding.provider,
         external_conversation_id=binding.external_conversation_id,
@@ -1099,6 +1300,25 @@ def _post_slack_message(
     return {"sent": bool(response.get("ok")), "providerResponse": response}
 
 
+def _update_slack_message(
+    token: str,
+    channel: str,
+    ts: str,
+    text: str,
+    *,
+    blocks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
+    if blocks:
+        payload["blocks"] = blocks
+    response = _post_json(
+        "https://slack.com/api/chat.update",
+        payload,
+        {"Authorization": f"Bearer {token}"},
+    )
+    return {"sent": bool(response.get("ok")), "providerResponse": response}
+
+
 def _post_telegram_message(token: str, chat_id: str, text: str) -> dict[str, Any]:
     response = _post_json(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -1191,6 +1411,37 @@ def _approval_blocks(request: dict[str, Any], binding: BotBinding) -> list[dict[
     ]
 
 
+def _approval_resolved_blocks(request: dict[str, Any] | None, context: str, status: str) -> list[dict[str, Any]]:
+    summary = _slack_escape(_approval_summary(request)) if request else "This approval request is no longer pending."
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Approval resolved for `{_slack_escape(context)}`*\n{_slack_escape(status)}\n```{summary}```",
+            },
+        }
+    ]
+
+
+def _slack_interaction_message_ts(payload: dict[str, Any]) -> str | None:
+    container = payload.get("container") or {}
+    message = payload.get("message") or {}
+    return container.get("message_ts") or message.get("ts")
+
+
+def _slack_interaction_context(payload: dict[str, Any], fallback: str) -> str:
+    blocks = (payload.get("message") or {}).get("blocks") or []
+    for block in blocks:
+        text = (block.get("text") or {}).get("text") if isinstance(block, dict) else None
+        if not text:
+            continue
+        match = re.search(r"Approval requested for `([^`]+)`", text)
+        if match:
+            return match.group(1)
+    return fallback
+
+
 async def _record_bot_approval_request(request: dict[str, Any]) -> None:
     thread_id = _approval_thread_id(request)
     if not thread_id:
@@ -1237,24 +1488,30 @@ async def _handle_slack_interaction(connection: BotConnection, payload: dict[str
         decision = value.get("decision")
         request = codex.pending_approvals.get(request_id)
         channel = (payload.get("channel") or {}).get("id") or connection.default_external_conversation_id
+        message_ts = _slack_interaction_message_ts(payload)
         user = (payload.get("user") or {}).get("username") or (payload.get("user") or {}).get("id") or "Slack"
+        context = _slack_interaction_context(payload, str(request_id))
         if not request or not decision:
-            if channel and connection.bot_token:
+            if channel and message_ts and connection.bot_token:
                 await asyncio.to_thread(
-                    _post_slack_message,
+                    _update_slack_message,
                     connection.bot_token,
                     channel,
+                    message_ts,
                     "That approval request is no longer pending.",
+                    blocks=_approval_resolved_blocks(None, context, "Already resolved."),
                 )
             return
         result = _approval_result(request["method"], decision)
         await codex.respond_to_server_request(request_id, result)
-        if channel and connection.bot_token:
+        if channel and message_ts and connection.bot_token:
             await asyncio.to_thread(
-                _post_slack_message,
+                _update_slack_message,
                 connection.bot_token,
                 channel,
-                f"{user} selected `{decision}` for approval request `{request_id}`.",
+                message_ts,
+                f"{user} selected {decision} for approval request {request_id}.",
+                blocks=_approval_resolved_blocks(request, context, f"{user} selected `{decision}`."),
             )
         _append_bot_event(
             {
@@ -1368,6 +1625,33 @@ class BotRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if connection.provider == "slack" and _is_transient_websocket_disconnect(exc):
+                    _set_runtime_status(
+                        connection,
+                        "reconnecting",
+                        lastDisconnect=str(exc),
+                        lastDisconnectAt=time.time(),
+                        lastError=None,
+                    )
+                    _append_bot_event(
+                        {
+                            "type": "runtime_reconnect",
+                            "provider": connection.provider,
+                            "connection_id": connection.id,
+                            "reason": str(exc),
+                        }
+                    )
+                    await hub.publish(
+                        {
+                            "type": "bot.runtime",
+                            "provider": connection.provider,
+                            "connectionId": connection.id,
+                            "status": "reconnecting",
+                            "reason": str(exc),
+                        }
+                    )
+                    await asyncio.sleep(5)
+                    continue
                 _set_runtime_status(connection, "error", lastError=str(exc), lastErrorAt=time.time())
                 _append_bot_event(
                     {
@@ -1393,7 +1677,7 @@ class BotRuntime:
         socket_url = await asyncio.to_thread(_slack_socket_url, connection.slack_app_token)
         _set_runtime_status(connection, "connecting", lastError=None)
         await hub.publish({"type": "bot.runtime", "provider": "slack", "connectionId": connection.id, "status": "connected"})
-        async with websockets.connect(socket_url, ping_interval=20) as websocket:
+        async with websockets.connect(socket_url, ping_interval=60, ping_timeout=None, close_timeout=5) as websocket:
             _set_runtime_status(connection, "connected", connectedAt=time.time(), lastError=None)
             async for raw in websocket:
                 envelope = json.loads(raw)
@@ -1407,40 +1691,65 @@ class BotRuntime:
                     lastEnvelopeAt=time.time(),
                     lastPayloadType=payload.get("type"),
                 )
-                if payload.get("type") == "block_actions":
-                    await _handle_slack_interaction(connection, payload)
-                    continue
-                event = payload.get("event") or {}
-                if event:
-                    _set_runtime_status(connection, "connected", lastEventAt=time.time(), lastEventType=event.get("type"))
-                if event.get("type") not in {"message", "app_mention"}:
-                    continue
-                if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
-                    continue
-                text = _strip_slack_mentions(event.get("text") or "")
-                channel = event.get("channel") or connection.default_external_conversation_id
-                if not text or not channel:
-                    continue
-                result = await _handle_bot_inbound(
-                    BotInboundMessage(
-                        provider="slack",
-                        external_conversation_id=channel,
-                        external_name=connection.default_external_name or channel,
-                        sender_id=event.get("user"),
-                        text=text,
-                        project_id=connection.project_id,
-                        external_thread_id=event.get("thread_ts") or event.get("ts"),
-                        message_id=event.get("ts"),
+                try:
+                    if payload.get("type") == "block_actions":
+                        await _handle_slack_interaction(connection, payload)
+                        continue
+                    event = payload.get("event") or {}
+                    if event:
+                        _set_runtime_status(connection, "connected", lastEventAt=time.time(), lastEventType=event.get("type"))
+                    if event.get("type") not in {"message", "app_mention"}:
+                        continue
+                    if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
+                        continue
+                    text = _strip_slack_mentions(event.get("text") or "")
+                    channel = event.get("channel") or connection.default_external_conversation_id
+                    if not text or not channel:
+                        continue
+                    result = await _handle_bot_inbound(
+                        BotInboundMessage(
+                            provider="slack",
+                            external_conversation_id=channel,
+                            connection_id=connection.id,
+                            external_name=connection.default_external_name or channel,
+                            sender_id=event.get("user"),
+                            text=text,
+                            project_id=connection.project_id,
+                            external_thread_id=event.get("thread_ts") or event.get("ts"),
+                            message_id=event.get("ts"),
+                        )
                     )
-                )
-                if result.get("ambiguous") and connection.bot_token:
-                    await asyncio.to_thread(
-                        _post_slack_message,
-                        connection.bot_token,
-                        channel,
-                        _ambiguous_route_message(result.get("availablePrefixes") or []),
-                        thread_ts=event.get("thread_ts") or event.get("ts"),
+                    if result.get("ambiguous") and connection.bot_token:
+                        await asyncio.to_thread(
+                            _post_slack_message,
+                            connection.bot_token,
+                            channel,
+                            _ambiguous_route_message(result.get("availablePrefixes") or []),
+                            thread_ts=event.get("thread_ts") or event.get("ts"),
+                        )
+                except Exception as exc:
+                    event = payload.get("event") or {}
+                    channel = event.get("channel") or (payload.get("channel") or {}).get("id") or connection.default_external_conversation_id
+                    thread_ts = event.get("thread_ts") or event.get("ts") or ((payload.get("message") or {}).get("ts"))
+                    _set_runtime_status(connection, "connected", lastError=str(exc), lastErrorAt=time.time())
+                    _append_bot_event(
+                        {
+                            "type": "inbound_error",
+                            "provider": "slack",
+                            "connection_id": connection.id,
+                            "external_conversation_id": channel,
+                            "message_id": event.get("ts"),
+                            "error": str(exc),
+                        }
                     )
+                    if channel and connection.bot_token:
+                        await asyncio.to_thread(
+                            _post_slack_message,
+                            connection.bot_token,
+                            channel,
+                            f"Codex could not handle that Slack message: {_truncate_text(str(exc), 500)}",
+                            thread_ts=thread_ts,
+                        )
 
     async def _run_telegram(self, connection: BotConnection) -> None:
         assert connection.bot_token
@@ -1522,6 +1831,20 @@ def _verify_telegram_secret(request: Request) -> None:
     raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
 
 
+def _codex_request_timeout(method: str) -> float | None:
+    if method == "initialize":
+        return 15
+    if method in {"thread/list", "thread/read", "account/rateLimits/read"}:
+        return 10
+    if method in {"thread/resume", "thread/start", "thread/name/set"}:
+        return 20
+    if method == "turn/start":
+        return 30
+    if method == "turn/interrupt":
+        return 10
+    return 20
+
+
 class CodexAppServer:
     def __init__(self) -> None:
         self.proc: subprocess.Popen[str] | None = None
@@ -1532,55 +1855,77 @@ class CodexAppServer:
         self.write_lock = asyncio.Lock()
         self.ready = asyncio.Event()
         self.reader_task: asyncio.Task[None] | None = None
+        self.stderr_task: asyncio.Task[None] | None = None
+        self.lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            return
-        self.ready.clear()
-        self.last_error = None
-        self.proc = subprocess.Popen(
-            ["codex", "app-server"],
-            cwd=str(Path.home()),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        self.reader_task = asyncio.create_task(self._read_loop())
-        asyncio.create_task(self._stderr_loop())
-        try:
-            init = await asyncio.wait_for(
-                self.request(
-                    "initialize",
-                    {
-                        "clientInfo": {
-                            "name": "codex_web_local",
-                            "title": "Codex Web Local",
-                            "version": "0.1.0",
-                        },
-                        "capabilities": {"experimentalApi": True},
-                    },
-                ),
-                timeout=15,
+        async with self.lifecycle_lock:
+            if self.proc and self.proc.poll() is None:
+                return
+            self.ready.clear()
+            self.last_error = None
+            self._fail_pending(RuntimeError("Codex app-server restarted"))
+            self.proc = subprocess.Popen(
+                ["codex", "app-server"],
+                cwd=str(Path.home()),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
-            await self.notify("initialized", {})
-            self.ready.set()
-            await hub.publish({"type": "codex.ready", "initialize": init})
-        except Exception as exc:
-            self.last_error = str(exc)
-            await hub.publish({"type": "codex.error", "error": self.last_error})
-            raise
+            self.reader_task = asyncio.create_task(self._read_loop())
+            self.stderr_task = asyncio.create_task(self._stderr_loop())
+            try:
+                init = await asyncio.wait_for(
+                    self.request(
+                        "initialize",
+                        {
+                            "clientInfo": {
+                                "name": "codex_web_local",
+                                "title": "Codex Web Local",
+                                "version": "0.1.0",
+                            },
+                            "capabilities": {"experimentalApi": True},
+                        },
+                    ),
+                    timeout=15,
+                )
+                await self.notify("initialized", {})
+                self.ready.set()
+                await hub.publish({"type": "codex.ready", "initialize": init})
+            except Exception as exc:
+                self.last_error = str(exc)
+                await hub.publish({"type": "codex.error", "error": self.last_error})
+                raise
 
     async def stop(self) -> None:
+        self._fail_pending(RuntimeError("Codex app-server stopped"))
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
                 await asyncio.wait_for(asyncio.to_thread(self.proc.wait), timeout=5)
             except asyncio.TimeoutError:
                 self.proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self.proc.wait)
         self.proc = None
         self.ready.clear()
+        for task in (self.reader_task, self.stderr_task):
+            if task and not task.done():
+                task.cancel()
+        for task in (self.reader_task, self.stderr_task):
+            if task:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self.reader_task = None
+        self.stderr_task = None
+
+    def _fail_pending(self, exc: Exception) -> None:
+        for future in self.pending.values():
+            if not future.done():
+                future.set_exception(exc)
+        self.pending.clear()
 
     async def _stderr_loop(self) -> None:
         assert self.proc and self.proc.stderr
@@ -1642,7 +1987,28 @@ class CodexAppServer:
         self.pending[message_id] = future
         message = {"method": method, "id": message_id, "params": params}
         await self._send(message)
-        return await future
+        timeout = _codex_request_timeout(method)
+        try:
+            if timeout is None:
+                return await future
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            self.pending.pop(message_id, None)
+            self.last_error = f"{method} timed out after {timeout}s"
+            await hub.publish({"type": "codex.error", "error": self.last_error})
+            if method != "initialize":
+                asyncio.create_task(self.restart_after_timeout(method, message_id))
+            raise HTTPException(status_code=504, detail=self.last_error) from exc
+
+    async def restart_after_timeout(self, method: str, message_id: int | str) -> None:
+        await hub.publish({"type": "codex.restarting", "method": method, "requestId": message_id})
+        async with self.lifecycle_lock:
+            await self.stop()
+        try:
+            await self.start()
+        except Exception as exc:
+            self.last_error = str(exc)
+            await hub.publish({"type": "codex.error", "error": self.last_error})
 
     async def notify(self, method: str, params: Any = None) -> None:
         await self._send({"method": method, "params": params})
@@ -1892,9 +2258,11 @@ async def slack_events(request: Request) -> dict[str, Any]:
     if not text or not channel:
         return {"ok": True, "ignored": True}
 
+    connection = _bot_connection_for_conversation("slack", channel)
     message = BotInboundMessage(
         provider="slack",
         external_conversation_id=channel,
+        connection_id=connection.id if connection else None,
         external_name=channel,
         sender_id=event.get("user"),
         text=text,
@@ -2156,7 +2524,7 @@ def main() -> None:
 
     host = os.environ.get("CODEX_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("CODEX_WEB_PORT", "8765"))
-    uvicorn.run("server:app", host=host, port=port, reload=False)
+    uvicorn.run("server:app", host=host, port=port, reload=False, timeout_graceful_shutdown=10)
 
 
 if __name__ == "__main__":
