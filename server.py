@@ -2159,15 +2159,63 @@ def _request_id_value(request_id: int | str) -> int | str:
     return int(request_id) if isinstance(request_id, str) and request_id.isdigit() else request_id
 
 
+def _nested_value(payload: Any, keys: set[str]) -> Any:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in keys and value:
+                return value
+        for value in payload.values():
+            found = _nested_value(value, keys)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _nested_value(value, keys)
+            if found:
+                return found
+    return None
+
+
+def _thread_id_for_turn_id(turn_id: str | None) -> str | None:
+    if not turn_id:
+        return None
+    for thread_id, active in _load_active_turns().items():
+        if active.turn_id == turn_id:
+            return thread_id
+    return None
+
+
 def _approval_thread_id(request: dict[str, Any]) -> str | None:
     params = request.get("params") or {}
-    return (
+    thread_id = (
         params.get("threadId")
         or params.get("thread_id")
         or params.get("conversationId")
         or params.get("conversation_id")
         or (params.get("item") or {}).get("threadId")
+        or _nested_value(params, {"threadId", "thread_id", "conversationId", "conversation_id"})
     )
+    if thread_id:
+        return str(thread_id)
+    turn_id = (
+        params.get("turnId")
+        or params.get("turn_id")
+        or (params.get("turn") or {}).get("id")
+        or (params.get("item") or {}).get("turnId")
+        or _nested_value(params, {"turnId", "turn_id"})
+    )
+    return _thread_id_for_turn_id(str(turn_id) if turn_id else None)
+
+
+def _approval_run_settings(request: dict[str, Any]) -> ThreadRunSettings:
+    thread_id = _approval_thread_id(request)
+    settings = _thread_run_settings(thread_id)
+    if settings.approval_policy:
+        return settings
+    active = _load_active_turns().get(thread_id or "")
+    if active and (active.sandbox or active.approval_policy):
+        return ThreadRunSettings(sandbox=active.sandbox, approval_policy=active.approval_policy)
+    return settings
 
 
 def _slack_escape(value: Any) -> str:
@@ -2852,16 +2900,19 @@ class CodexAppServer:
                 continue
 
             if message_id is not None and "method" in message:
-                if _thread_run_settings(_approval_thread_id(message)).approval_policy == "never":
+                approval_thread_id = _approval_thread_id(message)
+                approval_settings = _approval_run_settings(message)
+                if approval_settings.approval_policy == "never":
                     result = _approval_result(message["method"], "acceptForSession")
                     await self._send({"id": message_id, "result": result})
                     await hub.publish({"type": "approval.auto_resolved", "id": message_id, "result": result})
                     _append_bot_event(
                         {
                             "type": "approval_auto_resolved",
-                            "thread_id": _approval_thread_id(message),
+                            "thread_id": approval_thread_id,
                             "request_id": message_id,
                             "method": message.get("method"),
+                            "approval_policy": approval_settings.approval_policy,
                         }
                     )
                     continue
