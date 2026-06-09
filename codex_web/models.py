@@ -190,3 +190,12 @@ class BotInboundMessage(BaseModel):
     external_name: str | None = None
     external_thread_id: str | None = None
     message_id: str | None = None
+
+
+class BotRouteTest(BaseModel):
+    provider: str = "slack"
+    external_conversation_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    project_id: str | None = None
+    external_thread_id: str | None = None
+    message_id: str | None = None

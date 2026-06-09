@@ -17,6 +17,7 @@ const state = {
   botIntegrationTarget: null,
   expandedItems: new Set(),
   threadRenderPending: false,
+  diagnostics: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -762,6 +763,13 @@ function addMessage(role, text, type = role, timestamp = new Date()) {
   return message;
 }
 
+function resizePromptInput() {
+  const prompt = $("prompt");
+  if (!prompt) return;
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 260)}px`;
+}
+
 function attachQueuedSteer(message, threadId, queuedId = null) {
   if (!message || !threadId) return;
   message.classList.add("queued-message");
@@ -1148,6 +1156,7 @@ async function sendPrompt() {
   const threadId = state.threadId;
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
+  resizePromptInput();
   state.activeAgentMessage = null;
   const message = addMessage(willQueue ? "You (queued)" : "You", prompt, "user", new Date());
   if (willQueue) {
@@ -1407,6 +1416,45 @@ function renderCommunicationLog() {
   });
 }
 
+function renderBotAuditLog(events = []) {
+  const container = $("bot-audit-log");
+  if (!container) return;
+  container.innerHTML = "";
+  events.slice().reverse().forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "comm-row";
+    const time = document.createElement("time");
+    time.textContent = new Date((entry.created_at || Date.now() / 1000) * 1000).toLocaleTimeString();
+    const type = document.createElement("strong");
+    type.textContent = entry.type || "event";
+    const payload = document.createElement("code");
+    payload.textContent = JSON.stringify(entry);
+    row.append(time, type, payload);
+    container.appendChild(row);
+  });
+  if (!events.length) {
+    const row = document.createElement("div");
+    row.className = "comm-row";
+    const text = document.createElement("code");
+    text.textContent = "No bot audit events recorded.";
+    row.append(document.createElement("time"), document.createElement("strong"), text);
+    container.appendChild(row);
+  }
+}
+
+function fillRouteTestDefaults(diagnostics) {
+  const provider = $("route-test-provider");
+  const conversation = $("route-test-conversation");
+  if (!provider || !conversation || conversation.value.trim()) return;
+  const bindings = diagnostics?.bindings || [];
+  const activeThreadBinding = bindings.find((binding) => binding.thread_id === state.threadId);
+  const primaryBinding = bindings.find((binding) => binding.is_master || binding.is_primary_channel);
+  const selected = activeThreadBinding || primaryBinding || bindings[0];
+  if (!selected) return;
+  provider.value = selected.provider || "slack";
+  conversation.value = selected.external_conversation_id || "";
+}
+
 async function refreshDeveloperInfo() {
   const panel = $("developer-panel");
   if (panel && !panel.open) return;
@@ -1415,15 +1463,18 @@ async function refreshDeveloperInfo() {
   const lastRefresh = $("developer-last-refresh");
   if (daemonInfo) daemonInfo.textContent = "Loading...";
   try {
-    const [status, bots, bindings] = await Promise.all([
-      api("/api/status"),
-      api("/api/bots"),
-      api("/api/bots/bindings"),
-    ]);
+    const diagnostics = await api(`/api/diagnostics?project_id=${encodeURIComponent(state.projectId)}`);
+    state.diagnostics = diagnostics;
     const info = {
-      daemon: status,
-      bots,
-      botBindings: bindings,
+      daemon: diagnostics.status,
+      health: diagnostics.health,
+      activeTurns: diagnostics.activeTurns,
+      queues: diagnostics.queues,
+      queueTasks: diagnostics.queueTasks,
+      connections: diagnostics.connections,
+      botBindings: diagnostics.bindings,
+      replyTargets: diagnostics.replyTargets,
+      deliveryTargets: diagnostics.deliveryTargets,
       client: {
         projectId: state.projectId,
         threadId: state.threadId,
@@ -1434,15 +1485,49 @@ async function refreshDeveloperInfo() {
       },
     };
     if (daemonInfo) daemonInfo.textContent = JSON.stringify(info, null, 2);
+    renderBotAuditLog(diagnostics.recentBotEvents || []);
+    fillRouteTestDefaults(diagnostics);
     if (summary) {
-      summary.textContent = status.ok
-        ? `Daemon pid ${status.pid || "unknown"} · ${bindings.length} bot bindings`
-        : `Daemon not ready${status.error ? ` · ${status.error}` : ""}`;
+      summary.textContent = diagnostics.status.ok
+        ? `Daemon pid ${diagnostics.status.pid || "unknown"} · ${diagnostics.bindings.length} bot bindings`
+        : `Daemon not ready${diagnostics.status.error ? ` · ${diagnostics.status.error}` : ""}`;
     }
     if (lastRefresh) lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
     if (daemonInfo) daemonInfo.textContent = error.message;
     if (summary) summary.textContent = "Unable to load daemon status";
+  }
+}
+
+async function runRouteTest() {
+  const result = $("route-test-result");
+  if (!result) return;
+  result.textContent = "Testing...";
+  try {
+    const response = await api("/api/diagnostics/route-test", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: $("route-test-provider").value,
+        external_conversation_id: $("route-test-conversation").value.trim(),
+        text: $("route-test-text").value.trim() || "Test message",
+        project_id: state.projectId,
+      }),
+    });
+    result.textContent = JSON.stringify(response, null, 2);
+  } catch (error) {
+    result.textContent = error.message;
+  }
+}
+
+async function recoverDaemon() {
+  const daemonInfo = $("daemon-info");
+  if (daemonInfo) daemonInfo.textContent = "Scheduling recovery...";
+  try {
+    const response = await api("/api/recovery/resume", { method: "POST" });
+    logEvent("recovery.resume", response);
+    await refreshDeveloperInfo();
+  } catch (error) {
+    if (daemonInfo) daemonInfo.textContent = error.message;
   }
 }
 
@@ -1473,6 +1558,8 @@ $("theme-toggle").addEventListener("click", () => {
 });
 $("developer-panel").addEventListener("toggle", () => refreshDeveloperInfo().catch(console.error));
 $("refresh-developer").addEventListener("click", refreshDeveloperInfo);
+$("recover-daemon").addEventListener("click", recoverDaemon);
+$("run-route-test").addEventListener("click", runRouteTest);
 $("refresh-token-usage").addEventListener("click", (event) => {
   event.stopPropagation();
   refreshTokenUsage();
@@ -1505,6 +1592,7 @@ $("prompt").addEventListener("keydown", (event) => {
   event.preventDefault();
   sendPrompt();
 });
+$("prompt").addEventListener("input", resizePromptInput);
 $("thread-search").addEventListener("input", () => refresh().catch(console.error));
 $("archive-thread").addEventListener("click", async () => {
   if (!state.threadId) return;

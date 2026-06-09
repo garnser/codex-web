@@ -17,7 +17,7 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from codex_web.events import EventHub
@@ -30,6 +30,7 @@ from codex_web.models import (
     BotConnection,
     BotConnectionCreate,
     BotInboundMessage,
+    BotRouteTest,
     BotReplyTarget,
     BotThreadDetail,
     IndexedThread,
@@ -999,13 +1000,15 @@ def _schedule_queue_drain(thread_id: str | None) -> None:
     QUEUE_DRAIN_TASKS[thread_id] = asyncio.create_task(_drain_thread_queue(thread_id))
 
 
-async def _resume_active_threads_after_startup() -> None:
+async def _resume_active_threads_after_startup(thread_ids: set[str] | None = None) -> None:
     active_turns = _load_active_turns()
     if not active_turns:
         for thread_id in _load_turn_queues():
             _schedule_queue_drain(thread_id)
         return
     for thread_id, active in list(active_turns.items()):
+        if thread_ids is not None and thread_id not in thread_ids:
+            continue
         if active.resume_attempts >= 3:
             continue
         project = None
@@ -3156,6 +3159,236 @@ def _daemon_health() -> dict[str, Any]:
     }
 
 
+def _static_version() -> str:
+    mtimes = [
+        path.stat().st_mtime
+        for path in (STATIC_DIR / "index.html", STATIC_DIR / "app.js", STATIC_DIR / "styles.css")
+        if path.exists()
+    ]
+    mtime_version = str(int(max(mtimes) if mtimes else time.time()))
+    with contextlib.suppress(Exception):
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=DATA_DIR.parent,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if commit:
+            return f"{commit}-{mtime_version}"
+    return mtime_version
+
+
+def _recent_bot_events(limit: int = 80) -> list[dict[str, Any]]:
+    if not BOTS_EVENTS_FILE.exists():
+        return []
+    lines = BOTS_EVENTS_FILE.read_text(errors="replace").splitlines()[-max(1, min(limit, 300)) :]
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        with contextlib.suppress(Exception):
+            events.append(json.loads(line))
+    return events
+
+
+def _queued_turn_public(queued: QueuedTurn) -> dict[str, Any]:
+    preview = queued.message.replace("\n", " ")
+    if len(preview) > 180:
+        preview = f"{preview[:180]}..."
+    return {
+        "id": queued.id,
+        "threadId": queued.thread_id,
+        "projectId": queued.project_id,
+        "source": queued.source,
+        "attempts": queued.attempts,
+        "createdAt": queued.created_at,
+        "messagePreview": preview,
+        "replyTarget": queued.reply_target.model_dump() if queued.reply_target else None,
+    }
+
+
+def _binding_public(binding: BotBinding) -> dict[str, Any]:
+    item = binding.model_dump()
+    item["prefix"] = _binding_prefix(binding)
+    item["active"] = _thread_is_active(binding.thread_id)
+    item["queueDepth"] = _thread_queue_depth(binding.thread_id)
+    if binding.provider == "slack":
+        item["slack_icon"] = _slack_reply_icon(binding)
+        item["slack_username"] = _slack_reply_username(binding)
+    return item
+
+
+def _route_test_message(payload: BotRouteTest) -> BotInboundMessage:
+    return BotInboundMessage(
+        provider=payload.provider,
+        external_conversation_id=payload.external_conversation_id,
+        project_id=payload.project_id,
+        text=payload.text,
+        external_thread_id=payload.external_thread_id,
+        message_id=payload.message_id,
+    )
+
+
+def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
+    message = _route_test_message(payload)
+    provider = message.provider.lower()
+    if provider not in {"slack", "telegram"}:
+        raise HTTPException(status_code=400, detail="Provider must be slack or telegram")
+    bindings = _bindings_for_connection(provider, message.external_conversation_id)
+    project_id = message.project_id or (bindings[0].project_id if bindings else "home")
+    _project(project_id)
+    steer_now, route_message = _steer_route_message(message)
+    binding: BotBinding | None = None
+    routed_text = route_message.text
+    route_error = False
+    route_source = "none"
+    would_clone = False
+
+    exact_binding = None if steer_now else _binding_for_external_target(
+        provider,
+        project_id,
+        message.external_conversation_id,
+        message.external_thread_id,
+    )
+    if exact_binding is not None:
+        binding = exact_binding
+        would_clone = exact_binding.external_conversation_id != message.external_conversation_id
+        route_source = "external-thread"
+    else:
+        binding, routed_text, route_error = _resolve_bot_binding(
+            bindings,
+            route_message,
+            prefer_external_thread=not steer_now,
+            allow_master_fallback=not steer_now,
+        )
+        if binding:
+            route_source = "connection-prefix-or-primary"
+
+    if binding is None:
+        cross_binding, cross_text, cross_ambiguous = _cross_channel_binding_for_message(
+            provider,
+            project_id,
+            bindings,
+            route_message,
+        )
+        if cross_binding is not None:
+            binding = cross_binding
+            routed_text = cross_text
+            route_error = False
+            would_clone = cross_binding.external_conversation_id != message.external_conversation_id
+            route_source = "cross-channel-prefix-or-primary"
+        elif cross_ambiguous:
+            route_error = True
+
+    available_prefixes = [_binding_prefix(binding) for binding in bindings if _binding_prefix(binding)]
+    if not available_prefixes:
+        available_prefixes = [
+            _binding_prefix(binding)
+            for binding in _bindings_for_project(provider, project_id)
+            if _binding_prefix(binding)
+        ]
+
+    if route_error:
+        return {
+            "ok": False,
+            "ambiguous": True,
+            "projectId": project_id,
+            "provider": provider,
+            "externalConversationId": message.external_conversation_id,
+            "availablePrefixes": sorted(set(available_prefixes)),
+            "steer": steer_now,
+        }
+
+    if binding is None:
+        return {
+            "ok": True,
+            "wouldCreateThread": True,
+            "projectId": project_id,
+            "provider": provider,
+            "externalConversationId": message.external_conversation_id,
+            "routedText": routed_text,
+            "routeSource": route_source,
+            "steer": steer_now,
+        }
+
+    active = _thread_is_active(binding.thread_id)
+    queue_depth = _thread_queue_depth(binding.thread_id)
+    return {
+        "ok": True,
+        "wouldCreateThread": False,
+        "wouldCloneBinding": would_clone,
+        "projectId": binding.project_id,
+        "provider": provider,
+        "externalConversationId": message.external_conversation_id,
+        "bindingId": binding.id,
+        "threadId": binding.thread_id,
+        "threadName": binding.thread_name,
+        "prefix": _binding_prefix(binding),
+        "routedText": routed_text,
+        "routeSource": route_source,
+        "steer": steer_now,
+        "active": active,
+        "queueDepth": queue_depth,
+        "wouldQueue": not steer_now and (active or queue_depth > 0),
+    }
+
+
+def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
+    bindings = _load_bot_bindings()
+    if project_id:
+        _project(project_id)
+        bindings = [binding for binding in bindings if binding.project_id == project_id]
+    queues = _load_turn_queues()
+    active_turns = _load_active_turns()
+    return {
+        "generatedAt": time.time(),
+        "version": _static_version(),
+        "status": {
+            "ok": codex.ready.is_set(),
+            "pid": codex.proc.pid if codex.proc else None,
+            "error": codex.last_error,
+            "pendingApprovals": len(codex.pending_approvals),
+            "activeTurns": len(active_turns),
+            "queuedTurns": sum(len(items) for items in queues.values()),
+        },
+        "health": _daemon_health(),
+        "projects": [project.model_dump() for project in _load_projects()],
+        "threadIndex": [thread.model_dump() for thread in _load_thread_index()],
+        "activeTurns": [active.model_dump() for active in active_turns.values()],
+        "queues": {
+            thread_id: [_queued_turn_public(queued) for queued in items]
+            for thread_id, items in queues.items()
+            if not project_id or any(queued.project_id == project_id for queued in items)
+        },
+        "queueTasks": {
+            thread_id: {
+                "done": task.done(),
+                "cancelled": task.cancelled(),
+            }
+            for thread_id, task in QUEUE_DRAIN_TASKS.items()
+        },
+        "connections": [
+            {
+                **_bot_connection_public(connection),
+                "runtime": BOT_RUNTIME_STATUS.get(connection.id),
+                "runtimeTaskRunning": connection.id in bot_runtime.tasks and not bot_runtime.tasks[connection.id].done(),
+            }
+            for connection in _load_bot_connections()
+            if not project_id or connection.project_id == project_id
+        ],
+        "bindings": [_binding_public(binding) for binding in bindings],
+        "replyTargets": {
+            key: target.model_dump()
+            for key, target in _load_bot_reply_targets().items()
+            if not project_id or target.thread_id in {binding.thread_id for binding in bindings}
+        },
+        "deliveryTargets": {
+            key: target.model_dump()
+            for key, target in _load_bot_delivery_targets().items()
+            if not project_id or target.thread_id in {binding.thread_id for binding in bindings}
+        },
+        "recentBotEvents": _recent_bot_events(),
+    }
+
+
 async def _watchdog_loop() -> None:
     interval = _watchdog_interval()
     if interval <= 0:
@@ -3202,8 +3435,12 @@ async def shutdown() -> None:
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    version = _static_version()
+    html = (STATIC_DIR / "index.html").read_text()
+    html = html.replace('href="static/styles.css"', f'href="static/styles.css?v={version}"')
+    html = html.replace('src="static/app.js"', f'src="static/app.js?v={version}"')
+    return HTMLResponse(html)
 
 
 @app.websocket("/ws")
@@ -3227,6 +3464,7 @@ async def status() -> dict[str, Any]:
         "ok": codex.ready.is_set(),
         "pid": codex.proc.pid if codex.proc else None,
         "error": codex.last_error,
+        "version": _static_version(),
         "pendingApprovals": list(codex.pending_approvals.values()),
         "activeTurns": len(_load_active_turns()),
         "queuedTurns": sum(len(items) for items in _load_turn_queues().values()),
@@ -3239,6 +3477,40 @@ async def healthz() -> dict[str, Any]:
     if not health["ok"]:
         raise HTTPException(status_code=503, detail=health)
     return health
+
+
+@app.get("/api/diagnostics")
+async def diagnostics(project_id: str | None = None) -> dict[str, Any]:
+    return _diagnostic_snapshot(project_id)
+
+
+@app.post("/api/diagnostics/route-test")
+async def diagnostics_route_test(payload: BotRouteTest) -> dict[str, Any]:
+    return _preview_bot_route(payload)
+
+
+@app.post("/api/recovery/resume")
+async def recovery_resume() -> dict[str, Any]:
+    try:
+        await codex.ensure_started()
+    except Exception:
+        pass
+    now = time.time()
+    stale_thread_ids = {
+        thread_id
+        for thread_id, active in _load_active_turns().items()
+        if now - active.updated_at > 120
+    }
+    if stale_thread_ids:
+        asyncio.create_task(_resume_active_threads_after_startup(stale_thread_ids))
+    for thread_id in _load_turn_queues():
+        _schedule_queue_drain(thread_id)
+    return {
+        "ok": True,
+        "resumingStaleThreads": sorted(stale_thread_ids),
+        "activeTurns": len(_load_active_turns()),
+        "queuedTurns": sum(len(items) for items in _load_turn_queues().values()),
+    }
 
 
 @app.get("/api/account/rate-limits")

@@ -117,6 +117,7 @@
             <div class="developer-content">
               <div class="developer-toolbar">
                 <button id="refresh-developer" type="button" class="ghost-button">Refresh</button>
+                <button id="recover-daemon" type="button" class="ghost-button">Resume active</button>
                 <span id="developer-last-refresh"></span>
               </div>
               <div class="developer-grid">
@@ -125,8 +126,25 @@
                   <pre id="daemon-info">Open to load daemon information.</pre>
                 </div>
                 <div class="developer-card">
-                  <h2>Communication</h2>
+                  <h2>Route test</h2>
+                  <div class="route-test">
+                    <select id="route-test-provider">
+                      <option value="slack">Slack</option>
+                      <option value="telegram">Telegram</option>
+                    </select>
+                    <input id="route-test-conversation" placeholder="Conversation or channel ID" />
+                    <textarea id="route-test-text" rows="3" placeholder="Message text"></textarea>
+                    <button id="run-route-test" type="button" class="ghost-button">Test route</button>
+                    <pre id="route-test-result">No route test run yet.</pre>
+                  </div>
+                </div>
+                <div class="developer-card">
+                  <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
+                  <h2>Bot audit</h2>
+                  <div id="bot-audit-log" class="comm-log"></div>
                 </div>
               </div>
             </div>
