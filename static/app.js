@@ -13,6 +13,7 @@ const state = {
   accountRateLimits: null,
   botConnections: [],
   botBindings: [],
+  botChannels: [],
   botIntegrationTarget: null,
   expandedItems: new Set(),
 };
@@ -367,6 +368,14 @@ function renderThreads() {
       && binding.thread_id === thread.id
       && binding.is_master
     ));
+    const primaryChannel = state.botBindings.find((binding) => (
+      binding.project_id === state.projectId
+      && binding.thread_id === thread.id
+      && binding.is_primary_channel
+    ));
+    const channelOptions = state.botChannels
+      .map((channel) => `<option value="${escapeHtml(`${channel.provider}:${channel.id}`)}" ${primaryChannel?.provider === channel.provider && primaryChannel?.external_conversation_id === channel.id ? "selected" : ""}>${escapeHtml(channel.label || channel.id)}</option>`)
+      .join("");
     item.className = `item ${thread.id === state.threadId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
       <div class="item-header">
@@ -381,6 +390,13 @@ function renderThreads() {
         <label class="item-action-check">
           <input type="checkbox" data-action="primary" ${isPrimary ? "checked" : ""} />
           Primary catch-all
+        </label>
+        <label class="item-action-select">
+          <span>Primary channel</span>
+          <select data-action="primary-channel">
+            <option value="">Default</option>
+            ${channelOptions}
+          </select>
         </label>
       </div>
     `;
@@ -406,6 +422,21 @@ function renderThreads() {
         body: JSON.stringify({
           primary: event.target.checked,
           project_id: state.projectId,
+        }),
+      });
+      state.botBindings = response.bindings || state.botBindings;
+      await refresh();
+    });
+    item.querySelector('[data-action="primary-channel"]').addEventListener("change", async (event) => {
+      event.stopPropagation();
+      const [provider, ...channelParts] = event.target.value.split(":");
+      const channelId = channelParts.join(":") || null;
+      const response = await api(`/api/threads/${thread.id}/primary-channel`, {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: state.projectId,
+          provider: provider || "slack",
+          external_conversation_id: channelId,
         }),
       });
       state.botBindings = response.bindings || state.botBindings;
@@ -788,6 +819,7 @@ async function refresh() {
   state.projects = await api("/api/projects");
   state.botBindings = await api("/api/bots/bindings");
   applyRunSettings();
+  state.botChannels = await api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`);
   const search = $("thread-search").value.trim();
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);

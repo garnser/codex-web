@@ -41,6 +41,7 @@ TURN_QUEUE_FILE = DATA_DIR / "queued_turns.json"
 SLACK_THREAD_ICONS_FILE = DATA_DIR / "slack_thread_icons.json"
 STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
+BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
 IS_SHUTTING_DOWN = False
@@ -80,9 +81,24 @@ class ThreadPrimaryUpdate(BaseModel):
     project_id: str = "home"
 
 
+class ThreadPrimaryChannelUpdate(BaseModel):
+    project_id: str = "home"
+    external_conversation_id: str | None = None
+    provider: str = "slack"
+
+
 class ThreadRunSettings(BaseModel):
     sandbox: str | None = None
     approval_policy: str | None = None
+
+
+class BotReplyTarget(BaseModel):
+    thread_id: str
+    provider: str
+    external_conversation_id: str
+    external_thread_id: str | None = None
+    message_id: str | None = None
+    updated_at: float
 
 
 class ActiveThreadTurn(BaseModel):
@@ -92,6 +108,7 @@ class ActiveThreadTurn(BaseModel):
     sandbox: str | None = None
     approval_policy: str | None = None
     source: str | None = None
+    reply_target: BotReplyTarget | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -107,6 +124,7 @@ class QueuedTurn(BaseModel):
     approval_policy: str | None = None
     model: str | None = None
     source: str = "web"
+    reply_target: BotReplyTarget | None = None
     attempts: int = 0
     created_at: float
 
@@ -163,19 +181,11 @@ class BotBinding(BaseModel):
     thread_name: str | None = None
     route_prefix: str | None = None
     is_master: bool = False
+    is_primary_channel: bool = False
     post_in_thread: bool = False
     sandbox: str = "read-only"
     approval_policy: str = "on-request"
     created_at: float
-    updated_at: float
-
-
-class BotReplyTarget(BaseModel):
-    thread_id: str
-    provider: str
-    external_conversation_id: str
-    external_thread_id: str | None = None
-    message_id: str | None = None
     updated_at: float
 
 
@@ -207,6 +217,7 @@ class BotBindingCreate(BaseModel):
     thread_name: str | None = None
     route_prefix: str | None = None
     is_master: bool = False
+    is_primary_channel: bool = False
     post_in_thread: bool = False
     sandbox: str = "read-only"
     approval_policy: str = "on-request"
@@ -328,9 +339,9 @@ def _external_target_key(provider: str, external_conversation_id: str, external_
     return f"{provider}:{external_conversation_id}:external:{external_id}"
 
 
-def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) -> None:
+def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
     if not message.external_thread_id and not message.message_id:
-        return
+        return None
     targets = _load_bot_reply_targets()
     target = BotReplyTarget(
         thread_id=binding.thread_id,
@@ -345,6 +356,7 @@ def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) 
         if external_id:
             targets[_external_target_key(binding.provider, binding.external_conversation_id, external_id)] = target
     _save_bot_reply_targets(targets)
+    return target
 
 
 def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
@@ -355,6 +367,44 @@ def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
     if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
         return None
     return target
+
+
+def _active_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
+    active = _load_active_turns().get(binding.thread_id)
+    target = active.reply_target if active else None
+    if not target:
+        return None
+    if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
+        return None
+    return target
+
+
+def _active_reply_target_for_thread_provider(thread_id: str, provider: str) -> BotReplyTarget | None:
+    active = _load_active_turns().get(thread_id)
+    target = active.reply_target if active else None
+    if target and target.provider == provider:
+        return target
+    return None
+
+
+def _target_for_external_thread(
+    provider: str,
+    external_conversation_id: str,
+    external_thread_id: str | None,
+) -> BotReplyTarget | None:
+    if not external_thread_id:
+        return None
+    normalized_provider = provider.lower()
+    for targets in (_load_bot_reply_targets(), _load_bot_delivery_targets()):
+        direct = targets.get(_external_target_key(normalized_provider, external_conversation_id, external_thread_id))
+        if direct:
+            return direct
+        for target in targets.values():
+            if target.provider != normalized_provider or target.external_conversation_id != external_conversation_id:
+                continue
+            if target.external_thread_id == external_thread_id or target.message_id == external_thread_id:
+                return target
+    return None
 
 
 def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any]) -> None:
@@ -379,9 +429,24 @@ def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any])
 def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
     targets = _load_bot_reply_targets()
 
-    def score(binding: BotBinding) -> tuple[float, float]:
+    def score(binding: BotBinding) -> tuple[int, float, int, float]:
+        active_target = _active_reply_target_for_thread_provider(binding.thread_id, binding.provider)
+        if active_target:
+            target = _active_reply_target_for_binding(binding)
+            return (
+                2 if target else 0,
+                target.updated_at if target else 0,
+                0,
+                binding.updated_at,
+            )
         target = targets.get(_reply_target_key(binding))
-        return (target.updated_at if target else 0, binding.updated_at)
+        target_score = target.updated_at if (target and _should_reply_in_external_thread(binding)) else 0
+        return (
+            1 if target_score else 0,
+            target_score,
+            1 if binding.is_primary_channel else 0,
+            binding.updated_at,
+        )
 
     selected: dict[str, BotBinding] = {}
     for binding in bindings:
@@ -831,6 +896,7 @@ def _enqueue_turn(
     approval_policy: str | None = None,
     model: str | None = None,
     source: str = "web",
+    reply_target: BotReplyTarget | None = None,
 ) -> QueuedTurn:
     queues = _load_turn_queues()
     queued = QueuedTurn(
@@ -842,6 +908,7 @@ def _enqueue_turn(
         approval_policy=approval_policy,
         model=model,
         source=source,
+        reply_target=reply_target,
         created_at=time.time(),
     )
     queues.setdefault(thread_id, []).append(queued)
@@ -911,6 +978,7 @@ def _mark_thread_active(
     sandbox: str | None = None,
     approval_policy: str | None = None,
     source: str | None = None,
+    reply_target: BotReplyTarget | None = None,
 ) -> None:
     if not thread_id:
         return
@@ -925,6 +993,7 @@ def _mark_thread_active(
         sandbox=sandbox or settings.sandbox or (current.sandbox if current else None),
         approval_policy=approval_policy or settings.approval_policy or (current.approval_policy if current else None),
         source=source or (current.source if current else None),
+        reply_target=reply_target or (current.reply_target if current else None),
         started_at=current.started_at if current else now,
         updated_at=now,
         resume_attempts=current.resume_attempts if current else 0,
@@ -984,6 +1053,7 @@ async def _start_thread_turn_now(
     approval_policy: str | None,
     model: str | None = None,
     source: str = "web",
+    reply_target: BotReplyTarget | None = None,
 ) -> dict[str, Any]:
     await codex.request(
         "thread/resume",
@@ -1017,6 +1087,7 @@ async def _start_thread_turn_now(
         sandbox=sandbox,
         approval_policy=approval_policy,
         source=source,
+        reply_target=reply_target,
     )
     _append_bot_event(
         {
@@ -1049,6 +1120,7 @@ async def _drain_thread_queue(thread_id: str) -> None:
             approval_policy=queued.approval_policy or project.approval_policy,
             model=queued.model,
             source=f"queued:{queued.source}",
+            reply_target=queued.reply_target,
         )
         _append_bot_event(
             {
@@ -1133,6 +1205,7 @@ async def _resume_active_threads_after_startup() -> None:
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 source=f"restart-recovery:{active.source or 'unknown'}",
+                reply_target=active.reply_target,
             )
             _mark_thread_active(
                 thread_id,
@@ -1141,6 +1214,7 @@ async def _resume_active_threads_after_startup() -> None:
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 source=f"restart-recovery:{active.source or 'unknown'}",
+                reply_target=active.reply_target,
             )
             _append_bot_event({"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id})
         except Exception as exc:
@@ -1192,6 +1266,26 @@ def _bindings_for_project(provider: str, project_id: str) -> list[BotBinding]:
     ]
 
 
+def _binding_for_external_target(
+    provider: str,
+    project_id: str,
+    external_conversation_id: str,
+    external_thread_id: str | None,
+) -> BotBinding | None:
+    target = _target_for_external_thread(provider, external_conversation_id, external_thread_id)
+    if not target:
+        return None
+    candidates = [
+        binding
+        for binding in _bindings_for_project(provider, project_id)
+        if binding.thread_id == target.thread_id
+    ]
+    for binding in candidates:
+        if binding.external_conversation_id == external_conversation_id:
+            return binding
+    return candidates[0] if candidates else None
+
+
 def _clone_binding_for_conversation(source: BotBinding, message: BotInboundMessage) -> BotBinding:
     now = time.time()
     return _upsert_bot_binding(
@@ -1206,6 +1300,7 @@ def _clone_binding_for_conversation(source: BotBinding, message: BotInboundMessa
             thread_name=source.thread_name,
             route_prefix=source.route_prefix,
             is_master=False,
+            is_primary_channel=False,
             post_in_thread=source.post_in_thread,
             sandbox=source.sandbox,
             approval_policy=source.approval_policy,
@@ -1300,6 +1395,85 @@ def _remove_bot_binding(binding_id: str) -> None:
     _save_bot_bindings(bindings)
 
 
+def _channel_label(channel_id: str, name: str | None = None) -> str:
+    return f"#{name}" if name else channel_id
+
+
+def _known_bot_channels(project_id: str) -> list[dict[str, str]]:
+    channels: dict[tuple[str, str], dict[str, str]] = {}
+    for connection in _load_bot_connections():
+        if connection.project_id != project_id or not connection.default_external_conversation_id:
+            continue
+        key = (connection.provider, connection.default_external_conversation_id)
+        channels[key] = {
+            "provider": connection.provider,
+            "id": connection.default_external_conversation_id,
+            "name": connection.default_external_name or "",
+            "label": connection.default_external_name or connection.default_external_conversation_id,
+        }
+    for binding in _load_bot_bindings():
+        if binding.project_id != project_id:
+            continue
+        key = (binding.provider, binding.external_conversation_id)
+        channels.setdefault(
+            key,
+            {
+                "provider": binding.provider,
+                "id": binding.external_conversation_id,
+                "name": binding.external_name or "",
+                "label": binding.external_name or binding.external_conversation_id,
+            },
+        )
+    return sorted(channels.values(), key=lambda item: (item["provider"], item["label"]))
+
+
+def _slack_channels_for_connection(connection: BotConnection) -> list[dict[str, str]]:
+    if not connection.bot_token:
+        return []
+    channels: list[dict[str, str]] = []
+    cursor = ""
+    for _ in range(20):
+        url = "https://slack.com/api/conversations.list?exclude_archived=true&limit=200&types=public_channel,private_channel"
+        if cursor:
+            url += f"&cursor={cursor}"
+        response = _get_json(url, {"Authorization": f"Bearer {connection.bot_token}"})
+        if not response.get("ok"):
+            break
+        for channel in response.get("channels") or []:
+            channel_id = channel.get("id")
+            if not channel_id:
+                continue
+            name = channel.get("name") or channel.get("name_normalized") or channel_id
+            channels.append(
+                {
+                    "provider": "slack",
+                    "id": channel_id,
+                    "name": name,
+                    "label": _channel_label(channel_id, name),
+                }
+            )
+        cursor = ((response.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not cursor:
+            break
+    return channels
+
+
+def _bot_channels(project_id: str) -> list[dict[str, str]]:
+    cached = BOT_CHANNEL_CACHE.get(project_id)
+    if cached and time.time() - cached[0] < 300:
+        return cached[1]
+    channels = {(item["provider"], item["id"]): item for item in _known_bot_channels(project_id)}
+    for connection in _load_bot_connections():
+        if connection.project_id != project_id or connection.provider != "slack":
+            continue
+        with contextlib.suppress(Exception):
+            for channel in _slack_channels_for_connection(connection):
+                channels[(channel["provider"], channel["id"])] = channel
+    result = sorted(channels.values(), key=lambda item: (item["provider"], item["label"]))
+    BOT_CHANNEL_CACHE[project_id] = (time.time(), result)
+    return result
+
+
 async def _set_thread_primary(thread_id: str, project_id: str, primary: bool) -> list[BotBinding]:
     project = _project(project_id)
     bindings = _load_bot_bindings()
@@ -1319,6 +1493,83 @@ async def _set_thread_primary(thread_id: str, project_id: str, primary: bool) ->
     if changed:
         _save_bot_bindings(bindings)
     return [binding for binding in bindings if binding.project_id == project.id]
+
+
+async def _set_thread_primary_channel(
+    thread_id: str,
+    project_id: str,
+    provider: str,
+    external_conversation_id: str | None,
+) -> list[BotBinding]:
+    project = _project(project_id)
+    normalized_provider = provider.lower()
+    if normalized_provider not in {"slack", "telegram"}:
+        raise HTTPException(status_code=400, detail="Provider must be slack or telegram")
+    bindings = _load_bot_bindings()
+    if external_conversation_id and not any(
+        binding.thread_id == thread_id
+        and binding.project_id == project.id
+        and binding.provider == normalized_provider
+        and binding.external_conversation_id == external_conversation_id
+        for binding in bindings
+    ):
+        candidates = [
+            binding
+            for binding in bindings
+            if binding.thread_id == thread_id and binding.project_id == project.id and binding.provider == normalized_provider
+        ]
+        if not candidates:
+            candidates = await _project_scoped_bindings_for_thread(thread_id)
+        source = next((binding for binding in candidates if binding.provider == normalized_provider), None)
+        if not source:
+            connection = next(
+                (
+                    connection
+                    for connection in _load_bot_connections()
+                    if connection.project_id == project.id and connection.provider == normalized_provider
+                ),
+                None,
+            )
+            if not connection:
+                raise HTTPException(status_code=400, detail="No bot connection is configured for this project")
+            source = await _start_bot_thread(
+                BotBindingCreate(
+                    connection_id=connection.id,
+                    provider=normalized_provider,
+                    external_conversation_id=external_conversation_id,
+                    project_id=project.id,
+                    thread_id=thread_id,
+                )
+            )
+        else:
+            source = _upsert_bot_binding(
+                BotBinding(
+                    **{
+                        **source.model_dump(),
+                        "id": uuid.uuid4().hex[:12],
+                        "external_conversation_id": external_conversation_id,
+                        "external_name": external_conversation_id,
+                        "is_master": False,
+                        "is_primary_channel": False,
+                        "created_at": time.time(),
+                        "updated_at": time.time(),
+                    }
+                )
+            )
+        bindings = _load_bot_bindings()
+    changed = False
+    now = time.time()
+    for binding in bindings:
+        if binding.thread_id != thread_id or binding.project_id != project.id or binding.provider != normalized_provider:
+            continue
+        next_primary = bool(external_conversation_id and binding.external_conversation_id == external_conversation_id)
+        if binding.is_primary_channel != next_primary:
+            binding.is_primary_channel = next_primary
+            binding.updated_at = now
+            changed = True
+    if changed:
+        _save_bot_bindings(bindings)
+    return [binding for binding in bindings if binding.thread_id == thread_id and binding.project_id == project.id]
 
 
 def _forget_bot_reply_target(thread_id: str) -> None:
@@ -1404,6 +1655,7 @@ async def _start_bot_thread(binding_create: BotBindingCreate) -> BotBinding:
             thread_name=thread_name,
             route_prefix=binding_create.route_prefix or thread_name,
             is_master=binding_create.is_master,
+            is_primary_channel=binding_create.is_primary_channel,
             post_in_thread=binding_create.post_in_thread,
             thread_id=thread_id,
             project_id=project_id,
@@ -1418,8 +1670,23 @@ async def _start_bot_thread(binding_create: BotBindingCreate) -> BotBinding:
 async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     provider = message.provider.lower()
     bindings = _bindings_for_connection(provider, message.external_conversation_id)
-    binding, routed_text, route_error = _resolve_bot_binding(bindings, message)
     project_id = message.project_id or (bindings[0].project_id if bindings else "home")
+    exact_binding = _binding_for_external_target(
+        provider,
+        project_id,
+        message.external_conversation_id,
+        message.external_thread_id,
+    )
+    if exact_binding is not None:
+        binding = (
+            exact_binding
+            if exact_binding.external_conversation_id == message.external_conversation_id
+            else _clone_binding_for_conversation(exact_binding, message)
+        )
+        routed_text = message.text
+        route_error = False
+    else:
+        binding, routed_text, route_error = _resolve_bot_binding(bindings, message)
     if binding is None:
         cross_binding, cross_text, cross_ambiguous = _cross_channel_binding_for_message(
             provider,
@@ -1478,7 +1745,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     project = _project(binding.project_id)
     if not routed_text.strip():
         return {"ok": False, "empty": True, "threadId": binding.thread_id}
-    _remember_bot_reply_target(binding, message)
+    reply_target = _remember_bot_reply_target(binding, message)
     if _is_details_command(routed_text):
         delivery = await _send_bot_details(binding)
         return {"ok": True, "threadId": binding.thread_id, "details": True, "delivery": delivery}
@@ -1491,6 +1758,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             sandbox=binding.sandbox,
             approval_policy=binding.approval_policy,
             source=provider,
+            reply_target=reply_target,
         )
         binding.updated_at = time.time()
         _upsert_bot_binding(binding)
@@ -1593,7 +1861,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                     )
                 )
             project = _project(binding.project_id)
-            _remember_bot_reply_target(binding, message)
+            reply_target = _remember_bot_reply_target(binding, message) or reply_target
     _mark_thread_active(
         binding.thread_id,
         turn_id=(turn.get("turn") or {}).get("id") if isinstance(turn, dict) else None,
@@ -1601,6 +1869,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         sandbox=binding.sandbox,
         approval_policy=binding.approval_policy,
         source=provider,
+        reply_target=reply_target,
     )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
@@ -1782,6 +2051,7 @@ async def _project_scoped_bindings_for_thread(thread_id: str) -> list[BotBinding
                 external_name=connection.default_external_name,
                 thread_name=thread_name,
                 route_prefix=thread_name,
+                is_primary_channel=False,
                 post_in_thread=False,
                 sandbox=project.sandbox,
                 approval_policy=project.approval_policy,
@@ -1951,7 +2221,7 @@ def _has_recent_reply_target_for_active_turn(binding: BotBinding) -> bool:
     active = _load_active_turns().get(binding.thread_id)
     if not active:
         return False
-    target = _reply_target_for_binding(binding)
+    target = _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding)
     if not target:
         return False
     return target.updated_at >= active.started_at - 30
@@ -2055,7 +2325,7 @@ async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread:
         return {"sent": False, "reason": "missing_bot_token"}
     try:
         if binding.provider == "slack":
-            target = _reply_target_for_binding(binding)
+            target = _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding)
             should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             thread_ts = (target.external_thread_id or target.message_id) if (should_thread and target) else None
             return await asyncio.to_thread(
@@ -2329,7 +2599,7 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
         if not connection.bot_token:
             continue
         text = f"Approval requested for {_binding_prefix(binding) or thread_id}"
-        target = _reply_target_for_binding(binding)
+        target = _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding)
         thread_ts = (target.external_thread_id or target.message_id) if (_should_reply_in_external_thread(binding) and target) else None
         delivery = await asyncio.to_thread(
             _post_slack_message,
@@ -3185,6 +3455,12 @@ async def list_bot_bindings() -> list[dict[str, Any]]:
     return [binding.model_dump() for binding in _load_bot_bindings()]
 
 
+@app.get("/api/bots/channels")
+async def list_bot_channels(project_id: str = "home") -> list[dict[str, str]]:
+    _project(project_id)
+    return _bot_channels(project_id)
+
+
 @app.post("/api/bots/bindings")
 async def create_bot_binding(payload: BotBindingCreate) -> dict[str, Any]:
     binding = await _start_bot_thread(payload)
@@ -3512,6 +3788,7 @@ async def _steer_queued_turn(thread_id: str, queued: QueuedTurn) -> dict[str, An
         approval_policy=queued.approval_policy or project.approval_policy,
         model=queued.model,
         source=f"steer:{queued.source}",
+        reply_target=queued.reply_target,
     )
     return {
         "ok": True,
@@ -3539,6 +3816,24 @@ async def update_thread_primary(thread_id: str, payload: ThreadPrimaryUpdate) ->
         "threadId": thread_id,
         "projectId": payload.project_id,
         "primary": payload.primary,
+        "bindings": [binding.model_dump() for binding in bindings],
+    }
+
+
+@app.post("/api/threads/{thread_id}/primary-channel")
+async def update_thread_primary_channel(thread_id: str, payload: ThreadPrimaryChannelUpdate) -> dict[str, Any]:
+    bindings = await _set_thread_primary_channel(
+        thread_id,
+        payload.project_id,
+        payload.provider,
+        payload.external_conversation_id,
+    )
+    return {
+        "ok": True,
+        "threadId": thread_id,
+        "projectId": payload.project_id,
+        "provider": payload.provider,
+        "externalConversationId": payload.external_conversation_id,
         "bindings": [binding.model_dump() for binding in bindings],
     }
 
