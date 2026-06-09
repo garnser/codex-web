@@ -100,6 +100,18 @@ function persistRunSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(allSettings));
 }
 
+async function syncThreadRunSettings() {
+  if (!state.threadId) return;
+  const settings = currentRunSettings();
+  await api(`/api/threads/${state.threadId}/settings`, {
+    method: "POST",
+    body: JSON.stringify({
+      sandbox: settings.sandbox,
+      approval_policy: settings.approvalPolicy,
+    }),
+  });
+}
+
 function loadTokenUsageCache() {
   try {
     return JSON.parse(localStorage.getItem(TOKEN_USAGE_KEY) || "{}");
@@ -695,6 +707,7 @@ function applyBotProvider(provider) {
     $("bot-conversation-id").value = "";
     $("bot-slack-app-token").value = "";
     $("bot-signing-secret").value = "";
+    $("bot-post-in-thread").checked = false;
   }
 }
 
@@ -735,6 +748,7 @@ function fillBotDialogFromConnection(connection) {
   $("bot-conversation-id").value = connection.provider === "slack" ? (connection.default_external_conversation_id || "") : "";
   $("bot-telegram-chat-id").value = connection.provider === "telegram" ? (connection.default_external_conversation_id || "") : "";
   $("bot-external-name").value = connection.default_external_name || "";
+  $("bot-post-in-thread").checked = false;
 }
 
 async function openBotIntegration(target) {
@@ -750,6 +764,7 @@ async function openBotIntegration(target) {
   $("bot-webhook-secret").value = "";
   $("bot-conversation-id").value = "";
   $("bot-telegram-chat-id").value = "";
+  $("bot-post-in-thread").checked = false;
   $("bot-external-name").value = "";
   $("bot-route-prefix").value = target.title;
   $("bot-bind-existing-thread").checked = bindExisting;
@@ -806,6 +821,7 @@ async function saveBotIntegration(event) {
       thread_id: bindToThread ? target.threadId : null,
       thread_name: bindToThread ? null : $("bot-route-prefix").value.trim(),
       route_prefix: $("bot-route-prefix").value.trim() || target.title,
+      post_in_thread: provider === "slack" ? $("bot-post-in-thread").checked : false,
       sandbox: currentRunSettings().sandbox,
       approval_policy: currentRunSettings().approvalPolicy,
     }),
@@ -821,7 +837,8 @@ async function loadThread(threadId) {
   state.threadId = threadId;
   updateWaitingFromState();
   renderTokenUsage();
-  await api(`/api/threads/${threadId}/resume?project_id=${encodeURIComponent(state.projectId)}`, { method: "POST" });
+  const settings = currentRunSettings();
+  await api(`/api/threads/${threadId}/resume?project_id=${encodeURIComponent(state.projectId)}&sandbox=${encodeURIComponent(settings.sandbox)}&approval_policy=${encodeURIComponent(settings.approvalPolicy)}`, { method: "POST" });
   const data = await api(`/api/threads/${threadId}`);
   const thread = data.thread || data;
   hydrateThreadActivity(thread);
@@ -1137,8 +1154,14 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
-$("sandbox").addEventListener("change", persistRunSettings);
-$("approval-policy").addEventListener("change", persistRunSettings);
+$("sandbox").addEventListener("change", () => {
+  persistRunSettings();
+  syncThreadRunSettings().catch(console.error);
+});
+$("approval-policy").addEventListener("change", () => {
+  persistRunSettings();
+  syncThreadRunSettings().catch(console.error);
+});
 $("rename-thread").addEventListener("click", renameThread);
 $("prompt").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;

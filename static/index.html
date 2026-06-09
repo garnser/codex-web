@@ -198,6 +198,10 @@
           <label>Slack app token <input id="bot-slack-app-token" type="password" autocomplete="off" placeholder="xapp token for Socket Mode" /></label>
           <label>Slack signing secret <input id="bot-signing-secret" type="password" autocomplete="off" placeholder="Used to verify Slack events" /></label>
           <label>Slack channel ID <input id="bot-conversation-id" placeholder="C0123456789" /></label>
+          <label class="checkbox-line">
+            <input id="bot-post-in-thread" type="checkbox" />
+            Post replies inside Slack threads
+          </label>
         </div>
 
         <div id="telegram-fields" class="provider-fields" hidden>

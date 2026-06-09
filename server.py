@@ -31,8 +31,11 @@ BOTS_CONNECTIONS_FILE = DATA_DIR / "bot_connections.json"
 BOTS_BINDINGS_FILE = DATA_DIR / "bot_bindings.json"
 BOTS_EVENTS_FILE = DATA_DIR / "bot_events.jsonl"
 BOT_REPLY_TARGETS_FILE = DATA_DIR / "bot_reply_targets.json"
+BOT_DELIVERY_TARGETS_FILE = DATA_DIR / "bot_delivery_targets.json"
 BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
 THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
+THREAD_SETTINGS_FILE = DATA_DIR / "thread_settings.json"
+ACTIVE_TURNS_FILE = DATA_DIR / "active_turns.json"
 STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
@@ -65,6 +68,23 @@ class TurnCreate(BaseModel):
 
 class ApprovalDecision(BaseModel):
     decision: str
+
+
+class ThreadRunSettings(BaseModel):
+    sandbox: str | None = None
+    approval_policy: str | None = None
+
+
+class ActiveThreadTurn(BaseModel):
+    thread_id: str
+    turn_id: str | None = None
+    project_id: str | None = None
+    sandbox: str | None = None
+    approval_policy: str | None = None
+    started_at: float
+    updated_at: float
+    resume_attempts: int = 0
+    last_resume_at: float | None = None
 
 
 class ThreadRename(BaseModel):
@@ -119,6 +139,7 @@ class BotBinding(BaseModel):
     thread_name: str | None = None
     route_prefix: str | None = None
     is_master: bool = False
+    post_in_thread: bool = False
     sandbox: str = "read-only"
     approval_policy: str = "on-request"
     created_at: float
@@ -152,6 +173,7 @@ class BotBindingCreate(BaseModel):
     thread_name: str | None = None
     route_prefix: str | None = None
     is_master: bool = False
+    post_in_thread: bool = False
     sandbox: str = "read-only"
     approval_policy: str = "on-request"
 
@@ -237,15 +259,34 @@ def _save_bot_reply_targets(targets: dict[str, BotReplyTarget]) -> None:
     )
 
 
+def _load_bot_delivery_targets() -> dict[str, BotReplyTarget]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not BOT_DELIVERY_TARGETS_FILE.exists():
+        return {}
+    payload = json.loads(BOT_DELIVERY_TARGETS_FILE.read_text())
+    return {thread_id: BotReplyTarget.model_validate(item) for thread_id, item in payload.items()}
+
+
+def _save_bot_delivery_targets(targets: dict[str, BotReplyTarget]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    BOT_DELIVERY_TARGETS_FILE.write_text(
+        json.dumps({thread_id: target.model_dump() for thread_id, target in targets.items()}, indent=2) + "\n"
+    )
+
+
 def _reply_target_key(binding: BotBinding) -> str:
     return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
+
+
+def _external_target_key(provider: str, external_conversation_id: str, external_id: str) -> str:
+    return f"{provider}:{external_conversation_id}:external:{external_id}"
 
 
 def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) -> None:
     if not message.external_thread_id and not message.message_id:
         return
     targets = _load_bot_reply_targets()
-    targets[_reply_target_key(binding)] = BotReplyTarget(
+    target = BotReplyTarget(
         thread_id=binding.thread_id,
         provider=binding.provider,
         external_conversation_id=binding.external_conversation_id,
@@ -253,6 +294,10 @@ def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) 
         message_id=message.message_id,
         updated_at=time.time(),
     )
+    targets[_reply_target_key(binding)] = target
+    for external_id in {message.external_thread_id, message.message_id}:
+        if external_id:
+            targets[_external_target_key(binding.provider, binding.external_conversation_id, external_id)] = target
     _save_bot_reply_targets(targets)
 
 
@@ -264,6 +309,40 @@ def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
     if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
         return None
     return target
+
+
+def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any]) -> None:
+    response = delivery.get("providerResponse") or {}
+    ts = response.get("ts")
+    if not delivery.get("sent") or not ts:
+        return
+    targets = _load_bot_delivery_targets()
+    target = BotReplyTarget(
+        thread_id=binding.thread_id,
+        provider=binding.provider,
+        external_conversation_id=binding.external_conversation_id,
+        external_thread_id=str(ts),
+        message_id=str(ts),
+        updated_at=time.time(),
+    )
+    targets[_reply_target_key(binding)] = target
+    targets[_external_target_key(binding.provider, binding.external_conversation_id, str(ts))] = target
+    _save_bot_delivery_targets(targets)
+
+
+def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
+    targets = _load_bot_reply_targets()
+
+    def score(binding: BotBinding) -> tuple[float, float]:
+        target = targets.get(_reply_target_key(binding))
+        return (target.updated_at if target else 0, binding.updated_at)
+
+    selected: dict[str, BotBinding] = {}
+    for binding in bindings:
+        current = selected.get(binding.provider)
+        if current is None or score(binding) > score(current):
+            selected[binding.provider] = binding
+    return list(selected.values())
 
 
 def _load_bot_details() -> dict[str, list[BotThreadDetail]]:
@@ -517,6 +596,213 @@ def _save_bot_bindings(bindings: list[BotBinding]) -> None:
     BOTS_BINDINGS_FILE.write_text(json.dumps([binding.model_dump() for binding in bindings], indent=2) + "\n")
 
 
+def _load_thread_settings() -> dict[str, ThreadRunSettings]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not THREAD_SETTINGS_FILE.exists():
+        return {}
+    return {
+        thread_id: ThreadRunSettings.model_validate(settings)
+        for thread_id, settings in json.loads(THREAD_SETTINGS_FILE.read_text()).items()
+    }
+
+
+def _save_thread_settings(settings: dict[str, ThreadRunSettings]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    THREAD_SETTINGS_FILE.write_text(
+        json.dumps({thread_id: value.model_dump() for thread_id, value in settings.items()}, indent=2) + "\n"
+    )
+
+
+def _remember_thread_run_settings(
+    thread_id: str,
+    *,
+    sandbox: str | None = None,
+    approval_policy: str | None = None,
+) -> ThreadRunSettings:
+    all_settings = _load_thread_settings()
+    current = all_settings.get(thread_id, ThreadRunSettings())
+    if sandbox is not None:
+        current.sandbox = sandbox
+    if approval_policy is not None:
+        current.approval_policy = approval_policy
+    all_settings[thread_id] = current
+    _save_thread_settings(all_settings)
+    _sync_bot_binding_settings(thread_id, current)
+    return current
+
+
+def _thread_run_settings(thread_id: str | None) -> ThreadRunSettings:
+    if not thread_id:
+        return ThreadRunSettings()
+    settings = _load_thread_settings().get(thread_id)
+    if settings:
+        return settings
+    bindings = _bindings_for_thread(thread_id)
+    if bindings:
+        return ThreadRunSettings(sandbox=bindings[0].sandbox, approval_policy=bindings[0].approval_policy)
+    return ThreadRunSettings()
+
+
+def _sync_bot_binding_settings(thread_id: str, settings: ThreadRunSettings) -> None:
+    bindings = _load_bot_bindings()
+    changed = False
+    for binding in bindings:
+        if binding.thread_id != thread_id:
+            continue
+        binding_changed = False
+        if settings.sandbox is not None and binding.sandbox != settings.sandbox:
+            binding.sandbox = settings.sandbox
+            binding_changed = True
+        if settings.approval_policy is not None and binding.approval_policy != settings.approval_policy:
+            binding.approval_policy = settings.approval_policy
+            binding_changed = True
+        if binding_changed:
+            binding.updated_at = time.time()
+            changed = True
+    if changed:
+        _save_bot_bindings(bindings)
+
+
+def _load_active_turns() -> dict[str, ActiveThreadTurn]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not ACTIVE_TURNS_FILE.exists():
+        return {}
+    return {
+        thread_id: ActiveThreadTurn.model_validate(active)
+        for thread_id, active in json.loads(ACTIVE_TURNS_FILE.read_text()).items()
+    }
+
+
+def _save_active_turns(active_turns: dict[str, ActiveThreadTurn]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    ACTIVE_TURNS_FILE.write_text(
+        json.dumps({thread_id: active.model_dump() for thread_id, active in active_turns.items()}, indent=2) + "\n"
+    )
+
+
+def _mark_thread_active(
+    thread_id: str | None,
+    *,
+    turn_id: str | None = None,
+    project_id: str | None = None,
+    sandbox: str | None = None,
+    approval_policy: str | None = None,
+) -> None:
+    if not thread_id:
+        return
+    now = time.time()
+    active_turns = _load_active_turns()
+    current = active_turns.get(thread_id)
+    settings = _thread_run_settings(thread_id)
+    active_turns[thread_id] = ActiveThreadTurn(
+        thread_id=thread_id,
+        turn_id=turn_id or (current.turn_id if current else None),
+        project_id=project_id or (current.project_id if current else None),
+        sandbox=sandbox or settings.sandbox or (current.sandbox if current else None),
+        approval_policy=approval_policy or settings.approval_policy or (current.approval_policy if current else None),
+        started_at=current.started_at if current else now,
+        updated_at=now,
+        resume_attempts=current.resume_attempts if current else 0,
+        last_resume_at=current.last_resume_at if current else None,
+    )
+    _save_active_turns(active_turns)
+
+
+def _clear_thread_active(thread_id: str | None) -> None:
+    if not thread_id:
+        return
+    active_turns = _load_active_turns()
+    if thread_id in active_turns:
+        active_turns.pop(thread_id, None)
+        _save_active_turns(active_turns)
+
+
+def _record_thread_activity(message: dict[str, Any]) -> None:
+    method = message.get("method")
+    params = message.get("params") or {}
+    thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+    turn_id = params.get("turnId") or (params.get("turn") or {}).get("id")
+    if method in {"turn/started", "item/started"}:
+        _mark_thread_active(thread_id, turn_id=turn_id)
+    elif method in {"turn/completed", "turn/failed"}:
+        _clear_thread_active(thread_id)
+    elif method == "thread/status/changed":
+        status_type = (params.get("status") or {}).get("type")
+        if status_type == "active":
+            _mark_thread_active(thread_id)
+        elif status_type in {"idle", "systemError", "notLoaded"}:
+            _clear_thread_active(thread_id)
+
+
+async def _resume_active_threads_after_startup() -> None:
+    active_turns = _load_active_turns()
+    if not active_turns:
+        return
+    for thread_id, active in list(active_turns.items()):
+        if active.resume_attempts >= 3:
+            continue
+        project = None
+        if active.project_id:
+            with contextlib.suppress(Exception):
+                project = _project(active.project_id)
+        if project is None:
+            with contextlib.suppress(Exception):
+                thread_response = await codex.request("thread/read", {"threadId": thread_id, "includeTurns": False})
+                thread = thread_response.get("thread", thread_response) if isinstance(thread_response, dict) else {}
+                project = _project_for_cwd(thread.get("cwd"))
+        if project is None:
+            _clear_thread_active(thread_id)
+            continue
+        settings = _thread_run_settings(thread_id)
+        sandbox = active.sandbox or settings.sandbox or project.sandbox
+        approval_policy = active.approval_policy or settings.approval_policy or project.approval_policy
+        active.resume_attempts += 1
+        active.last_resume_at = time.time()
+        active.updated_at = time.time()
+        active_turns[thread_id] = active
+        _save_active_turns(active_turns)
+        try:
+            await codex.request(
+                "thread/resume",
+                {
+                    "threadId": thread_id,
+                    **_project_params(
+                        project,
+                        {
+                            "sandbox": sandbox,
+                            "approvalPolicy": approval_policy,
+                        },
+                    ),
+                },
+            )
+            response = await codex.request(
+                "turn/start",
+                {
+                    "threadId": thread_id,
+                    "input": [
+                        {
+                            "type": "text",
+                            "text": "codex-web was restarted while this thread was active. Continue the interrupted work from the latest context and report progress.",
+                            "text_elements": [],
+                        }
+                    ],
+                    "cwd": project.path,
+                    "approvalPolicy": approval_policy,
+                    "sandboxPolicy": _sandbox_policy(sandbox, project.path),
+                },
+            )
+            _mark_thread_active(
+                thread_id,
+                turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else active.turn_id,
+                project_id=project.id,
+                sandbox=sandbox,
+                approval_policy=approval_policy,
+            )
+            _append_bot_event({"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id})
+        except Exception as exc:
+            _append_bot_event({"type": "active_thread_resume_failed", "thread_id": thread_id, "error": str(exc)})
+
+
 def _append_bot_event(event: dict[str, Any]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     payload = {"created_at": time.time(), **event}
@@ -567,6 +853,7 @@ def _clone_binding_for_conversation(source: BotBinding, message: BotInboundMessa
             thread_name=source.thread_name,
             route_prefix=source.route_prefix,
             is_master=False,
+            post_in_thread=source.post_in_thread,
             sandbox=source.sandbox,
             approval_policy=source.approval_policy,
             created_at=now,
@@ -661,14 +948,18 @@ def _remove_bot_binding(binding_id: str) -> None:
 
 
 def _forget_bot_reply_target(thread_id: str) -> None:
-    targets = _load_bot_reply_targets()
-    removed = False
-    for key, target in list(targets.items()):
-        if key == thread_id or target.thread_id == thread_id:
-            targets.pop(key, None)
-            removed = True
-    if removed:
-        _save_bot_reply_targets(targets)
+    for loader, saver in (
+        (_load_bot_reply_targets, _save_bot_reply_targets),
+        (_load_bot_delivery_targets, _save_bot_delivery_targets),
+    ):
+        targets = loader()
+        removed = False
+        for key, target in list(targets.items()):
+            if key == thread_id or target.thread_id == thread_id:
+                targets.pop(key, None)
+                removed = True
+        if removed:
+            saver(targets)
 
 
 def _project(project_id: str | None) -> Project:
@@ -739,6 +1030,7 @@ async def _start_bot_thread(binding_create: BotBindingCreate) -> BotBinding:
             thread_name=thread_name,
             route_prefix=binding_create.route_prefix or thread_name,
             is_master=binding_create.is_master,
+            post_in_thread=binding_create.post_in_thread,
             thread_id=thread_id,
             project_id=project_id,
             sandbox=binding_create.sandbox,
@@ -819,7 +1111,19 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     prompt = _format_bot_prompt(message, provider, routed_text)
     for attempt in range(2):
         try:
-            await codex.request("thread/resume", {"threadId": binding.thread_id, **_project_params(project)})
+            await codex.request(
+                "thread/resume",
+                {
+                    "threadId": binding.thread_id,
+                    **_project_params(
+                        project,
+                        {
+                            "sandbox": binding.sandbox,
+                            "approvalPolicy": binding.approval_policy,
+                        },
+                    ),
+                },
+            )
             turn = await codex.request(
                 "turn/start",
                 {
@@ -864,12 +1168,20 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                         thread_name=binding.thread_name,
                         route_prefix=binding.route_prefix,
                         is_master=binding.is_master,
+                        post_in_thread=binding.post_in_thread,
                         sandbox=binding.sandbox,
                         approval_policy=binding.approval_policy,
                     )
                 )
             project = _project(binding.project_id)
             _remember_bot_reply_target(binding, message)
+    _mark_thread_active(
+        binding.thread_id,
+        turn_id=(turn.get("turn") or {}).get("id") if isinstance(turn, dict) else None,
+        project_id=binding.project_id,
+        sandbox=binding.sandbox,
+        approval_policy=binding.approval_policy,
+    )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
     _append_bot_event(
@@ -933,17 +1245,18 @@ def _binding_for_external_thread(bindings: list[BotBinding], external_thread_id:
     if not external_thread_id:
         return None
     by_thread_id = {binding.thread_id: binding for binding in bindings}
-    for target in _load_bot_reply_targets().values():
-        if not any(
-            target.provider == binding.provider and target.external_conversation_id == binding.external_conversation_id
-            for binding in bindings
-        ):
-            continue
-        if target.external_thread_id != external_thread_id and target.message_id != external_thread_id:
-            continue
-        binding = by_thread_id.get(target.thread_id)
-        if binding:
-            return binding
+    for targets in (_load_bot_reply_targets(), _load_bot_delivery_targets()):
+        for target in targets.values():
+            if not any(
+                target.provider == binding.provider and target.external_conversation_id == binding.external_conversation_id
+                for binding in bindings
+            ):
+                continue
+            if target.external_thread_id != external_thread_id and target.message_id != external_thread_id:
+                continue
+            binding = by_thread_id.get(target.thread_id)
+            if binding:
+                return binding
     return None
 
 
@@ -1049,6 +1362,7 @@ async def _project_scoped_bindings_for_thread(thread_id: str) -> list[BotBinding
                 external_name=connection.default_external_name,
                 thread_name=thread_name,
                 route_prefix=thread_name,
+                post_in_thread=False,
                 sandbox=project.sandbox,
                 approval_policy=project.approval_policy,
                 created_at=now,
@@ -1057,23 +1371,6 @@ async def _project_scoped_bindings_for_thread(thread_id: str) -> list[BotBinding
         )
         bindings.append(binding)
     return bindings
-
-
-def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any]) -> None:
-    response = delivery.get("providerResponse") or {}
-    ts = response.get("ts")
-    if not delivery.get("sent") or not ts:
-        return
-    targets = _load_bot_reply_targets()
-    targets[_reply_target_key(binding)] = BotReplyTarget(
-        thread_id=binding.thread_id,
-        provider=binding.provider,
-        external_conversation_id=binding.external_conversation_id,
-        external_thread_id=str(ts),
-        message_id=str(ts),
-        updated_at=time.time(),
-    )
-    _save_bot_reply_targets(targets)
 
 
 async def _record_bot_outbound(message: dict[str, Any]) -> None:
@@ -1093,7 +1390,7 @@ async def _record_bot_outbound(message: dict[str, Any]) -> None:
     bindings = _bindings_for_thread(thread_id)
     if not bindings:
         bindings = await _project_scoped_bindings_for_thread(thread_id)
-    for binding in bindings:
+    for binding in _outbound_bindings_for_thread(thread_id, bindings):
         prefix = _binding_prefix(binding)
         outbound_text = _format_bot_outbound_item(item, prefix)
         if not outbound_text:
@@ -1224,6 +1521,30 @@ def _slack_reply_username(binding: BotBinding) -> str:
     return f"Codex · {prefix}" if prefix else "Codex"
 
 
+def _slack_reply_icon(binding: BotBinding) -> str:
+    icons = [
+        ":large_blue_circle:",
+        ":large_green_circle:",
+        ":large_orange_circle:",
+        ":large_purple_circle:",
+        ":large_yellow_circle:",
+        ":red_circle:",
+        ":black_circle:",
+        ":white_circle:",
+        ":small_blue_diamond:",
+        ":small_orange_diamond:",
+        ":large_blue_diamond:",
+        ":large_orange_diamond:",
+        ":eight_pointed_black_star:",
+        ":six_pointed_star:",
+        ":star:",
+        ":sparkles:",
+    ]
+    seed = _binding_prefix(binding) or binding.thread_id
+    digest = hashlib.sha256(seed.encode()).hexdigest()
+    return icons[int(digest[:8], 16) % len(icons)]
+
+
 async def _send_bot_outbound(binding: BotBinding, text: str) -> dict[str, Any]:
     connection = _bot_connection(binding.connection_id) if binding.connection_id else None
     if not connection or not connection.bot_token:
@@ -1231,13 +1552,15 @@ async def _send_bot_outbound(binding: BotBinding, text: str) -> dict[str, Any]:
     try:
         if binding.provider == "slack":
             target = _reply_target_for_binding(binding)
+            thread_ts = (target.external_thread_id or target.message_id) if (binding.post_in_thread and target) else None
             return await asyncio.to_thread(
                 _post_slack_message,
                 connection.bot_token,
                 binding.external_conversation_id,
                 text,
                 username=_slack_reply_username(binding),
-                thread_ts=(target.external_thread_id or target.message_id) if target else None,
+                icon_emoji=_slack_reply_icon(binding),
+                thread_ts=thread_ts,
             )
         if binding.provider == "telegram":
             return await asyncio.to_thread(_post_telegram_message, connection.bot_token, binding.external_conversation_id, text)
@@ -1446,7 +1769,7 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
     thread_id = _approval_thread_id(request)
     if not thread_id:
         return
-    for binding in _bindings_for_thread(thread_id):
+    for binding in _outbound_bindings_for_thread(thread_id, _bindings_for_thread(thread_id)):
         if binding.provider != "slack" or not binding.connection_id:
             continue
         connection = _bot_connection(binding.connection_id)
@@ -1454,13 +1777,15 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
             continue
         text = f"Approval requested for {_binding_prefix(binding) or thread_id}"
         target = _reply_target_for_binding(binding)
+        thread_ts = (target.external_thread_id or target.message_id) if (binding.post_in_thread and target) else None
         delivery = await asyncio.to_thread(
             _post_slack_message,
             connection.bot_token,
             binding.external_conversation_id,
             text,
             username=_slack_reply_username(binding),
-            thread_ts=(target.external_thread_id or target.message_id) if target else None,
+            icon_emoji=_slack_reply_icon(binding),
+            thread_ts=thread_ts,
             blocks=_approval_blocks(request, binding),
         )
         _append_bot_event(
@@ -1971,11 +2296,25 @@ class CodexAppServer:
                 continue
 
             if message_id is not None and "method" in message:
+                if _thread_run_settings(_approval_thread_id(message)).approval_policy == "never":
+                    result = _approval_result(message["method"], "acceptForSession")
+                    await self._send({"id": message_id, "result": result})
+                    await hub.publish({"type": "approval.auto_resolved", "id": message_id, "result": result})
+                    _append_bot_event(
+                        {
+                            "type": "approval_auto_resolved",
+                            "thread_id": _approval_thread_id(message),
+                            "request_id": message_id,
+                            "method": message.get("method"),
+                        }
+                    )
+                    continue
                 self.pending_approvals[message_id] = message
                 await _record_bot_approval_request(message)
                 await hub.publish({"type": "approval.request", "request": message})
                 continue
 
+            _record_thread_activity(message)
             await _record_bot_outbound(message)
             await hub.publish({"type": "codex.event", "message": message})
 
@@ -2117,6 +2456,8 @@ async def startup() -> None:
         # Keep the HTTP UI up so it can report the app-server failure.
         pass
     await bot_runtime.sync()
+    if codex.ready.is_set():
+        asyncio.create_task(_resume_active_threads_after_startup())
     _sd_notify("READY=1\nSTATUS=codex-web started")
     WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
 
@@ -2409,7 +2750,7 @@ async def create_thread(
     model: str | None = None,
 ) -> dict[str, Any]:
     project = _project(project_id)
-    return await codex.request(
+    response = await codex.request(
         "thread/start",
         _project_params(
             project,
@@ -2421,6 +2762,15 @@ async def create_thread(
             },
         ),
     )
+    thread = response.get("thread", response)
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if thread_id:
+        _remember_thread_run_settings(
+            thread_id,
+            sandbox=sandbox or project.sandbox,
+            approval_policy=approval_policy or project.approval_policy,
+        )
+    return response
 
 
 @app.get("/api/threads/{thread_id}")
@@ -2435,16 +2785,50 @@ async def rename_thread(thread_id: str, payload: ThreadRename) -> dict[str, Any]
 
 
 @app.post("/api/threads/{thread_id}/resume")
-async def resume_thread(thread_id: str, project_id: str | None = None) -> dict[str, Any]:
+async def resume_thread(
+    thread_id: str,
+    project_id: str | None = None,
+    sandbox: str | None = None,
+    approval_policy: str | None = None,
+) -> dict[str, Any]:
     project = _project(project_id)
-    params = {"threadId": thread_id, **_project_params(project)}
+    remembered = _thread_run_settings(thread_id)
+    effective_sandbox = sandbox or remembered.sandbox or project.sandbox
+    effective_approval_policy = approval_policy or remembered.approval_policy or project.approval_policy
+    _remember_thread_run_settings(thread_id, sandbox=effective_sandbox, approval_policy=effective_approval_policy)
+    params = {
+        "threadId": thread_id,
+        **_project_params(
+            project,
+            {
+                "sandbox": effective_sandbox,
+                "approvalPolicy": effective_approval_policy,
+            },
+        ),
+    }
     return await codex.request("thread/resume", params)
 
 
 @app.post("/api/threads/{thread_id}/turns")
 async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
     project = _project(payload.project_id)
-    await codex.request("thread/resume", {"threadId": thread_id, **_project_params(project)})
+    remembered = _thread_run_settings(thread_id)
+    effective_sandbox = payload.sandbox or remembered.sandbox or project.sandbox
+    effective_approval_policy = payload.approval_policy or remembered.approval_policy or project.approval_policy
+    _remember_thread_run_settings(thread_id, sandbox=effective_sandbox, approval_policy=effective_approval_policy)
+    await codex.request(
+        "thread/resume",
+        {
+            "threadId": thread_id,
+            **_project_params(
+                project,
+                {
+                    "sandbox": effective_sandbox,
+                    "approvalPolicy": effective_approval_policy,
+                },
+            ),
+        },
+    )
     params: dict[str, Any] = {
         "threadId": thread_id,
         "input": [{"type": "text", "text": payload.message, "text_elements": []}],
@@ -2452,11 +2836,29 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
     }
     if payload.model or project.model:
         params["model"] = payload.model or project.model
-    if payload.approval_policy or project.approval_policy:
-        params["approvalPolicy"] = payload.approval_policy or project.approval_policy
-    if payload.sandbox or project.sandbox:
-        params["sandboxPolicy"] = _sandbox_policy(payload.sandbox or project.sandbox, project.path)
-    return await codex.request("turn/start", params)
+    if effective_approval_policy:
+        params["approvalPolicy"] = effective_approval_policy
+    if effective_sandbox:
+        params["sandboxPolicy"] = _sandbox_policy(effective_sandbox, project.path)
+    response = await codex.request("turn/start", params)
+    _mark_thread_active(
+        thread_id,
+        turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
+        project_id=project.id,
+        sandbox=effective_sandbox,
+        approval_policy=effective_approval_policy,
+    )
+    return response
+
+
+@app.post("/api/threads/{thread_id}/settings")
+async def update_thread_settings(thread_id: str, payload: ThreadRunSettings) -> dict[str, Any]:
+    settings = _remember_thread_run_settings(
+        thread_id,
+        sandbox=payload.sandbox,
+        approval_policy=payload.approval_policy,
+    )
+    return {"ok": True, "threadId": thread_id, **settings.model_dump()}
 
 
 @app.post("/api/threads/{thread_id}/archive")
