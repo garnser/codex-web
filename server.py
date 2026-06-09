@@ -1860,8 +1860,10 @@ class CodexAppServer:
 
     async def start(self) -> None:
         async with self.lifecycle_lock:
-            if self.proc and self.proc.poll() is None:
+            if self.proc and self.proc.poll() is None and self.ready.is_set():
                 return
+            if self.proc and self.proc.poll() is None:
+                await self.stop()
             self.ready.clear()
             self.last_error = None
             self._fail_pending(RuntimeError("Codex app-server restarted"))
@@ -1943,6 +1945,12 @@ class CodexAppServer:
         while True:
             line = await asyncio.to_thread(self.proc.stdout.readline)
             if not line:
+                self.ready.clear()
+                self.last_error = "Codex app-server stopped"
+                self._fail_pending(RuntimeError(self.last_error))
+                print(f"codex app-server stdout closed: {self.last_error}", flush=True)
+                if self.proc and self.proc.poll() is not None:
+                    self.proc = None
                 await hub.publish({"type": "codex.closed"})
                 return
             try:
@@ -1995,20 +2003,9 @@ class CodexAppServer:
         except asyncio.TimeoutError as exc:
             self.pending.pop(message_id, None)
             self.last_error = f"{method} timed out after {timeout}s"
+            print(f"codex app-server request timed out: {self.last_error}", flush=True)
             await hub.publish({"type": "codex.error", "error": self.last_error})
-            if method != "initialize":
-                asyncio.create_task(self.restart_after_timeout(method, message_id))
             raise HTTPException(status_code=504, detail=self.last_error) from exc
-
-    async def restart_after_timeout(self, method: str, message_id: int | str) -> None:
-        await hub.publish({"type": "codex.restarting", "method": method, "requestId": message_id})
-        async with self.lifecycle_lock:
-            await self.stop()
-        try:
-            await self.start()
-        except Exception as exc:
-            self.last_error = str(exc)
-            await hub.publish({"type": "codex.error", "error": self.last_error})
 
     async def notify(self, method: str, params: Any = None) -> None:
         await self._send({"method": method, "params": params})
@@ -2016,7 +2013,11 @@ class CodexAppServer:
     async def ensure_started(self, skip: bool = False) -> None:
         if skip:
             return
-        if not self.proc or self.proc.poll() is not None:
+        if (
+            not self.proc
+            or self.proc.poll() is not None
+            or (self.reader_task is not None and self.reader_task.done() and not self.ready.is_set())
+        ):
             await self.start()
         elif not self.ready.is_set():
             await self.ready.wait()
