@@ -644,6 +644,16 @@ h1 {
   color: var(--accent);
 }
 
+.codex-status.queued {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.steer-button {
+  flex: 0 0 auto;
+}
+
 .status-spinner {
   width: 14px;
   height: 14px;
@@ -664,6 +674,13 @@ h1 {
 .codex-status.waiting .status-spinner {
   opacity: 1;
   animation: spin 800ms linear infinite;
+}
+
+.codex-status.queued .status-spinner {
+  animation: none;
+  border-color: currentColor;
+  border-right-color: currentColor;
+  opacity: 0.85;
 }
 
 @keyframes spin {

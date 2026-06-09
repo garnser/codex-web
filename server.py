@@ -36,9 +36,12 @@ BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
 THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
 THREAD_SETTINGS_FILE = DATA_DIR / "thread_settings.json"
 ACTIVE_TURNS_FILE = DATA_DIR / "active_turns.json"
+TURN_QUEUE_FILE = DATA_DIR / "queued_turns.json"
 STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
+QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
+IS_SHUTTING_DOWN = False
 
 
 class Project(BaseModel):
@@ -85,6 +88,19 @@ class ActiveThreadTurn(BaseModel):
     updated_at: float
     resume_attempts: int = 0
     last_resume_at: float | None = None
+
+
+class QueuedTurn(BaseModel):
+    id: str
+    thread_id: str
+    project_id: str
+    message: str
+    sandbox: str | None = None
+    approval_policy: str | None = None
+    model: str | None = None
+    source: str = "web"
+    attempts: int = 0
+    created_at: float
 
 
 class ThreadRename(BaseModel):
@@ -680,6 +696,107 @@ def _save_active_turns(active_turns: dict[str, ActiveThreadTurn]) -> None:
     )
 
 
+def _load_turn_queues() -> dict[str, list[QueuedTurn]]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not TURN_QUEUE_FILE.exists():
+        return {}
+    payload = json.loads(TURN_QUEUE_FILE.read_text())
+    return {
+        thread_id: [QueuedTurn.model_validate(item) for item in items]
+        for thread_id, items in payload.items()
+    }
+
+
+def _save_turn_queues(queues: dict[str, list[QueuedTurn]]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    TURN_QUEUE_FILE.write_text(
+        json.dumps(
+            {
+                thread_id: [queued.model_dump() for queued in items]
+                for thread_id, items in queues.items()
+                if items
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _thread_queue(thread_id: str | None) -> list[QueuedTurn]:
+    if not thread_id:
+        return []
+    return _load_turn_queues().get(thread_id, [])
+
+
+def _thread_queue_depth(thread_id: str | None) -> int:
+    return len(_thread_queue(thread_id))
+
+
+def _enqueue_turn(
+    *,
+    thread_id: str,
+    project_id: str,
+    message: str,
+    sandbox: str | None = None,
+    approval_policy: str | None = None,
+    model: str | None = None,
+    source: str = "web",
+) -> QueuedTurn:
+    queues = _load_turn_queues()
+    queued = QueuedTurn(
+        id=uuid.uuid4().hex[:12],
+        thread_id=thread_id,
+        project_id=project_id,
+        message=message,
+        sandbox=sandbox,
+        approval_policy=approval_policy,
+        model=model,
+        source=source,
+        created_at=time.time(),
+    )
+    queues.setdefault(thread_id, []).append(queued)
+    _save_turn_queues(queues)
+    return queued
+
+
+def _pop_next_queued_turn(thread_id: str) -> QueuedTurn | None:
+    queues = _load_turn_queues()
+    items = queues.get(thread_id) or []
+    if not items:
+        return None
+    queued = items.pop(0)
+    if items:
+        queues[thread_id] = items
+    else:
+        queues.pop(thread_id, None)
+    _save_turn_queues(queues)
+    return queued
+
+
+def _pop_latest_queued_turn(thread_id: str) -> QueuedTurn | None:
+    queues = _load_turn_queues()
+    items = queues.get(thread_id) or []
+    if not items:
+        return None
+    queued = items.pop()
+    if items:
+        queues[thread_id] = items
+    else:
+        queues.pop(thread_id, None)
+    _save_turn_queues(queues)
+    return queued
+
+
+def _requeue_turn_front(queued: QueuedTurn) -> None:
+    queues = _load_turn_queues()
+    queues.setdefault(queued.thread_id, []).insert(0, queued)
+    _save_turn_queues(queues)
+
+
+def _thread_is_active(thread_id: str | None) -> bool:
+    return bool(thread_id and thread_id in _load_active_turns())
+
+
 def _mark_thread_active(
     thread_id: str | None,
     *,
@@ -708,11 +825,14 @@ def _mark_thread_active(
     _save_active_turns(active_turns)
 
 
-def _clear_thread_active(thread_id: str | None) -> None:
+def _clear_thread_active(thread_id: str | None, turn_id: str | None = None) -> None:
     if not thread_id:
         return
     active_turns = _load_active_turns()
-    if thread_id in active_turns:
+    active = active_turns.get(thread_id)
+    if active and turn_id and active.turn_id and active.turn_id != turn_id:
+        return
+    if active:
         active_turns.pop(thread_id, None)
         _save_active_turns(active_turns)
 
@@ -725,18 +845,148 @@ def _record_thread_activity(message: dict[str, Any]) -> None:
     if method in {"turn/started", "item/started"}:
         _mark_thread_active(thread_id, turn_id=turn_id)
     elif method in {"turn/completed", "turn/failed"}:
-        _clear_thread_active(thread_id)
+        if not IS_SHUTTING_DOWN:
+            _clear_thread_active(thread_id, turn_id=turn_id)
     elif method == "thread/status/changed":
         status_type = (params.get("status") or {}).get("type")
         if status_type == "active":
             _mark_thread_active(thread_id)
         elif status_type in {"idle", "systemError", "notLoaded"}:
-            _clear_thread_active(thread_id)
+            if not IS_SHUTTING_DOWN:
+                _clear_thread_active(thread_id)
+
+
+async def _publish_queue_status(thread_id: str) -> None:
+    await hub.publish(
+        {
+            "type": "queue.status",
+            "threadId": thread_id,
+            "queueDepth": _thread_queue_depth(thread_id),
+            "active": _thread_is_active(thread_id),
+        }
+    )
+
+
+async def _start_thread_turn_now(
+    thread_id: str,
+    *,
+    project: Project,
+    message: str,
+    sandbox: str | None,
+    approval_policy: str | None,
+    model: str | None = None,
+    source: str = "web",
+) -> dict[str, Any]:
+    await codex.request(
+        "thread/resume",
+        {
+            "threadId": thread_id,
+            **_project_params(
+                project,
+                {
+                    "sandbox": sandbox,
+                    "approvalPolicy": approval_policy,
+                },
+            ),
+        },
+    )
+    params: dict[str, Any] = {
+        "threadId": thread_id,
+        "input": [{"type": "text", "text": message, "text_elements": []}],
+        "cwd": project.path,
+    }
+    if model or project.model:
+        params["model"] = model or project.model
+    if approval_policy:
+        params["approvalPolicy"] = approval_policy
+    if sandbox:
+        params["sandboxPolicy"] = _sandbox_policy(sandbox, project.path)
+    response = await codex.request("turn/start", params)
+    _mark_thread_active(
+        thread_id,
+        turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
+        project_id=project.id,
+        sandbox=sandbox,
+        approval_policy=approval_policy,
+    )
+    _append_bot_event(
+        {
+            "type": "turn_started",
+            "thread_id": thread_id,
+            "project_id": project.id,
+            "source": source,
+        }
+    )
+    await _publish_queue_status(thread_id)
+    return response
+
+
+async def _drain_thread_queue(thread_id: str) -> None:
+    if not thread_id or _thread_is_active(thread_id):
+        await _publish_queue_status(thread_id)
+        return
+    queued = _pop_next_queued_turn(thread_id)
+    if not queued:
+        await _publish_queue_status(thread_id)
+        return
+    queued.attempts += 1
+    try:
+        project = _project(queued.project_id)
+        await _start_thread_turn_now(
+            thread_id,
+            project=project,
+            message=queued.message,
+            sandbox=queued.sandbox or project.sandbox,
+            approval_policy=queued.approval_policy or project.approval_policy,
+            model=queued.model,
+            source=f"queued:{queued.source}",
+        )
+        _append_bot_event(
+            {
+                "type": "queued_turn_started",
+                "thread_id": thread_id,
+                "queued_id": queued.id,
+                "remaining": _thread_queue_depth(thread_id),
+            }
+        )
+    except Exception as exc:
+        if queued.attempts < 3:
+            _requeue_turn_front(queued)
+        _append_bot_event(
+            {
+                "type": "queued_turn_failed",
+                "thread_id": thread_id,
+                "queued_id": queued.id,
+                "attempts": queued.attempts,
+                "error": str(exc),
+            }
+        )
+        await hub.publish(
+            {
+                "type": "queue.error",
+                "threadId": thread_id,
+                "queueDepth": _thread_queue_depth(thread_id),
+                "error": str(exc),
+            }
+        )
+    finally:
+        await _publish_queue_status(thread_id)
+
+
+def _schedule_queue_drain(thread_id: str | None) -> None:
+    if not thread_id:
+        return
+    task = QUEUE_DRAIN_TASKS.get(thread_id)
+    if task and not task.done():
+        return
+    QUEUE_DRAIN_TASKS[thread_id] = asyncio.create_task(_drain_thread_queue(thread_id))
 
 
 async def _resume_active_threads_after_startup() -> None:
     active_turns = _load_active_turns()
     if not active_turns:
+        for thread_id in _load_turn_queues():
+            _schedule_queue_drain(thread_id)
         return
     for thread_id, active in list(active_turns.items()):
         if active.resume_attempts >= 3:
@@ -762,34 +1012,18 @@ async def _resume_active_threads_after_startup() -> None:
         active_turns[thread_id] = active
         _save_active_turns(active_turns)
         try:
-            await codex.request(
-                "thread/resume",
-                {
-                    "threadId": thread_id,
-                    **_project_params(
-                        project,
-                        {
-                            "sandbox": sandbox,
-                            "approvalPolicy": approval_policy,
-                        },
-                    ),
-                },
-            )
-            response = await codex.request(
-                "turn/start",
-                {
-                    "threadId": thread_id,
-                    "input": [
-                        {
-                            "type": "text",
-                            "text": "codex-web was restarted while this thread was active. Continue the interrupted work from the latest context and report progress.",
-                            "text_elements": [],
-                        }
-                    ],
-                    "cwd": project.path,
-                    "approvalPolicy": approval_policy,
-                    "sandboxPolicy": _sandbox_policy(sandbox, project.path),
-                },
+            response = await _start_thread_turn_now(
+                thread_id,
+                project=project,
+                message=(
+                    "codex-web was restarted while this thread had an active turn. "
+                    "Continue the interrupted work from the latest available context. "
+                    "Do not restart from scratch; inspect the current workspace state, infer what was in progress, "
+                    "resume the next concrete step, and report only meaningful progress."
+                ),
+                sandbox=sandbox,
+                approval_policy=approval_policy,
+                source="restart-recovery",
             )
             _mark_thread_active(
                 thread_id,
@@ -801,6 +1035,8 @@ async def _resume_active_threads_after_startup() -> None:
             _append_bot_event({"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id})
         except Exception as exc:
             _append_bot_event({"type": "active_thread_resume_failed", "thread_id": thread_id, "error": str(exc)})
+    for thread_id in _load_turn_queues():
+        _schedule_queue_drain(thread_id)
 
 
 def _append_bot_event(event: dict[str, Any]) -> None:
@@ -1109,6 +1345,50 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         delivery = await _send_bot_details(binding)
         return {"ok": True, "threadId": binding.thread_id, "details": True, "delivery": delivery}
     prompt = _format_bot_prompt(message, provider, routed_text)
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+        queued = _enqueue_turn(
+            thread_id=binding.thread_id,
+            project_id=project.id,
+            message=prompt,
+            sandbox=binding.sandbox,
+            approval_policy=binding.approval_policy,
+            source=provider,
+        )
+        binding.updated_at = time.time()
+        _upsert_bot_binding(binding)
+        _append_bot_event(
+            {
+                "type": "inbound_turn_queued",
+                "provider": provider,
+                "external_conversation_id": message.external_conversation_id,
+                "message_id": message.message_id,
+                "thread_id": binding.thread_id,
+                "queued_id": queued.id,
+                "queue_depth": _thread_queue_depth(binding.thread_id),
+            }
+        )
+        await _publish_queue_status(binding.thread_id)
+        await hub.publish(
+            {
+                "type": "bot.inbound",
+                "provider": provider,
+                "externalConversationId": message.external_conversation_id,
+                "threadId": binding.thread_id,
+                "text": routed_text,
+                "senderId": message.sender_id,
+                "senderName": message.sender_name,
+                "messageId": message.message_id,
+                "queued": True,
+                "queueDepth": _thread_queue_depth(binding.thread_id),
+            }
+        )
+        return {
+            "ok": True,
+            "queued": True,
+            "threadId": binding.thread_id,
+            "queuedId": queued.id,
+            "queueDepth": _thread_queue_depth(binding.thread_id),
+        }
     for attempt in range(2):
         try:
             await codex.request(
@@ -2315,6 +2595,15 @@ class CodexAppServer:
                 continue
 
             _record_thread_activity(message)
+            method = message.get("method")
+            params = message.get("params") or {}
+            thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+            if method in {"turn/completed", "turn/failed"}:
+                _schedule_queue_drain(thread_id)
+            elif method == "thread/status/changed":
+                status_type = (params.get("status") or {}).get("type")
+                if status_type in {"idle", "systemError", "notLoaded"}:
+                    _schedule_queue_drain(thread_id)
             await _record_bot_outbound(message)
             await hub.publish({"type": "codex.event", "message": message})
 
@@ -2447,7 +2736,8 @@ async def _watchdog_loop() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global WATCHDOG_TASK
+    global WATCHDOG_TASK, IS_SHUTTING_DOWN
+    IS_SHUTTING_DOWN = False
     _load_projects()
     _dedupe_bot_integrations()
     try:
@@ -2464,7 +2754,8 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global WATCHDOG_TASK
+    global WATCHDOG_TASK, IS_SHUTTING_DOWN
+    IS_SHUTTING_DOWN = True
     _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
     if WATCHDOG_TASK:
         WATCHDOG_TASK.cancel()
@@ -2502,6 +2793,8 @@ async def status() -> dict[str, Any]:
         "pid": codex.proc.pid if codex.proc else None,
         "error": codex.last_error,
         "pendingApprovals": list(codex.pending_approvals.values()),
+        "activeTurns": len(_load_active_turns()),
+        "queuedTurns": sum(len(items) for items in _load_turn_queues().values()),
     }
 
 
@@ -2816,39 +3109,75 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
     effective_sandbox = payload.sandbox or remembered.sandbox or project.sandbox
     effective_approval_policy = payload.approval_policy or remembered.approval_policy or project.approval_policy
     _remember_thread_run_settings(thread_id, sandbox=effective_sandbox, approval_policy=effective_approval_policy)
-    await codex.request(
-        "thread/resume",
-        {
+    if _thread_is_active(thread_id) or _thread_queue_depth(thread_id):
+        queued = _enqueue_turn(
+            thread_id=thread_id,
+            project_id=project.id,
+            message=payload.message,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
+            model=payload.model,
+        )
+        await _publish_queue_status(thread_id)
+        return {
+            "queued": True,
+            "queuedId": queued.id,
+            "queueDepth": _thread_queue_depth(thread_id),
             "threadId": thread_id,
-            **_project_params(
-                project,
-                {
-                    "sandbox": effective_sandbox,
-                    "approvalPolicy": effective_approval_policy,
-                },
-            ),
-        },
-    )
-    params: dict[str, Any] = {
-        "threadId": thread_id,
-        "input": [{"type": "text", "text": payload.message, "text_elements": []}],
-        "cwd": project.path,
-    }
-    if payload.model or project.model:
-        params["model"] = payload.model or project.model
-    if effective_approval_policy:
-        params["approvalPolicy"] = effective_approval_policy
-    if effective_sandbox:
-        params["sandboxPolicy"] = _sandbox_policy(effective_sandbox, project.path)
-    response = await codex.request("turn/start", params)
-    _mark_thread_active(
+        }
+    return await _start_thread_turn_now(
         thread_id,
-        turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
-        project_id=project.id,
+        project=project,
+        message=payload.message,
         sandbox=effective_sandbox,
         approval_policy=effective_approval_policy,
+        model=payload.model,
     )
-    return response
+
+
+@app.get("/api/threads/{thread_id}/queue")
+async def thread_queue(thread_id: str) -> dict[str, Any]:
+    return {
+        "threadId": thread_id,
+        "active": _thread_is_active(thread_id),
+        "queueDepth": _thread_queue_depth(thread_id),
+        "queued": [
+            {
+                "id": queued.id,
+                "source": queued.source,
+                "createdAt": queued.created_at,
+                "attempts": queued.attempts,
+            }
+            for queued in _thread_queue(thread_id)
+        ],
+    }
+
+
+@app.post("/api/threads/{thread_id}/queue/steer")
+async def steer_queued_turn(thread_id: str) -> dict[str, Any]:
+    queued = _pop_latest_queued_turn(thread_id)
+    if not queued:
+        raise HTTPException(status_code=404, detail="No queued message for this thread")
+    if _thread_is_active(thread_id):
+        with contextlib.suppress(Exception):
+            await codex.request("turn/interrupt", {"threadId": thread_id})
+        _clear_thread_active(thread_id)
+    project = _project(queued.project_id)
+    response = await _start_thread_turn_now(
+        thread_id,
+        project=project,
+        message=queued.message,
+        sandbox=queued.sandbox or project.sandbox,
+        approval_policy=queued.approval_policy or project.approval_policy,
+        model=queued.model,
+        source=f"steer:{queued.source}",
+    )
+    return {
+        "ok": True,
+        "steeredId": queued.id,
+        "queueDepth": _thread_queue_depth(thread_id),
+        "turn": response.get("turn") if isinstance(response, dict) else None,
+    }
 
 
 @app.post("/api/threads/{thread_id}/settings")

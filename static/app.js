@@ -6,6 +6,7 @@ const state = {
   activeAgentMessage: null,
   approvals: new Map(),
   activeTurnsByThread: new Map(),
+  queuedDepthByThread: new Map(),
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
@@ -423,14 +424,39 @@ function renderApprovals() {
   });
 }
 
-function setWaiting(waiting, label = "Waiting for Codex") {
+function setWaiting(waiting, label = "Waiting for Codex", mode = waiting ? "waiting" : "idle") {
   state.waiting = waiting;
   const status = $("codex-status");
   const text = $("codex-status-text");
   if (!status || !text) return;
   status.classList.toggle("waiting", waiting);
+  status.classList.toggle("queued", mode === "queued");
   status.classList.toggle("idle", !waiting);
   text.textContent = waiting ? label : "Idle";
+  updateSteerButton();
+}
+
+function queuedDepth(threadId) {
+  return Number(state.queuedDepthByThread.get(threadId) || 0);
+}
+
+function setThreadQueueDepth(threadId, depth) {
+  if (!threadId) return;
+  const normalized = Math.max(0, Number(depth || 0));
+  if (normalized) {
+    state.queuedDepthByThread.set(threadId, normalized);
+  } else {
+    state.queuedDepthByThread.delete(threadId);
+  }
+  updateWaitingFromState();
+}
+
+function updateSteerButton() {
+  const button = $("steer-queued");
+  if (!button) return;
+  const depth = queuedDepth(state.threadId);
+  button.hidden = depth === 0;
+  button.textContent = depth > 1 ? `Steer now (${depth})` : "Steer now";
 }
 
 function ensureActiveTurns(threadId) {
@@ -481,10 +507,23 @@ function activeApprovalForThread(threadId) {
 function updateWaitingFromState() {
   if (activeApprovalForThread(state.threadId)) {
     setWaiting(true, "Waiting for approval");
+  } else if (queuedDepth(state.threadId)) {
+    setWaiting(true, queuedDepth(state.threadId) > 1 ? `Queued (${queuedDepth(state.threadId)})` : "Queued", "queued");
   } else if (isThreadBusy(state.threadId)) {
     setWaiting(true, "Waiting for Codex");
   } else {
     setWaiting(false);
+  }
+}
+
+async function refreshQueueStatus(threadId = state.threadId) {
+  if (!threadId) return;
+  try {
+    const status = await api(`/api/threads/${threadId}/queue`);
+    setThreadQueueDepth(threadId, status.queueDepth || 0);
+    if (status.active) markThreadBusy(threadId);
+  } catch (error) {
+    logEvent("queue.error", { message: error.message });
   }
 }
 
@@ -842,6 +881,7 @@ async function loadThread(threadId) {
   const data = await api(`/api/threads/${threadId}`);
   const thread = data.thread || data;
   hydrateThreadActivity(thread);
+  await refreshQueueStatus(threadId);
   renderThread(thread);
   renderThreads();
   renderTokenUsage();
@@ -865,12 +905,18 @@ async function sendPrompt() {
   if (!prompt) return;
   persistRunSettings();
   if (!state.threadId) await newThread();
+  const threadId = state.threadId;
+  const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   state.activeAgentMessage = null;
-  addMessage("You", prompt, "user");
-  markThreadBusy(state.threadId);
+  addMessage(willQueue ? "You (queued)" : "You", prompt, "user");
+  if (willQueue) {
+    setThreadQueueDepth(threadId, queuedDepth(threadId) + 1);
+  } else {
+    markThreadBusy(threadId);
+  }
   try {
-    await api(`/api/threads/${state.threadId}/turns`, {
+    const response = await api(`/api/threads/${threadId}/turns`, {
       method: "POST",
       body: JSON.stringify({
         message: prompt,
@@ -879,9 +925,29 @@ async function sendPrompt() {
         approval_policy: currentRunSettings().approvalPolicy,
       }),
     });
+    if (response.queued) {
+      setThreadQueueDepth(threadId, response.queueDepth || queuedDepth(threadId) || 1);
+    }
   } catch (error) {
-    clearThreadBusy(state.threadId);
+    if (willQueue) {
+      setThreadQueueDepth(threadId, Math.max(0, queuedDepth(threadId) - 1));
+    } else {
+      clearThreadBusy(threadId);
+    }
     addMessage("Error", error.message, "tool");
+  }
+}
+
+async function steerQueuedMessage() {
+  if (!state.threadId || !queuedDepth(state.threadId)) return;
+  const threadId = state.threadId;
+  markThreadBusy(threadId);
+  try {
+    const response = await api(`/api/threads/${threadId}/queue/steer`, { method: "POST" });
+    setThreadQueueDepth(threadId, response.queueDepth || 0);
+  } catch (error) {
+    addMessage("Queue", error.message, "tool");
+    await refreshQueueStatus(threadId);
   }
 }
 
@@ -920,10 +986,24 @@ function connectEvents() {
 function handleEvent(event) {
   if (event.type === "bot.inbound") {
     if (event.threadId === state.threadId) {
-      addMessage("You", event.text || "", "user");
-      setWaiting(true, "Waiting for Codex");
+      addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user");
+      if (event.queued) {
+        setThreadQueueDepth(event.threadId, event.queueDepth || 1);
+      } else {
+        setWaiting(true, "Waiting for Codex");
+      }
     }
     refresh().catch(console.error);
+    return;
+  }
+  if (event.type === "queue.status") {
+    setThreadQueueDepth(event.threadId, event.queueDepth || 0);
+    if (event.active) markThreadBusy(event.threadId);
+    return;
+  }
+  if (event.type === "queue.error") {
+    setThreadQueueDepth(event.threadId, event.queueDepth || 0);
+    if (event.threadId === state.threadId) addMessage("Queue", event.error || "Queued message failed.", "tool");
     return;
   }
   if (event.type === "approval.request") {
@@ -1132,6 +1212,7 @@ function escapeHtml(value) {
 $("refresh").addEventListener("click", refresh);
 $("new-thread").addEventListener("click", newThread);
 $("send").addEventListener("click", sendPrompt);
+$("steer-queued").addEventListener("click", steerQueuedMessage);
 $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });
