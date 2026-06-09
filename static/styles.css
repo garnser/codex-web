@@ -498,14 +498,17 @@ section {
   cursor: pointer;
 }
 
-.thread-title-line {
+.item .thread-title-line {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
+  margin-top: 0;
+  color: var(--text);
+  font-size: inherit;
 }
 
-.thread-title-line strong {
+.item .thread-title-line strong {
   min-width: 0;
 }
 

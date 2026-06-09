@@ -433,7 +433,15 @@ function renderProjects() {
 
 function renderThreads() {
   $("threads").innerHTML = "";
-  const threads = state.threads?.data || state.threads?.threads || state.threads || [];
+  const rawThreads = state.threads?.data || state.threads?.threads || state.threads || [];
+  const primaryThreadIds = new Set(state.botBindings
+    .filter((binding) => binding.project_id === state.projectId && binding.is_master)
+    .map((binding) => binding.thread_id));
+  const threads = [...rawThreads].sort((left, right) => {
+    const primaryDelta = Number(primaryThreadIds.has(right.id)) - Number(primaryThreadIds.has(left.id));
+    if (primaryDelta) return primaryDelta;
+    return (right.updatedAt || 0) - (left.updatedAt || 0);
+  });
   threads.forEach((thread) => {
     const item = document.createElement("div");
     const title = thread.name || thread.preview || "Untitled thread";
@@ -443,11 +451,7 @@ function renderThreads() {
     const slackIconMarkup = slackIcon
       ? `<span class="slack-thread-icon" title="${escapeHtml(`Slack icon ${slackIcon}`)}" aria-label="${escapeHtml(`Slack icon ${slackIcon}`)}">${escapeHtml(slackIconGlyph(slackIcon))}</span>`
       : "";
-    const isPrimary = state.botBindings.some((binding) => (
-      binding.project_id === state.projectId
-      && binding.thread_id === thread.id
-      && binding.is_master
-    ));
+    const isPrimary = primaryThreadIds.has(thread.id);
     const primaryChannel = state.botBindings.find((binding) => (
       binding.project_id === state.projectId
       && binding.thread_id === thread.id

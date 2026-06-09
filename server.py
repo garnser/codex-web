@@ -10,8 +10,6 @@ import re
 import socket
 import subprocess
 import time
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,247 +19,61 @@ from websockets.exceptions import ConnectionClosed
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+
+from codex_web.events import EventHub
+from codex_web.models import (
+    ActiveThreadTurn,
+    ApprovalDecision,
+    ApprovalSlackMessage,
+    BotBinding,
+    BotBindingCreate,
+    BotConnection,
+    BotConnectionCreate,
+    BotInboundMessage,
+    BotReplyTarget,
+    BotThreadDetail,
+    IndexedThread,
+    Project,
+    ProjectCreate,
+    QueuedTurn,
+    ThreadPrimaryChannelUpdate,
+    ThreadPrimaryUpdate,
+    ThreadRename,
+    ThreadRunSettings,
+    TurnCreate,
+)
+from codex_web.paths import (
+    ACTIVE_TURNS_FILE,
+    APPROVAL_MESSAGES_FILE,
+    BOT_DELIVERY_TARGETS_FILE,
+    BOT_DETAILS_FILE,
+    BOT_REPLY_TARGETS_FILE,
+    BOTS_BINDINGS_FILE,
+    BOTS_CONNECTIONS_FILE,
+    BOTS_EVENTS_FILE,
+    DATA_DIR,
+    PROJECTS_FILE,
+    SLACK_RELAY_NOTICE,
+    SLACK_THREAD_ICONS_FILE,
+    STATIC_DIR,
+    THREAD_INDEX_FILE,
+    THREAD_SETTINGS_FILE,
+    TURN_QUEUE_FILE,
+)
+from codex_web.providers import (
+    get_json as _get_json,
+    post_slack_message as _post_slack_message,
+    post_telegram_message as _post_telegram_message,
+    slack_socket_url as _slack_socket_url,
+    update_slack_message as _update_slack_message,
+)
 
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-PROJECTS_FILE = DATA_DIR / "projects.json"
-BOTS_CONNECTIONS_FILE = DATA_DIR / "bot_connections.json"
-BOTS_BINDINGS_FILE = DATA_DIR / "bot_bindings.json"
-BOTS_EVENTS_FILE = DATA_DIR / "bot_events.jsonl"
-BOT_REPLY_TARGETS_FILE = DATA_DIR / "bot_reply_targets.json"
-BOT_DELIVERY_TARGETS_FILE = DATA_DIR / "bot_delivery_targets.json"
-BOT_DETAILS_FILE = DATA_DIR / "bot_details.json"
-APPROVAL_MESSAGES_FILE = DATA_DIR / "approval_messages.json"
-THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
-THREAD_SETTINGS_FILE = DATA_DIR / "thread_settings.json"
-ACTIVE_TURNS_FILE = DATA_DIR / "active_turns.json"
-TURN_QUEUE_FILE = DATA_DIR / "queued_turns.json"
-SLACK_THREAD_ICONS_FILE = DATA_DIR / "slack_thread_icons.json"
-STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
 IS_SHUTTING_DOWN = False
-SLACK_RELAY_NOTICE = (
-    "Slack relay rule: do not use Slack tools, Slack connectors, MCP Slack apps, or any direct Slack API calls in this "
-    "turn. Write the Slack-facing update as a normal agent response instead; codex-web will relay it through the "
-    "configured Slack bot with the correct thread name and icon impersonation. If a Slack handoff or channel update is "
-    "needed, include that handoff text in your response rather than posting it yourself."
-)
-
-
-class Project(BaseModel):
-    id: str
-    name: str
-    path: str
-    model: str | None = None
-    sandbox: str = "workspace-write"
-    approval_policy: str = "on-request"
-
-
-class ProjectCreate(BaseModel):
-    name: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    model: str | None = None
-    sandbox: str = "workspace-write"
-    approval_policy: str = "on-request"
-
-
-class TurnCreate(BaseModel):
-    message: str = Field(min_length=1)
-    project_id: str | None = None
-    model: str | None = None
-    approval_policy: str | None = None
-    sandbox: str | None = None
-
-
-class ApprovalDecision(BaseModel):
-    decision: str
-
-
-class ThreadPrimaryUpdate(BaseModel):
-    primary: bool = True
-    project_id: str = "home"
-
-
-class ThreadPrimaryChannelUpdate(BaseModel):
-    project_id: str = "home"
-    external_conversation_id: str | None = None
-    provider: str = "slack"
-
-
-class ThreadRunSettings(BaseModel):
-    sandbox: str | None = None
-    approval_policy: str | None = None
-
-
-class BotReplyTarget(BaseModel):
-    thread_id: str
-    provider: str
-    external_conversation_id: str
-    external_thread_id: str | None = None
-    message_id: str | None = None
-    updated_at: float
-
-
-class ActiveThreadTurn(BaseModel):
-    thread_id: str
-    turn_id: str | None = None
-    project_id: str | None = None
-    sandbox: str | None = None
-    approval_policy: str | None = None
-    source: str | None = None
-    reply_target: BotReplyTarget | None = None
-    started_at: float
-    updated_at: float
-    resume_attempts: int = 0
-    last_resume_at: float | None = None
-
-
-class QueuedTurn(BaseModel):
-    id: str
-    thread_id: str
-    project_id: str
-    message: str
-    sandbox: str | None = None
-    approval_policy: str | None = None
-    model: str | None = None
-    source: str = "web"
-    reply_target: BotReplyTarget | None = None
-    attempts: int = 0
-    created_at: float
-
-
-class ThreadRename(BaseModel):
-    name: str = Field(min_length=1)
-
-
-class IndexedThread(BaseModel):
-    id: str
-    name: str
-    cwd: str | None = None
-    path: str | None = None
-    updatedAt: float | None = None
-
-
-class BotConnection(BaseModel):
-    id: str
-    provider: str
-    name: str
-    project_id: str = "home"
-    bot_token: str | None = None
-    slack_app_token: str | None = None
-    signing_secret: str | None = None
-    webhook_secret: str | None = None
-    default_external_conversation_id: str | None = None
-    default_external_name: str | None = None
-    telegram_update_offset: int | None = None
-    created_at: float
-    updated_at: float
-
-
-class BotConnectionCreate(BaseModel):
-    id: str | None = None
-    provider: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    project_id: str = "home"
-    bot_token: str | None = None
-    slack_app_token: str | None = None
-    signing_secret: str | None = None
-    webhook_secret: str | None = None
-    default_external_conversation_id: str | None = None
-    default_external_name: str | None = None
-
-
-class BotBinding(BaseModel):
-    id: str
-    connection_id: str | None = None
-    provider: str
-    external_conversation_id: str
-    thread_id: str
-    project_id: str = "home"
-    external_name: str | None = None
-    thread_name: str | None = None
-    route_prefix: str | None = None
-    is_master: bool = False
-    is_primary_channel: bool = False
-    post_in_thread: bool = False
-    sandbox: str = "read-only"
-    approval_policy: str = "on-request"
-    created_at: float
-    updated_at: float
-
-
-class BotThreadDetail(BaseModel):
-    thread_id: str
-    item_type: str
-    title: str
-    text: str
-    created_at: float
-
-
-class ApprovalSlackMessage(BaseModel):
-    request_id: str
-    connection_id: str
-    channel: str
-    message_ts: str
-    context: str
-    thread_id: str | None = None
-    created_at: float
-
-
-class BotBindingCreate(BaseModel):
-    connection_id: str | None = None
-    provider: str | None = None
-    external_conversation_id: str | None = None
-    thread_id: str | None = None
-    project_id: str = "home"
-    external_name: str | None = None
-    thread_name: str | None = None
-    route_prefix: str | None = None
-    is_master: bool = False
-    is_primary_channel: bool = False
-    post_in_thread: bool = False
-    sandbox: str = "read-only"
-    approval_policy: str = "on-request"
-
-
-class BotInboundMessage(BaseModel):
-    provider: str = Field(min_length=1)
-    external_conversation_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    connection_id: str | None = None
-    sender_id: str | None = None
-    sender_name: str | None = None
-    project_id: str | None = None
-    external_name: str | None = None
-    external_thread_id: str | None = None
-    message_id: str | None = None
-
-
-class EventHub:
-    def __init__(self) -> None:
-        self._clients: set[WebSocket] = set()
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self._clients.add(websocket)
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        self._clients.discard(websocket)
-
-    async def publish(self, event: dict[str, Any]) -> None:
-        dead: list[WebSocket] = []
-        for websocket in list(self._clients):
-            try:
-                await websocket.send_json(event)
-            except Exception:
-                dead.append(websocket)
-        for websocket in dead:
-            self.disconnect(websocket)
 
 
 hub = EventHub()
@@ -1455,7 +1267,10 @@ def _remove_bot_binding(binding_id: str) -> None:
 
 
 def _channel_label(channel_id: str, name: str | None = None) -> str:
-    return f"#{name}" if name else channel_id
+    normalized = (name or "").strip()
+    if not normalized:
+        return channel_id
+    return normalized if normalized.startswith("#") else f"#{normalized}"
 
 
 def _known_bot_channels(project_id: str) -> list[dict[str, str]]:
@@ -1468,7 +1283,10 @@ def _known_bot_channels(project_id: str) -> list[dict[str, str]]:
             "provider": connection.provider,
             "id": connection.default_external_conversation_id,
             "name": connection.default_external_name or "",
-            "label": connection.default_external_name or connection.default_external_conversation_id,
+            "label": _channel_label(
+                connection.default_external_conversation_id,
+                connection.default_external_name,
+            ),
         }
     for binding in _load_bot_bindings():
         if binding.project_id != project_id:
@@ -1480,10 +1298,38 @@ def _known_bot_channels(project_id: str) -> list[dict[str, str]]:
                 "provider": binding.provider,
                 "id": binding.external_conversation_id,
                 "name": binding.external_name or "",
-                "label": binding.external_name or binding.external_conversation_id,
+                "label": _channel_label(binding.external_conversation_id, binding.external_name),
             },
         )
     return sorted(channels.values(), key=lambda item: (item["provider"], item["label"]))
+
+
+def _slack_channel_for_connection(connection: BotConnection, channel_id: str) -> dict[str, str] | None:
+    if not connection.bot_token:
+        return None
+    response = _get_json(
+        f"https://slack.com/api/conversations.info?channel={channel_id}",
+        {"Authorization": f"Bearer {connection.bot_token}"},
+    )
+    if not response.get("ok"):
+        return None
+    channel = response.get("channel") or {}
+    name = channel.get("name") or channel.get("name_normalized")
+    if not name:
+        return None
+    return {
+        "provider": "slack",
+        "id": channel_id,
+        "name": name,
+        "label": _channel_label(channel_id, name),
+    }
+
+
+def _channel_needs_name(channel: dict[str, str]) -> bool:
+    channel_id = channel.get("id") or ""
+    name = channel.get("name") or ""
+    label = channel.get("label") or ""
+    return not name or name == channel_id or label in {channel_id, f"#{channel_id}"}
 
 
 def _slack_channels_for_connection(connection: BotConnection) -> list[dict[str, str]]:
@@ -1528,6 +1374,13 @@ def _bot_channels(project_id: str) -> list[dict[str, str]]:
         with contextlib.suppress(Exception):
             for channel in _slack_channels_for_connection(connection):
                 channels[(channel["provider"], channel["id"])] = channel
+        for channel in list(channels.values()):
+            if channel["provider"] != "slack" or not _channel_needs_name(channel):
+                continue
+            with contextlib.suppress(Exception):
+                resolved = _slack_channel_for_connection(connection, channel["id"])
+                if resolved:
+                    channels[(resolved["provider"], resolved["id"])] = resolved
     result = sorted(channels.values(), key=lambda item: (item["provider"], item["label"]))
     BOT_CHANNEL_CACHE[project_id] = (time.time(), result)
     return result
@@ -2401,87 +2254,6 @@ async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread:
     return {"sent": False, "reason": "unsupported_provider"}
 
 
-def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-    body = json.dumps(payload).encode()
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", **(headers or {})},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
-
-
-def _post_slack_message(
-    token: str,
-    channel: str,
-    text: str,
-    *,
-    username: str | None = None,
-    icon_emoji: str | None = None,
-    thread_ts: str | None = None,
-    blocks: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"channel": channel, "text": text}
-    if username:
-        payload["username"] = username[:80]
-    if icon_emoji:
-        payload["icon_emoji"] = icon_emoji
-    if thread_ts:
-        payload["thread_ts"] = thread_ts
-    if blocks:
-        payload["blocks"] = blocks
-    response = _post_json(
-        "https://slack.com/api/chat.postMessage",
-        payload,
-        {"Authorization": f"Bearer {token}"},
-    )
-    if not response.get("ok") and (username or icon_emoji):
-        fallback_payload = {"channel": channel, "text": text}
-        if thread_ts:
-            fallback_payload["thread_ts"] = thread_ts
-        if blocks:
-            fallback_payload["blocks"] = blocks
-        response = _post_json(
-            "https://slack.com/api/chat.postMessage",
-            fallback_payload,
-            {"Authorization": f"Bearer {token}"},
-        )
-    return {"sent": bool(response.get("ok")), "providerResponse": response}
-
-
-def _update_slack_message(
-    token: str,
-    channel: str,
-    ts: str,
-    text: str,
-    *,
-    blocks: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
-    if blocks:
-        payload["blocks"] = blocks
-    response = _post_json(
-        "https://slack.com/api/chat.update",
-        payload,
-        {"Authorization": f"Bearer {token}"},
-    )
-    return {"sent": bool(response.get("ok")), "providerResponse": response}
-
-
-def _post_telegram_message(token: str, chat_id: str, text: str) -> dict[str, Any]:
-    response = _post_json(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        {"chat_id": chat_id, "text": text},
-    )
-    return {"sent": bool(response.get("ok")), "providerResponse": response}
-
-
 def _request_id_value(request_id: int | str) -> int | str:
     return int(request_id) if isinstance(request_id, str) and request_id.isdigit() else request_id
 
@@ -2773,27 +2545,6 @@ async def _handle_slack_interaction(connection: BotConnection, payload: dict[str
                 "user": user,
             }
         )
-
-
-def _get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers=headers or {}, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
-
-
-def _slack_socket_url(app_token: str) -> str:
-    response = _post_json(
-        "https://slack.com/api/apps.connections.open",
-        {},
-        {"Authorization": f"Bearer {app_token}"},
-    )
-    if not response.get("ok") or not response.get("url"):
-        raise RuntimeError(f"Slack Socket Mode connection failed: {response}")
-    return str(response["url"])
 
 
 def _set_runtime_status(connection: BotConnection, status: str, **details: Any) -> None:
