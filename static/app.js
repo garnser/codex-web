@@ -24,6 +24,67 @@ const THEME_KEY = "codex-web-theme";
 const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
+const SLACK_ICON_MAP = {
+  ":large_blue_circle:": "🔵",
+  ":large_green_circle:": "🟢",
+  ":large_orange_circle:": "🟠",
+  ":large_purple_circle:": "🟣",
+  ":large_yellow_circle:": "🟡",
+  ":red_circle:": "🔴",
+  ":black_circle:": "⚫",
+  ":white_circle:": "⚪",
+  ":brown_circle:": "🟤",
+  ":large_red_square:": "🟥",
+  ":large_blue_square:": "🟦",
+  ":large_green_square:": "🟩",
+  ":large_yellow_square:": "🟨",
+  ":large_orange_square:": "🟧",
+  ":large_purple_square:": "🟪",
+  ":large_brown_square:": "🟫",
+  ":black_large_square:": "⬛",
+  ":white_large_square:": "⬜",
+  ":small_blue_diamond:": "🔹",
+  ":small_orange_diamond:": "🔸",
+  ":large_blue_diamond:": "🔷",
+  ":large_orange_diamond:": "🔶",
+  ":small_red_triangle:": "🔺",
+  ":small_red_triangle_down:": "🔻",
+  ":eight_pointed_black_star:": "✴",
+  ":six_pointed_star:": "🔯",
+  ":star:": "⭐",
+  ":sparkles:": "✨",
+  ":zap:": "⚡",
+  ":fire:": "🔥",
+  ":snowflake:": "❄",
+  ":sunny:": "☀",
+  ":crescent_moon:": "🌙",
+  ":cloud:": "☁",
+  ":umbrella:": "☂",
+  ":coffee:": "☕",
+  ":rocket:": "🚀",
+  ":satellite:": "🛰",
+  ":gear:": "⚙",
+  ":mag:": "🔍",
+  ":lock:": "🔒",
+  ":key:": "🔑",
+  ":bell:": "🔔",
+  ":bookmark:": "🔖",
+  ":pushpin:": "📌",
+  ":paperclip:": "📎",
+  ":scissors:": "✂",
+  ":hammer:": "🔨",
+  ":wrench:": "🔧",
+  ":pick:": "⛏",
+  ":shield:": "🛡",
+  ":link:": "🔗",
+  ":package:": "📦",
+  ":battery:": "🔋",
+  ":bulb:": "💡",
+  ":hourglass:": "⌛",
+  ":watch:": "⌚",
+  ":compass:": "🧭",
+  ":anchor:": "⚓",
+};
 
 function preferredTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -31,6 +92,21 @@ function preferredTheme() {
 
 function currentTheme() {
   return document.documentElement.dataset.theme || localStorage.getItem(THEME_KEY) || preferredTheme();
+}
+
+function slackIconForThread(threadId) {
+  const bindings = state.botBindings.filter((binding) => (
+    binding.project_id === state.projectId
+    && binding.thread_id === threadId
+    && binding.provider === "slack"
+    && binding.slack_icon
+  ));
+  return (bindings.find((binding) => binding.is_primary_channel) || bindings[0])?.slack_icon || "";
+}
+
+function slackIconGlyph(iconCode) {
+  if (!iconCode) return "";
+  return SLACK_ICON_MAP[iconCode] || iconCode.replaceAll(":", "").slice(0, 2).toUpperCase();
 }
 
 function applyTheme(theme) {
@@ -363,6 +439,10 @@ function renderThreads() {
     const title = thread.name || thread.preview || "Untitled thread";
     const updated = thread.updatedAt ? new Date(thread.updatedAt * 1000).toLocaleString() : "";
     const expanded = isItemExpanded("thread", thread.id);
+    const slackIcon = slackIconForThread(thread.id);
+    const slackIconMarkup = slackIcon
+      ? `<span class="slack-thread-icon" title="${escapeHtml(`Slack icon ${slackIcon}`)}" aria-label="${escapeHtml(`Slack icon ${slackIcon}`)}">${escapeHtml(slackIconGlyph(slackIcon))}</span>`
+      : "";
     const isPrimary = state.botBindings.some((binding) => (
       binding.project_id === state.projectId
       && binding.thread_id === thread.id
@@ -380,7 +460,7 @@ function renderThreads() {
     item.innerHTML = `
       <div class="item-header">
         <div class="item-main">
-          <strong>${escapeHtml(title)}</strong>
+          <span class="thread-title-line">${slackIconMarkup}<strong>${escapeHtml(title)}</strong></span>
           <span>${escapeHtml(updated || "No activity yet")}</span>
         </div>
         <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>

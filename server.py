@@ -45,6 +45,12 @@ BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
 IS_SHUTTING_DOWN = False
+SLACK_RELAY_NOTICE = (
+    "Slack relay rule: do not use Slack tools, Slack connectors, MCP Slack apps, or any direct Slack API calls in this "
+    "turn. Write the Slack-facing update as a normal agent response instead; codex-web will relay it through the "
+    "configured Slack bot with the correct thread name and icon impersonation. If a Slack handoff or channel update is "
+    "needed, include that handoff text in your response rather than posting it yourself."
+)
 
 
 class Project(BaseModel):
@@ -970,6 +976,23 @@ def _thread_is_active(thread_id: str | None) -> bool:
     return bool(thread_id and thread_id in _load_active_turns())
 
 
+def _with_relay_guard(message: str, source: str | None) -> str:
+    normalized_source = (source or "").lower()
+    if "slack" not in normalized_source:
+        return message
+    if SLACK_RELAY_NOTICE in message:
+        return message
+    return f"{SLACK_RELAY_NOTICE}\n\n{message}"
+
+
+def _turn_source_for_relay_guard(thread_id: str, source: str | None) -> str | None:
+    if "slack" in (source or "").lower():
+        return source
+    if any(binding.provider == "slack" for binding in _bindings_for_thread(thread_id)):
+        return f"{source or 'web'}:slack-bound"
+    return source
+
+
 def _mark_thread_active(
     thread_id: str | None,
     *,
@@ -1079,6 +1102,7 @@ async def _start_thread_turn_now(
         params["approvalPolicy"] = approval_policy
     if sandbox:
         params["sandboxPolicy"] = _sandbox_policy(sandbox, project.path)
+    params["input"][0]["text"] = _with_relay_guard(params["input"][0]["text"], _turn_source_for_relay_guard(thread_id, source))
     response = await codex.request("turn/start", params)
     _mark_thread_active(
         thread_id,
@@ -1266,6 +1290,41 @@ def _bindings_for_project(provider: str, project_id: str) -> list[BotBinding]:
     ]
 
 
+def _primary_binding_for_project(
+    provider: str,
+    project_id: str,
+    external_conversation_id: str | None = None,
+) -> BotBinding | None:
+    masters = [binding for binding in _bindings_for_project(provider, project_id) if binding.is_master]
+    if not masters:
+        return None
+    preferred_thread = next(
+        (
+            binding.thread_id
+            for binding in masters
+            if (_binding_prefix(binding) or "").strip().lower() in {"orchestrator", "codex"}
+        ),
+        None,
+    )
+    if not preferred_thread:
+        thread_ids = {binding.thread_id for binding in masters}
+        if len(thread_ids) == 1:
+            preferred_thread = next(iter(thread_ids))
+    if not preferred_thread:
+        preferred_thread = max(masters, key=lambda binding: binding.updated_at).thread_id
+    same_channel = [
+        binding
+        for binding in _bindings_for_project(provider, project_id)
+        if binding.thread_id == preferred_thread and binding.external_conversation_id == external_conversation_id
+    ]
+    if same_channel:
+        return same_channel[0]
+    for binding in masters:
+        if binding.thread_id == preferred_thread:
+            return binding
+    return None
+
+
 def _binding_for_external_target(
     provider: str,
     project_id: str,
@@ -1337,12 +1396,12 @@ def _cross_channel_binding_for_message(
         return next(iter(matches.values()))[0], next(iter(matches.values()))[1], False
     if len(matches) > 1:
         return None, message.text, True
-    if current_bindings:
-        return None, message.text, False
-    masters = [binding for binding in candidates if binding.is_master]
-    if len(masters) == 1:
-        return masters[0], message.text, False
-    return None, message.text, len(masters) > 1
+    primary = _primary_binding_for_project(provider, project_id, message.external_conversation_id)
+    if primary:
+        return primary, message.text, False
+    if len(current_bindings) == 1:
+        return current_bindings[0], message.text, False
+    return None, message.text, False
 
 
 def _fallback_binding_for_stale(binding: BotBinding, message: BotInboundMessage) -> BotBinding | None:
@@ -1369,7 +1428,7 @@ def _upsert_bot_binding(new_binding: BotBinding) -> BotBinding:
         if (
             new_binding.is_master
             and binding.provider == new_binding.provider
-            and binding.external_conversation_id == new_binding.external_conversation_id
+            and binding.project_id == new_binding.project_id
             and binding.thread_id != new_binding.thread_id
         ):
             binding.is_master = False
@@ -1815,7 +1874,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                 "turn/start",
                 {
                     "threadId": binding.thread_id,
-                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                    "input": [{"type": "text", "text": _with_relay_guard(prompt, provider), "text_elements": []}],
                     "cwd": project.path,
                     "approvalPolicy": binding.approval_policy,
                     "sandboxPolicy": _sandbox_policy(binding.sandbox, project.path),
@@ -1922,8 +1981,6 @@ def _resolve_bot_binding(bindings: list[BotBinding], message: BotInboundMessage)
         stripped = _strip_prefix(text, prefix)
         if stripped is not None:
             return binding, stripped, False
-    if len(bindings) == 1:
-        return bindings[0], text, False
     masters = [binding for binding in bindings if binding.is_master]
     if len(masters) == 1:
         return masters[0], text, False
@@ -3452,7 +3509,14 @@ async def save_bot_connection(payload: BotConnectionCreate) -> dict[str, Any]:
 
 @app.get("/api/bots/bindings")
 async def list_bot_bindings() -> list[dict[str, Any]]:
-    return [binding.model_dump() for binding in _load_bot_bindings()]
+    results: list[dict[str, Any]] = []
+    for binding in _load_bot_bindings():
+        item = binding.model_dump()
+        if binding.provider == "slack":
+            item["slack_icon"] = _slack_reply_icon(binding)
+            item["slack_username"] = _slack_reply_username(binding)
+        results.append(item)
+    return results
 
 
 @app.get("/api/bots/channels")
