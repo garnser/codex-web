@@ -981,6 +981,7 @@ select {
 }
 
 .messages {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 22px;
@@ -990,7 +991,10 @@ select {
 }
 
 .message {
+  box-sizing: border-box;
+  min-width: 0;
   max-width: min(980px, 88%);
+  overflow: hidden;
   border: 1px solid var(--line);
   background: var(--surface);
   border-radius: 12px;
@@ -1082,6 +1086,7 @@ select {
 }
 
 .message.command-message {
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   align-self: stretch;
@@ -1091,6 +1096,7 @@ select {
 
 .file-change-details,
 .command-details {
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   display: grid;
@@ -1156,14 +1162,18 @@ select {
 .file-change-details pre,
 .command-details pre {
   box-sizing: border-box;
+  display: block;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
+  max-height: min(52vh, 520px);
   margin: 10px 0 0;
   border: 1px solid var(--code-border);
   border-radius: var(--radius);
   background: var(--code);
   color: var(--code-text);
   padding: 13px;
+  overflow: auto;
   overflow-x: hidden;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

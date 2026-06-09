@@ -722,6 +722,12 @@ function formatMessageTimestamp(value) {
   return date.toLocaleString();
 }
 
+function truncateCommandOutput(text, limit = 60000) {
+  const value = String(text || "");
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n\n... truncated ${value.length - limit} characters`;
+}
+
 function itemTimestamp(item = {}, turn = {}) {
   return messageTimestamp(
     item.createdAt,
@@ -861,7 +867,9 @@ function addCommandMessage(label, command, output = "", open = false, timestamp 
   const pre = message.querySelector("pre");
   summary.querySelector("span").textContent = summaryText;
   summary.title = summaryText;
-  pre.textContent = hasOutput ? `${command || ""}\n\n${output}`.trim() : command || "No command content was provided.";
+  pre.textContent = hasOutput
+    ? truncateCommandOutput(`${command || ""}\n\n${output}`.trim())
+    : truncateCommandOutput(command || "No command content was provided.");
   details.addEventListener("toggle", () => {
     if (!hasOutput) return;
     summary.querySelector("small").textContent = details.open ? "Collapse output" : "Expand output";
