@@ -12,7 +12,7 @@ const state = {
   accountRateLimits: null,
   botConnections: [],
   botIntegrationTarget: null,
-  openItemMenu: null,
+  expandedItems: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -254,14 +254,6 @@ function applySidebarPreference(preference = loadSidebarPreference()) {
 function setupSidebarControls() {
   const toggle = $("sidebar-toggle");
   const resizer = $("sidebar-resizer");
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest(".item-menu")) closeItemMenu();
-  });
-  window.addEventListener("resize", () => {
-    if (state.openItemMenu) positionItemMenu(state.openItemMenu);
-  });
-  $("projects").addEventListener("scroll", closeItemMenu);
-  $("threads").addEventListener("scroll", closeItemMenu);
   toggle.addEventListener("click", () => {
     const preference = loadSidebarPreference();
     preference.collapsed = !preference.collapsed;
@@ -291,22 +283,39 @@ function setupSidebarControls() {
   });
 }
 
+function itemExpansionKey(scope, id) {
+  return `${scope}:${id}`;
+}
+
+function isItemExpanded(scope, id) {
+  return state.expandedItems.has(itemExpansionKey(scope, id));
+}
+
+function toggleItemExpanded(scope, id) {
+  const key = itemExpansionKey(scope, id);
+  if (state.expandedItems.has(key)) {
+    state.expandedItems.delete(key);
+  } else {
+    state.expandedItems.add(key);
+  }
+}
+
 function renderProjects() {
-  closeItemMenu();
   $("projects").innerHTML = "";
   state.projects.forEach((project) => {
     const item = document.createElement("div");
-    item.className = `item ${project.id === state.projectId ? "active" : ""}`;
+    const expanded = isItemExpanded("project", project.id);
+    item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
-      <div class="item-main">
-        <strong>${escapeHtml(project.name)}</strong>
-        <span>${escapeHtml(project.path)}</span>
-      </div>
-      <div class="item-menu">
-        <button type="button" class="item-menu-trigger" title="Project actions" aria-label="Project actions">...</button>
-        <div class="item-menu-popover">
-          <button type="button" data-action="bot">Bot Integration</button>
+      <div class="item-header">
+        <div class="item-main">
+          <strong>${escapeHtml(project.name)}</strong>
+          <span>${escapeHtml(project.path)}</span>
         </div>
+        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
+      </div>
+      <div class="item-actions" aria-label="Project actions" ${expanded ? "" : "hidden"}>
+        <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", async () => {
@@ -314,45 +323,52 @@ function renderProjects() {
       applyRunSettings();
       await refresh();
     });
+    item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleItemExpanded("project", project.id);
+      renderProjects();
+    });
     item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
       event.stopPropagation();
-      closeItemMenu();
       openBotIntegration({
         scope: "project",
         projectId: project.id,
         title: project.name,
       });
     });
-    item.querySelector(".item-menu-trigger").addEventListener("click", (event) => toggleItemMenu(event.currentTarget));
     $("projects").appendChild(item);
   });
 }
 
 function renderThreads() {
-  closeItemMenu();
   $("threads").innerHTML = "";
   const threads = state.threads?.data || state.threads?.threads || state.threads || [];
   threads.forEach((thread) => {
     const item = document.createElement("div");
-    item.className = `item ${thread.id === state.threadId ? "active" : ""}`;
     const title = thread.name || thread.preview || "Untitled thread";
     const updated = thread.updatedAt ? new Date(thread.updatedAt * 1000).toLocaleString() : "";
+    const expanded = isItemExpanded("thread", thread.id);
+    item.className = `item ${thread.id === state.threadId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
-      <div class="item-main">
-        <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(updated || "No activity yet")}</span>
-      </div>
-      <div class="item-menu">
-        <button type="button" class="item-menu-trigger" title="Thread actions" aria-label="Thread actions">...</button>
-        <div class="item-menu-popover">
-          <button type="button" data-action="bot">Bot Integration</button>
+      <div class="item-header">
+        <div class="item-main">
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(updated || "No activity yet")}</span>
         </div>
+        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
+      </div>
+      <div class="item-actions" aria-label="Thread actions" ${expanded ? "" : "hidden"}>
+        <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", () => loadThread(thread.id));
+    item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleItemExpanded("thread", thread.id);
+      renderThreads();
+    });
     item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
       event.stopPropagation();
-      closeItemMenu();
       openBotIntegration({
         scope: "thread",
         projectId: state.projectId,
@@ -360,41 +376,8 @@ function renderThreads() {
         title,
       });
     });
-    item.querySelector(".item-menu-trigger").addEventListener("click", (event) => toggleItemMenu(event.currentTarget));
     $("threads").appendChild(item);
   });
-}
-
-function closeItemMenu() {
-  if (!state.openItemMenu) return;
-  state.openItemMenu.classList.remove("open");
-  state.openItemMenu.querySelector(".item-menu-trigger")?.setAttribute("aria-expanded", "false");
-  state.openItemMenu = null;
-}
-
-function toggleItemMenu(trigger) {
-  const menu = trigger.closest(".item-menu");
-  if (!menu) return;
-  const willOpen = state.openItemMenu !== menu;
-  closeItemMenu();
-  if (!willOpen) return;
-  menu.classList.add("open");
-  trigger.setAttribute("aria-expanded", "true");
-  state.openItemMenu = menu;
-  positionItemMenu(menu);
-}
-
-function positionItemMenu(menu) {
-  const trigger = menu.querySelector(".item-menu-trigger");
-  const popover = menu.querySelector(".item-menu-popover");
-  if (!trigger || !popover) return;
-  const rect = trigger.getBoundingClientRect();
-  const width = Math.max(168, popover.offsetWidth || 168);
-  const left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.right - width));
-  const belowTop = rect.bottom + 6;
-  const top = belowTop + 44 > window.innerHeight ? Math.max(8, rect.top - 44) : belowTop;
-  popover.style.left = `${left}px`;
-  popover.style.top = `${top}px`;
 }
 
 function renderApprovals() {
@@ -672,26 +655,32 @@ async function refreshBotConnections() {
   renderBotConnectionOptions();
 }
 
-function renderBotConnectionOptions() {
+function renderBotConnectionOptions(selectedId = $("bot-connection")?.value || "") {
   const select = $("bot-connection");
   if (!select) return;
-  const current = select.value;
+  const provider = $("bot-provider")?.value || "slack";
   select.innerHTML = `<option value="">New connection</option>`;
-  state.botConnections.forEach((connection) => {
-    const option = document.createElement("option");
-    option.value = connection.id;
-    option.textContent = `${connection.name} (${connection.provider})`;
-    select.appendChild(option);
-  });
-  select.value = state.botConnections.some((connection) => connection.id === current) ? current : "";
+  state.botConnections
+    .filter((connection) => connection.provider === provider)
+    .forEach((connection) => {
+      const option = document.createElement("option");
+      option.value = connection.id;
+      option.textContent = connection.name;
+      select.appendChild(option);
+    });
+  select.value = state.botConnections.some((connection) => connection.id === selectedId && connection.provider === provider) ? selectedId : "";
 }
 
 function applyBotProvider(provider) {
   const isSlack = provider === "slack";
+  $("bot-provider").value = isSlack ? "slack" : "telegram";
   $("bot-token-label").textContent = isSlack ? "Slack bot token" : "Telegram bot token";
   $("bot-token").placeholder = isSlack
     ? "xoxb token; leave blank to keep existing"
     : "Telegram bot token; leave blank to keep existing";
+  $("bot-slack-app-token").placeholder = "xapp token for Socket Mode";
+  $("bot-signing-secret").placeholder = "Used to verify Slack events";
+  $("bot-webhook-secret").placeholder = "Secret token sent by Telegram";
   $("slack-fields").hidden = !isSlack;
   $("telegram-fields").hidden = isSlack;
   $("bot-slack-app-token").required = isSlack && !$("bot-connection").value;
@@ -716,14 +705,22 @@ function selectedBotConnection() {
 
 function fillBotDialogFromConnection(connection) {
   if (!connection) {
+    const target = state.botIntegrationTarget;
+    $("bot-name").value = target ? `${target.title} bot` : "";
     $("bot-token").value = "";
     $("bot-slack-app-token").value = "";
     $("bot-signing-secret").value = "";
     $("bot-webhook-secret").value = "";
+    $("bot-conversation-id").value = "";
+    $("bot-telegram-chat-id").value = "";
+    $("bot-external-name").value = "";
+    if (target) $("bot-route-prefix").value = target.title;
+    applyBotProvider($("bot-provider").value);
     return;
   }
   $("bot-provider").value = connection.provider;
   applyBotProvider(connection.provider);
+  renderBotConnectionOptions(connection.id);
   $("bot-name").value = connection.name || "";
   $("bot-token").value = "";
   $("bot-token").placeholder = connection.bot_token
@@ -744,7 +741,6 @@ async function openBotIntegration(target) {
   state.botIntegrationTarget = target;
   const bindExisting = target.scope === "thread";
   $("bot-context").textContent = `${target.scope === "thread" ? "Thread" : "Project"}: ${target.title}`;
-  $("bot-provider").value = "slack";
   $("bot-connection").value = "";
   applyBotProvider("slack");
   $("bot-name").value = `${target.title} bot`;
@@ -759,7 +755,8 @@ async function openBotIntegration(target) {
   $("bot-bind-existing-thread").checked = bindExisting;
   $("bot-bind-existing-thread").disabled = !bindExisting;
   $("bot-result").hidden = true;
-  $("bot-dialog").showModal();
+  const dialog = $("bot-dialog");
+  if (!dialog.open) dialog.showModal();
   try {
     await refreshBotConnections();
   } catch (error) {
@@ -1127,7 +1124,12 @@ $("refresh-token-usage").addEventListener("click", (event) => {
   event.stopPropagation();
   refreshTokenUsage();
 });
-$("bot-provider").addEventListener("change", () => applyBotProvider($("bot-provider").value));
+$("bot-provider").addEventListener("change", () => {
+  $("bot-connection").value = "";
+  applyBotProvider($("bot-provider").value);
+  renderBotConnectionOptions();
+  fillBotDialogFromConnection(null);
+});
 $("bot-connection").addEventListener("change", () => fillBotDialogFromConnection(selectedBotConnection()));
 $("close-bot-dialog").addEventListener("click", () => $("bot-dialog").close());
 $("cancel-bot-integration").addEventListener("click", () => $("bot-dialog").close());
