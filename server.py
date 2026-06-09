@@ -37,6 +37,7 @@ THREAD_INDEX_FILE = DATA_DIR / "thread_index.json"
 THREAD_SETTINGS_FILE = DATA_DIR / "thread_settings.json"
 ACTIVE_TURNS_FILE = DATA_DIR / "active_turns.json"
 TURN_QUEUE_FILE = DATA_DIR / "queued_turns.json"
+SLACK_THREAD_ICONS_FILE = DATA_DIR / "slack_thread_icons.json"
 STATIC_DIR = ROOT / "static"
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
@@ -84,6 +85,7 @@ class ActiveThreadTurn(BaseModel):
     project_id: str | None = None
     sandbox: str | None = None
     approval_policy: str | None = None
+    source: str | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -273,6 +275,18 @@ def _save_bot_reply_targets(targets: dict[str, BotReplyTarget]) -> None:
     BOT_REPLY_TARGETS_FILE.write_text(
         json.dumps({thread_id: target.model_dump() for thread_id, target in targets.items()}, indent=2) + "\n"
     )
+
+
+def _load_slack_thread_icons() -> dict[str, str]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not SLACK_THREAD_ICONS_FILE.exists():
+        return {}
+    return {str(key): str(value) for key, value in json.loads(SLACK_THREAD_ICONS_FILE.read_text()).items()}
+
+
+def _save_slack_thread_icons(icons: dict[str, str]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    SLACK_THREAD_ICONS_FILE.write_text(json.dumps(icons, indent=2, sort_keys=True) + "\n")
 
 
 def _load_bot_delivery_targets() -> dict[str, BotReplyTarget]:
@@ -804,6 +818,7 @@ def _mark_thread_active(
     project_id: str | None = None,
     sandbox: str | None = None,
     approval_policy: str | None = None,
+    source: str | None = None,
 ) -> None:
     if not thread_id:
         return
@@ -817,6 +832,7 @@ def _mark_thread_active(
         project_id=project_id or (current.project_id if current else None),
         sandbox=sandbox or settings.sandbox or (current.sandbox if current else None),
         approval_policy=approval_policy or settings.approval_policy or (current.approval_policy if current else None),
+        source=source or (current.source if current else None),
         started_at=current.started_at if current else now,
         updated_at=now,
         resume_attempts=current.resume_attempts if current else 0,
@@ -908,6 +924,7 @@ async def _start_thread_turn_now(
         project_id=project.id,
         sandbox=sandbox,
         approval_policy=approval_policy,
+        source=source,
     )
     _append_bot_event(
         {
@@ -1023,7 +1040,7 @@ async def _resume_active_threads_after_startup() -> None:
                 ),
                 sandbox=sandbox,
                 approval_policy=approval_policy,
-                source="restart-recovery",
+                source=f"restart-recovery:{active.source or 'unknown'}",
             )
             _mark_thread_active(
                 thread_id,
@@ -1031,6 +1048,7 @@ async def _resume_active_threads_after_startup() -> None:
                 project_id=project.id,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
+                source=f"restart-recovery:{active.source or 'unknown'}",
             )
             _append_bot_event({"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id})
         except Exception as exc:
@@ -1051,6 +1069,13 @@ def _find_bot_binding(provider: str, external_conversation_id: str) -> BotBindin
     if len(bindings) == 1:
         return bindings[0]
     return None
+
+
+def _first_binding_for_connection(provider: str, external_conversation_id: str | None) -> BotBinding | None:
+    if not external_conversation_id:
+        return None
+    bindings = _bindings_for_connection(provider, external_conversation_id)
+    return bindings[0] if bindings else None
 
 
 def _bindings_for_connection(provider: str, external_conversation_id: str) -> list[BotBinding]:
@@ -1461,6 +1486,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         project_id=binding.project_id,
         sandbox=binding.sandbox,
         approval_policy=binding.approval_policy,
+        source=provider,
     )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
@@ -1699,8 +1725,12 @@ def _is_details_command(text: str) -> bool:
 async def _send_bot_details(binding: BotBinding) -> dict[str, Any]:
     detail = _latest_bot_detail(binding.thread_id)
     if not detail:
-        return await _send_bot_outbound(binding, "No command or file details are available for this thread yet.")
-    return await _send_bot_outbound(binding, _format_bot_detail_response(detail))
+        return await _send_bot_outbound(
+            binding,
+            "No command or file details are available for this thread yet.",
+            reply_in_thread=True,
+        )
+    return await _send_bot_outbound(binding, _format_bot_detail_response(detail), reply_in_thread=True)
 
 
 def _format_bot_detail_response(detail: BotThreadDetail) -> str:
@@ -1796,6 +1826,28 @@ def _format_bot_outbound_item(item: dict[str, Any], prefix: str | None) -> str |
     return None
 
 
+def _active_turn_source(thread_id: str | None) -> str:
+    if not thread_id:
+        return ""
+    active = _load_active_turns().get(thread_id)
+    return (active.source or "") if active else ""
+
+
+def _has_recent_reply_target_for_active_turn(binding: BotBinding) -> bool:
+    active = _load_active_turns().get(binding.thread_id)
+    if not active:
+        return False
+    target = _reply_target_for_binding(binding)
+    if not target:
+        return False
+    return target.updated_at >= active.started_at - 30
+
+
+def _should_reply_in_external_thread(binding: BotBinding) -> bool:
+    source = _active_turn_source(binding.thread_id).lower()
+    return binding.post_in_thread or "slack" in source or _has_recent_reply_target_for_active_turn(binding)
+
+
 def _slack_reply_username(binding: BotBinding) -> str:
     prefix = _binding_prefix(binding)
     return f"Codex · {prefix}" if prefix else "Codex"
@@ -1811,28 +1863,93 @@ def _slack_reply_icon(binding: BotBinding) -> str:
         ":red_circle:",
         ":black_circle:",
         ":white_circle:",
+        ":brown_circle:",
+        ":large_red_square:",
+        ":large_blue_square:",
+        ":large_green_square:",
+        ":large_yellow_square:",
+        ":large_orange_square:",
+        ":large_purple_square:",
+        ":large_brown_square:",
+        ":black_large_square:",
+        ":white_large_square:",
         ":small_blue_diamond:",
         ":small_orange_diamond:",
         ":large_blue_diamond:",
         ":large_orange_diamond:",
+        ":small_red_triangle:",
+        ":small_red_triangle_down:",
         ":eight_pointed_black_star:",
         ":six_pointed_star:",
         ":star:",
         ":sparkles:",
+        ":zap:",
+        ":fire:",
+        ":snowflake:",
+        ":sunny:",
+        ":crescent_moon:",
+        ":cloud:",
+        ":umbrella:",
+        ":coffee:",
+        ":rocket:",
+        ":satellite:",
+        ":gear:",
+        ":mag:",
+        ":lock:",
+        ":key:",
+        ":bell:",
+        ":bookmark:",
+        ":pushpin:",
+        ":paperclip:",
+        ":scissors:",
+        ":hammer:",
+        ":wrench:",
+        ":pick:",
+        ":shield:",
+        ":link:",
+        ":package:",
+        ":battery:",
+        ":bulb:",
+        ":hourglass:",
+        ":watch:",
+        ":compass:",
+        ":anchor:",
     ]
-    seed = _binding_prefix(binding) or binding.thread_id
-    digest = hashlib.sha256(seed.encode()).hexdigest()
-    return icons[int(digest[:8], 16) % len(icons)]
+    thread_id = binding.thread_id
+    assignments = _load_slack_thread_icons()
+    assigned = assignments.get(thread_id)
+    duplicate_assigned = assigned and any(
+        other_thread_id != thread_id and icon == assigned
+        for other_thread_id, icon in assignments.items()
+    )
+    if assigned and not duplicate_assigned:
+        return assigned
+    if duplicate_assigned:
+        assignments.pop(thread_id, None)
+    used = set(assignments.values())
+    seed = f"{_binding_prefix(binding)}:{thread_id}"
+    start = int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) % len(icons)
+    for offset in range(len(icons)):
+        candidate = icons[(start + offset) % len(icons)]
+        if candidate not in used:
+            assignments[thread_id] = candidate
+            _save_slack_thread_icons(assignments)
+            return candidate
+    candidate = icons[start]
+    assignments[thread_id] = candidate
+    _save_slack_thread_icons(assignments)
+    return candidate
 
 
-async def _send_bot_outbound(binding: BotBinding, text: str) -> dict[str, Any]:
+async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread: bool | None = None) -> dict[str, Any]:
     connection = _bot_connection(binding.connection_id) if binding.connection_id else None
     if not connection or not connection.bot_token:
         return {"sent": False, "reason": "missing_bot_token"}
     try:
         if binding.provider == "slack":
             target = _reply_target_for_binding(binding)
-            thread_ts = (target.external_thread_id or target.message_id) if (binding.post_in_thread and target) else None
+            should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            thread_ts = (target.external_thread_id or target.message_id) if (should_thread and target) else None
             return await asyncio.to_thread(
                 _post_slack_message,
                 connection.bot_token,
@@ -2057,7 +2174,7 @@ async def _record_bot_approval_request(request: dict[str, Any]) -> None:
             continue
         text = f"Approval requested for {_binding_prefix(binding) or thread_id}"
         target = _reply_target_for_binding(binding)
-        thread_ts = (target.external_thread_id or target.message_id) if (binding.post_in_thread and target) else None
+        thread_ts = (target.external_thread_id or target.message_id) if (_should_reply_in_external_thread(binding) and target) else None
         delivery = await asyncio.to_thread(
             _post_slack_message,
             connection.bot_token,
@@ -2325,11 +2442,14 @@ class BotRuntime:
                         )
                     )
                     if result.get("ambiguous") and connection.bot_token:
+                        binding = _first_binding_for_connection("slack", channel)
                         await asyncio.to_thread(
                             _post_slack_message,
                             connection.bot_token,
                             channel,
                             _ambiguous_route_message(result.get("availablePrefixes") or []),
+                            username=_slack_reply_username(binding) if binding else None,
+                            icon_emoji=_slack_reply_icon(binding) if binding else None,
                             thread_ts=event.get("thread_ts") or event.get("ts"),
                         )
                 except Exception as exc:
@@ -2348,11 +2468,14 @@ class BotRuntime:
                         }
                     )
                     if channel and connection.bot_token:
+                        binding = _first_binding_for_connection("slack", channel)
                         await asyncio.to_thread(
                             _post_slack_message,
                             connection.bot_token,
                             channel,
                             f"Codex could not handle that Slack message: {_truncate_text(str(exc), 500)}",
+                            username=_slack_reply_username(binding) if binding else None,
+                            icon_emoji=_slack_reply_icon(binding) if binding else None,
                             thread_ts=thread_ts,
                         )
 
@@ -2915,6 +3038,8 @@ async def slack_events(request: Request) -> dict[str, Any]:
                 connection.bot_token,
                 channel,
                 _ambiguous_route_message(result["availablePrefixes"]),
+                username=_slack_reply_username(binding) if binding else None,
+                icon_emoji=_slack_reply_icon(binding) if binding else None,
                 thread_ts=event.get("thread_ts") or event.get("ts"),
             )
         return {"ok": True, "accepted": False, "ambiguous": True, "availablePrefixes": result["availablePrefixes"]}

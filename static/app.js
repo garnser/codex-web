@@ -556,17 +556,63 @@ function clearMessages() {
   state.activeAgentMessage = null;
 }
 
-function addMessage(role, text, type = role) {
+function coerceMessageDate(value) {
+  if (!value) return null;
+  if (typeof value === "number") {
+    return new Date(value > 1_000_000_000_000 ? value : value * 1000);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function messageTimestamp(...candidates) {
+  for (const candidate of candidates) {
+    const date = coerceMessageDate(candidate);
+    if (date) return date;
+  }
+  return new Date();
+}
+
+function formatMessageTimestamp(value) {
+  const date = coerceMessageDate(value) || new Date();
+  return date.toLocaleString();
+}
+
+function itemTimestamp(item = {}, turn = {}) {
+  return messageTimestamp(
+    item.createdAt,
+    item.created_at,
+    item.timestamp,
+    item.completedAt,
+    item.completed_at,
+    item.updatedAt,
+    item.updated_at,
+    turn.createdAt,
+    turn.created_at,
+    turn.startedAt,
+    turn.started_at,
+    turn.updatedAt,
+    turn.updated_at,
+  );
+}
+
+function addMessage(role, text, type = role, timestamp = new Date()) {
   const message = document.createElement("article");
   message.className = `message ${type}`;
-  message.innerHTML = `<div class="role">${escapeHtml(role)}</div><div class="body"></div>`;
+  message.innerHTML = `
+    <div class="message-header">
+      <div class="role">${escapeHtml(role)}</div>
+      <time datetime="${timestamp.toISOString()}">${escapeHtml(formatMessageTimestamp(timestamp))}</time>
+    </div>
+    <div class="body"></div>
+  `;
   message.querySelector(".body").textContent = text || "";
   $("messages").appendChild(message);
   $("messages").scrollTop = $("messages").scrollHeight;
   return message;
 }
 
-function addFileChangeMessage(changes) {
+function addFileChangeMessage(changes, timestamp = new Date()) {
   const normalizedChanges = Array.isArray(changes) ? changes : [];
   const message = document.createElement("article");
   message.className = "message file-change";
@@ -581,7 +627,10 @@ function addFileChangeMessage(changes) {
   const overflow = normalizedChanges.length > 4 ? `\n+${normalizedChanges.length - 4} more` : "";
 
   message.innerHTML = `
-    <div class="role">File change</div>
+    <div class="message-header">
+      <div class="role">File change</div>
+      <time datetime="${timestamp.toISOString()}">${escapeHtml(formatMessageTimestamp(timestamp))}</time>
+    </div>
     <details class="file-change-details">
       <summary>
         <span>${escapeHtml(summaryText)}</span>
@@ -612,13 +661,16 @@ function addFileChangeMessage(changes) {
   return message;
 }
 
-function addCommandMessage(label, command, output = "", open = false) {
+function addCommandMessage(label, command, output = "", open = false, timestamp = new Date()) {
   const message = document.createElement("article");
   message.className = "message command-message";
   const hasOutput = Boolean(output && output.trim());
   const summaryText = command || "Command";
   message.innerHTML = `
-    <div class="role">${escapeHtml(label)}</div>
+    <div class="message-header">
+      <div class="role">${escapeHtml(label)}</div>
+      <time datetime="${timestamp.toISOString()}">${escapeHtml(formatMessageTimestamp(timestamp))}</time>
+    </div>
     <details class="command-details"${open ? " open" : ""}>
       <summary>
         <span></span>
@@ -644,7 +696,7 @@ function addCommandMessage(label, command, output = "", open = false) {
 
 function appendAgentDelta(text) {
   if (!state.activeAgentMessage) {
-    state.activeAgentMessage = addMessage("Codex", "", "agent");
+    state.activeAgentMessage = addMessage("Codex", "", "agent", new Date());
   }
   const body = state.activeAgentMessage.querySelector(".body");
   body.textContent += text;
@@ -663,7 +715,7 @@ function renderThread(thread) {
   $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}`;
   const turns = thread.turns || [];
   turns.forEach((turn) => {
-    (turn.items || []).forEach((item) => renderItem(item));
+    (turn.items || []).forEach((item) => renderItem(item, turn));
   });
 }
 
@@ -673,18 +725,19 @@ function renderNewThreadShell(thread) {
   $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}`;
 }
 
-function renderItem(item) {
+function renderItem(item, turn = {}) {
+  const timestamp = itemTimestamp(item, turn);
   if (item.type === "userMessage") {
     const text = (item.content || []).map((part) => part.text || part.path || part.url || "").join("\n");
-    addMessage("You", displayUserMessageText(text), "user");
+    addMessage("You", displayUserMessageText(text), "user", timestamp);
   } else if (item.type === "agentMessage") {
-    addMessage("Codex", item.text || "", "agent");
+    addMessage("Codex", item.text || "", "agent", timestamp);
   } else if (item.type === "commandExecution") {
-    addCommandMessage("Command", item.command || "", item.aggregatedOutput || "");
+    addCommandMessage("Command", item.command || "", item.aggregatedOutput || "", false, timestamp);
   } else if (item.type === "fileChange") {
-    addFileChangeMessage(item.changes || []);
+    addFileChangeMessage(item.changes || [], timestamp);
   } else if (item.type === "reasoning" && item.summary?.length) {
-    addMessage("Reasoning", item.summary.join("\n"), "tool");
+    addMessage("Reasoning", item.summary.join("\n"), "tool", timestamp);
   }
 }
 
@@ -909,7 +962,7 @@ async function sendPrompt() {
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   state.activeAgentMessage = null;
-  addMessage(willQueue ? "You (queued)" : "You", prompt, "user");
+  addMessage(willQueue ? "You (queued)" : "You", prompt, "user", new Date());
   if (willQueue) {
     setThreadQueueDepth(threadId, queuedDepth(threadId) + 1);
   } else {
@@ -934,7 +987,7 @@ async function sendPrompt() {
     } else {
       clearThreadBusy(threadId);
     }
-    addMessage("Error", error.message, "tool");
+    addMessage("Error", error.message, "tool", new Date());
   }
 }
 
@@ -946,7 +999,7 @@ async function steerQueuedMessage() {
     const response = await api(`/api/threads/${threadId}/queue/steer`, { method: "POST" });
     setThreadQueueDepth(threadId, response.queueDepth || 0);
   } catch (error) {
-    addMessage("Queue", error.message, "tool");
+    addMessage("Queue", error.message, "tool", new Date());
     await refreshQueueStatus(threadId);
   }
 }
@@ -986,7 +1039,7 @@ function connectEvents() {
 function handleEvent(event) {
   if (event.type === "bot.inbound") {
     if (event.threadId === state.threadId) {
-      addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user");
+      addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user", new Date());
       if (event.queued) {
         setThreadQueueDepth(event.threadId, event.queueDepth || 1);
       } else {
@@ -1003,7 +1056,7 @@ function handleEvent(event) {
   }
   if (event.type === "queue.error") {
     setThreadQueueDepth(event.threadId, event.queueDepth || 0);
-    if (event.threadId === state.threadId) addMessage("Queue", event.error || "Queued message failed.", "tool");
+    if (event.threadId === state.threadId) addMessage("Queue", event.error || "Queued message failed.", "tool", new Date());
     return;
   }
   if (event.type === "approval.request") {
@@ -1052,15 +1105,15 @@ function handleEvent(event) {
   } else if (message.method === "item/started") {
     const item = message.params?.item;
     setWaiting(true, "Waiting for Codex");
-    if (item?.type === "commandExecution") addCommandMessage("Command started", item.command || "", "", false);
+    if (item?.type === "commandExecution") addCommandMessage("Command started", item.command || "", "", false, itemTimestamp(item));
   } else if (message.method === "item/completed") {
     const item = message.params?.item;
     if (item?.type === "agentMessage") {
       state.activeAgentMessage = null;
     } else if (item?.type === "commandExecution") {
-      addCommandMessage("Command result", item.command || "", item.aggregatedOutput || "");
+      addCommandMessage("Command result", item.command || "", item.aggregatedOutput || "", false, itemTimestamp(item));
     } else if (item?.type === "fileChange") {
-      addFileChangeMessage(item.changes || []);
+      addFileChangeMessage(item.changes || [], itemTimestamp(item));
     }
   } else if (message.method === "turn/completed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
@@ -1280,5 +1333,5 @@ renderTokenUsage();
 connectEvents();
 refreshTokenUsage();
 refresh().catch((error) => {
-  addMessage("Error", error.message, "tool");
+  addMessage("Error", error.message, "tool", new Date());
 });
