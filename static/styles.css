@@ -994,13 +994,19 @@ select {
   box-sizing: border-box;
   min-width: 0;
   max-width: min(980px, 88%);
-  overflow: hidden;
   border: 1px solid var(--line);
   background: var(--surface);
+  color: var(--text);
   border-radius: 12px;
   padding: 13px 14px;
   line-height: 1.48;
   box-shadow: var(--shadow-sm);
+}
+
+.message .body {
+  color: inherit;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message.user {
@@ -1089,8 +1095,10 @@ select {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  overflow: hidden;
   align-self: stretch;
   background: var(--surface);
+  color: var(--text);
   border-color: var(--line);
 }
 
@@ -1115,6 +1123,7 @@ select {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-soft);
+  color: var(--text);
   padding: 8px 10px;
 }
 
