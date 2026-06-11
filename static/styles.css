@@ -959,6 +959,79 @@ select {
   max-height: 190px;
 }
 
+.gitlab-routing {
+  display: grid;
+  gap: 8px;
+}
+
+.gitlab-routing label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gitlab-routing .field-label {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gitlab-routing .checkbox-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.gitlab-routing input,
+.gitlab-routing select,
+.gitlab-routing textarea {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 7px 10px;
+  outline: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.gitlab-routing input[readonly] {
+  color: var(--muted);
+  background: var(--surface-strong);
+}
+
+.gitlab-routing textarea {
+  resize: vertical;
+  min-height: 74px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.42;
+}
+
+.gitlab-agent-channels {
+  display: grid;
+  gap: 6px;
+}
+
+.gitlab-agent-channel-row {
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+}
+
+.gitlab-agent-channel-row span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
 .comm-log {
   display: grid;
   gap: 8px;

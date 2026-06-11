@@ -139,6 +139,26 @@
                   </div>
                 </div>
                 <div class="developer-card">
+                  <h2>GitLab Routing</h2>
+                  <div class="gitlab-routing">
+                    <label class="checkbox-line">
+                      <input id="gitlab-enabled" type="checkbox" />
+                      Enabled
+                    </label>
+                    <label>Webhook path <input id="gitlab-webhook-path" readonly /></label>
+                    <label>Token verification <input id="gitlab-token-status" readonly /></label>
+                    <label>Ignored event kinds <input id="gitlab-ignored-kinds" placeholder="note, wiki_page" /></label>
+                    <label>Project paths <textarea id="gitlab-project-paths" rows="3" spellcheck="false" placeholder="veridataops/codex-web"></textarea></label>
+                    <label>Fallback agents <textarea id="gitlab-fallback-agents" rows="4" spellcheck="false"></textarea></label>
+                    <div>
+                      <div class="field-label">Agent channels</div>
+                      <div id="gitlab-agent-channels" class="gitlab-agent-channels"></div>
+                    </div>
+                    <button id="save-gitlab-routing" type="button" class="ghost-button">Save routing</button>
+                    <div id="gitlab-routing-result" class="form-result" hidden></div>
+                  </div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
