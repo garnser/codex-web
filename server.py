@@ -74,6 +74,7 @@ BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
+GITLAB_EVENT_IDS: dict[str, float] = {}
 IS_SHUTTING_DOWN = False
 
 
@@ -188,6 +189,16 @@ def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
     return target
 
 
+def _delivery_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
+    targets = _load_bot_delivery_targets()
+    target = targets.get(_reply_target_key(binding)) or targets.get(binding.thread_id)
+    if not target:
+        return None
+    if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
+        return None
+    return target
+
+
 def _active_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
     active = _load_active_turns().get(binding.thread_id)
     target = active.reply_target if active else None
@@ -243,6 +254,43 @@ def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any])
     targets[_reply_target_key(binding)] = target
     targets[_external_target_key(binding.provider, binding.external_conversation_id, str(ts))] = target
     _save_bot_delivery_targets(targets)
+
+
+def _master_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
+    if binding.is_master:
+        return None
+    candidates = [
+        candidate
+        for candidate in _bindings_for_project(binding.provider, binding.project_id)
+        if candidate.is_master and candidate.external_conversation_id == binding.external_conversation_id
+    ]
+    candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
+    for candidate in candidates:
+        target = _active_reply_target_for_binding(candidate) or _reply_target_for_binding(candidate)
+        if target:
+            return target
+    return None
+
+
+def _thread_target_for_outbound(binding: BotBinding, reply_in_thread: bool | None = None) -> tuple[BotReplyTarget | None, bool]:
+    active_target = _active_reply_target_for_binding(binding)
+    if active_target:
+        return active_target, True if reply_in_thread is None else reply_in_thread
+
+    own_target = _reply_target_for_binding(binding)
+    if own_target:
+        should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+        return own_target, should_thread
+
+    master_target = _master_reply_target_for_binding(binding)
+    if master_target:
+        return master_target, True if reply_in_thread is None else reply_in_thread
+
+    delivery_target = _delivery_target_for_binding(binding)
+    if delivery_target and binding.post_in_thread:
+        return delivery_target, True if reply_in_thread is None else reply_in_thread
+
+    return None, False if reply_in_thread is None else reply_in_thread
 
 
 def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
@@ -1014,6 +1062,8 @@ async def _drain_thread_queue(thread_id: str) -> None:
         )
     finally:
         await _publish_queue_status(thread_id)
+        if _thread_queue_depth(thread_id) and not _thread_is_active(thread_id):
+            asyncio.get_running_loop().call_soon(_schedule_queue_drain, thread_id)
 
 
 def _schedule_queue_drain(thread_id: str | None) -> None:
@@ -1098,6 +1148,149 @@ def _append_bot_event(event: dict[str, Any]) -> None:
     payload = {"created_at": time.time(), **event}
     with BOTS_EVENTS_FILE.open("a") as handle:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
+
+def _parse_agent_channel_overrides() -> dict[str, str]:
+    raw = os.environ.get("CODEX_WEB_AGENT_CHANNELS", "").strip()
+    if not raw:
+        return {}
+    with contextlib.suppress(Exception):
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return {str(key).lower(): str(value) for key, value in payload.items() if value}
+    result: dict[str, str] = {}
+    for part in raw.split(","):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key and value:
+            result[key] = value
+    return result
+
+
+def _preferred_agent_conversation(agent: str) -> str | None:
+    overrides = _parse_agent_channel_overrides()
+    normalized = agent.lower()
+    if normalized in overrides:
+        return overrides[normalized]
+    # Local defaults keep high-volume development and data-pack traffic out of
+    # the main orchestration channel when matching bindings exist.
+    defaults = {
+        "carl": "C0B9591ESTB",
+        "dana": "C0B9C6MGZ5X",
+        "james": "C0B9591ESTB",
+        "nora": "C0B9591ESTB",
+        "quinn": "C0B9591ESTB",
+        "riley": "C0B9591ESTB",
+    }
+    return defaults.get(normalized)
+
+
+def _binding_for_agent(agent: str, project_id: str = "a956644fc336") -> BotBinding | None:
+    normalized = agent.strip().lower()
+    if not normalized:
+        return None
+    candidates = [
+        binding
+        for binding in _load_bot_bindings()
+        if binding.project_id == project_id
+        and not binding.is_master
+        and (_binding_prefix(binding) or "").strip().lower() == normalized
+    ]
+    if not candidates:
+        candidates = [
+            binding
+            for binding in _load_bot_bindings()
+            if binding.project_id == project_id
+            and not binding.is_master
+            and normalized in {
+                (_binding_prefix(binding) or "").strip().lower().split(" ", 1)[0],
+                (binding.thread_name or "").strip().lower().split(" ", 1)[0],
+            }
+        ]
+    if not candidates:
+        return None
+    preferred_conversation = _preferred_agent_conversation(normalized)
+    if preferred_conversation:
+        for binding in candidates:
+            if binding.external_conversation_id == preferred_conversation:
+                return binding
+    return max(candidates, key=lambda binding: binding.updated_at)
+
+
+def _master_binding(project_id: str = "a956644fc336") -> BotBinding | None:
+    masters = [binding for binding in _load_bot_bindings() if binding.project_id == project_id and binding.is_master]
+    if not masters:
+        return None
+    return max(masters, key=lambda binding: binding.updated_at)
+
+
+async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str) -> dict[str, Any]:
+    project = _project(binding.project_id)
+    settings = _thread_run_settings(binding.thread_id)
+    effective_model = settings.model or project.model
+    effective_reasoning_effort = settings.reasoning_effort
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+        queued = _enqueue_turn(
+            thread_id=binding.thread_id,
+            project_id=project.id,
+            message=text,
+            sandbox=binding.sandbox,
+            approval_policy=binding.approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
+            source=source,
+            reply_target=None,
+        )
+        binding.updated_at = time.time()
+        _upsert_bot_binding(binding)
+        _append_bot_event(
+            {
+                "type": "event_turn_queued",
+                "source": source,
+                "thread_id": binding.thread_id,
+                "queued_id": queued.id,
+                "queue_depth": _thread_queue_depth(binding.thread_id),
+            }
+        )
+        await _publish_queue_status(binding.thread_id)
+        await hub.publish(
+            {
+                "type": "bot.inbound",
+                "provider": source,
+                "externalConversationId": binding.external_conversation_id,
+                "threadId": binding.thread_id,
+                "queued": True,
+                "queuedId": queued.id,
+                "queueDepth": _thread_queue_depth(binding.thread_id),
+            }
+        )
+        return {"ok": True, "queued": True, "threadId": binding.thread_id, "queuedId": queued.id}
+
+    turn = await _start_thread_turn_now(
+        binding.thread_id,
+        project=project,
+        message=text,
+        sandbox=binding.sandbox,
+        approval_policy=binding.approval_policy,
+        model=effective_model,
+        reasoning_effort=effective_reasoning_effort,
+        source=source,
+        reply_target=None,
+    )
+    binding.updated_at = time.time()
+    _upsert_bot_binding(binding)
+    await hub.publish(
+        {
+            "type": "bot.inbound",
+            "provider": source,
+            "externalConversationId": binding.external_conversation_id,
+            "threadId": binding.thread_id,
+        }
+    )
+    return {"ok": True, "queued": False, "threadId": binding.thread_id, "turn": turn}
 
 
 def _find_bot_binding(provider: str, external_conversation_id: str) -> BotBinding | None:
@@ -2311,8 +2504,7 @@ async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread:
         return {"sent": False, "reason": "missing_bot_token"}
     try:
         if binding.provider == "slack":
-            target = _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding)
-            should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            target, should_thread = _thread_target_for_outbound(binding, reply_in_thread)
             thread_ts = (target.external_thread_id or target.message_id) if (should_thread and target) else None
             return await asyncio.to_thread(
                 _post_slack_message,
@@ -3374,6 +3566,148 @@ def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
     }
 
 
+def _verify_gitlab_webhook(request: Request) -> None:
+    expected = os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET") or os.environ.get("GITLAB_WEBHOOK_SECRET")
+    if not expected:
+        return
+    received = request.headers.get("x-gitlab-token") or ""
+    if not hmac.compare_digest(received, expected):
+        raise HTTPException(status_code=401, detail="Invalid GitLab webhook token")
+
+
+def _gitlab_event_id(request: Request, payload: dict[str, Any]) -> str:
+    for header in ("x-gitlab-event-uuid", "x-request-id"):
+        value = request.headers.get(header)
+        if value:
+            return value
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    parts = [
+        str(payload.get("object_kind") or payload.get("event_name") or "gitlab"),
+        str(project.get("id") or project.get("path_with_namespace") or ""),
+        str(attrs.get("id") or attrs.get("iid") or attrs.get("sha") or attrs.get("commit_id") or ""),
+        str(attrs.get("updated_at") or attrs.get("finished_at") or attrs.get("created_at") or ""),
+        str(attrs.get("action") or attrs.get("state") or attrs.get("status") or ""),
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def _remember_gitlab_event(event_id: str) -> bool:
+    now = time.time()
+    for key, seen_at in list(GITLAB_EVENT_IDS.items()):
+        if now - seen_at > 3600:
+            GITLAB_EVENT_IDS.pop(key, None)
+    if event_id in GITLAB_EVENT_IDS:
+        return False
+    GITLAB_EVENT_IDS[event_id] = now
+    return True
+
+
+def _gitlab_label_names(payload: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            labels.append(value)
+        elif isinstance(value, dict):
+            name = value.get("title") or value.get("name")
+            if name:
+                labels.append(str(name))
+
+    attrs = payload.get("object_attributes") or {}
+    for source in (
+        payload.get("labels"),
+        attrs.get("labels"),
+        (payload.get("changes") or {}).get("labels", {}).get("current"),
+    ):
+        if isinstance(source, list):
+            for item in source:
+                add(item)
+    for key in ("labels", "label_names"):
+        source = attrs.get(key)
+        if isinstance(source, list):
+            for item in source:
+                add(item)
+    return sorted({label.strip() for label in labels if label and label.strip()})
+
+
+def _gitlab_owner_agents(payload: dict[str, Any]) -> list[str]:
+    owners: list[str] = []
+    for label in _gitlab_label_names(payload):
+        match = re.match(r"owner::(.+)", label.strip(), re.IGNORECASE)
+        if match:
+            owners.append(match.group(1).strip().lower())
+    if owners:
+        return sorted(set(owners))
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
+    if kind in {"pipeline", "build"}:
+        return ["quinn"]
+    if kind == "merge_request":
+        return ["quinn"]
+    return []
+
+
+def _gitlab_project_id(payload: dict[str, Any]) -> str:
+    project_path = ((payload.get("project") or {}).get("path_with_namespace") or "").lower()
+    if project_path.startswith("veridataops/"):
+        return "a956644fc336"
+    return "a956644fc336"
+
+
+def _gitlab_reference(payload: dict[str, Any]) -> str:
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "event").replace("_", " ")
+    project_name = project.get("path_with_namespace") or project.get("name") or "unknown project"
+    iid = attrs.get("iid")
+    title = attrs.get("title") or attrs.get("name") or attrs.get("ref") or attrs.get("status") or ""
+    if iid:
+        return f"{project_name} {kind} !/#{iid}: {title}".strip()
+    return f"{project_name} {kind}: {title}".strip()
+
+
+def _gitlab_url(payload: dict[str, Any]) -> str | None:
+    attrs = payload.get("object_attributes") or {}
+    return attrs.get("url") or attrs.get("web_url") or (payload.get("project") or {}).get("web_url")
+
+
+def _format_gitlab_event_prompt(payload: dict[str, Any], agent: str | None) -> str:
+    attrs = payload.get("object_attributes") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "event")
+    action = attrs.get("action") or attrs.get("state") or attrs.get("status") or ""
+    labels = _gitlab_label_names(payload)
+    url = _gitlab_url(payload)
+    lines = [
+        f"GitLab event received for {agent or 'the project'}: {_gitlab_reference(payload)}",
+        f"Kind/status: {kind}{f' / {action}' if action else ''}",
+    ]
+    if labels:
+        lines.append("Labels: " + ", ".join(labels))
+    if url:
+        lines.append(f"URL: {url}")
+    if kind == "pipeline":
+        lines.append(
+            "Pipeline details: "
+            + ", ".join(
+                part
+                for part in (
+                    f"ref={attrs.get('ref')}" if attrs.get("ref") else "",
+                    f"sha={str(attrs.get('sha') or '')[:12]}" if attrs.get("sha") else "",
+                    f"duration={attrs.get('duration')}" if attrs.get("duration") is not None else "",
+                )
+                if part
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "Handle this event-driven update within your directive. Inspect the linked GitLab item/MR/pipeline only as needed.",
+            "Do not poll GitLab for generic queue state in this turn. Keep any Slack/GitLab update concise and avoid repeating prior evidence.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
     bindings = _load_bot_bindings()
     if project_id:
@@ -3592,6 +3926,14 @@ async def bot_status() -> dict[str, Any]:
                 ),
                 "webhookPath": "/bots/telegram/webhook",
             },
+            "gitlab": {
+                "enabled": True,
+                "tokenVerification": bool(
+                    os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
+                    or os.environ.get("GITLAB_WEBHOOK_SECRET")
+                ),
+                "webhookPath": "/bots/gitlab/events",
+            },
         },
         "connections": len(connections),
         "bindings": len(bindings),
@@ -3640,6 +3982,57 @@ async def create_bot_binding(payload: BotBindingCreate) -> dict[str, Any]:
 @app.post("/api/bots/inbound")
 async def bot_inbound(payload: BotInboundMessage) -> dict[str, Any]:
     return await _handle_bot_inbound(payload)
+
+
+@app.post("/bots/gitlab/events")
+async def gitlab_events(request: Request) -> dict[str, Any]:
+    _verify_gitlab_webhook(request)
+    payload = await request.json()
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
+    if kind in {"note", "wiki_page"}:
+        return {"ok": True, "ignored": True, "reason": "noisy_event_kind"}
+
+    event_id = _gitlab_event_id(request, payload)
+    if not _remember_gitlab_event(event_id):
+        return {"ok": True, "ignored": True, "reason": "duplicate", "eventId": event_id}
+
+    project_id = _gitlab_project_id(payload)
+    agents = _gitlab_owner_agents(payload)
+    bindings: list[tuple[str | None, BotBinding]] = []
+    for agent in agents:
+        binding = _binding_for_agent(agent, project_id)
+        if binding:
+            bindings.append((agent, binding))
+    if not bindings:
+        master = _master_binding(project_id)
+        if not master:
+            return {"ok": False, "accepted": False, "reason": "no_matching_binding", "eventId": event_id}
+        bindings.append((None, master))
+
+    results: list[dict[str, Any]] = []
+    for agent, binding in bindings:
+        prompt = _format_gitlab_event_prompt(payload, agent)
+        result = await _dispatch_event_to_binding(binding, prompt, source="gitlab")
+        results.append(
+            {
+                "agent": agent,
+                "threadId": result.get("threadId"),
+                "queued": result.get("queued", False),
+                "ok": result.get("ok", False),
+            }
+        )
+
+    _append_bot_event(
+        {
+            "type": "gitlab_event_dispatched",
+            "event_id": event_id,
+            "kind": kind,
+            "agents": agents,
+            "targets": results,
+        }
+    )
+    await hub.publish({"type": "gitlab.event", "eventId": event_id, "kind": kind, "targets": results})
+    return {"ok": True, "accepted": True, "eventId": event_id, "targets": results}
 
 
 @app.post("/bots/slack/events")
@@ -3766,14 +4159,33 @@ async def list_threads(project_id: str | None = None, archived: bool = False, se
         params["cwd"] = project_path
     if search:
         params["searchTerm"] = search
-    result = await codex.request("thread/list", params)
+    try:
+        result = await codex.request("thread/list", params)
+    except Exception as exc:
+        if archived:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        result = {"data": []}
     if archived:
         return result
 
     items = result.get("data") or result.get("threads") or []
+    indexed_threads = _load_thread_index()
+    indexed_by_id = {indexed.id: indexed for indexed in indexed_threads}
+    active_turns = _load_active_turns()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        indexed = indexed_by_id.get(item.get("id"))
+        if indexed:
+            item["name"] = indexed.name
+            item["updatedAt"] = max(
+                item.get("updatedAt") or 0,
+                indexed.updatedAt or 0,
+                active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0,
+            )
     existing_ids = {item.get("id") for item in items if isinstance(item, dict)}
     search_term = search.casefold() if search else None
-    for indexed in _load_thread_index():
+    for indexed in indexed_threads:
         if indexed.id in existing_ids:
             continue
         if project_path and indexed.cwd and indexed.cwd != project_path:
@@ -3787,7 +4199,7 @@ async def list_threads(project_id: str | None = None, archived: bool = False, se
             "name": indexed.name,
             "cwd": indexed.cwd,
             "path": indexed.path,
-            "updatedAt": indexed.updatedAt or 0,
+            "updatedAt": max(indexed.updatedAt or 0, active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0),
             "status": {"type": "notLoaded"},
             "turns": [],
         }
@@ -3796,6 +4208,11 @@ async def list_threads(project_id: str | None = None, archived: bool = False, se
             thread = thread_response.get("thread", thread_response) if isinstance(thread_response, dict) else {}
             item.update(thread)
             item["name"] = indexed.name
+            item["updatedAt"] = max(
+                item.get("updatedAt") or 0,
+                indexed.updatedAt or 0,
+                active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0,
+            )
         items.append(item)
         existing_ids.add(indexed.id)
 
