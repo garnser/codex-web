@@ -10,6 +10,9 @@ import re
 import socket
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -58,6 +61,7 @@ from codex_web.paths import (
     GITLAB_ROUTING_FILE,
     PROJECTS_FILE,
     SLACK_RELAY_NOTICE,
+    SUPPORT_SERVICEDESK_STATE_FILE,
     SLACK_THREAD_ICONS_FILE,
     STATIC_DIR,
     THREAD_INDEX_FILE,
@@ -76,6 +80,7 @@ from codex_web.providers import (
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
+SUPPORT_SERVICEDESK_SWEEP_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
 GITLAB_EVENT_IDS: dict[str, float] = {}
 IS_SHUTTING_DOWN = False
@@ -3791,6 +3796,331 @@ def _remember_gitlab_event(event_id: str) -> bool:
     return True
 
 
+def _support_servicedesk_project_paths() -> list[str]:
+    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATHS") or os.environ.get(
+        "CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH"
+    )
+    values = raw.split(",") if raw else ["veridataops/support"]
+    return [value.strip().lower().strip("/") for value in values if value.strip()]
+
+
+def _support_servicedesk_owner_agent() -> str:
+    return (os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_OWNER_AGENT") or "james").strip().lower() or "james"
+
+
+def _support_servicedesk_project_matches(project_path: str) -> bool:
+    normalized = project_path.strip().lower().strip("/")
+    return bool(normalized and normalized in _support_servicedesk_project_paths())
+
+
+def _support_servicedesk_ticket_key(payload: dict[str, Any]) -> str | None:
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    project_id = project.get("id") or project.get("path_with_namespace")
+    iid = attrs.get("iid")
+    if project_id is None or iid is None:
+        return None
+    return f"{project_id}:{iid}"
+
+
+def _is_support_servicedesk_ticket_payload(payload: dict[str, Any]) -> bool:
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
+    if kind != "issue":
+        return False
+    project_path = str((payload.get("project") or {}).get("path_with_namespace") or "")
+    if not _support_servicedesk_project_matches(project_path):
+        return False
+    attrs = payload.get("object_attributes") or {}
+    state = str(attrs.get("state") or payload.get("state") or "").lower()
+    action = str(attrs.get("action") or "").lower()
+    if action and action not in {"open", "reopen", "sweep"}:
+        return False
+    return bool(attrs.get("iid")) and state not in {"closed", "merged"}
+
+
+def _load_support_servicedesk_state() -> dict[str, Any]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not SUPPORT_SERVICEDESK_STATE_FILE.exists():
+        return {"tickets": {}, "last_sweep_at": None}
+    try:
+        payload = json.loads(SUPPORT_SERVICEDESK_STATE_FILE.read_text())
+    except json.JSONDecodeError:
+        payload = {}
+    tickets = payload.get("tickets") if isinstance(payload, dict) else {}
+    return {
+        "tickets": tickets if isinstance(tickets, dict) else {},
+        "last_sweep_at": payload.get("last_sweep_at") if isinstance(payload, dict) else None,
+    }
+
+
+def _save_support_servicedesk_state(state: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    SUPPORT_SERVICEDESK_STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def _remember_support_servicedesk_ticket(payload: dict[str, Any], source: str, event_id: str | None = None) -> bool:
+    ticket_key = _support_servicedesk_ticket_key(payload)
+    if not ticket_key:
+        return False
+    state = _load_support_servicedesk_state()
+    tickets = state.setdefault("tickets", {})
+    now = time.time()
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    if ticket_key in tickets:
+        tickets[ticket_key]["last_seen_at"] = now
+        tickets[ticket_key]["last_source"] = source
+        _save_support_servicedesk_state(state)
+        return False
+    tickets[ticket_key] = {
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "first_source": source,
+        "last_source": source,
+        "event_id": event_id,
+        "project": project.get("path_with_namespace") or project.get("id"),
+        "iid": attrs.get("iid"),
+        "title": attrs.get("title"),
+        "url": attrs.get("url") or attrs.get("web_url"),
+    }
+    _save_support_servicedesk_state(state)
+    return True
+
+
+def _support_servicedesk_ticket_seen(payload: dict[str, Any]) -> bool:
+    ticket_key = _support_servicedesk_ticket_key(payload)
+    if not ticket_key:
+        return False
+    return ticket_key in _load_support_servicedesk_state().get("tickets", {})
+
+
+def _format_support_servicedesk_prompt(payload: dict[str, Any], source: str, agent: str) -> str:
+    attrs = payload.get("object_attributes") or {}
+    labels = _gitlab_label_names(payload)
+    url = _gitlab_url(payload)
+    lines = [
+        f"Support ServiceDesk ticket intake for {agent}: {_gitlab_reference(payload)}",
+        f"Intake source: {source}",
+    ]
+    if labels:
+        lines.append("Labels: " + ", ".join(labels))
+    if url:
+        lines.append(f"URL: {url}")
+    if attrs.get("description"):
+        lines.append("Ticket description is available in GitLab; inspect the linked ticket only as needed.")
+    lines.extend(
+        [
+            "",
+            "Handle Support intake triage for this new ticket. Do not change the ticket-response workflow.",
+            "Do not poll generic queues. Do not use Slack tools, Slack connectors, MCP Slack apps, or direct Slack API calls.",
+            "Keep any GitLab update concise and avoid repeating prior evidence.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _dispatch_support_servicedesk_ticket(
+    payload: dict[str, Any],
+    *,
+    source: str,
+    event_id: str | None = None,
+    settings: GitLabRoutingSettings | None = None,
+) -> dict[str, Any]:
+    if not _is_support_servicedesk_ticket_payload(payload):
+        return {"ok": True, "ignored": True, "reason": "not_support_servicedesk_ticket"}
+    if _support_servicedesk_ticket_seen(payload):
+        return {"ok": True, "ignored": True, "reason": "duplicate_support_ticket", "ticketKey": _support_servicedesk_ticket_key(payload)}
+
+    project_id, project_settings = _gitlab_project_settings_for_payload(payload, settings)
+    if not project_id or not project_settings or not project_settings.enabled:
+        _append_bot_event(
+            {
+                "type": "support_servicedesk_ticket_ignored",
+                "source": source,
+                "event_id": event_id,
+                "reason": "no_enabled_gitlab_project_route",
+                "ticket_key": _support_servicedesk_ticket_key(payload),
+            }
+        )
+        return {"ok": True, "accepted": False, "reason": "no_enabled_gitlab_project_route"}
+
+    agent = next(iter(_gitlab_owner_agents(payload, project_settings)), _support_servicedesk_owner_agent())
+    binding = _binding_for_agent(agent, project_id) or _master_binding(project_id)
+    if not binding:
+        _append_bot_event(
+            {
+                "type": "support_servicedesk_ticket_ignored",
+                "source": source,
+                "event_id": event_id,
+                "reason": "no_matching_binding",
+                "agent": agent,
+                "ticket_key": _support_servicedesk_ticket_key(payload),
+            }
+        )
+        return {"ok": False, "accepted": False, "reason": "no_matching_binding", "agent": agent}
+
+    _remember_support_servicedesk_ticket(payload, source, event_id)
+    result = await _dispatch_event_to_binding(
+        binding,
+        _format_support_servicedesk_prompt(payload, source, agent),
+        source=f"gitlab:servicedesk:{source}",
+    )
+    target = {
+        "agent": agent,
+        "threadId": result.get("threadId"),
+        "queued": result.get("queued", False),
+        "ok": result.get("ok", False),
+    }
+    _append_bot_event(
+        {
+            "type": "support_servicedesk_ticket_dispatched",
+            "source": source,
+            "event_id": event_id,
+            "project_id": project_id,
+            "ticket_key": _support_servicedesk_ticket_key(payload),
+            "target": target,
+        }
+    )
+    await hub.publish(
+        {
+            "type": "support.servicedesk.ticket",
+            "eventId": event_id,
+            "projectId": project_id,
+            "ticketKey": _support_servicedesk_ticket_key(payload),
+            "target": target,
+        }
+    )
+    return {"ok": True, "accepted": True, "eventId": event_id, "ticketKey": _support_servicedesk_ticket_key(payload), "targets": [target]}
+
+
+def _gitlab_api_base_url() -> str:
+    base = os.environ.get("CODEX_WEB_GITLAB_BASE_URL") or os.environ.get("GITLAB_BASE_URL") or "https://dev.veridataops.com/gitlab"
+    return base.rstrip("/")
+
+
+def _gitlab_api_token() -> str | None:
+    return os.environ.get("CODEX_WEB_GITLAB_TOKEN") or os.environ.get("GITLAB_TOKEN")
+
+
+def _support_servicedesk_sweep_project() -> str:
+    return (
+        os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_ID")
+        or os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH")
+        or "veridataops/support"
+    ).strip()
+
+
+def _support_servicedesk_sweep_interval() -> int:
+    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_INTERVAL_SECONDS", "3600")
+    with contextlib.suppress(ValueError):
+        return max(0, int(raw))
+    return 3600
+
+
+def _support_servicedesk_sweep_lookback_hours() -> int:
+    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_LOOKBACK_HOURS", "0")
+    with contextlib.suppress(ValueError):
+        return max(0, int(raw))
+    return 0
+
+
+def _gitlab_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
+    token = _gitlab_api_token()
+    if not token:
+        raise RuntimeError("GitLab token is not configured for Support ServiceDesk sweep")
+    query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
+    url = f"{_gitlab_api_base_url()}/api/v4/{path.lstrip('/')}"
+    if query:
+        url = f"{url}?{query}"
+    request = urllib.request.Request(url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"GitLab API returned HTTP {exc.code} for {path}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GitLab API request failed for {path}: {exc.reason}") from exc
+
+
+def _issue_to_support_servicedesk_payload(issue: dict[str, Any], project_path: str, project_id: Any) -> dict[str, Any]:
+    labels = issue.get("labels") or []
+    return {
+        "object_kind": "issue",
+        "event_name": "issue",
+        "project": {
+            "id": project_id,
+            "path_with_namespace": project_path,
+            "web_url": issue.get("references", {}).get("full"),
+        },
+        "object_attributes": {
+            "id": issue.get("id"),
+            "iid": issue.get("iid"),
+            "title": issue.get("title"),
+            "description": issue.get("description"),
+            "state": issue.get("state"),
+            "action": "sweep",
+            "created_at": issue.get("created_at"),
+            "updated_at": issue.get("updated_at"),
+            "url": issue.get("web_url"),
+            "web_url": issue.get("web_url"),
+        },
+        "labels": [{"title": label} for label in labels if isinstance(label, str)],
+    }
+
+
+def _support_servicedesk_sweep_payloads() -> list[dict[str, Any]]:
+    project = _support_servicedesk_sweep_project()
+    encoded_project = urllib.parse.quote(project, safe="")
+    project_payload = _gitlab_api_get(f"projects/{encoded_project}")
+    project_path = str(project_payload.get("path_with_namespace") or project)
+    project_id = project_payload.get("id") or project
+    lookback_hours = _support_servicedesk_sweep_lookback_hours()
+    created_after = None
+    if lookback_hours:
+        created_after = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - (lookback_hours * 3600)))
+    issues = _gitlab_api_get(
+        f"projects/{encoded_project}/issues",
+        {
+            "state": "opened",
+            "created_after": created_after,
+            "order_by": "created_at",
+            "sort": "asc",
+            "per_page": 100,
+        },
+    )
+    if not isinstance(issues, list):
+        return []
+    return [_issue_to_support_servicedesk_payload(issue, project_path, project_id) for issue in issues if isinstance(issue, dict)]
+
+
+async def _run_support_servicedesk_sweep_once() -> dict[str, Any]:
+    payloads = await asyncio.to_thread(_support_servicedesk_sweep_payloads)
+    results: list[dict[str, Any]] = []
+    settings = _load_gitlab_routing_settings()
+    for payload in payloads:
+        result = await _dispatch_support_servicedesk_ticket(payload, source="sweep", settings=settings)
+        results.append(result)
+    state = _load_support_servicedesk_state()
+    state["last_sweep_at"] = time.time()
+    _save_support_servicedesk_state(state)
+    accepted = sum(1 for result in results if result.get("accepted"))
+    duplicates = sum(1 for result in results if result.get("reason") == "duplicate_support_ticket")
+    return {"ok": True, "checked": len(payloads), "accepted": accepted, "duplicates": duplicates, "results": results}
+
+
+async def _support_servicedesk_sweep_loop() -> None:
+    interval = _support_servicedesk_sweep_interval()
+    if interval <= 0 or not _gitlab_api_token():
+        return
+    while True:
+        try:
+            result = await _run_support_servicedesk_sweep_once()
+            _append_bot_event({"type": "support_servicedesk_sweep_completed", **{key: value for key, value in result.items() if key != "results"}})
+        except Exception as exc:
+            _append_bot_event({"type": "support_servicedesk_sweep_failed", "error": _truncate_text(str(exc), 500)})
+        await asyncio.sleep(interval)
+
+
 def _gitlab_label_names(payload: dict[str, Any]) -> list[str]:
     labels: list[str] = []
 
@@ -3978,7 +4308,7 @@ async def _watchdog_loop() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global WATCHDOG_TASK, IS_SHUTTING_DOWN
+    global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = False
     _load_projects()
     _dedupe_bot_integrations()
@@ -3993,11 +4323,12 @@ async def startup() -> None:
         asyncio.create_task(_resume_active_threads_after_startup())
     _sd_notify("READY=1\nSTATUS=codex-web started")
     WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
+    SUPPORT_SERVICEDESK_SWEEP_TASK = asyncio.create_task(_support_servicedesk_sweep_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global WATCHDOG_TASK, IS_SHUTTING_DOWN
+    global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = True
     _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
     if WATCHDOG_TASK:
@@ -4005,6 +4336,11 @@ async def shutdown() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await WATCHDOG_TASK
         WATCHDOG_TASK = None
+    if SUPPORT_SERVICEDESK_SWEEP_TASK:
+        SUPPORT_SERVICEDESK_SWEEP_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await SUPPORT_SERVICEDESK_SWEEP_TASK
+        SUPPORT_SERVICEDESK_SWEEP_TASK = None
     await bot_runtime.stop()
     await codex.stop()
 
@@ -4086,6 +4422,17 @@ async def update_gitlab_integration(payload: GitLabRoutingSettings) -> dict[str,
     _append_bot_event({"type": "gitlab_routing_updated", "settings": settings.model_dump()})
     await hub.publish({"type": "gitlab.routing.updated", "settings": _gitlab_integration_payload(settings)})
     return {"ok": True, **_gitlab_integration_payload(settings)}
+
+
+@app.post("/api/integrations/gitlab/support-servicedesk/sweep")
+async def sweep_support_servicedesk() -> dict[str, Any]:
+    if not _gitlab_api_token():
+        raise HTTPException(status_code=503, detail="GitLab token is not configured for Support ServiceDesk sweep")
+    try:
+        return await _run_support_servicedesk_sweep_once()
+    except Exception as exc:
+        _append_bot_event({"type": "support_servicedesk_sweep_failed", "error": _truncate_text(str(exc), 500)})
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/recovery/resume")
@@ -4225,6 +4572,10 @@ async def gitlab_events(request: Request) -> dict[str, Any]:
     event_id = _gitlab_event_id(request, payload)
     if not _remember_gitlab_event(event_id):
         return {"ok": True, "ignored": True, "reason": "duplicate", "eventId": event_id}
+
+    if _is_support_servicedesk_ticket_payload(payload):
+        result = await _dispatch_support_servicedesk_ticket(payload, source="webhook", event_id=event_id, settings=settings)
+        return {**result, "eventId": event_id, "serviceDesk": True}
 
     project_id, project_settings = _gitlab_project_settings_for_payload(payload, settings)
     if not project_id or not project_settings:
