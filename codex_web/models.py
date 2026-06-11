@@ -205,3 +205,34 @@ class BotRouteTest(BaseModel):
     project_id: str | None = None
     external_thread_id: str | None = None
     message_id: str | None = None
+
+
+class GitLabProjectRoutingSettings(BaseModel):
+    project_paths: list[str] = Field(default_factory=list)
+    fallback_agents_by_kind: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "build": ["quinn"],
+            "merge_request": ["quinn"],
+            "pipeline": ["quinn"],
+        }
+    )
+    agent_channels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "carl": "C0B9591ESTB",
+            "dana": "C0B9C6MGZ5X",
+            "james": "C0B9591ESTB",
+            "nora": "C0B9591ESTB",
+            "quinn": "C0B9591ESTB",
+            "riley": "C0B9591ESTB",
+        }
+    )
+
+
+class GitLabRoutingSettings(BaseModel):
+    enabled: bool = True
+    ignored_event_kinds: list[str] = Field(default_factory=lambda: ["note", "wiki_page"])
+    projects: dict[str, GitLabProjectRoutingSettings] = Field(
+        default_factory=lambda: {
+            "a956644fc336": GitLabProjectRoutingSettings(project_paths=["veridataops/"])
+        }
+    )

@@ -33,6 +33,8 @@ from codex_web.models import (
     BotRouteTest,
     BotReplyTarget,
     BotThreadDetail,
+    GitLabProjectRoutingSettings,
+    GitLabRoutingSettings,
     IndexedThread,
     Project,
     ProjectCreate,
@@ -53,6 +55,7 @@ from codex_web.paths import (
     BOTS_CONNECTIONS_FILE,
     BOTS_EVENTS_FILE,
     DATA_DIR,
+    GITLAB_ROUTING_FILE,
     PROJECTS_FILE,
     SLACK_RELAY_NOTICE,
     SLACK_THREAD_ICONS_FILE,
@@ -153,6 +156,17 @@ def _save_bot_delivery_targets(targets: dict[str, BotReplyTarget]) -> None:
 
 def _reply_target_key(binding: BotBinding) -> str:
     return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
+
+
+def _conversation_target_for_binding(binding: BotBinding) -> BotReplyTarget:
+    return BotReplyTarget(
+        thread_id=binding.thread_id,
+        provider=binding.provider,
+        external_conversation_id=binding.external_conversation_id,
+        external_thread_id=None,
+        message_id=None,
+        updated_at=time.time(),
+    )
 
 
 def _external_target_key(provider: str, external_conversation_id: str, external_id: str) -> str:
@@ -1150,6 +1164,95 @@ def _append_bot_event(event: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
+def _normalize_gitlab_project_settings(settings: GitLabProjectRoutingSettings) -> GitLabProjectRoutingSettings:
+    project_paths = sorted({path.strip().lower() for path in settings.project_paths if path and path.strip()})
+    fallbacks: dict[str, list[str]] = {}
+    for kind, agents in settings.fallback_agents_by_kind.items():
+        normalized_kind = str(kind).strip().lower()
+        normalized_agents = sorted({str(agent).strip().lower() for agent in agents if str(agent).strip()})
+        if normalized_kind and normalized_agents:
+            fallbacks[normalized_kind] = normalized_agents
+    channels = {
+        str(agent).strip().lower(): str(channel).strip()
+        for agent, channel in settings.agent_channels.items()
+        if str(agent).strip() and str(channel).strip()
+    }
+    return GitLabProjectRoutingSettings(
+        project_paths=project_paths,
+        fallback_agents_by_kind=fallbacks,
+        agent_channels=channels,
+    )
+
+
+def _normalize_gitlab_routing_settings(settings: GitLabRoutingSettings) -> GitLabRoutingSettings:
+    ignored = sorted({kind.strip().lower() for kind in settings.ignored_event_kinds if kind and kind.strip()})
+    projects: dict[str, GitLabProjectRoutingSettings] = {}
+    for project_id, project_settings in settings.projects.items():
+        normalized_project_id = str(project_id).strip()
+        if not normalized_project_id:
+            continue
+        projects[normalized_project_id] = _normalize_gitlab_project_settings(project_settings)
+    return GitLabRoutingSettings(
+        enabled=settings.enabled,
+        ignored_event_kinds=ignored or ["note", "wiki_page"],
+        projects=projects,
+    )
+
+
+def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
+    if not isinstance(raw, dict):
+        return GitLabRoutingSettings()
+    if "projects" in raw:
+        return GitLabRoutingSettings.model_validate(raw)
+    project_settings_by_id: dict[str, GitLabProjectRoutingSettings] = {}
+    for mapping in raw.get("project_mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        project_id = str(mapping.get("project_id") or "").strip()
+        namespace = str(mapping.get("namespace") or "").strip().lower()
+        if not project_id:
+            continue
+        project_settings = project_settings_by_id.setdefault(project_id, GitLabProjectRoutingSettings())
+        if namespace:
+            project_settings.project_paths.append(namespace)
+    if not project_settings_by_id:
+        legacy_project_id = str(raw.get("default_project_id") or "home").strip() or "home"
+        project_settings_by_id[legacy_project_id] = GitLabProjectRoutingSettings()
+    fallback_agents = raw.get("fallback_agents_by_kind")
+    agent_channels = raw.get("agent_channels")
+    for project_settings in project_settings_by_id.values():
+        if isinstance(fallback_agents, dict):
+            project_settings.fallback_agents_by_kind = fallback_agents
+        if isinstance(agent_channels, dict):
+            project_settings.agent_channels = agent_channels
+    return GitLabRoutingSettings(
+        enabled=bool(raw.get("enabled", True)),
+        ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
+        projects=project_settings_by_id,
+    )
+
+
+def _load_gitlab_routing_settings() -> GitLabRoutingSettings:
+    DATA_DIR.mkdir(exist_ok=True)
+    if GITLAB_ROUTING_FILE.exists():
+        return _normalize_gitlab_routing_settings(_migrate_gitlab_routing_settings(json.loads(GITLAB_ROUTING_FILE.read_text())))
+    settings = GitLabRoutingSettings()
+    channel_overrides = _parse_agent_channel_overrides()
+    if channel_overrides:
+        for project_settings in settings.projects.values():
+            project_settings.agent_channels.update(channel_overrides)
+    normalized = _normalize_gitlab_routing_settings(settings)
+    _save_gitlab_routing_settings(normalized)
+    return normalized
+
+
+def _save_gitlab_routing_settings(settings: GitLabRoutingSettings) -> GitLabRoutingSettings:
+    normalized = _normalize_gitlab_routing_settings(settings)
+    DATA_DIR.mkdir(exist_ok=True)
+    GITLAB_ROUTING_FILE.write_text(json.dumps(normalized.model_dump(), indent=2) + "\n")
+    return normalized
+
+
 def _parse_agent_channel_overrides() -> dict[str, str]:
     raw = os.environ.get("CODEX_WEB_AGENT_CHANNELS", "").strip()
     if not raw:
@@ -1170,25 +1273,19 @@ def _parse_agent_channel_overrides() -> dict[str, str]:
     return result
 
 
-def _preferred_agent_conversation(agent: str) -> str | None:
-    overrides = _parse_agent_channel_overrides()
+def _preferred_agent_conversation(agent: str, project_id: str) -> str | None:
     normalized = agent.lower()
+    settings = _load_gitlab_routing_settings()
+    project_settings = settings.projects.get(project_id)
+    if project_settings and normalized in project_settings.agent_channels:
+        return project_settings.agent_channels[normalized]
+    overrides = _parse_agent_channel_overrides()
     if normalized in overrides:
         return overrides[normalized]
-    # Local defaults keep high-volume development and data-pack traffic out of
-    # the main orchestration channel when matching bindings exist.
-    defaults = {
-        "carl": "C0B9591ESTB",
-        "dana": "C0B9C6MGZ5X",
-        "james": "C0B9591ESTB",
-        "nora": "C0B9591ESTB",
-        "quinn": "C0B9591ESTB",
-        "riley": "C0B9591ESTB",
-    }
-    return defaults.get(normalized)
+    return None
 
 
-def _binding_for_agent(agent: str, project_id: str = "a956644fc336") -> BotBinding | None:
+def _binding_for_agent(agent: str, project_id: str) -> BotBinding | None:
     normalized = agent.strip().lower()
     if not normalized:
         return None
@@ -1212,15 +1309,17 @@ def _binding_for_agent(agent: str, project_id: str = "a956644fc336") -> BotBindi
         ]
     if not candidates:
         return None
-    preferred_conversation = _preferred_agent_conversation(normalized)
+    preferred_conversation = _preferred_agent_conversation(normalized, project_id)
     if preferred_conversation:
         for binding in candidates:
             if binding.external_conversation_id == preferred_conversation:
                 return binding
+        source = max(candidates, key=lambda binding: binding.updated_at)
+        return _clone_binding_to_conversation(source, preferred_conversation)
     return max(candidates, key=lambda binding: binding.updated_at)
 
 
-def _master_binding(project_id: str = "a956644fc336") -> BotBinding | None:
+def _master_binding(project_id: str) -> BotBinding | None:
     masters = [binding for binding in _load_bot_bindings() if binding.project_id == project_id and binding.is_master]
     if not masters:
         return None
@@ -1232,6 +1331,7 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
     settings = _thread_run_settings(binding.thread_id)
     effective_model = settings.model or project.model
     effective_reasoning_effort = settings.reasoning_effort
+    reply_target = _conversation_target_for_binding(binding)
     if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
         queued = _enqueue_turn(
             thread_id=binding.thread_id,
@@ -1242,7 +1342,7 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
             model=effective_model,
             reasoning_effort=effective_reasoning_effort,
             source=source,
-            reply_target=None,
+            reply_target=reply_target,
         )
         binding.updated_at = time.time()
         _upsert_bot_binding(binding)
@@ -1251,6 +1351,7 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
                 "type": "event_turn_queued",
                 "source": source,
                 "thread_id": binding.thread_id,
+                "external_conversation_id": binding.external_conversation_id,
                 "queued_id": queued.id,
                 "queue_depth": _thread_queue_depth(binding.thread_id),
             }
@@ -1278,7 +1379,7 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
         model=effective_model,
         reasoning_effort=effective_reasoning_effort,
         source=source,
-        reply_target=None,
+        reply_target=reply_target,
     )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
@@ -1385,20 +1486,37 @@ def _binding_for_external_target(
 
 
 def _clone_binding_for_conversation(source: BotBinding, message: BotInboundMessage) -> BotBinding:
+    return _clone_binding_to_conversation(
+        source,
+        message.external_conversation_id,
+        connection_id=message.connection_id or source.connection_id,
+        external_name=message.external_name or source.external_name,
+        is_primary_channel=False,
+    )
+
+
+def _clone_binding_to_conversation(
+    source: BotBinding,
+    external_conversation_id: str,
+    *,
+    connection_id: str | None = None,
+    external_name: str | None = None,
+    is_primary_channel: bool = False,
+) -> BotBinding:
     now = time.time()
     return _upsert_bot_binding(
         BotBinding(
             id=uuid.uuid4().hex[:12],
-            connection_id=message.connection_id or source.connection_id,
+            connection_id=connection_id or source.connection_id,
             provider=source.provider,
-            external_conversation_id=message.external_conversation_id,
+            external_conversation_id=external_conversation_id,
             thread_id=source.thread_id,
             project_id=source.project_id,
-            external_name=message.external_name or source.external_name,
+            external_name=external_name or external_conversation_id,
             thread_name=source.thread_name,
             route_prefix=source.route_prefix,
             is_master=False,
-            is_primary_channel=False,
+            is_primary_channel=is_primary_channel,
             post_in_thread=source.post_in_thread,
             sandbox=source.sandbox,
             approval_policy=source.approval_policy,
@@ -1413,6 +1531,8 @@ def _cross_channel_binding_for_message(
     project_id: str,
     current_bindings: list[BotBinding],
     message: BotInboundMessage,
+    *,
+    allow_bare_prefix: bool = False,
 ) -> tuple[BotBinding | None, str, bool]:
     current_by_thread_id = {binding.thread_id: binding for binding in current_bindings}
     candidates = [
@@ -1422,15 +1542,14 @@ def _cross_channel_binding_for_message(
     ]
     matches: dict[str, tuple[BotBinding, str]] = {}
     for binding in sorted(candidates, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
-        prefix = _binding_prefix(binding)
-        if not prefix:
-            continue
-        stripped = _strip_prefix(message.text, prefix)
-        if stripped is None:
-            continue
-        if binding.thread_id in current_by_thread_id:
-            return current_by_thread_id[binding.thread_id], stripped, False
-        matches.setdefault(binding.thread_id, (binding, stripped))
+        for prefix in _binding_prefix_candidates(binding):
+            stripped = _strip_prefix(message.text, prefix, allow_bare_word=allow_bare_prefix)
+            if stripped is None:
+                continue
+            if binding.thread_id in current_by_thread_id:
+                return current_by_thread_id[binding.thread_id], stripped, False
+            matches.setdefault(binding.thread_id, (binding, stripped))
+            break
     if len(matches) == 1:
         return next(iter(matches.values()))[0], next(iter(matches.values()))[1], False
     if len(matches) > 1:
@@ -1831,6 +1950,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             route_message,
             prefer_external_thread=not steer_now,
             allow_master_fallback=not steer_now,
+            allow_bare_prefix=steer_now,
         )
     if binding is None:
         cross_binding, cross_text, cross_ambiguous = _cross_channel_binding_for_message(
@@ -1838,6 +1958,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             project_id,
             bindings,
             route_message,
+            allow_bare_prefix=steer_now,
         )
         if cross_binding is not None:
             binding = (
@@ -2087,6 +2208,7 @@ def _resolve_bot_binding(
     *,
     prefer_external_thread: bool = True,
     allow_master_fallback: bool = True,
+    allow_bare_prefix: bool = False,
 ) -> tuple[BotBinding | None, str, bool]:
     text = message.text
     if not bindings:
@@ -2096,12 +2218,10 @@ def _resolve_bot_binding(
         if thread_binding:
             return thread_binding, text, False
     for binding in sorted(bindings, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
-        prefix = _binding_prefix(binding)
-        if not prefix:
-            continue
-        stripped = _strip_prefix(text, prefix)
-        if stripped is not None:
-            return binding, stripped, False
+        for prefix in _binding_prefix_candidates(binding):
+            stripped = _strip_prefix(text, prefix, allow_bare_word=allow_bare_prefix)
+            if stripped is not None:
+                return binding, stripped, False
     if allow_master_fallback:
         masters = [binding for binding in bindings if binding.is_master]
         if len(masters) == 1:
@@ -2132,7 +2252,33 @@ def _binding_prefix(binding: BotBinding) -> str:
     return (binding.route_prefix or binding.thread_name or binding.thread_id).strip()
 
 
-def _strip_prefix(text: str, prefix: str) -> str | None:
+def _binding_report_name(binding: BotBinding) -> str:
+    prefix = _binding_prefix(binding)
+    if " - " in prefix:
+        first, rest = prefix.split(" - ", 1)
+        if first.strip() and "agent" in rest.lower():
+            return first.strip()
+    return prefix
+
+
+def _binding_prefix_candidates(binding: BotBinding) -> list[str]:
+    candidates = [
+        _binding_prefix(binding),
+        _binding_report_name(binding),
+        binding.thread_name or "",
+    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for candidate in candidates:
+        normalized = candidate.strip()
+        key = normalized.lower()
+        if normalized and key not in seen:
+            seen.add(key)
+            result.append(normalized)
+    return result
+
+
+def _strip_prefix(text: str, prefix: str, *, allow_bare_word: bool = False) -> str | None:
     normalized = text.strip()
     prefix = prefix.strip()
     candidates = [
@@ -2145,6 +2291,10 @@ def _strip_prefix(text: str, prefix: str) -> str | None:
     for candidate in candidates:
         if lower.startswith(candidate.lower()):
             return normalized[len(candidate) :].strip()
+    if allow_bare_word:
+        match = re.match(rf"^{re.escape(prefix)}(?:\s+)(.+)$", normalized, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
     return None
 
 
@@ -2182,17 +2332,45 @@ async def _set_thread_name(thread_id: str, name: str) -> dict[str, Any]:
             updatedAt=thread.get("updatedAt") or time.time(),
         )
     _upsert_indexed_thread(indexed)
-    bindings = _load_bot_bindings()
-    changed = False
-    for binding in bindings:
-        if binding.thread_id == thread_id:
-            binding.thread_name = name
-            binding.route_prefix = name
-            binding.updated_at = time.time()
-            changed = True
-    if changed:
-        _save_bot_bindings(bindings)
     return response
+
+
+def _canonical_bot_thread_names() -> dict[str, str]:
+    grouped: dict[str, list[BotBinding]] = {}
+    for binding in _load_bot_bindings():
+        if binding.thread_name:
+            grouped.setdefault(binding.thread_id, []).append(binding)
+    names: dict[str, str] = {}
+    for thread_id, bindings in grouped.items():
+        bindings.sort(key=lambda binding: (binding.created_at, binding.updated_at))
+        for binding in bindings:
+            name = (binding.thread_name or "").strip()
+            if name:
+                names[thread_id] = name
+                break
+    return names
+
+
+async def _restore_bot_thread_name(thread_id: str | None) -> None:
+    if not thread_id:
+        return
+    name = _canonical_bot_thread_names().get(thread_id)
+    if not name:
+        return
+    try:
+        thread_response = await codex.request("thread/read", {"threadId": thread_id, "includeTurns": False})
+        thread = thread_response.get("thread", thread_response) if isinstance(thread_response, dict) else {}
+        if (thread.get("name") or "").strip() == name:
+            return
+        await _set_thread_name(thread_id, name)
+        _append_bot_event({"type": "bot_thread_name_restored", "thread_id": thread_id, "name": name})
+    except Exception as exc:
+        _append_bot_event({"type": "bot_thread_name_restore_failed", "thread_id": thread_id, "error": str(exc)})
+
+
+async def _restore_bot_thread_names() -> None:
+    for thread_id in _canonical_bot_thread_names():
+        await _restore_bot_thread_name(thread_id)
 
 
 def _project_for_cwd(cwd: str | None) -> Project | None:
@@ -2260,8 +2438,9 @@ async def _record_bot_outbound(message: dict[str, Any]) -> None:
     if not bindings:
         bindings = await _project_scoped_bindings_for_thread(thread_id)
     for binding in _outbound_bindings_for_thread(thread_id, bindings):
-        prefix = _binding_prefix(binding)
-        outbound_text = _format_bot_outbound_item(item, prefix)
+        route_prefix = _binding_prefix(binding)
+        report_name = _binding_report_name(binding)
+        outbound_text = _format_bot_outbound_item(item, report_name)
         if not outbound_text:
             continue
         event = {
@@ -2270,7 +2449,8 @@ async def _record_bot_outbound(message: dict[str, Any]) -> None:
             "external_conversation_id": binding.external_conversation_id,
             "thread_id": thread_id,
             "thread_name": binding.thread_name,
-            "route_prefix": prefix,
+            "route_prefix": route_prefix,
+            "report_name": report_name,
             "item_type": item.get("type"),
             "text": outbound_text,
         }
@@ -2412,8 +2592,8 @@ def _should_reply_in_external_thread(binding: BotBinding) -> bool:
 
 
 def _slack_reply_username(binding: BotBinding) -> str:
-    prefix = _binding_prefix(binding)
-    return f"Codex · {prefix}" if prefix else "Codex"
+    name = _binding_report_name(binding)
+    return f"Codex · {name}" if name else "Codex"
 
 
 def _slack_reply_icon(binding: BotBinding) -> str:
@@ -3271,6 +3451,8 @@ class CodexAppServer:
             method = message.get("method")
             params = message.get("params") or {}
             thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+            if method == "thread/name/updated":
+                asyncio.create_task(_restore_bot_thread_name(thread_id))
             if method in {"turn/completed", "turn/failed"}:
                 _schedule_queue_drain(thread_id)
             elif method == "thread/status/changed":
@@ -3443,6 +3625,7 @@ def _queued_turn_public(queued: QueuedTurn) -> dict[str, Any]:
 def _binding_public(binding: BotBinding) -> dict[str, Any]:
     item = binding.model_dump()
     item["prefix"] = _binding_prefix(binding)
+    item["report_name"] = _binding_report_name(binding)
     item["active"] = _thread_is_active(binding.thread_id)
     item["queueDepth"] = _thread_queue_depth(binding.thread_id)
     if binding.provider == "slack":
@@ -3493,6 +3676,7 @@ def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
             route_message,
             prefer_external_thread=not steer_now,
             allow_master_fallback=not steer_now,
+            allow_bare_prefix=steer_now,
         )
         if binding:
             route_source = "connection-prefix-or-primary"
@@ -3503,6 +3687,7 @@ def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
             project_id,
             bindings,
             route_message,
+            allow_bare_prefix=steer_now,
         )
         if cross_binding is not None:
             binding = cross_binding
@@ -3631,7 +3816,7 @@ def _gitlab_label_names(payload: dict[str, Any]) -> list[str]:
     return sorted({label.strip() for label in labels if label and label.strip()})
 
 
-def _gitlab_owner_agents(payload: dict[str, Any]) -> list[str]:
+def _gitlab_owner_agents(payload: dict[str, Any], project_settings: GitLabProjectRoutingSettings) -> list[str]:
     owners: list[str] = []
     for label in _gitlab_label_names(payload):
         match = re.match(r"owner::(.+)", label.strip(), re.IGNORECASE)
@@ -3640,18 +3825,27 @@ def _gitlab_owner_agents(payload: dict[str, Any]) -> list[str]:
     if owners:
         return sorted(set(owners))
     kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
-    if kind in {"pipeline", "build"}:
-        return ["quinn"]
-    if kind == "merge_request":
-        return ["quinn"]
-    return []
+    return project_settings.fallback_agents_by_kind.get(kind, [])
 
 
-def _gitlab_project_id(payload: dict[str, Any]) -> str:
+def _gitlab_project_path_matches(project_path: str, configured_path: str) -> bool:
+    project_path = project_path.strip().lower().strip("/")
+    configured_path = configured_path.strip().lower().strip("/")
+    if not project_path or not configured_path:
+        return False
+    return project_path == configured_path or project_path.startswith(f"{configured_path}/")
+
+
+def _gitlab_project_settings_for_payload(
+    payload: dict[str, Any],
+    settings: GitLabRoutingSettings | None = None,
+) -> tuple[str | None, GitLabProjectRoutingSettings | None]:
     project_path = ((payload.get("project") or {}).get("path_with_namespace") or "").lower()
-    if project_path.startswith("veridataops/"):
-        return "a956644fc336"
-    return "a956644fc336"
+    settings = settings or _load_gitlab_routing_settings()
+    for project_id, project_settings in settings.projects.items():
+        if any(_gitlab_project_path_matches(project_path, path) for path in project_settings.project_paths):
+            return project_id, project_settings
+    return None, None
 
 
 def _gitlab_reference(payload: dict[str, Any]) -> str:
@@ -3792,6 +3986,7 @@ async def startup() -> None:
         pass
     await bot_runtime.sync()
     if codex.ready.is_set():
+        asyncio.create_task(_restore_bot_thread_names())
         asyncio.create_task(_resume_active_threads_after_startup())
     _sd_notify("READY=1\nSTATUS=codex-web started")
     WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
@@ -3866,6 +4061,30 @@ async def diagnostics_route_test(payload: BotRouteTest) -> dict[str, Any]:
     return _preview_bot_route(payload)
 
 
+@app.get("/api/integrations/gitlab")
+async def get_gitlab_integration() -> dict[str, Any]:
+    return _gitlab_integration_payload(_load_gitlab_routing_settings())
+
+
+def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, Any]:
+    return {
+        **settings.model_dump(),
+        "webhookPath": "/bots/gitlab/events",
+        "tokenVerification": bool(
+            os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
+            or os.environ.get("GITLAB_WEBHOOK_SECRET")
+        ),
+    }
+
+
+@app.post("/api/integrations/gitlab")
+async def update_gitlab_integration(payload: GitLabRoutingSettings) -> dict[str, Any]:
+    settings = _save_gitlab_routing_settings(payload)
+    _append_bot_event({"type": "gitlab_routing_updated", "settings": settings.model_dump()})
+    await hub.publish({"type": "gitlab.routing.updated", "settings": _gitlab_integration_payload(settings)})
+    return {"ok": True, **_gitlab_integration_payload(settings)}
+
+
 @app.post("/api/recovery/resume")
 async def recovery_resume() -> dict[str, Any]:
     try:
@@ -3908,6 +4127,7 @@ async def list_models(include_hidden: bool = False) -> dict[str, Any]:
 async def bot_status() -> dict[str, Any]:
     bindings = _load_bot_bindings()
     connections = _load_bot_connections()
+    gitlab_settings = _load_gitlab_routing_settings()
     return {
         "providers": {
             "slack": {
@@ -3927,7 +4147,7 @@ async def bot_status() -> dict[str, Any]:
                 "webhookPath": "/bots/telegram/webhook",
             },
             "gitlab": {
-                "enabled": True,
+                "enabled": gitlab_settings.enabled,
                 "tokenVerification": bool(
                     os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
                     or os.environ.get("GITLAB_WEBHOOK_SECRET")
@@ -3988,16 +4208,31 @@ async def bot_inbound(payload: BotInboundMessage) -> dict[str, Any]:
 async def gitlab_events(request: Request) -> dict[str, Any]:
     _verify_gitlab_webhook(request)
     payload = await request.json()
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return {"ok": True, "ignored": True, "reason": "gitlab_routing_disabled"}
     kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
-    if kind in {"note", "wiki_page"}:
+    if kind in settings.ignored_event_kinds:
         return {"ok": True, "ignored": True, "reason": "noisy_event_kind"}
 
     event_id = _gitlab_event_id(request, payload)
     if not _remember_gitlab_event(event_id):
         return {"ok": True, "ignored": True, "reason": "duplicate", "eventId": event_id}
 
-    project_id = _gitlab_project_id(payload)
-    agents = _gitlab_owner_agents(payload)
+    project_id, project_settings = _gitlab_project_settings_for_payload(payload, settings)
+    if not project_id or not project_settings:
+        _append_bot_event(
+            {
+                "type": "gitlab_event_ignored",
+                "event_id": event_id,
+                "kind": kind,
+                "reason": "no_matching_project",
+                "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+            }
+        )
+        return {"ok": True, "ignored": True, "reason": "no_matching_project", "eventId": event_id}
+
+    agents = _gitlab_owner_agents(payload, project_settings)
     bindings: list[tuple[str | None, BotBinding]] = []
     for agent in agents:
         binding = _binding_for_agent(agent, project_id)
@@ -4027,11 +4262,12 @@ async def gitlab_events(request: Request) -> dict[str, Any]:
             "type": "gitlab_event_dispatched",
             "event_id": event_id,
             "kind": kind,
+            "project_id": project_id,
             "agents": agents,
             "targets": results,
         }
     )
-    await hub.publish({"type": "gitlab.event", "eventId": event_id, "kind": kind, "targets": results})
+    await hub.publish({"type": "gitlab.event", "eventId": event_id, "kind": kind, "projectId": project_id, "targets": results})
     return {"ok": True, "accepted": True, "eventId": event_id, "targets": results}
 
 

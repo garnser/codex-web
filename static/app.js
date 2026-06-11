@@ -17,6 +17,7 @@ const state = {
   botBindings: [],
   botChannels: [],
   botIntegrationTarget: null,
+  gitlabIntegration: null,
   expandedItems: new Set(),
   threadRenderPending: false,
   diagnostics: null,
@@ -28,6 +29,7 @@ const THEME_KEY = "codex-web-theme";
 const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
+const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "nora", "quinn", "riley"];
 const SLACK_ICON_MAP = {
   ":large_blue_circle:": "🔵",
   ":large_green_circle:": "🟢",
@@ -1061,6 +1063,7 @@ async function refresh() {
   }
   applyRunSettings();
   state.botChannels = await api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`);
+  renderGitLabIntegration();
   const search = $("thread-search").value.trim();
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
@@ -1419,6 +1422,12 @@ function handleEvent(event) {
     if (event.threadId === state.threadId) addMessage("Queue", event.error || "Queued message failed.", "tool", new Date());
     return;
   }
+  if (event.type === "gitlab.routing.updated") {
+    state.gitlabIntegration = event.settings || state.gitlabIntegration;
+    renderGitLabIntegration();
+    refreshDeveloperInfo().catch(console.error);
+    return;
+  }
   if (event.type === "approval.request") {
     state.approvals.set(String(event.request.id), event.request);
     renderApprovals();
@@ -1603,6 +1612,159 @@ function fillRouteTestDefaults(diagnostics) {
   conversation.value = selected.external_conversation_id || "";
 }
 
+function formatLinesFromObject(values = {}) {
+  return Object.entries(values)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(",") : value}`)
+    .join("\n");
+}
+
+function parseList(value) {
+  return String(value || "")
+    .split(/[,\n]/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function parseKeyValueLines(value, { listValues = false } = {}) {
+  const result = {};
+  String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const separator = line.includes("=") ? "=" : ":";
+      const index = line.indexOf(separator);
+      if (index < 0) return;
+      const key = line.slice(0, index).trim().toLowerCase();
+      const rawValue = line.slice(index + 1).trim();
+      if (!key || !rawValue) return;
+      result[key] = listValues
+        ? rawValue.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
+        : rawValue;
+    });
+  return result;
+}
+
+function gitLabProjectsCopy(settings) {
+  return JSON.parse(JSON.stringify(settings?.projects || {}));
+}
+
+function activeGitLabProjectSettings(settings = state.gitlabIntegration) {
+  return (settings?.projects || {})[state.projectId] || {
+    project_paths: [],
+    fallback_agents_by_kind: {
+      build: ["quinn"],
+      merge_request: ["quinn"],
+      pipeline: ["quinn"],
+    },
+    agent_channels: {},
+  };
+}
+
+function gitLabChannelOptions(selectedId) {
+  const seen = new Set();
+  const channels = [...state.botChannels]
+    .filter((channel) => channel?.id && !seen.has(channel.id) && seen.add(channel.id))
+    .sort((left, right) => (left.label || left.name || left.id).localeCompare(right.label || right.name || right.id));
+  const options = [new Option("Binding default", "")];
+  channels.forEach((channel) => {
+    const option = new Option(channel.label || channel.name || channel.id, channel.id);
+    option.title = channel.id;
+    options.push(option);
+  });
+  if (selectedId && !seen.has(selectedId)) {
+    const option = new Option(selectedId, selectedId);
+    option.title = selectedId;
+    options.push(option);
+  }
+  options.forEach((option) => {
+    option.selected = option.value === selectedId;
+  });
+  return options;
+}
+
+function renderGitLabAgentChannels(projectSettings) {
+  const container = $("gitlab-agent-channels");
+  if (!container) return;
+  container.innerHTML = "";
+  const agents = new Set(GITLAB_AGENT_NAMES);
+  Object.keys(projectSettings.agent_channels || {}).forEach((agent) => agents.add(agent));
+  Object.values(projectSettings.fallback_agents_by_kind || {}).forEach((fallbackAgents) => {
+    (fallbackAgents || []).forEach((agent) => agents.add(agent));
+  });
+  [...agents].sort().forEach((agent) => {
+    const row = document.createElement("label");
+    row.className = "gitlab-agent-channel-row";
+    const name = document.createElement("span");
+    name.textContent = agent;
+    const select = document.createElement("select");
+    select.dataset.gitlabAgentChannel = agent;
+    gitLabChannelOptions((projectSettings.agent_channels || {})[agent] || "").forEach((option) => {
+      select.appendChild(option);
+    });
+    row.append(name, select);
+    container.appendChild(row);
+  });
+}
+
+function collectGitLabAgentChannels() {
+  const channels = {};
+  document.querySelectorAll("[data-gitlab-agent-channel]").forEach((select) => {
+    if (select.value) channels[select.dataset.gitlabAgentChannel] = select.value;
+  });
+  return channels;
+}
+
+function renderGitLabIntegration() {
+  const settings = state.gitlabIntegration;
+  if (!settings || !$("gitlab-enabled")) return;
+  const projectSettings = activeGitLabProjectSettings(settings);
+  $("gitlab-enabled").checked = Boolean(settings.enabled);
+  $("gitlab-webhook-path").value = settings.webhookPath || "/bots/gitlab/events";
+  $("gitlab-token-status").value = settings.tokenVerification ? "Enabled" : "Not configured";
+  $("gitlab-ignored-kinds").value = (settings.ignored_event_kinds || []).join(", ");
+  $("gitlab-project-paths").value = (projectSettings.project_paths || []).join("\n");
+  $("gitlab-fallback-agents").value = formatLinesFromObject(projectSettings.fallback_agents_by_kind || {});
+  renderGitLabAgentChannels(projectSettings);
+}
+
+async function refreshGitLabIntegration() {
+  state.gitlabIntegration = await api("/api/integrations/gitlab");
+  renderGitLabIntegration();
+}
+
+async function saveGitLabIntegration() {
+  const result = $("gitlab-routing-result");
+  if (result) {
+    result.hidden = false;
+    result.textContent = "Saving...";
+  }
+  const projects = gitLabProjectsCopy(state.gitlabIntegration);
+  projects[state.projectId] = {
+    project_paths: parseList($("gitlab-project-paths").value),
+    fallback_agents_by_kind: parseKeyValueLines($("gitlab-fallback-agents").value, { listValues: true }),
+    agent_channels: collectGitLabAgentChannels(),
+  };
+  const payload = {
+    enabled: $("gitlab-enabled").checked,
+    ignored_event_kinds: parseList($("gitlab-ignored-kinds").value),
+    projects,
+  };
+  try {
+    const response = await api("/api/integrations/gitlab", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.gitlabIntegration = response;
+    renderGitLabIntegration();
+    if (result) result.textContent = "Saved";
+    await refreshDeveloperInfo();
+  } catch (error) {
+    if (result) result.textContent = error.message;
+  }
+}
+
 async function refreshDeveloperInfo() {
   const panel = $("developer-panel");
   if (panel && !panel.open) return;
@@ -1635,6 +1797,7 @@ async function refreshDeveloperInfo() {
     if (daemonInfo) daemonInfo.textContent = JSON.stringify(info, null, 2);
     renderBotAuditLog(diagnostics.recentBotEvents || []);
     fillRouteTestDefaults(diagnostics);
+    await refreshGitLabIntegration();
     if (summary) {
       summary.textContent = diagnostics.status.ok
         ? `Daemon pid ${diagnostics.status.pid || "unknown"} · ${diagnostics.bindings.length} bot bindings`
@@ -1708,6 +1871,7 @@ $("developer-panel").addEventListener("toggle", () => refreshDeveloperInfo().cat
 $("refresh-developer").addEventListener("click", refreshDeveloperInfo);
 $("recover-daemon").addEventListener("click", recoverDaemon);
 $("run-route-test").addEventListener("click", runRouteTest);
+$("save-gitlab-routing").addEventListener("click", saveGitLabIntegration);
 $("refresh-token-usage").addEventListener("click", (event) => {
   event.stopPropagation();
   refreshTokenUsage();
