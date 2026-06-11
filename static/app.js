@@ -836,6 +836,12 @@ function truncateCommandOutput(text, limit = 60000) {
   return `${value.slice(0, limit)}\n\n... truncated ${value.length - limit} characters`;
 }
 
+function commandPreview(command) {
+  const value = String(command || "").trim();
+  if (!value) return "Command details";
+  return value.replace(/\s+/g, " ");
+}
+
 function itemTimestamp(item = {}, turn = {}) {
   return messageTimestamp(
     item.createdAt,
@@ -962,8 +968,11 @@ function addFileChangeMessage(changes, timestamp = new Date()) {
 function addCommandMessage(label, command, output = "", open = false, timestamp = new Date()) {
   const message = document.createElement("article");
   message.className = "message command-message";
-  const hasOutput = Boolean(output && output.trim());
-  const summaryText = command || "Command";
+  const normalizedCommand = String(command || "").trim();
+  const normalizedOutput = String(output || "").trim();
+  const hasCommand = Boolean(normalizedCommand);
+  const hasOutput = Boolean(normalizedOutput);
+  const summaryText = commandPreview(normalizedCommand);
   message.innerHTML = `
     <div class="message-header">
       <div class="role">${escapeHtml(label)}</div>
@@ -972,7 +981,7 @@ function addCommandMessage(label, command, output = "", open = false, timestamp 
     <details class="command-details"${open ? " open" : ""}>
       <summary>
         <span></span>
-        <small>${hasOutput ? "Expand output" : "No output"}</small>
+        <small>${hasOutput ? "Expand output" : "Expand command"}</small>
       </summary>
       <pre></pre>
     </details>
@@ -981,13 +990,15 @@ function addCommandMessage(label, command, output = "", open = false, timestamp 
   const summary = message.querySelector("summary");
   const pre = message.querySelector("pre");
   summary.querySelector("span").textContent = summaryText;
-  summary.title = summaryText;
-  pre.textContent = hasOutput
-    ? truncateCommandOutput(`${command || ""}\n\n${output}`.trim())
-    : truncateCommandOutput(command || "No command content was provided.");
+  summary.title = normalizedCommand || summaryText;
+  const commandBlock = hasCommand ? `$ ${normalizedCommand}` : "$ Command content was not provided.";
+  pre.textContent = truncateCommandOutput(
+    hasOutput ? `${commandBlock}\n\n${normalizedOutput}` : commandBlock
+  );
   details.addEventListener("toggle", () => {
-    if (!hasOutput) return;
-    summary.querySelector("small").textContent = details.open ? "Collapse output" : "Expand output";
+    const expandedLabel = hasOutput ? "Collapse output" : "Collapse command";
+    const collapsedLabel = hasOutput ? "Expand output" : "Expand command";
+    summary.querySelector("small").textContent = details.open ? expandedLabel : collapsedLabel;
   });
   $("messages").appendChild(message);
   $("messages").scrollTop = $("messages").scrollHeight;

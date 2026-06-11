@@ -1136,7 +1136,7 @@ select {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   align-self: stretch;
   background: var(--surface);
   color: var(--text);
@@ -1198,8 +1198,21 @@ select {
   flex: 1;
   font-weight: 800;
   overflow: hidden;
+}
+
+.file-change-details summary span {
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.command-details summary span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .file-change-details summary small,
@@ -1231,6 +1244,10 @@ select {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.command-details pre {
+  max-height: min(70vh, 760px);
 }
 
 .composer {
