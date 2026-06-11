@@ -88,6 +88,32 @@ request and pipeline events without an owner label go to Quinn. Configure
 channel preference overrides with `CODEX_WEB_AGENT_CHANNELS`, either as JSON
 (`{"dana":"C0B9C6MGZ5X"}`) or comma pairs (`dana:C0B9C6MGZ5X,james:C0B9591ESTB`).
 
+Support ServiceDesk intake:
+
+- New issue webhooks for `veridataops/support` are routed as Support
+  ServiceDesk tickets. Owner labels still win; otherwise intake defaults to
+  James.
+- Delivered tickets are recorded in `data/support_servicedesk_intake.json`
+  using the GitLab project and issue IID, so webhook retries and sweeps do not
+  create duplicate Codex turns.
+- Missed-ticket sweeps run hourly when `CODEX_WEB_GITLAB_TOKEN` or
+  `GITLAB_TOKEN` is configured. The sweep checks open Support issues and relies
+  on the durable ticket record to avoid repeats.
+- Run a sweep manually with
+  `POST /api/integrations/gitlab/support-servicedesk/sweep`.
+
+Optional Support ServiceDesk environment variables:
+
+- `CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH` or
+  `CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATHS`, default `veridataops/support`.
+- `CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_ID`, default
+  `veridataops/support`, for GitLab API sweep requests.
+- `CODEX_WEB_SUPPORT_SERVICEDESK_OWNER_AGENT`, default `james`.
+- `CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_INTERVAL_SECONDS`, default `3600`.
+- `CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_LOOKBACK_HOURS`, default `0` for all
+  open issues.
+- `CODEX_WEB_GITLAB_BASE_URL`, default `https://dev.veridataops.com/gitlab`.
+
 Important: `/codex` is currently nginx-allowlisted to local networks. Real
 Slack and Telegram webhooks need either a separate public nginx location for
 the two webhook paths or an external relay that can reach this host. Outbound
