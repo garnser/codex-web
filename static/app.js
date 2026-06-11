@@ -1650,8 +1650,9 @@ function gitLabProjectsCopy(settings) {
   return JSON.parse(JSON.stringify(settings?.projects || {}));
 }
 
-function activeGitLabProjectSettings(settings = state.gitlabIntegration) {
-  return (settings?.projects || {})[state.projectId] || {
+function defaultGitLabProjectSettings(enabled = false) {
+  return {
+    enabled,
     project_paths: [],
     fallback_agents_by_kind: {
       build: ["quinn"],
@@ -1660,6 +1661,11 @@ function activeGitLabProjectSettings(settings = state.gitlabIntegration) {
     },
     agent_channels: {},
   };
+}
+
+function activeGitLabProjectSettings(settings = state.gitlabIntegration) {
+  const projectSettings = (settings?.projects || {})[state.projectId];
+  return projectSettings ? { ...defaultGitLabProjectSettings(true), ...projectSettings } : defaultGitLabProjectSettings(false);
 }
 
 function gitLabChannelOptions(selectedId) {
@@ -1720,7 +1726,7 @@ function renderGitLabIntegration() {
   const settings = state.gitlabIntegration;
   if (!settings || !$("gitlab-enabled")) return;
   const projectSettings = activeGitLabProjectSettings(settings);
-  $("gitlab-enabled").checked = Boolean(settings.enabled);
+  $("gitlab-enabled").checked = Boolean(projectSettings.enabled);
   $("gitlab-webhook-path").value = settings.webhookPath || "/bots/gitlab/events";
   $("gitlab-token-status").value = settings.tokenVerification ? "Enabled" : "Not configured";
   $("gitlab-ignored-kinds").value = (settings.ignored_event_kinds || []).join(", ");
@@ -1742,12 +1748,13 @@ async function saveGitLabIntegration() {
   }
   const projects = gitLabProjectsCopy(state.gitlabIntegration);
   projects[state.projectId] = {
+    enabled: $("gitlab-enabled").checked,
     project_paths: parseList($("gitlab-project-paths").value),
     fallback_agents_by_kind: parseKeyValueLines($("gitlab-fallback-agents").value, { listValues: true }),
     agent_channels: collectGitLabAgentChannels(),
   };
   const payload = {
-    enabled: $("gitlab-enabled").checked,
+    enabled: state.gitlabIntegration?.enabled ?? true,
     ignored_event_kinds: parseList($("gitlab-ignored-kinds").value),
     projects,
   };

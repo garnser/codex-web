@@ -1178,6 +1178,7 @@ def _normalize_gitlab_project_settings(settings: GitLabProjectRoutingSettings) -
         if str(agent).strip() and str(channel).strip()
     }
     return GitLabProjectRoutingSettings(
+        enabled=settings.enabled,
         project_paths=project_paths,
         fallback_agents_by_kind=fallbacks,
         agent_channels=channels,
@@ -1220,13 +1221,15 @@ def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
         project_settings_by_id[legacy_project_id] = GitLabProjectRoutingSettings()
     fallback_agents = raw.get("fallback_agents_by_kind")
     agent_channels = raw.get("agent_channels")
+    enabled = bool(raw.get("enabled", True))
     for project_settings in project_settings_by_id.values():
+        project_settings.enabled = enabled
         if isinstance(fallback_agents, dict):
             project_settings.fallback_agents_by_kind = fallback_agents
         if isinstance(agent_channels, dict):
             project_settings.agent_channels = agent_channels
     return GitLabRoutingSettings(
-        enabled=bool(raw.get("enabled", True)),
+        enabled=enabled,
         ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
         projects=project_settings_by_id,
     )
@@ -4128,6 +4131,10 @@ async def bot_status() -> dict[str, Any]:
     bindings = _load_bot_bindings()
     connections = _load_bot_connections()
     gitlab_settings = _load_gitlab_routing_settings()
+    gitlab_enabled = gitlab_settings.enabled and any(
+        project.enabled and project.project_paths
+        for project in gitlab_settings.projects.values()
+    )
     return {
         "providers": {
             "slack": {
@@ -4147,7 +4154,7 @@ async def bot_status() -> dict[str, Any]:
                 "webhookPath": "/bots/telegram/webhook",
             },
             "gitlab": {
-                "enabled": gitlab_settings.enabled,
+                "enabled": gitlab_enabled,
                 "tokenVerification": bool(
                     os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
                     or os.environ.get("GITLAB_WEBHOOK_SECRET")
@@ -4231,6 +4238,18 @@ async def gitlab_events(request: Request) -> dict[str, Any]:
             }
         )
         return {"ok": True, "ignored": True, "reason": "no_matching_project", "eventId": event_id}
+    if not project_settings.enabled:
+        _append_bot_event(
+            {
+                "type": "gitlab_event_ignored",
+                "event_id": event_id,
+                "kind": kind,
+                "reason": "project_routing_disabled",
+                "project_id": project_id,
+                "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+            }
+        )
+        return {"ok": True, "ignored": True, "reason": "project_routing_disabled", "eventId": event_id}
 
     agents = _gitlab_owner_agents(payload, project_settings)
     bindings: list[tuple[str | None, BotBinding]] = []
