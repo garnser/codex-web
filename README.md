@@ -73,12 +73,20 @@ Provider webhook endpoints:
 
 - Slack Events API: `POST /bots/slack/events`
 - Telegram Bot API webhook: `POST /bots/telegram/webhook`
+- GitLab project/group webhooks: `POST /bots/gitlab/events`
 
 Optional verification environment variables:
 
 - `SLACK_SIGNING_SECRET` verifies Slack request signatures.
 - `TELEGRAM_WEBHOOK_SECRET` verifies Telegram's
   `X-Telegram-Bot-Api-Secret-Token` header.
+- `CODEX_WEB_GITLAB_WEBHOOK_SECRET` or `GITLAB_WEBHOOK_SECRET` verifies
+  GitLab's `X-Gitlab-Token` header.
+
+GitLab events are routed to agent threads from `owner::<agent>` labels. Merge
+request and pipeline events without an owner label go to Quinn. Configure
+channel preference overrides with `CODEX_WEB_AGENT_CHANNELS`, either as JSON
+(`{"dana":"C0B9C6MGZ5X"}`) or comma pairs (`dana:C0B9C6MGZ5X,james:C0B9591ESTB`).
 
 Important: `/codex` is currently nginx-allowlisted to local networks. Real
 Slack and Telegram webhooks need either a separate public nginx location for
