@@ -208,6 +208,7 @@ class BotRouteTest(BaseModel):
 
 
 class GitLabProjectRoutingSettings(BaseModel):
+    enabled: bool = True
     project_paths: list[str] = Field(default_factory=list)
     fallback_agents_by_kind: dict[str, list[str]] = Field(
         default_factory=lambda: {
