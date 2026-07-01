@@ -18,9 +18,15 @@ const state = {
   botChannels: [],
   botIntegrationTarget: null,
   gitlabIntegration: null,
+  agentChannelPresence: null,
   expandedItems: new Set(),
   threadRenderPending: false,
   diagnostics: null,
+  refreshTimer: null,
+  refreshInFlight: null,
+  refreshQueued: false,
+  searchTimer: null,
+  commLogRenderPending: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -29,7 +35,7 @@ const THEME_KEY = "codex-web-theme";
 const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
-const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "nora", "quinn", "riley"];
+const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "janice", "larry", "maya", "nora", "quinn", "riley", "sally", "tom"];
 const SLACK_ICON_MAP = {
   ":large_blue_circle:": "🔵",
   ":large_green_circle:": "🟢",
@@ -134,6 +140,19 @@ function applyTheme(theme) {
   toggle.textContent = isDark ? "☀" : "◐";
   toggle.setAttribute("aria-pressed", String(isDark));
   toggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+}
+
+function developerPanelOpen() {
+  return Boolean($("developer-panel")?.open);
+}
+
+function scheduleCommunicationLogRender() {
+  if (!developerPanelOpen() || state.commLogRenderPending) return;
+  state.commLogRenderPending = true;
+  requestAnimationFrame(() => {
+    state.commLogRenderPending = false;
+    renderCommunicationLog();
+  });
 }
 
 async function api(path, options = {}) {
@@ -1055,23 +1074,62 @@ function renderItem(item, turn = {}) {
 }
 
 async function refresh() {
-  state.projects = await api("/api/projects");
-  state.botBindings = await api("/api/bots/bindings");
-  state.threadSettings = await api("/api/thread-settings");
-  if (!state.models.length) {
-    await refreshModels();
+  if (state.refreshInFlight) {
+    state.refreshQueued = true;
+    return state.refreshInFlight;
   }
-  applyRunSettings();
-  state.botChannels = await api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`);
-  renderGitLabIntegration();
   const search = $("thread-search").value.trim();
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
-  state.threads = await api(`/api/threads?${qs}`);
-  const threads = state.threads?.data || state.threads?.threads || state.threads || [];
-  hydrateThreadListActivity(threads);
-  renderProjects();
-  renderThreads();
+  state.refreshInFlight = (async () => {
+    const [projects, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
+      api("/api/projects"),
+      api("/api/bots/bindings"),
+      api("/api/thread-settings"),
+      api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
+      api(`/api/threads?${qs}`),
+      state.models.length
+        ? Promise.resolve(state.models)
+        : api("/api/models")
+          .then((response) => (Array.isArray(response.data) ? response.data : []))
+          .catch((error) => {
+            logEvent("models.error", { message: error.message });
+            return [];
+          }),
+    ]);
+    state.projects = projects;
+    state.botBindings = botBindings;
+    state.threadSettings = threadSettings;
+    state.botChannels = botChannels;
+    state.threads = threadsResponse;
+    if (!state.models.length) {
+      state.models = modelsResponse;
+    }
+    applyRunSettings();
+    renderGitLabIntegration();
+    renderAgentChannelPresence();
+    const threads = state.threads?.data || state.threads?.threads || state.threads || [];
+    hydrateThreadListActivity(threads);
+    renderProjects();
+    renderThreads();
+  })();
+  try {
+    await state.refreshInFlight;
+  } finally {
+    state.refreshInFlight = null;
+    if (state.refreshQueued) {
+      state.refreshQueued = false;
+      scheduleRefresh(100);
+    }
+  }
+}
+
+function scheduleRefresh(delay = 100) {
+  if (state.refreshTimer) clearTimeout(state.refreshTimer);
+  state.refreshTimer = setTimeout(() => {
+    state.refreshTimer = null;
+    refresh().catch(console.error);
+  }, delay);
 }
 
 async function refreshModels() {
@@ -1268,7 +1326,6 @@ async function loadThread(threadId) {
   });
   if (threadOptions.model) qs.set("model", threadOptions.model);
   if (threadOptions.reasoningEffort) qs.set("reasoning_effort", threadOptions.reasoningEffort);
-  await api(`/api/threads/${threadId}/resume?${qs}`, { method: "POST" });
   const data = await api(`/api/threads/${threadId}`);
   const thread = data.thread || data;
   hydrateThreadActivity(thread);
@@ -1409,7 +1466,7 @@ function handleEvent(event) {
         setWaiting(true, "Waiting for Codex");
       }
     }
-    refresh().catch(console.error);
+    scheduleRefresh(120);
     return;
   }
   if (event.type === "queue.status") {
@@ -1425,7 +1482,13 @@ function handleEvent(event) {
   if (event.type === "gitlab.routing.updated") {
     state.gitlabIntegration = event.settings || state.gitlabIntegration;
     renderGitLabIntegration();
-    refreshDeveloperInfo().catch(console.error);
+    if (developerPanelOpen()) refreshDeveloperInfo().catch(console.error);
+    return;
+  }
+  if (event.type === "agent.channels.updated") {
+    state.agentChannelPresence = event.settings || state.agentChannelPresence;
+    renderAgentChannelPresence();
+    if (developerPanelOpen()) refreshDeveloperInfo().catch(console.error);
     return;
   }
   if (event.type === "approval.request") {
@@ -1462,7 +1525,7 @@ function handleEvent(event) {
   }
   if (!isActiveThreadEvent(message)) {
     if (message.method === "thread/name/updated" || message.method === "thread/status/changed") {
-      refresh().catch(console.error);
+      scheduleRefresh(120);
     }
     updateWaitingFromState();
     return;
@@ -1487,14 +1550,14 @@ function handleEvent(event) {
   } else if (message.method === "turn/completed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
-    refresh().catch(console.error);
+    scheduleRefresh(120);
   } else if (message.method === "turn/failed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
   } else if (message.method === "thread/name/updated") {
-    refresh().catch(console.error);
+    scheduleRefresh(120);
   } else if (message.method === "thread/status/changed") {
-    refresh().catch(console.error);
+    scheduleRefresh(120);
     updateWaitingFromState();
   }
 }
@@ -1552,7 +1615,7 @@ function logEvent(type, payload = {}) {
     payload,
   });
   state.eventLog = state.eventLog.slice(0, 120);
-  renderCommunicationLog();
+  scheduleCommunicationLogRender();
 }
 
 function renderCommunicationLog() {
@@ -1653,13 +1716,14 @@ function gitLabProjectsCopy(settings) {
 function defaultGitLabProjectSettings(enabled = false) {
   return {
     enabled,
+    channel_ids: [],
+    route_agents: [],
     project_paths: [],
     fallback_agents_by_kind: {
       build: ["quinn"],
       merge_request: ["quinn"],
       pipeline: ["quinn"],
     },
-    agent_channels: {},
   };
 }
 
@@ -1668,58 +1732,344 @@ function activeGitLabProjectSettings(settings = state.gitlabIntegration) {
   return projectSettings ? { ...defaultGitLabProjectSettings(true), ...projectSettings } : defaultGitLabProjectSettings(false);
 }
 
-function gitLabChannelOptions(selectedId) {
+function agentChannelProjectsCopy(settings) {
+  return JSON.parse(JSON.stringify(settings?.projects || {}));
+}
+
+function defaultAgentChannelPresenceProjectSettings() {
+  return {
+    agent_channels: {},
+  };
+}
+
+function activeAgentChannelPresenceProjectSettings(settings = state.agentChannelPresence) {
+  const projectSettings = (settings?.projects || {})[state.projectId];
+  return projectSettings
+    ? { ...defaultAgentChannelPresenceProjectSettings(), ...projectSettings }
+    : defaultAgentChannelPresenceProjectSettings();
+}
+
+function normalizeGitLabSelectedChannels(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (value) return [value];
+  return [];
+}
+
+function gitLabChannelChoices(selectedIds) {
+  const selectedSet = new Set(normalizeGitLabSelectedChannels(selectedIds));
   const seen = new Set();
   const channels = [...state.botChannels]
     .filter((channel) => channel?.id && !seen.has(channel.id) && seen.add(channel.id))
     .sort((left, right) => (left.label || left.name || left.id).localeCompare(right.label || right.name || right.id));
-  const options = [new Option("Binding default", "")];
+  const options = [];
   channels.forEach((channel) => {
-    const option = new Option(channel.label || channel.name || channel.id, channel.id);
-    option.title = channel.id;
-    options.push(option);
+    options.push({
+      label: channel.label || channel.name || channel.id,
+      value: channel.id,
+      title: channel.id,
+      selected: selectedSet.has(channel.id),
+    });
   });
-  if (selectedId && !seen.has(selectedId)) {
-    const option = new Option(selectedId, selectedId);
-    option.title = selectedId;
-    options.push(option);
-  }
-  options.forEach((option) => {
-    option.selected = option.value === selectedId;
+  selectedSet.forEach((selectedId) => {
+    if (selectedId && !seen.has(selectedId)) {
+      options.push({
+        label: selectedId,
+        value: selectedId,
+        title: selectedId,
+        selected: true,
+      });
+    }
   });
   return options;
 }
 
-function renderGitLabAgentChannels(projectSettings) {
-  const container = $("gitlab-agent-channels");
+function gitLabSlackRouteChannelChoices(selectedIds) {
+  const selectedSet = new Set(normalizeGitLabSelectedChannels(selectedIds));
+  const seen = new Set();
+  const channels = [...state.botChannels]
+    .filter((channel) => channel?.provider === "slack" && channel?.id && !seen.has(channel.id) && seen.add(channel.id))
+    .sort((left, right) => (left.label || left.name || left.id).localeCompare(right.label || right.name || right.id));
+  const options = [];
+  channels.forEach((channel) => {
+    options.push({
+      label: channel.label || channel.name || channel.id,
+      value: channel.id,
+      title: channel.id,
+      selected: selectedSet.has(channel.id),
+    });
+  });
+  selectedSet.forEach((selectedId) => {
+    if (!selectedId || seen.has(selectedId)) return;
+    options.push({
+      label: selectedId,
+      value: selectedId,
+      title: selectedId,
+      selected: true,
+    });
+  });
+  return options;
+}
+
+function gitLabChannelOptions(selectedIds) {
+  return gitLabChannelChoices(selectedIds).map((choice) => {
+    const option = new Option(choice.label, choice.value);
+    option.title = choice.title;
+    option.selected = choice.selected;
+    return option;
+  });
+}
+
+function gitLabChoiceSummary(choices, selectedIds, emptyLabel) {
+  const selectedSet = new Set(normalizeGitLabSelectedChannels(selectedIds));
+  const selected = choices.filter((choice) => selectedSet.has(choice.value));
+  if (!selected.length) return emptyLabel;
+  if (selected.length === 1) return selected[0].label;
+  if (selected.length === 2) return `${selected[0].label}, ${selected[1].label}`;
+  return `${selected.length} selected`;
+}
+
+function createGitLabMultiSelectDropdown({
+  dataAttribute,
+  dataValue = "true",
+  selectedValues = [],
+  choices = [],
+  emptyLabel,
+  emptyMeta,
+  defaultLabel,
+  onSelectionChange,
+}) {
+  const picker = document.createElement("div");
+  picker.className = "gitlab-agent-channel-picker";
+
+  const details = document.createElement("details");
+  details.className = "gitlab-channel-dropdown";
+
+  const summary = document.createElement("summary");
+  summary.innerHTML = `
+    <span class="gitlab-channel-summary">
+      <strong></strong>
+      <small></small>
+    </span>
+  `;
+  const summaryTitle = summary.querySelector("strong");
+  const summaryMeta = summary.querySelector("small");
+
+  const menu = document.createElement("div");
+  menu.className = "gitlab-channel-menu";
+
+  const select = document.createElement("select");
+  select.multiple = true;
+  select.hidden = true;
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  select.dataset[dataAttribute] = dataValue;
+
+  const defaultLabelEl = document.createElement("label");
+  defaultLabelEl.className = "gitlab-channel-option gitlab-channel-default";
+  const defaultInput = document.createElement("input");
+  defaultInput.type = "checkbox";
+  defaultInput.dataset.gitlabChannelDefault = "true";
+  const defaultText = document.createElement("span");
+  defaultText.textContent = defaultLabel;
+  defaultLabelEl.append(defaultInput, defaultText);
+  menu.appendChild(defaultLabelEl);
+
+  function selectedIds() {
+    return [...select.selectedOptions].map((option) => option.value).filter(Boolean);
+  }
+
+  function syncSummary() {
+    const current = selectedIds();
+    summaryTitle.textContent = gitLabChoiceSummary(choices, current, emptyLabel);
+    summaryMeta.textContent = current.length ? `${current.length} selected` : emptyMeta;
+    defaultInput.checked = current.length === 0;
+  }
+
+  function setChoices(nextChoices, nextSelectedValues = selectedIds()) {
+    choices = nextChoices;
+    select.innerHTML = "";
+    menu.querySelectorAll("[data-gitlab-channel-value]").forEach((element) => element.closest("label")?.remove());
+    const selectedSet = new Set(normalizeGitLabSelectedChannels(nextSelectedValues));
+    nextChoices.forEach((choice) => {
+      const option = new Option(choice.label, choice.value);
+      option.title = choice.title;
+      option.selected = selectedSet.has(choice.value);
+      select.appendChild(option);
+
+      const optionLabel = document.createElement("label");
+      optionLabel.className = "gitlab-channel-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selectedSet.has(choice.value);
+      checkbox.dataset.gitlabChannelValue = choice.value;
+      checkbox.title = choice.title;
+      checkbox.addEventListener("change", () => {
+        [...select.options].forEach((item) => {
+          if (item.value === choice.value) item.selected = checkbox.checked;
+        });
+        syncSummary();
+        onSelectionChange?.(selectedIds(), { setChoices });
+      });
+      const text = document.createElement("span");
+      text.textContent = choice.label;
+      optionLabel.append(checkbox, text);
+      menu.appendChild(optionLabel);
+    });
+    syncSummary();
+  }
+
+  defaultInput.addEventListener("change", () => {
+    if (!defaultInput.checked) {
+      defaultInput.checked = selectedIds().length === 0;
+      return;
+    }
+    [...select.options].forEach((option) => {
+      option.selected = false;
+    });
+    menu.querySelectorAll("[data-gitlab-channel-value]").forEach((input) => {
+      input.checked = false;
+    });
+    syncSummary();
+    onSelectionChange?.([], { setChoices });
+  });
+
+  setChoices(choices, selectedValues);
+  details.append(summary, menu);
+  picker.append(details, select);
+  return { picker, select, setChoices, selectedIds };
+}
+
+function bindingAgentName(binding) {
+  if (!binding || binding.is_master) return "";
+  const raw = String(binding.route_prefix || binding.thread_name || "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw.split(" - ", 1)[0].split(/\s+/, 1)[0].trim();
+}
+
+function agentChannelNames(projectSettings) {
+  const agents = new Set(GITLAB_AGENT_NAMES);
+  (state.botBindings || []).forEach((binding) => {
+    if (binding.project_id && binding.project_id !== state.projectId) return;
+    const agent = bindingAgentName(binding);
+    if (agent) agents.add(agent);
+  });
+  Object.keys(projectSettings.agent_channels || {}).forEach((agent) => agents.add(agent));
+  return [...agents].sort();
+}
+
+function gitLabRouteAgentChoices(selectedChannelIds = [], selectedAgents = []) {
+  const presence = activeAgentChannelPresenceProjectSettings();
+  const allowedChannels = new Set(normalizeGitLabSelectedChannels(selectedChannelIds));
+  const agents = new Set();
+  Object.entries(presence.agent_channels || {}).forEach(([agent, channels]) => {
+    const normalizedChannels = normalizeGitLabSelectedChannels(channels);
+    if (!allowedChannels.size || normalizedChannels.some((channel) => allowedChannels.has(channel))) {
+      agents.add(agent);
+    }
+  });
+  normalizeGitLabSelectedChannels(selectedAgents).forEach((agent) => agents.add(agent));
+  return [...agents]
+    .sort()
+    .map((agent) => ({
+      label: agent,
+      value: agent,
+      title: agent,
+      selected: normalizeGitLabSelectedChannels(selectedAgents).includes(agent),
+    }));
+}
+
+function renderAgentChannelPresence(projectSettings = activeAgentChannelPresenceProjectSettings()) {
+  const container = $("agent-channel-presence");
   if (!container) return;
   container.innerHTML = "";
-  const agents = new Set(GITLAB_AGENT_NAMES);
-  Object.keys(projectSettings.agent_channels || {}).forEach((agent) => agents.add(agent));
-  Object.values(projectSettings.fallback_agents_by_kind || {}).forEach((fallbackAgents) => {
-    (fallbackAgents || []).forEach((agent) => agents.add(agent));
-  });
-  [...agents].sort().forEach((agent) => {
-    const row = document.createElement("label");
+  agentChannelNames(projectSettings).forEach((agent) => {
+    const row = document.createElement("div");
     row.className = "gitlab-agent-channel-row";
     const name = document.createElement("span");
     name.textContent = agent;
-    const select = document.createElement("select");
-    select.dataset.gitlabAgentChannel = agent;
-    gitLabChannelOptions((projectSettings.agent_channels || {})[agent] || "").forEach((option) => {
-      select.appendChild(option);
+    const selectedIds = (projectSettings.agent_channels || {})[agent] || [];
+    const dropdown = createGitLabMultiSelectDropdown({
+      dataAttribute: "gitlabAgentChannel",
+      dataValue: agent,
+      selectedValues: selectedIds,
+      choices: gitLabChannelChoices(selectedIds),
+      emptyLabel: "Binding default",
+      emptyMeta: "Default route",
+      defaultLabel: "Binding default",
     });
-    row.append(name, select);
+    row.append(name, dropdown.picker);
     container.appendChild(row);
   });
 }
 
-function collectGitLabAgentChannels() {
+function collectAgentChannelPresence() {
   const channels = {};
   document.querySelectorAll("[data-gitlab-agent-channel]").forEach((select) => {
-    if (select.value) channels[select.dataset.gitlabAgentChannel] = select.value;
+    const selected = [...select.selectedOptions]
+      .map((option) => option.value)
+      .filter(Boolean);
+    if (selected.length) channels[select.dataset.gitlabAgentChannel] = selected;
   });
   return channels;
+}
+
+function renderGitLabRoutingRoutes(projectSettings = activeGitLabProjectSettings()) {
+  const container = $("gitlab-routing-routes");
+  if (!container) return;
+  container.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "gitlab-routing-route-row";
+
+  const sender = document.createElement("span");
+  sender.className = "gitlab-routing-sender";
+  sender.textContent = "GitLab";
+
+  const channelDropdown = createGitLabMultiSelectDropdown({
+    dataAttribute: "gitlabRouteChannel",
+    selectedValues: projectSettings.channel_ids || [],
+    choices: gitLabSlackRouteChannelChoices(projectSettings.channel_ids || []),
+    emptyLabel: "Automatic routing",
+    emptyMeta: "Any matching channel",
+    defaultLabel: "Automatic routing",
+    onSelectionChange: (selectedChannels) => {
+      const selectedAgents = agentDropdown.selectedIds();
+      agentDropdown.setChoices(
+        gitLabRouteAgentChoices(selectedChannels, selectedAgents),
+        selectedAgents
+      );
+    },
+  });
+
+  const routeAgents = normalizeGitLabSelectedChannels(projectSettings.route_agents || []);
+  const agentDropdown = createGitLabMultiSelectDropdown({
+    dataAttribute: "gitlabRouteAgent",
+    selectedValues: routeAgents,
+    choices: gitLabRouteAgentChoices(channelDropdown.selectedIds(), routeAgents),
+    emptyLabel: "Automatic agents",
+    emptyMeta: "Use GitLab ownership",
+    defaultLabel: "Automatic agents",
+  });
+
+  channelDropdown.setChoices(
+    gitLabSlackRouteChannelChoices(projectSettings.channel_ids || []),
+    projectSettings.channel_ids || []
+  );
+  agentDropdown.setChoices(
+    gitLabRouteAgentChoices(channelDropdown.selectedIds(), routeAgents),
+    routeAgents
+  );
+
+  row.append(sender, channelDropdown.picker, agentDropdown.picker);
+  container.appendChild(row);
+}
+
+function collectGitLabRoutingSelection() {
+  return {
+    channel_ids: [...document.querySelectorAll("[data-gitlab-route-channel]")]
+      .flatMap((select) => [...select.selectedOptions].map((option) => option.value).filter(Boolean)),
+    route_agents: [...document.querySelectorAll("[data-gitlab-route-agent]")]
+      .flatMap((select) => [...select.selectedOptions].map((option) => option.value).filter(Boolean)),
+  };
 }
 
 function renderGitLabIntegration() {
@@ -1731,13 +2081,17 @@ function renderGitLabIntegration() {
   $("gitlab-token-status").value = settings.tokenVerification ? "Enabled" : "Not configured";
   $("gitlab-ignored-kinds").value = (settings.ignored_event_kinds || []).join(", ");
   $("gitlab-project-paths").value = (projectSettings.project_paths || []).join("\n");
-  $("gitlab-fallback-agents").value = formatLinesFromObject(projectSettings.fallback_agents_by_kind || {});
-  renderGitLabAgentChannels(projectSettings);
+  renderGitLabRoutingRoutes(projectSettings);
 }
 
 async function refreshGitLabIntegration() {
   state.gitlabIntegration = await api("/api/integrations/gitlab");
   renderGitLabIntegration();
+}
+
+async function refreshAgentChannelPresence() {
+  state.agentChannelPresence = await api("/api/integrations/agent-presence");
+  renderAgentChannelPresence();
 }
 
 async function saveGitLabIntegration() {
@@ -1747,11 +2101,13 @@ async function saveGitLabIntegration() {
     result.textContent = "Saving...";
   }
   const projects = gitLabProjectsCopy(state.gitlabIntegration);
+  const routingSelection = collectGitLabRoutingSelection();
   projects[state.projectId] = {
     enabled: $("gitlab-enabled").checked,
+    channel_ids: routingSelection.channel_ids,
+    route_agents: routingSelection.route_agents,
     project_paths: parseList($("gitlab-project-paths").value),
-    fallback_agents_by_kind: parseKeyValueLines($("gitlab-fallback-agents").value, { listValues: true }),
-    agent_channels: collectGitLabAgentChannels(),
+    fallback_agents_by_kind: activeGitLabProjectSettings(state.gitlabIntegration).fallback_agents_by_kind || {},
   };
   const payload = {
     enabled: state.gitlabIntegration?.enabled ?? true,
@@ -1772,6 +2128,30 @@ async function saveGitLabIntegration() {
   }
 }
 
+async function saveAgentChannelPresence() {
+  const result = $("agent-channel-presence-result");
+  if (result) {
+    result.hidden = false;
+    result.textContent = "Saving...";
+  }
+  const projects = agentChannelProjectsCopy(state.agentChannelPresence);
+  projects[state.projectId] = {
+    agent_channels: collectAgentChannelPresence(),
+  };
+  try {
+    const response = await api("/api/integrations/agent-presence", {
+      method: "POST",
+      body: JSON.stringify({ projects }),
+    });
+    state.agentChannelPresence = response;
+    renderAgentChannelPresence();
+    if (result) result.textContent = "Saved";
+    await refreshDeveloperInfo();
+  } catch (error) {
+    if (result) result.textContent = error.message;
+  }
+}
+
 async function refreshDeveloperInfo() {
   const panel = $("developer-panel");
   if (panel && !panel.open) return;
@@ -1780,7 +2160,11 @@ async function refreshDeveloperInfo() {
   const lastRefresh = $("developer-last-refresh");
   if (daemonInfo) daemonInfo.textContent = "Loading...";
   try {
-    const diagnostics = await api(`/api/diagnostics?project_id=${encodeURIComponent(state.projectId)}`);
+    const [diagnostics] = await Promise.all([
+      api(`/api/diagnostics?project_id=${encodeURIComponent(state.projectId)}`),
+      refreshGitLabIntegration(),
+      refreshAgentChannelPresence(),
+    ]);
     state.diagnostics = diagnostics;
     const info = {
       daemon: diagnostics.status,
@@ -1799,12 +2183,12 @@ async function refreshDeveloperInfo() {
         theme: currentTheme(),
         tokenUsage: state.threadId ? state.tokenUsageByThread[state.threadId] : null,
         accountRateLimits: state.accountRateLimits,
+        agentChannelPresence: state.agentChannelPresence,
       },
     };
     if (daemonInfo) daemonInfo.textContent = JSON.stringify(info, null, 2);
     renderBotAuditLog(diagnostics.recentBotEvents || []);
     fillRouteTestDefaults(diagnostics);
-    await refreshGitLabIntegration();
     if (summary) {
       summary.textContent = diagnostics.status.ok
         ? `Daemon pid ${diagnostics.status.pid || "unknown"} · ${diagnostics.bindings.length} bot bindings`
@@ -1874,11 +2258,16 @@ $("send").addEventListener("click", sendPrompt);
 $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });
-$("developer-panel").addEventListener("toggle", () => refreshDeveloperInfo().catch(console.error));
+$("developer-panel").addEventListener("toggle", () => {
+  if (!developerPanelOpen()) return;
+  renderCommunicationLog();
+  refreshDeveloperInfo().catch(console.error);
+});
 $("refresh-developer").addEventListener("click", refreshDeveloperInfo);
 $("recover-daemon").addEventListener("click", recoverDaemon);
 $("run-route-test").addEventListener("click", runRouteTest);
 $("save-gitlab-routing").addEventListener("click", saveGitLabIntegration);
+$("save-agent-channel-presence").addEventListener("click", saveAgentChannelPresence);
 $("refresh-token-usage").addEventListener("click", (event) => {
   event.stopPropagation();
   refreshTokenUsage();
@@ -1912,7 +2301,13 @@ $("prompt").addEventListener("keydown", (event) => {
   sendPrompt();
 });
 $("prompt").addEventListener("input", resizePromptInput);
-$("thread-search").addEventListener("input", () => refresh().catch(console.error));
+$("thread-search").addEventListener("input", () => {
+  if (state.searchTimer) clearTimeout(state.searchTimer);
+  state.searchTimer = setTimeout(() => {
+    state.searchTimer = null;
+    scheduleRefresh(0);
+  }, 180);
+});
 $("archive-thread").addEventListener("click", async () => {
   if (!state.threadId) return;
   await api(`/api/threads/${state.threadId}/archive`, { method: "POST" });

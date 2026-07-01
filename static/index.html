@@ -149,13 +149,23 @@
                     <label>Token verification <input id="gitlab-token-status" readonly /></label>
                     <label>Ignored event kinds <input id="gitlab-ignored-kinds" placeholder="note, wiki_page" /></label>
                     <label>Project paths <textarea id="gitlab-project-paths" rows="3" spellcheck="false" placeholder="veridataops/codex-web"></textarea></label>
-                    <label>Fallback agents <textarea id="gitlab-fallback-agents" rows="4" spellcheck="false"></textarea></label>
                     <div>
-                      <div class="field-label">Agent channels</div>
-                      <div id="gitlab-agent-channels" class="gitlab-agent-channels"></div>
+                      <div class="field-label">Event routes</div>
+                      <div id="gitlab-routing-routes" class="gitlab-routing-routes"></div>
                     </div>
                     <button id="save-gitlab-routing" type="button" class="ghost-button">Save routing</button>
                     <div id="gitlab-routing-result" class="form-result" hidden></div>
+                  </div>
+                </div>
+                <div class="developer-card">
+                  <h2>Agent Channel Presence</h2>
+                  <div class="gitlab-routing">
+                    <div>
+                      <div class="field-label">Agent channels</div>
+                      <div id="agent-channel-presence" class="gitlab-agent-channels"></div>
+                    </div>
+                    <button id="save-agent-channel-presence" type="button" class="ghost-button">Save presence</button>
+                    <div id="agent-channel-presence-result" class="form-result" hidden></div>
                   </div>
                 </div>
                 <div class="developer-card">

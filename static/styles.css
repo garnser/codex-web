@@ -1017,19 +1017,142 @@ select {
 
 .gitlab-agent-channels {
   display: grid;
-  gap: 6px;
+  gap: 8px;
+}
+
+.gitlab-routing-routes {
+  display: grid;
+  gap: 8px;
+}
+
+.gitlab-routing-route-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.gitlab-routing-sender {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .gitlab-agent-channel-row {
+  display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
-  align-items: center;
+  gap: 10px;
+  align-items: start;
 }
 
-.gitlab-agent-channel-row span {
+.gitlab-agent-channel-row > span {
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
   text-transform: capitalize;
+}
+
+.gitlab-agent-channel-picker {
+  min-width: 0;
+}
+
+.gitlab-channel-dropdown {
+  width: 100%;
+}
+
+.gitlab-channel-dropdown summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.gitlab-channel-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.gitlab-channel-dropdown summary::after {
+  content: "▾";
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gitlab-channel-dropdown[open] summary::after {
+  content: "▴";
+}
+
+.gitlab-channel-summary {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.gitlab-channel-summary strong,
+.gitlab-channel-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitlab-channel-summary strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gitlab-channel-summary small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gitlab-channel-menu {
+  margin-top: 6px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.gitlab-channel-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--text);
+  font-size: 12px;
+  text-transform: none;
+}
+
+.gitlab-channel-option:hover {
+  background: var(--surface-soft);
+}
+
+.gitlab-channel-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.gitlab-channel-default {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 2px;
 }
 
 .comm-log {

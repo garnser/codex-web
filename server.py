@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -14,6 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +27,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from codex_web.events import EventHub
+from codex_web.devhealth import build_context as build_devhealth_context, render_html as render_devhealth_html
+from codex_web.devstatus import build_context as build_devstatus_context, render_html as render_devstatus_html
 from codex_web.models import (
     ActiveThreadTurn,
+    AgentChannelPresenceProjectSettings,
+    AgentChannelPresenceSettings,
     ApprovalDecision,
     ApprovalSlackMessage,
     BotBinding,
@@ -47,9 +54,16 @@ from codex_web.models import (
     ThreadRename,
     ThreadRunSettings,
     TurnCreate,
+    WorkItemAckCreate,
+    WorkItemEvent,
+    WorkItemHandoff,
+    WorkItemHandoffCreate,
+    WorkItemProgressUpdate,
+    WorkItemState,
 )
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
+    AGENT_CHANNEL_PRESENCE_FILE,
     APPROVAL_MESSAGES_FILE,
     BOT_DELIVERY_TARGETS_FILE,
     BOT_DETAILS_FILE,
@@ -67,6 +81,8 @@ from codex_web.paths import (
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
+    WORK_ITEM_EVENTS_FILE,
+    WORK_ITEM_STATES_FILE,
 )
 from codex_web.providers import (
     get_json as _get_json,
@@ -81,9 +97,50 @@ BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
 BOT_CHANNEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 WATCHDOG_TASK: asyncio.Task[None] | None = None
 SUPPORT_SERVICEDESK_SWEEP_TASK: asyncio.Task[None] | None = None
+OWNER_WORK_WATCHDOG_TASK: asyncio.Task[None] | None = None
+RELEASE_GATE_WATCHDOG_TASK: asyncio.Task[None] | None = None
+WORK_ITEM_SLA_TASK: asyncio.Task[None] | None = None
+ORCHESTRATOR_WATCHDOG_TASK: asyncio.Task[None] | None = None
+SPLIT_BRAIN_WATCHDOG_TASK: asyncio.Task[None] | None = None
+QUEUE_RECOVERY_TASK: asyncio.Task[None] | None = None
+SLACK_BACKFILL_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
+WEB_THREAD_RESUME_TASKS: dict[str, asyncio.Task[dict[str, Any]]] = {}
 GITLAB_EVENT_IDS: dict[str, float] = {}
+WATCHDOG_DISPATCH_TIMES: dict[str, float] = {}
+SLACK_BACKFILL_SEEN: set[str] = set()
+SLACK_BACKFILL_BAD_THREADS: set[tuple[str, str, str]] = set()
+NATIVE_RECOVERY_LAST_SCHEDULED_AT = 0.0
 IS_SHUTTING_DOWN = False
+GITLAB_API_BASE = os.environ.get("CODEX_WEB_GITLAB_API_BASE", "https://dev.veridataops.com/gitlab/api/v4")
+GITLAB_SEMANTIC_EVENTS_FILE = DATA_DIR / "gitlab_semantic_events.json"
+OWNER_QUEUE_AGENTS = (
+    "james",
+    "carl",
+    "dana",
+    "quinn",
+    "riley",
+    "nora",
+    "larry",
+    "tom",
+    "janice",
+    "maya",
+    "sally",
+)
+DEFAULT_VALIDATION_OWNER = "quinn"
+DEFAULT_RELEASE_OWNER = "release manager"
+NON_IMPLEMENTATION_OWNERS = {
+    DEFAULT_VALIDATION_OWNER,
+    DEFAULT_RELEASE_OWNER,
+    "orchestrator",
+    "carl",
+    "compliance manager",
+    "nora",
+    "maya",
+    "larry",
+}
+HANDOFF_COORDINATION_CHANNEL = "C0B9M89AHCY"
+DEFAULT_THREAD_MESSAGE_LIMIT = 100
 
 
 hub = EventHub()
@@ -339,7 +396,29 @@ def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) ->
         current = selected.get(binding.provider)
         if current is None or score(binding) > score(current):
             selected[binding.provider] = binding
-    return list(selected.values())
+
+    ordered: list[BotBinding] = list(selected.values())
+    seen = {
+        (binding.provider, binding.external_conversation_id, binding.thread_id)
+        for binding in ordered
+    }
+    for binding in bindings:
+        key = (binding.provider, binding.external_conversation_id, binding.thread_id)
+        if key in seen:
+            continue
+        primary = selected.get(binding.provider)
+        if primary is None:
+            continue
+        # Keep the best interactive binding per provider, but also mirror agent
+        # updates into any additional passive report-channel bindings explicitly
+        # attached to the same thread.
+        if _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding):
+            continue
+        if binding.post_in_thread:
+            continue
+        ordered.append(binding)
+        seen.add(key)
+    return ordered
 
 
 def _load_bot_details() -> dict[str, list[BotThreadDetail]]:
@@ -465,6 +544,928 @@ def _save_json_private(path: Path, payload: Any) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def _work_item_handoff_timeout_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS") or "900")
+    except ValueError:
+        return 900.0
+    return max(60.0, seconds)
+
+
+def _default_thread_message_limit() -> int:
+    try:
+        limit = int(
+            os.environ.get("CODEX_WEB_THREAD_MESSAGE_LIMIT")
+            or os.environ.get("CODEX_WEB_THREAD_TURN_LIMIT")
+            or DEFAULT_THREAD_MESSAGE_LIMIT
+        )
+    except ValueError:
+        return DEFAULT_THREAD_MESSAGE_LIMIT
+    return max(1, min(limit, 1000))
+
+
+def _coerce_thread_message_limit(limit: int | None) -> int:
+    if limit is None:
+        return _default_thread_message_limit()
+    return max(1, min(int(limit), 1000))
+
+
+def _trim_thread_messages(response: dict[str, Any], limit: int) -> dict[str, Any]:
+    if limit <= 0:
+        return response
+    thread = response.get("thread") if isinstance(response.get("thread"), dict) else response
+    turns = thread.get("turns") if isinstance(thread, dict) else None
+    if not isinstance(turns, list):
+        return response
+    total_items = sum(len(turn.get("items") or []) for turn in turns if isinstance(turn, dict))
+    if total_items <= limit:
+        thread["messageLimit"] = limit
+        return response
+    remaining = limit
+    kept_turns: list[dict[str, Any]] = []
+    for turn in reversed(turns):
+        if not isinstance(turn, dict):
+            continue
+        items = turn.get("items") or []
+        if not isinstance(items, list):
+            items = []
+        if remaining <= 0:
+            break
+        if len(items) <= remaining:
+            kept_turns.append(turn)
+            remaining -= len(items)
+            continue
+        kept_turn = {**turn, "items": items[-remaining:]}
+        kept_turns.append(kept_turn)
+        remaining = 0
+    thread["turns"] = list(reversed(kept_turns))
+    thread["messagesTruncated"] = True
+    thread["messagesOmitted"] = total_items - limit
+    thread["messageLimit"] = limit
+    return response
+
+
+def _work_item_progress_sla_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_PROGRESS_SLA_SECONDS") or "3600")
+    except ValueError:
+        return 3600.0
+    return max(300.0, seconds)
+
+
+def _release_validation_sla_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_RELEASE_VALIDATION_SLA_SECONDS") or "1800")
+    except ValueError:
+        return 1800.0
+    return max(300.0, seconds)
+
+
+def _accepted_handoff_owner_idle_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_ACCEPTED_HANDOFF_OWNER_IDLE_SECONDS") or "300")
+    except ValueError:
+        return 300.0
+    return max(60.0, seconds)
+
+
+def _load_work_item_states() -> dict[str, WorkItemState]:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not WORK_ITEM_STATES_FILE.exists():
+        return {}
+    raw = json.loads(WORK_ITEM_STATES_FILE.read_text())
+    return {
+        ref: WorkItemState.model_validate(item)
+        for ref, item in raw.items()
+        if isinstance(ref, str)
+    }
+
+
+def _save_work_item_states(states: dict[str, WorkItemState]) -> None:
+    _save_json_private(
+        WORK_ITEM_STATES_FILE,
+        {ref: state.model_dump() for ref, state in sorted(states.items())},
+    )
+
+
+def _append_work_item_event(event: WorkItemEvent) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    with WORK_ITEM_EVENTS_FILE.open("a") as handle:
+        handle.write(json.dumps(event.model_dump(), separators=(",", ":")) + "\n")
+
+
+def _work_item_event(
+    ref: str,
+    event_type: str,
+    *,
+    actor: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> WorkItemEvent:
+    safe_payload: dict[str, Any] = payload or {}
+    return WorkItemEvent(
+        ref=ref,
+        event_type=event_type,
+        created_at=time.time(),
+        actor=actor,
+        payload=safe_payload,
+    )
+
+
+def _work_item_state_public(state: WorkItemState) -> dict[str, Any]:
+    state = _ensure_work_item_lane_defaults(state)
+    payload = state.model_dump()
+    payload["isConfirmationPending"] = bool(state.handoff and state.handoff.status == "pending")
+    payload["isReleaseStage"] = state.current_stage in {
+        "ready_for_validation",
+        "validation_running",
+        "failed_with_action_owner",
+        "ready_to_close",
+    }
+    routing_errors = _work_item_split_brain_findings(state)
+    payload["routingErrors"] = routing_errors
+    payload["routingError"] = routing_errors[0] if routing_errors else None
+    return payload
+
+
+def _devhealth_work_item_stats() -> dict[str, int]:
+    open_states = [
+        state
+        for state in _load_work_item_states().values()
+        if state.current_stage != "closed"
+    ]
+    return {
+        "open_count": len(open_states),
+        "blocked_count": sum(1 for state in open_states if state.current_stage == "failed_with_action_owner"),
+        "pending_handoff_count": sum(1 for state in open_states if state.handoff and state.handoff.status == "pending"),
+        "release_gate_count": sum(1 for state in open_states if state.release_gate),
+        "ready_for_validation_count": sum(1 for state in open_states if state.current_stage == "ready_for_validation"),
+        "implementation_active_count": sum(1 for state in open_states if state.current_stage == "implementation_active"),
+    }
+
+
+def _normalize_work_item_stage(
+    stage: str | None,
+    *,
+    fallback: str = "implementation_active",
+) -> str:
+    normalized = (stage or "").strip().lower()
+    allowed = {
+        "implementation_active",
+        "ready_for_validation",
+        "validation_running",
+        "failed_with_action_owner",
+        "ready_to_close",
+        "closed",
+    }
+    return normalized if normalized in allowed else fallback
+
+
+def _normalize_artifact_state(
+    artifact_state: str | None,
+    *,
+    fallback: str = "branch",
+) -> str:
+    normalized = (artifact_state or "").strip().lower()
+    allowed = {
+        "branch",
+        "merge_request",
+        "merged_main",
+        "tag_pipeline",
+    }
+    return normalized if normalized in allowed else fallback
+
+
+def _ensure_work_item_lane_defaults(state: WorkItemState) -> WorkItemState:
+    state.validation_owner = _coerce_owner(state.validation_owner) or DEFAULT_VALIDATION_OWNER
+    state.release_owner = _coerce_owner(state.release_owner) or DEFAULT_RELEASE_OWNER
+    if not _coerce_owner(state.implementation_owner):
+        for candidate in (
+            state.current_owner,
+            state.next_owner,
+            state.handoff.from_agent if state.handoff else None,
+        ):
+            owner = _coerce_owner(candidate)
+            if owner and owner not in NON_IMPLEMENTATION_OWNERS and owner not in {
+                _coerce_owner(state.validation_owner),
+                _coerce_owner(state.release_owner),
+            }:
+                state.implementation_owner = owner
+                break
+    state.artifact_state = _normalize_artifact_state(state.artifact_state, fallback="branch")
+    return state
+
+
+def _infer_artifact_state_from_state(state: WorkItemState) -> str:
+    state = _ensure_work_item_lane_defaults(state)
+    current_owner = _coerce_owner(state.current_owner)
+    current_artifact = _normalize_artifact_state(state.artifact_state, fallback="branch")
+    if current_owner == _coerce_owner(state.release_owner):
+        if current_artifact == "tag_pipeline":
+            return "tag_pipeline"
+        return "merged_main"
+    if current_owner == _coerce_owner(state.validation_owner):
+        if current_artifact in {"merged_main", "tag_pipeline"}:
+            return current_artifact
+        return "merge_request" if state.mr_refs else "branch"
+    if current_artifact in {"merged_main", "tag_pipeline"} and state.current_stage == "closed":
+        return current_artifact
+    return "branch"
+
+
+def _infer_artifact_state_from_gitlab_payload(
+    payload: dict[str, Any],
+    *,
+    current_state: WorkItemState | None,
+) -> str:
+    attrs = payload.get("object_attributes") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "").strip().lower()
+    if kind == "merge_request":
+        mr_state = str(attrs.get("state") or "").strip().lower()
+        action = str(attrs.get("action") or "").strip().lower()
+        if mr_state == "merged" or action == "merge":
+            return "merged_main"
+        return "merge_request"
+    if kind == "pipeline":
+        ref_name = str(attrs.get("ref") or "").strip()
+        if ref_name == "main":
+            return "merged_main"
+        if ref_name.startswith("v"):
+            return "tag_pipeline"
+        return "branch"
+    if current_state is not None:
+        return _infer_artifact_state_from_state(current_state)
+    projected = WorkItemState(
+        ref="projection",
+        current_stage="implementation_active",
+        last_meaningful_update_at=time.time(),
+        updated_at=time.time(),
+        created_at=time.time(),
+        artifact_state="branch",
+        mr_refs=[],
+    )
+    return _infer_artifact_state_from_state(projected)
+
+
+def _routing_error_detail(
+    *,
+    code: str,
+    message: str,
+    from_agent: str | None,
+    to_agent: str | None,
+    artifact_state: str | None,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "message": message,
+        "from_agent": _coerce_owner(from_agent) or from_agent,
+        "to_agent": _coerce_owner(to_agent) or to_agent,
+        "artifact_state": _normalize_artifact_state(artifact_state, fallback="branch"),
+    }
+
+
+def _validate_handoff_edge(
+    state: WorkItemState,
+    *,
+    from_agent: str | None,
+    to_agent: str | None,
+    artifact_state: str | None,
+) -> dict[str, Any] | None:
+    state = _ensure_work_item_lane_defaults(state)
+    sender = _coerce_owner(from_agent)
+    recipient = _coerce_owner(to_agent)
+    artifact = _normalize_artifact_state(artifact_state or state.artifact_state, fallback=_infer_artifact_state_from_state(state))
+    implementation_owner = _coerce_owner(state.implementation_owner)
+    validation_owner = _coerce_owner(state.validation_owner)
+    release_owner = _coerce_owner(state.release_owner)
+    orchestrator_override = sender == "orchestrator"
+
+    if recipient == release_owner and sender == implementation_owner and not orchestrator_override:
+        if artifact == "branch":
+            return _routing_error_detail(
+                code="branch_only_artifact",
+                message="Direct implementation->release handoff is blocked while the artifact is only on a branch. Hand off to the validation owner first.",
+                from_agent=sender,
+                to_agent=recipient,
+                artifact_state=artifact,
+            )
+        if artifact == "merge_request":
+            return _routing_error_detail(
+                code="missing_merge",
+                message="Direct implementation->release handoff is blocked while the artifact is only on an open merge request. Merge to main first or reroute explicitly via Orchestrator.",
+                from_agent=sender,
+                to_agent=recipient,
+                artifact_state=artifact,
+            )
+        return _routing_error_detail(
+            code="wrong_lane",
+            message="Direct implementation->release handoff requires explicit Orchestrator reassignment.",
+            from_agent=sender,
+            to_agent=recipient,
+            artifact_state=artifact,
+        )
+
+    if (
+        recipient == validation_owner
+        and artifact not in {"branch", "merge_request"}
+        and not (orchestrator_override and artifact in {"merged_main", "tag_pipeline"})
+    ):
+        return _routing_error_detail(
+            code="wrong_lane",
+            message=(
+                "Validation ownership requires an MR-ready artifact on a branch or open merge request, "
+                "unless Orchestrator explicitly reassigns a merged-main or tag-pipeline validation lane."
+            ),
+            from_agent=sender,
+            to_agent=recipient,
+            artifact_state=artifact,
+        )
+
+    if sender == validation_owner and recipient == release_owner and artifact not in {"merged_main", "tag_pipeline"}:
+        return _routing_error_detail(
+            code="missing_merge" if artifact == "merge_request" else "wrong_lane",
+            message="Release ownership requires a merged mainline or tag pipeline artifact after validation/merge.",
+            from_agent=sender,
+            to_agent=recipient,
+            artifact_state=artifact,
+        )
+    return None
+
+
+def _record_handoff_history(
+    state: WorkItemState,
+    handoff: WorkItemHandoff,
+    *,
+    status: str | None = None,
+    acknowledged_at: float | None = None,
+    reason_code: str | None = None,
+) -> WorkItemState:
+    entry = handoff.model_copy(deep=True)
+    if status is not None:
+        entry.status = status
+    if acknowledged_at is not None:
+        entry.acknowledged_at = acknowledged_at
+    if reason_code is not None:
+        entry.reason_code = reason_code
+    state.handoff_history = (state.handoff_history + [entry])[-100:]
+    return state
+
+
+def _archive_active_handoff(
+    state: WorkItemState,
+    *,
+    now: float,
+    status: str,
+    reason_code: str | None = None,
+) -> WorkItemState:
+    if state.handoff:
+        state = _record_handoff_history(
+            state,
+            state.handoff,
+            status=status,
+            acknowledged_at=now,
+            reason_code=reason_code,
+        )
+        state.handoff = None
+    return state
+
+
+def _current_status_label(labels: list[str]) -> str | None:
+    for label in labels:
+        if label.lower().startswith("status::"):
+            return label
+    return None
+
+
+def _has_routing_labels(labels: list[str]) -> bool:
+    return any(label.lower().startswith(("owner::", "status::")) for label in labels)
+
+
+def _priority_from_labels(labels: list[str]) -> str | None:
+    for label in labels:
+        if label.lower().startswith("priority::"):
+            return label
+    return None
+
+
+def _parse_gitlab_timestamp(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    with contextlib.suppress(ValueError):
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return None
+
+
+def _latest_gitlab_timestamp(*values: Any) -> float | None:
+    parsed = [stamp for stamp in (_parse_gitlab_timestamp(value) for value in values) if stamp is not None]
+    return max(parsed) if parsed else None
+
+
+def _gitlab_issue_timestamp(issue: dict[str, Any]) -> float | None:
+    return _latest_gitlab_timestamp(
+        issue.get("updated_at"),
+        issue.get("closed_at"),
+        issue.get("created_at"),
+    )
+
+
+def _gitlab_payload_timestamp(payload: dict[str, Any]) -> float | None:
+    attrs = payload.get("object_attributes") or {}
+    return _latest_gitlab_timestamp(
+        attrs.get("updated_at"),
+        attrs.get("closed_at"),
+        attrs.get("last_edited_at"),
+        attrs.get("created_at"),
+    )
+
+
+def _gitlab_stage_from_projection(
+    *,
+    state_name: str,
+    status_label: str | None,
+    existing_stage: str | None = None,
+) -> str:
+    normalized_state = (state_name or "").strip().lower()
+    if normalized_state in {"closed", "merged"}:
+        return "closed"
+    if status_label == "status::awaiting confirmation":
+        return "ready_for_validation"
+    if status_label == "status::blocked":
+        return "failed_with_action_owner"
+    if status_label == "status::in progress":
+        if existing_stage in {"implementation_active", "validation_running", "ready_to_close"}:
+            return existing_stage
+        return "implementation_active"
+    return existing_stage or "implementation_active"
+
+
+def _gitlab_projection_semantics(
+    *,
+    owner: str | None,
+    stage: str,
+    status_label: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    state_name = "closed" if stage == "closed" else "opened"
+    if stage == "closed":
+        return state_name, ()
+    active_labels: list[str] = []
+    if owner:
+        active_labels.append(f"owner::{owner}")
+    if status_label:
+        active_labels.append(status_label)
+    return state_name, tuple(sorted(dict.fromkeys(active_labels)))
+
+
+def _gitlab_projection_is_stale(
+    state: WorkItemState,
+    *,
+    projected_owner: str | None,
+    projected_stage: str,
+    projected_status_label: str | None,
+    event_timestamp: float | None,
+) -> bool:
+    if event_timestamp is None:
+        return False
+    if state.last_gitlab_event_at is not None and event_timestamp < state.last_gitlab_event_at:
+        return True
+    if event_timestamp >= state.last_meaningful_update_at:
+        return False
+    incoming = _gitlab_projection_semantics(
+        owner=projected_owner,
+        stage=projected_stage,
+        status_label=projected_status_label,
+    )
+    current = _gitlab_projection_semantics(
+        owner=_coerce_owner(state.current_owner),
+        stage=state.current_stage,
+        status_label=_derived_status_label_for_work_item(state),
+    )
+    return incoming != current
+
+
+def _work_item_issue_ref_parts(ref: str) -> tuple[str, int] | None:
+    project_path, sep, iid_text = str(ref or "").partition("#")
+    if not sep or not project_path.strip() or not iid_text.strip().isdigit():
+        return None
+    return project_path.strip(), int(iid_text.strip())
+
+
+def _derived_status_label_for_work_item(state: WorkItemState) -> str | None:
+    if state.current_stage == "closed":
+        return None
+    if state.handoff and state.handoff.status == "pending":
+        return "status::awaiting confirmation"
+    if state.current_stage == "failed_with_action_owner":
+        return "status::blocked"
+    if state.current_stage in {
+        "implementation_active",
+        "ready_for_validation",
+        "validation_running",
+        "ready_to_close",
+    }:
+        return "status::in progress"
+    return state.status_label
+
+
+def _owner_label_from_labels(labels: list[str]) -> str | None:
+    for label in labels:
+        match = re.match(r"owner::(.+)", label.strip(), re.IGNORECASE)
+        if match:
+            return _coerce_owner(match.group(1))
+    return None
+
+
+def _work_item_split_brain_findings(state: WorkItemState) -> list[str]:
+    state = _ensure_work_item_lane_defaults(state)
+    findings: list[str] = []
+    canonical_status = _derived_status_label_for_work_item(state)
+    label_owner = _owner_label_from_labels(state.labels)
+    current_owner = _coerce_owner(state.current_owner)
+    next_owner = _coerce_owner(state.next_owner)
+
+    if canonical_status != state.status_label:
+        findings.append(
+            f"status drift: canonical={canonical_status or 'none'} stored={state.status_label or 'none'}"
+        )
+    if label_owner != current_owner:
+        findings.append(
+            f"owner drift: gitlab={label_owner or 'none'} codex-web={current_owner or 'none'}"
+        )
+    if state.handoff and state.handoff.status == "pending":
+        handoff_to = _coerce_owner(state.handoff.to_agent)
+        handoff_from = _coerce_owner(state.handoff.from_agent)
+        if state.status_label != "status::awaiting confirmation":
+            findings.append("pending handoff without awaiting-confirmation status")
+        if next_owner != handoff_to:
+            findings.append(
+                f"pending handoff next-owner drift: expected={handoff_to or 'none'} stored={next_owner or 'none'}"
+            )
+        if current_owner != handoff_from:
+            findings.append(
+                f"pending handoff current-owner drift: expected={handoff_from or 'none'} stored={current_owner or 'none'}"
+            )
+    elif state.status_label == "status::awaiting confirmation":
+        findings.append("awaiting-confirmation status without pending handoff")
+
+    if state.current_stage == "failed_with_action_owner":
+        if not (state.blocker or "").strip():
+            findings.append("blocked lane missing blocker text")
+        if not (next_owner or current_owner):
+            findings.append("blocked lane missing actionable owner")
+    active_handoff = state.handoff
+    if active_handoff:
+        handoff_error = _validate_handoff_edge(
+            state,
+            from_agent=active_handoff.from_agent,
+            to_agent=active_handoff.to_agent,
+            artifact_state=active_handoff.artifact_state or state.artifact_state,
+        )
+        if handoff_error:
+            findings.append(
+                "routing error: "
+                + str(handoff_error.get("code") or "wrong_lane")
+                + " - "
+                + str(handoff_error.get("message") or "invalid handoff edge")
+            )
+    if current_owner == _coerce_owner(state.release_owner) and state.artifact_state in {"branch", "merge_request"}:
+        findings.append(
+            f"routing error: release owner on pre-merge artifact_state={state.artifact_state}"
+        )
+    return findings
+
+
+def _reconcile_blocked_work_item_state(
+    state: WorkItemState,
+    *,
+    projected_owner: str | None,
+    previous_owner: str | None,
+    now: float,
+) -> WorkItemState:
+    if state.handoff and state.handoff.status == "pending":
+        state = _archive_active_handoff(
+            state,
+            now=now,
+            status="superseded",
+            reason_code="blocked_reconciled",
+        )
+    owner = _coerce_owner(projected_owner) or _coerce_owner(state.current_owner) or _coerce_owner(previous_owner)
+    if owner:
+        state.current_owner = owner
+        state.next_owner = owner
+    if not (state.blocker or "").strip():
+        state.blocker = "Blocked-item reconciliation required from incoming GitLab event."
+    if not (state.next_action or "").strip():
+        state.next_action = "Reconcile the newly blocked item and either continue work or emit one exact blocker."
+    return state
+
+
+def _gitlab_event_target_agents(
+    payload: dict[str, Any],
+    project_settings: GitLabProjectRoutingSettings,
+    projected_state: WorkItemState | None,
+) -> list[str]:
+    if projected_state:
+        findings = _work_item_split_brain_findings(projected_state)
+        if findings:
+            return ["orchestrator"]
+        if projected_state.handoff and projected_state.handoff.status == "pending":
+            recipient = _coerce_owner(projected_state.handoff.to_agent)
+            if recipient:
+                return [recipient]
+        if projected_state.current_stage == "failed_with_action_owner":
+            owner = _coerce_owner(projected_state.current_owner or projected_state.next_owner)
+            if owner:
+                return [owner]
+        owner = _coerce_owner(projected_state.current_owner)
+        if owner and projected_state.current_stage in {
+            "implementation_active",
+            "ready_for_validation",
+            "validation_running",
+            "ready_to_close",
+        }:
+            return [owner]
+    return _gitlab_routing_agents(payload, project_settings)
+
+
+def _sync_work_item_status_label(state: WorkItemState) -> WorkItemState:
+    state.status_label = _derived_status_label_for_work_item(state)
+    return state
+
+
+def _maybe_infer_pending_handoff_from_gitlab_projection(
+    state: WorkItemState,
+    *,
+    previous_owner: str | None,
+    owners: list[str],
+    status_label: str | None,
+    now: float,
+) -> WorkItemState:
+    recipient = _coerce_owner(owners[0]) if owners else None
+    if status_label != "status::awaiting confirmation" or not recipient:
+        return state
+    if state.handoff and state.handoff.status == "pending":
+        return state
+    sender = _coerce_owner(previous_owner)
+    if not sender or sender == recipient:
+        sender = _coerce_owner(state.next_owner)
+    if not sender or sender == recipient:
+        return state
+    if state.handoff:
+        archive_status = "superseded" if state.handoff.status == "pending" else state.handoff.status
+        state = _archive_active_handoff(
+            state,
+            now=now,
+            status=archive_status,
+            reason_code="gitlab_projection_inferred",
+        )
+    state.handoff = WorkItemHandoff(
+        from_agent=sender,
+        to_agent=recipient,
+        reason="Inferred from GitLab awaiting-confirmation label projection.",
+        expected_action=state.next_action,
+        requested_at=state.last_meaningful_update_at or now,
+        status="pending",
+        artifact_state=state.artifact_state,
+        stage=state.current_stage,
+    )
+    state.next_owner = recipient
+    state = _record_handoff_history(state, state.handoff)
+    return state
+
+
+def _gitlab_json_request(method: str, url: str, *, token: str, payload: dict[str, Any] | None = None) -> Any:
+    body = None
+    headers = {"PRIVATE-TOKEN": token}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response)
+
+
+def _sync_gitlab_issue_labels_from_work_item(state: WorkItemState) -> WorkItemState:
+    if state.kind not in {"issue", "merge_request"}:
+        return state
+    ref_parts = _work_item_issue_ref_parts(state.ref)
+    if ref_parts is None or not state.project_id:
+        return state
+    token = _gitlab_token_for_project(state.project_id)
+    if not token:
+        return state
+    project_path, iid = ref_parts
+    encoded_project = urllib.parse.quote_plus(project_path)
+    issue_url = f"{GITLAB_API_BASE}/projects/{encoded_project}/issues/{iid}"
+    issue = _gitlab_json_request("GET", issue_url, token=token)
+    current_labels = [str(label).strip() for label in issue.get("labels", []) if str(label).strip()]
+    next_labels = [label for label in current_labels if not label.startswith(("owner::", "status::"))]
+    if state.current_stage != "closed" and state.current_owner:
+        next_labels.append(f"owner::{state.current_owner}")
+    status_label = _derived_status_label_for_work_item(state)
+    if state.current_stage != "closed" and status_label:
+        next_labels.append(status_label)
+    deduped_labels = list(dict.fromkeys(next_labels))
+    if deduped_labels != current_labels:
+        issue = _gitlab_json_request(
+            "PUT",
+            issue_url,
+            token=token,
+            payload={"labels": ",".join(deduped_labels)},
+        )
+    state.labels = [str(label).strip() for label in issue.get("labels", []) if str(label).strip()]
+    state.status_label = _current_status_label(state.labels) or status_label
+    _remember_gitlab_semantic_issue_state(
+        state.ref,
+        labels=state.labels,
+        state=str(issue.get("state") or "opened"),
+        reason="codex-web-label-sync",
+    )
+    return state
+
+
+def _mr_refs_from_payload(payload: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    attrs = payload.get("object_attributes") or {}
+    for candidate in (
+        attrs.get("source_branch"),
+        attrs.get("target_branch"),
+        attrs.get("references", {}).get("full") if isinstance(attrs.get("references"), dict) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            refs.append(candidate.strip())
+    changes = payload.get("changes") or {}
+    for source in (changes.get("description"), changes.get("title")):
+        if isinstance(source, dict):
+            for value in source.values():
+                if isinstance(value, str):
+                    refs.extend(re.findall(r"[A-Za-z0-9._-]+![0-9]+", value))
+    return sorted(set(refs))
+
+
+def _project_issue_ref(payload: dict[str, Any]) -> str | None:
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    project_path = str(project.get("path_with_namespace") or "").strip()
+    iid = attrs.get("iid")
+    if not project_path or iid in {None, ""}:
+        return None
+    return f"{project_path}#{iid}"
+
+
+def _coerce_owner(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if normalized in {"", "none", "null"}:
+        return None
+    return normalized
+
+
+def _normalize_closed_work_item_state(
+    state: WorkItemState,
+    *,
+    now: float,
+    reason_code: str,
+    closed_at: float | None = None,
+) -> WorkItemState:
+    if state.handoff:
+        state = _archive_active_handoff(state, now=now, status="superseded", reason_code=reason_code)
+    state.current_owner = None
+    state.next_owner = None
+    state.blocker = None
+    state.status_label = None
+    state.closed_at = closed_at or state.closed_at or now
+    return state
+
+
+def _touch_work_item_progress(
+    state: WorkItemState,
+    *,
+    actor: str | None = None,
+    current_owner: str | None = None,
+    current_stage: str | None = None,
+    next_action: str | None = None,
+    next_owner: str | None = None,
+    next_owner_present: bool = False,
+    blocker: str | None = None,
+    blocker_present: bool = False,
+    release_gate: bool | None = None,
+    status_label: str | None = None,
+    artifact_state: str | None = None,
+    event_type: str = "progress_updated",
+    note: str | None = None,
+) -> WorkItemState:
+    state = _ensure_work_item_lane_defaults(state)
+    now = time.time()
+    previous_owner = _coerce_owner(state.current_owner)
+    previous_stage = state.current_stage
+    incoming_stage = _normalize_work_item_stage(current_stage, fallback=state.current_stage) if current_stage is not None else None
+    if current_owner is not None:
+        state.current_owner = _coerce_owner(current_owner)
+    if current_stage is not None:
+        state.current_stage = incoming_stage
+    if next_action is not None:
+        state.next_action = next_action or None
+    if next_owner_present:
+        state.next_owner = _coerce_owner(next_owner)
+    if blocker_present:
+        state.blocker = blocker or None
+    if release_gate is not None:
+        state.release_gate = release_gate
+    if status_label is not None:
+        state.status_label = status_label or None
+    if artifact_state is not None:
+        state.artifact_state = _normalize_artifact_state(artifact_state, fallback=state.artifact_state)
+    if state.current_stage == "closed":
+        state = _normalize_closed_work_item_state(state, now=now, reason_code="closed_lane")
+    elif state.handoff:
+        current_owner_normalized = _coerce_owner(state.current_owner)
+        handoff_from = _coerce_owner(state.handoff.from_agent)
+        handoff_to = _coerce_owner(state.handoff.to_agent)
+        archive_resolved_handoff = False
+        if state.handoff.status == "pending":
+            # Explicit progress that moves the lane back into implementation/owner-action
+            # must invalidate any still-pending confirmation handoff. Otherwise the stale
+            # handoff keeps re-deriving status::awaiting confirmation and rewrites GitLab
+            # labels back to the wrong stage.
+            archive_resolved_handoff = (
+                incoming_stage in {"implementation_active", "failed_with_action_owner"}
+                or (status_label is not None and status_label != "status::awaiting confirmation")
+            )
+            # Pre-ack progress is expected to keep the sender as current_owner. Preserve
+            # the pending handoff unless ownership is explicitly moved outside the
+            # sender/recipient contract.
+            if current_owner_normalized and current_owner_normalized not in {handoff_from, handoff_to}:
+                archive_resolved_handoff = True
+        elif state.handoff.status == "accepted":
+            # Accepted handoffs should only stay attached while the canonical owner still
+            # matches the recipient. Once orchestration or validation hands the lane back
+            # into implementation/owner-action, the old accepted handoff becomes residue
+            # that can trigger false split-brain findings on the next event.
+            archive_resolved_handoff = bool(current_owner_normalized and current_owner_normalized != handoff_to)
+            if (
+                not archive_resolved_handoff
+                and incoming_stage in {"implementation_active", "failed_with_action_owner"}
+                and current_owner_normalized == handoff_from
+            ):
+                archive_resolved_handoff = True
+        elif state.handoff.status == "rejected":
+            # Once canonical progress resumes after a rejected handoff, keep the rejection
+            # in history only and drop it from the live state.
+            archive_resolved_handoff = True
+        if archive_resolved_handoff:
+            state = _archive_active_handoff(state, now=now, status="superseded", reason_code="new_canonical_progress")
+            if status_label is None and state.current_stage in {"implementation_active", "failed_with_action_owner"}:
+                state.status_label = None
+    if state.current_stage == "implementation_active" and not (state.handoff and state.handoff.status == "pending"):
+        state.blocker = None
+        if _coerce_owner(state.next_owner) != _coerce_owner(state.current_owner):
+            state.next_owner = None
+    if artifact_state is None:
+        state.artifact_state = _infer_artifact_state_from_state(state)
+    state = _ensure_work_item_lane_defaults(state)
+    current_owner_normalized = _coerce_owner(state.current_owner)
+    actor_normalized = _coerce_owner(actor)
+    refresh_owner_activity = (
+        state.current_stage == "closed"
+        or previous_owner != current_owner_normalized
+        or previous_stage != state.current_stage
+        or (actor_normalized is not None and actor_normalized == current_owner_normalized)
+        or state.last_owner_activity_at is None
+    )
+    state.updated_at = now
+    state.last_meaningful_update_at = now
+    if refresh_owner_activity:
+        state.last_owner_activity_at = now
+    if note:
+        state.notes = (state.notes + [note])[-20:]
+    _append_work_item_event(
+        _work_item_event(
+            state.ref,
+            event_type,
+            actor=actor,
+            payload={
+                "current_owner": state.current_owner,
+                "current_stage": state.current_stage,
+                "next_action": state.next_action,
+                "next_owner": state.next_owner,
+                "blocker": state.blocker,
+                "artifact_state": state.artifact_state,
+                "release_gate": state.release_gate,
+                "status_label": state.status_label,
+            },
+        )
+    )
+    return state
 
 
 def _load_bot_connections() -> list[BotConnection]:
@@ -677,6 +1678,7 @@ def _remember_thread_run_settings(
     approval_policy: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    developer_instructions: str | None = None,
 ) -> ThreadRunSettings:
     all_settings = _load_thread_settings()
     current = all_settings.get(thread_id, ThreadRunSettings())
@@ -688,6 +1690,8 @@ def _remember_thread_run_settings(
         current.model = model or None
     if reasoning_effort is not None:
         current.reasoning_effort = reasoning_effort or None
+    if developer_instructions is not None:
+        current.developer_instructions = _base_developer_instructions(thread_id, developer_instructions)
     all_settings[thread_id] = current
     _save_thread_settings(all_settings)
     _sync_bot_binding_settings(thread_id, current)
@@ -707,6 +1711,98 @@ def _thread_run_settings(thread_id: str | None) -> ThreadRunSettings:
             approval_policy=bindings[0].approval_policy,
         )
     return ThreadRunSettings()
+
+
+def _codex_web_internal_base_url() -> str:
+    override = (os.environ.get("CODEX_WEB_INTERNAL_BASE_URL") or "").strip()
+    if override:
+        return override.rstrip("/")
+    port = int(os.environ.get("CODEX_WEB_PORT", "8765"))
+    return f"http://127.0.0.1:{port}"
+
+
+def _work_item_contract_binding(thread_id: str | None) -> BotBinding | None:
+    if not thread_id:
+        return None
+    bindings = _bindings_for_thread(thread_id)
+    return max(bindings, key=lambda item: item.updated_at) if bindings else None
+
+
+def _gitlab_routing_enabled_for_project(project_id: str | None) -> bool:
+    if not project_id:
+        return False
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return False
+    project_settings = settings.projects.get(project_id)
+    return bool(project_settings and project_settings.enabled)
+
+
+def _work_item_contract_instructions(thread_id: str | None) -> str | None:
+    binding = _work_item_contract_binding(thread_id)
+    if not binding or not _gitlab_routing_enabled_for_project(binding.project_id):
+        return None
+    role = (_binding_report_name(binding) or _binding_prefix(binding) or "Agent").strip()
+    role_key = role.lower()
+    base_url = _codex_web_internal_base_url()
+    lines = [
+        "codex-web structured work-item contract. These rules are mandatory for GitLab-driven work.",
+        f"Use `{base_url}/api/work-items` as the system of record for ownership, handoff, and progress.",
+        "Before calling a work-item endpoint, URL-encode the full GitLab ref path with `urllib.parse.quote(ref, safe='')`.",
+        "Do not rely on Slack narration alone. Every meaningful GitLab work step must also update codex-web state.",
+        "",
+        "Required endpoint usage:",
+        "- POST `/api/work-items/{ref}/progress` after every meaningful step, blocker change, owner change, or next-action change.",
+        "- POST `/api/work-items/{ref}/handoff` immediately when you push work to another named agent.",
+        "- POST `/api/work-items/{ref}/ack` immediately when you accept or reject a handoff addressed to you.",
+        "",
+        "Progress payload minimums:",
+        f"- `actor`: `{role}`",
+        "- `current_owner`: the agent currently responsible",
+        "- `current_stage`: one of `implementation_active`, `ready_for_validation`, `validation_running`, `failed_with_action_owner`, `ready_to_close`, `closed`",
+        "- `next_action`: one exact next action",
+        "- `next_owner`: set this whenever the next owner differs from the current owner",
+        "- `blocker`: one exact blocker if work is blocked, otherwise omit or clear it",
+        "",
+        "Handoff rules:",
+        "- A handoff is not complete until the sender records `/handoff` and the recipient records `/ack`.",
+        "- If you hand work to release/validation, update the stage accordingly and set the exact expected action.",
+        "- If you receive a handoff, acknowledge it in the same turn before doing deeper work.",
+        "",
+        "Loop discipline:",
+        "- Never stop at a status summary. Either keep working, hand off explicitly, or record one exact blocker with the next owner.",
+        "- If GitLab labels or status changed, reconcile the work-item state in codex-web before ending the turn.",
+    ]
+    if binding.is_master or role_key in {"orchestrator", "codex"}:
+        lines.extend(
+            [
+                "",
+                "Orchestrator-specific rules:",
+                "- For every open GitLab work item you touch, ensure there is always a current owner, an exact next action, and a follow-up path until the item is closed.",
+                "- When an owner stalls, issue a direct follow-up to the named agent thread and record the reassignment or escalation through `/progress` or `/handoff` in the same turn.",
+                "- If a handoff expires or validation stalls, do not just restate the blocker. Push the next owner and update the structured state so the watchdog loop can continue.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _effective_developer_instructions(thread_id: str | None, instructions: str | None) -> str | None:
+    parts = [part.strip() for part in (instructions, _work_item_contract_instructions(thread_id)) if part and part.strip()]
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
+def _base_developer_instructions(thread_id: str | None, instructions: str | None) -> str | None:
+    if not instructions or not instructions.strip():
+        return None
+    normalized = instructions.strip()
+    contract = _work_item_contract_instructions(thread_id)
+    if contract:
+        while contract in normalized:
+            normalized = normalized.replace(contract, "").strip()
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    return normalized or None
 
 
 def _sync_bot_binding_settings(thread_id: str, settings: ThreadRunSettings) -> None:
@@ -750,7 +1846,17 @@ def _load_turn_queues() -> dict[str, list[QueuedTurn]]:
     DATA_DIR.mkdir(exist_ok=True)
     if not TURN_QUEUE_FILE.exists():
         return {}
-    payload = json.loads(TURN_QUEUE_FILE.read_text())
+    raw = TURN_QUEUE_FILE.read_text()
+    if not raw.strip():
+        _append_bot_event({"type": "turn_queue_file_empty", "path": str(TURN_QUEUE_FILE)})
+        _save_turn_queues({})
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _append_bot_event({"type": "turn_queue_file_invalid", "path": str(TURN_QUEUE_FILE), "error": str(exc)})
+        _save_turn_queues({})
+        return {}
     return {
         thread_id: [QueuedTurn.model_validate(item) for item in items]
         for thread_id, items in payload.items()
@@ -811,6 +1917,13 @@ def _enqueue_turn(
     queues.setdefault(thread_id, []).append(queued)
     _save_turn_queues(queues)
     return queued
+
+
+def _find_duplicate_queued_turn(thread_id: str, *, message: str, source: str) -> QueuedTurn | None:
+    for queued in _thread_queue(thread_id):
+        if queued.source == source and queued.message == message:
+            return queued
+    return None
 
 
 def _pop_next_queued_turn(thread_id: str) -> QueuedTurn | None:
@@ -930,6 +2043,8 @@ def _clear_thread_active(thread_id: str | None, turn_id: str | None = None) -> N
     if active:
         active_turns.pop(thread_id, None)
         _save_active_turns(active_turns)
+        if not IS_SHUTTING_DOWN and _autonomy_enabled():
+            _schedule_native_recovery_cycles(reason="thread-became-idle")
 
 
 def _record_thread_activity(message: dict[str, Any]) -> None:
@@ -977,6 +2092,7 @@ async def _start_thread_turn_now(
     settings = _thread_run_settings(thread_id)
     effective_model = model or settings.model or project.model
     effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
+    effective_developer_instructions = _effective_developer_instructions(thread_id, settings.developer_instructions)
     await codex.request(
         "thread/resume",
         {
@@ -987,6 +2103,7 @@ async def _start_thread_turn_now(
                     "sandbox": sandbox,
                     "approvalPolicy": approval_policy,
                     "model": effective_model,
+                    "developerInstructions": effective_developer_instructions,
                 },
             ),
         },
@@ -1000,6 +2117,8 @@ async def _start_thread_turn_now(
         params["model"] = effective_model
     if effective_reasoning_effort:
         params["effort"] = effective_reasoning_effort
+    if effective_developer_instructions:
+        params["developerInstructions"] = effective_developer_instructions
     if approval_policy:
         params["approvalPolicy"] = approval_policy
     if sandbox:
@@ -1030,14 +2149,20 @@ async def _start_thread_turn_now(
 
 
 async def _drain_thread_queue(thread_id: str) -> None:
-    if not thread_id or _thread_is_active(thread_id):
+    if not thread_id:
         await _publish_queue_status(thread_id)
         return
+    if _thread_is_active(thread_id):
+        _release_stale_active_turn(thread_id, "queue-drain")
+        if _thread_is_active(thread_id):
+            await _publish_queue_status(thread_id)
+            return
     queued = _pop_next_queued_turn(thread_id)
     if not queued:
         await _publish_queue_status(thread_id)
         return
     queued.attempts += 1
+    reschedule_queue = True
     try:
         project = _project(queued.project_id)
         await _start_thread_turn_now(
@@ -1060,6 +2185,50 @@ async def _drain_thread_queue(thread_id: str) -> None:
             }
         )
     except Exception as exc:
+        if _is_stale_thread_error(exc):
+            bindings = _bindings_for_thread(thread_id)
+            if bindings:
+                replacement = await _replace_stale_bot_thread(bindings[0], str(exc))
+                queued.thread_id = replacement.thread_id
+                if queued.reply_target and queued.reply_target.thread_id == thread_id:
+                    queued.reply_target = queued.reply_target.model_copy(update={"thread_id": replacement.thread_id})
+                queued.attempts = 0
+                _requeue_turn_front(queued)
+                _append_bot_event(
+                    {
+                        "type": "queued_turn_retargeted",
+                        "old_thread_id": thread_id,
+                        "new_thread_id": replacement.thread_id,
+                        "queued_id": queued.id,
+                        "error": _truncate_text(str(exc), 500),
+                    }
+                )
+                asyncio.get_running_loop().call_soon(_schedule_queue_drain, replacement.thread_id)
+                return
+        if _is_codex_timeout_error(exc):
+            queued.attempts = max(0, queued.attempts - 1)
+            _requeue_turn_front(queued)
+            delay = _thread_resume_retry_delay()
+            reschedule_queue = False
+            _append_bot_event(
+                {
+                    "type": "queued_turn_resume_timeout",
+                    "thread_id": thread_id,
+                    "queued_id": queued.id,
+                    "retry_delay_seconds": delay,
+                    "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+                }
+            )
+            await hub.publish(
+                {
+                    "type": "queue.status",
+                    "threadId": thread_id,
+                    "queueDepth": _thread_queue_depth(thread_id),
+                    "active": _thread_is_active(thread_id),
+                }
+            )
+            asyncio.get_running_loop().call_later(delay, _schedule_queue_drain, thread_id)
+            return
         if queued.attempts < 3:
             _requeue_turn_front(queued)
         _append_bot_event(
@@ -1081,7 +2250,7 @@ async def _drain_thread_queue(thread_id: str) -> None:
         )
     finally:
         await _publish_queue_status(thread_id)
-        if _thread_queue_depth(thread_id) and not _thread_is_active(thread_id):
+        if reschedule_queue and _thread_queue_depth(thread_id) and not _thread_is_active(thread_id):
             asyncio.get_running_loop().call_soon(_schedule_queue_drain, thread_id)
 
 
@@ -1169,24 +2338,143 @@ def _append_bot_event(event: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
+def _normalize_agent_channel_mapping(raw_channels: dict[str, Any]) -> dict[str, list[str]]:
+    channels: dict[str, list[str]] = {}
+    for agent, values in raw_channels.items():
+        normalized_agent = str(agent).strip().lower()
+        if not normalized_agent:
+            continue
+        if isinstance(values, str):
+            candidate_channels = [values]
+        else:
+            candidate_channels = list(values or [])
+        normalized_channels = sorted(
+            {
+                str(channel).strip()
+                for channel in candidate_channels
+                if str(channel).strip()
+            }
+        )
+        if normalized_channels:
+            channels[normalized_agent] = normalized_channels
+    return channels
+
+
+def _normalize_agent_channel_presence_project_settings(
+    settings: AgentChannelPresenceProjectSettings,
+) -> AgentChannelPresenceProjectSettings:
+    return AgentChannelPresenceProjectSettings(
+        agent_channels=_normalize_agent_channel_mapping(settings.agent_channels),
+    )
+
+
+def _normalize_agent_channel_presence_settings(
+    settings: AgentChannelPresenceSettings,
+) -> AgentChannelPresenceSettings:
+    projects: dict[str, AgentChannelPresenceProjectSettings] = {}
+    for project_id, project_settings in settings.projects.items():
+        normalized_project_id = str(project_id).strip()
+        if not normalized_project_id:
+            continue
+        projects[normalized_project_id] = _normalize_agent_channel_presence_project_settings(project_settings)
+    return AgentChannelPresenceSettings(projects=projects)
+
+
+def _migrate_agent_channel_presence_settings(raw: Any) -> AgentChannelPresenceSettings:
+    if not isinstance(raw, dict):
+        return AgentChannelPresenceSettings()
+    raw_projects = raw.get("projects")
+    projects: dict[str, AgentChannelPresenceProjectSettings] = {}
+    if isinstance(raw_projects, dict):
+        for project_id, project_settings in raw_projects.items():
+            if not isinstance(project_settings, dict):
+                continue
+            channels = project_settings.get("agent_channels")
+            if not isinstance(channels, dict):
+                continue
+            normalized_project_id = str(project_id).strip()
+            if not normalized_project_id:
+                continue
+            projects[normalized_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
+    else:
+        legacy_project_id = str(raw.get("default_project_id") or "home").strip() or "home"
+        channels = raw.get("agent_channels")
+        if isinstance(channels, dict):
+            projects[legacy_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
+    return AgentChannelPresenceSettings(projects=projects)
+
+
+def _legacy_agent_channel_presence_from_gitlab_file() -> AgentChannelPresenceSettings:
+    if not GITLAB_ROUTING_FILE.exists():
+        return AgentChannelPresenceSettings()
+    with contextlib.suppress(Exception):
+        raw = json.loads(GITLAB_ROUTING_FILE.read_text())
+        if isinstance(raw, dict) and "projects" in raw:
+            projects: dict[str, AgentChannelPresenceProjectSettings] = {}
+            for project_id, project_settings in (raw.get("projects") or {}).items():
+                if not isinstance(project_settings, dict):
+                    continue
+                channels = project_settings.get("agent_channels")
+                if not isinstance(channels, dict):
+                    continue
+                normalized_project_id = str(project_id).strip()
+                if not normalized_project_id:
+                    continue
+                projects[normalized_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
+            if projects:
+                return AgentChannelPresenceSettings(projects=projects)
+        return _migrate_agent_channel_presence_settings(raw)
+    return AgentChannelPresenceSettings()
+
+
+def _load_agent_channel_presence_settings() -> AgentChannelPresenceSettings:
+    DATA_DIR.mkdir(exist_ok=True)
+    if AGENT_CHANNEL_PRESENCE_FILE.exists():
+        raw = json.loads(AGENT_CHANNEL_PRESENCE_FILE.read_text())
+        return _normalize_agent_channel_presence_settings(_migrate_agent_channel_presence_settings(raw))
+    settings = _legacy_agent_channel_presence_from_gitlab_file()
+    normalized = _normalize_agent_channel_presence_settings(settings)
+    _save_agent_channel_presence_settings(normalized)
+    return normalized
+
+
+def _save_agent_channel_presence_settings(
+    settings: AgentChannelPresenceSettings,
+) -> AgentChannelPresenceSettings:
+    normalized = _normalize_agent_channel_presence_settings(settings)
+    DATA_DIR.mkdir(exist_ok=True)
+    AGENT_CHANNEL_PRESENCE_FILE.write_text(json.dumps(normalized.model_dump(), indent=2) + "\n")
+    return normalized
+
+
+def _normalize_string_list(values: list[Any] | tuple[Any, ...] | set[Any] | None) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values or []:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
 def _normalize_gitlab_project_settings(settings: GitLabProjectRoutingSettings) -> GitLabProjectRoutingSettings:
+    channel_ids = _normalize_string_list(settings.channel_ids)
     project_paths = sorted({path.strip().lower() for path in settings.project_paths if path and path.strip()})
+    route_agents = sorted({str(agent).strip().lower() for agent in settings.route_agents if str(agent).strip()})
     fallbacks: dict[str, list[str]] = {}
     for kind, agents in settings.fallback_agents_by_kind.items():
         normalized_kind = str(kind).strip().lower()
         normalized_agents = sorted({str(agent).strip().lower() for agent in agents if str(agent).strip()})
         if normalized_kind and normalized_agents:
             fallbacks[normalized_kind] = normalized_agents
-    channels = {
-        str(agent).strip().lower(): str(channel).strip()
-        for agent, channel in settings.agent_channels.items()
-        if str(agent).strip() and str(channel).strip()
-    }
     return GitLabProjectRoutingSettings(
         enabled=settings.enabled,
+        channel_ids=channel_ids,
+        route_agents=route_agents,
         project_paths=project_paths,
         fallback_agents_by_kind=fallbacks,
-        agent_channels=channels,
     )
 
 
@@ -1209,7 +2497,23 @@ def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
     if not isinstance(raw, dict):
         return GitLabRoutingSettings()
     if "projects" in raw:
-        return GitLabRoutingSettings.model_validate(raw)
+        projects: dict[str, GitLabProjectRoutingSettings] = {}
+        for project_id, project_settings in (raw.get("projects") or {}).items():
+            if not isinstance(project_settings, dict):
+                continue
+            normalized_project_id = str(project_id).strip()
+            if not normalized_project_id:
+                continue
+            migrated = dict(project_settings)
+            legacy_channel_id = str(migrated.get("channel_id") or "").strip()
+            if legacy_channel_id and not migrated.get("channel_ids"):
+                migrated["channel_ids"] = [legacy_channel_id]
+            projects[normalized_project_id] = GitLabProjectRoutingSettings.model_validate(migrated)
+        return GitLabRoutingSettings(
+            enabled=bool(raw.get("enabled", True)),
+            ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
+            projects=projects or GitLabRoutingSettings().projects,
+        )
     project_settings_by_id: dict[str, GitLabProjectRoutingSettings] = {}
     for mapping in raw.get("project_mappings") or []:
         if not isinstance(mapping, dict):
@@ -1225,14 +2529,14 @@ def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
         legacy_project_id = str(raw.get("default_project_id") or "home").strip() or "home"
         project_settings_by_id[legacy_project_id] = GitLabProjectRoutingSettings()
     fallback_agents = raw.get("fallback_agents_by_kind")
-    agent_channels = raw.get("agent_channels")
     enabled = bool(raw.get("enabled", True))
     for project_settings in project_settings_by_id.values():
         project_settings.enabled = enabled
+        channel_id = str(raw.get("channel_id") or "").strip()
+        if channel_id:
+            project_settings.channel_ids = [channel_id]
         if isinstance(fallback_agents, dict):
             project_settings.fallback_agents_by_kind = fallback_agents
-        if isinstance(agent_channels, dict):
-            project_settings.agent_channels = agent_channels
     return GitLabRoutingSettings(
         enabled=enabled,
         ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
@@ -1244,12 +2548,7 @@ def _load_gitlab_routing_settings() -> GitLabRoutingSettings:
     DATA_DIR.mkdir(exist_ok=True)
     if GITLAB_ROUTING_FILE.exists():
         return _normalize_gitlab_routing_settings(_migrate_gitlab_routing_settings(json.loads(GITLAB_ROUTING_FILE.read_text())))
-    settings = GitLabRoutingSettings()
-    channel_overrides = _parse_agent_channel_overrides()
-    if channel_overrides:
-        for project_settings in settings.projects.values():
-            project_settings.agent_channels.update(channel_overrides)
-    normalized = _normalize_gitlab_routing_settings(settings)
+    normalized = _normalize_gitlab_routing_settings(GitLabRoutingSettings())
     _save_gitlab_routing_settings(normalized)
     return normalized
 
@@ -1261,15 +2560,24 @@ def _save_gitlab_routing_settings(settings: GitLabRoutingSettings) -> GitLabRout
     return normalized
 
 
-def _parse_agent_channel_overrides() -> dict[str, str]:
+def _parse_agent_channel_overrides() -> dict[str, list[str]]:
     raw = os.environ.get("CODEX_WEB_AGENT_CHANNELS", "").strip()
     if not raw:
         return {}
     with contextlib.suppress(Exception):
         payload = json.loads(raw)
         if isinstance(payload, dict):
-            return {str(key).lower(): str(value) for key, value in payload.items() if value}
-    result: dict[str, str] = {}
+            result: dict[str, list[str]] = {}
+            for key, value in payload.items():
+                normalized_key = str(key).lower()
+                if isinstance(value, str) and value.strip():
+                    result[normalized_key] = [value.strip()]
+                elif isinstance(value, list):
+                    channels = [str(channel).strip() for channel in value if str(channel).strip()]
+                    if channels:
+                        result[normalized_key] = channels
+            return result
+    result: dict[str, list[str]] = {}
     for part in raw.split(","):
         if ":" not in part:
             continue
@@ -1277,54 +2585,397 @@ def _parse_agent_channel_overrides() -> dict[str, str]:
         key = key.strip().lower()
         value = value.strip()
         if key and value:
-            result[key] = value
+            result[key] = [value]
     return result
 
 
 def _preferred_agent_conversation(agent: str, project_id: str) -> str | None:
     normalized = agent.lower()
-    settings = _load_gitlab_routing_settings()
+    channels = _preferred_agent_conversations(normalized, project_id)
+    return channels[0] if channels else None
+
+
+def _preferred_agent_conversations(agent: str, project_id: str, allowed_channels: list[str] | None = None) -> list[str]:
+    normalized = agent.lower()
+    settings = _load_agent_channel_presence_settings()
     project_settings = settings.projects.get(project_id)
+    allowed = set(_normalize_string_list(allowed_channels)) if allowed_channels else None
     if project_settings and normalized in project_settings.agent_channels:
-        return project_settings.agent_channels[normalized]
+        channels = _normalize_string_list(project_settings.agent_channels[normalized])
+        if allowed is not None:
+            channels = [channel for channel in channels if channel in allowed]
+        if channels:
+            return channels
     overrides = _parse_agent_channel_overrides()
     if normalized in overrides:
-        return overrides[normalized]
-    return None
+        channels = _normalize_string_list(overrides[normalized])
+        if allowed is not None:
+            channels = [channel for channel in channels if channel in allowed]
+        if channels:
+            return channels
+    return []
 
 
-def _binding_for_agent(agent: str, project_id: str) -> BotBinding | None:
+def _clone_binding_to_known_channel(source: BotBinding, channel_id: str) -> BotBinding:
+    channel = next(
+        (
+            item
+            for item in _bot_channels(source.project_id)
+            if item.get("provider") == source.provider and item.get("id") == channel_id
+        ),
+        None,
+    )
+    return _clone_binding_to_conversation(
+        source,
+        channel_id,
+        external_name=(channel or {}).get("name") or (channel or {}).get("label") or channel_id,
+    )
+
+
+def _gitlab_routing_agents(payload: dict[str, Any], project_settings: GitLabProjectRoutingSettings) -> list[str]:
+    explicit = _normalize_string_list(project_settings.route_agents)
+    return explicit or _gitlab_owner_agents(payload, project_settings)
+
+
+def _gitlab_routing_bindings_for_agent(
+    agent: str,
+    project_id: str,
+    project_settings: GitLabProjectRoutingSettings,
+) -> list[BotBinding]:
+    binding = _binding_for_agent(agent, project_id)
+    if not binding:
+        return []
+    route_channels = _normalize_string_list(project_settings.channel_ids)
+    if not route_channels:
+        return [binding]
+    preferred_channels = _preferred_agent_conversations(agent, project_id, route_channels)
+    if not preferred_channels:
+        return []
+    return [_clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
+
+
+def _gitlab_routing_bindings_for_master(
+    project_id: str,
+    project_settings: GitLabProjectRoutingSettings,
+) -> list[BotBinding]:
+    master = _master_binding(project_id)
+    if not master:
+        return []
+    route_channels = _normalize_string_list(project_settings.channel_ids)
+    if not route_channels or master.provider != "slack":
+        return [master]
+    return [_clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
+
+
+def _binding_for_agent(
+    agent: str,
+    project_id: str,
+    *,
+    preferred_conversation_id: str | None = None,
+) -> BotBinding | None:
     normalized = agent.strip().lower()
     if not normalized:
         return None
-    candidates = [
-        binding
-        for binding in _load_bot_bindings()
-        if binding.project_id == project_id
-        and not binding.is_master
-        and (_binding_prefix(binding) or "").strip().lower() == normalized
-    ]
-    if not candidates:
-        candidates = [
+    candidates = sorted(
+        [
             binding
             for binding in _load_bot_bindings()
             if binding.project_id == project_id
             and not binding.is_master
-            and normalized in {
-                (_binding_prefix(binding) or "").strip().lower().split(" ", 1)[0],
-                (binding.thread_name or "").strip().lower().split(" ", 1)[0],
-            }
-        ]
+            and (_binding_prefix(binding) or "").strip().lower() == normalized
+        ],
+        key=lambda binding: binding.updated_at,
+        reverse=True,
+    )
+    if not candidates:
+        candidates = sorted(
+            [
+                binding
+                for binding in _load_bot_bindings()
+                if binding.project_id == project_id
+                and not binding.is_master
+                and normalized in {
+                    (_binding_prefix(binding) or "").strip().lower().split(" ", 1)[0],
+                    (binding.thread_name or "").strip().lower().split(" ", 1)[0],
+                }
+            ],
+            key=lambda binding: binding.updated_at,
+            reverse=True,
+        )
     if not candidates:
         return None
+    if preferred_conversation_id:
+        preferred = [
+            binding for binding in candidates if binding.external_conversation_id == preferred_conversation_id
+        ]
+        if preferred:
+            return preferred[0]
+        source = candidates[0]
+        allowed_channels = [binding.external_conversation_id for binding in candidates]
+        if preferred_conversation_id in _preferred_agent_conversations(
+            normalized,
+            project_id,
+            allowed_channels=allowed_channels,
+        ):
+            return _clone_binding_to_conversation(source, preferred_conversation_id)
     preferred_conversation = _preferred_agent_conversation(normalized, project_id)
     if preferred_conversation:
-        for binding in candidates:
-            if binding.external_conversation_id == preferred_conversation:
-                return binding
-        source = max(candidates, key=lambda binding: binding.updated_at)
+        preferred = [
+            binding for binding in candidates if binding.external_conversation_id == preferred_conversation
+        ]
+        if preferred:
+            return preferred[0]
+        source = candidates[0]
         return _clone_binding_to_conversation(source, preferred_conversation)
-    return max(candidates, key=lambda binding: binding.updated_at)
+    return candidates[0]
+
+
+def _logical_binding_name(binding: BotBinding) -> str:
+    name = _binding_report_name(binding) or binding.thread_name or _binding_prefix(binding)
+    return name.strip().lower()
+
+
+def _same_logical_binding(candidate: BotBinding, source: BotBinding) -> bool:
+    return (
+        candidate.provider == source.provider
+        and candidate.project_id == source.project_id
+        and _logical_binding_name(candidate) == _logical_binding_name(source)
+    )
+
+
+def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
+    return sorted(
+        [
+            binding
+            for binding in _load_bot_bindings()
+            if binding.thread_id == source.thread_id or _same_logical_binding(binding, source)
+        ],
+        key=lambda binding: binding.updated_at,
+        reverse=True,
+    )
+
+
+def _preferred_binding_for_replacement(source: BotBinding, bindings: list[BotBinding]) -> BotBinding:
+    for binding in bindings:
+        if binding.external_conversation_id == source.external_conversation_id:
+            return binding
+    return bindings[0] if bindings else source
+
+
+def _retarget_bot_targets(old_thread_id: str, new_thread_id: str) -> None:
+    def rewrite(targets: dict[str, BotReplyTarget]) -> dict[str, BotReplyTarget]:
+        rewritten: dict[str, BotReplyTarget] = {}
+        for key, target in targets.items():
+            next_key = key
+            if key == old_thread_id:
+                next_key = new_thread_id
+            elif key.endswith(f":{old_thread_id}") and ":external:" not in key:
+                next_key = f"{key.rsplit(':', 1)[0]}:{new_thread_id}"
+            if target.thread_id == old_thread_id:
+                target = target.model_copy(update={"thread_id": new_thread_id, "updated_at": time.time()})
+            rewritten[next_key] = target
+        return rewritten
+
+    _save_bot_reply_targets(rewrite(_load_bot_reply_targets()))
+    _save_bot_delivery_targets(rewrite(_load_bot_delivery_targets()))
+
+
+def _retarget_thread_settings(old_thread_id: str, new_thread_id: str) -> None:
+    settings = _load_thread_settings()
+    old_settings = settings.pop(old_thread_id, None)
+    if old_settings and new_thread_id not in settings:
+        settings[new_thread_id] = old_settings
+    if old_settings:
+        _save_thread_settings(settings)
+
+
+def _retarget_active_turn(old_thread_id: str, new_thread_id: str) -> None:
+    active_turns = _load_active_turns()
+    active = active_turns.pop(old_thread_id, None)
+    if not active:
+        return
+    if active.reply_target and active.reply_target.thread_id == old_thread_id:
+        active.reply_target = active.reply_target.model_copy(update={"thread_id": new_thread_id})
+    active.thread_id = new_thread_id
+    active.updated_at = time.time()
+    active_turns.setdefault(new_thread_id, active)
+    _save_active_turns(active_turns)
+
+
+def _retarget_turn_queue(old_thread_id: str, new_thread_id: str) -> None:
+    queues = _load_turn_queues()
+    queued = queues.pop(old_thread_id, [])
+    if not queued:
+        return
+    for item in queued:
+        item.thread_id = new_thread_id
+        if item.reply_target and item.reply_target.thread_id == old_thread_id:
+            item.reply_target = item.reply_target.model_copy(update={"thread_id": new_thread_id})
+    queues.setdefault(new_thread_id, []).extend(queued)
+    _save_turn_queues(queues)
+
+
+def _retarget_bot_details(old_thread_id: str, new_thread_id: str) -> None:
+    details = _load_bot_details()
+    old_items = details.pop(old_thread_id, [])
+    if not old_items:
+        return
+    details.setdefault(new_thread_id, [])
+    details[new_thread_id] = (details[new_thread_id] + old_items)[-20:]
+    _save_bot_details(details)
+
+
+def _retarget_slack_thread_icon(old_thread_id: str, new_thread_id: str) -> None:
+    icons = _load_slack_thread_icons()
+    icon = icons.pop(old_thread_id, None)
+    if icon and new_thread_id not in icons:
+        icons[new_thread_id] = icon
+    if icon:
+        _save_slack_thread_icons(icons)
+
+
+def _retarget_logical_bot_bindings(source: BotBinding, new_thread_id: str) -> BotBinding:
+    bindings = _load_bot_bindings()
+    now = time.time()
+    changed: list[BotBinding] = []
+    canonical_thread_name = source.thread_name or source.route_prefix or _binding_prefix(source)
+    for binding in bindings:
+        if binding.thread_id != source.thread_id and not _same_logical_binding(binding, source):
+            continue
+        binding.thread_id = new_thread_id
+        if not binding.thread_name and canonical_thread_name:
+            binding.thread_name = canonical_thread_name
+        binding.sandbox = source.sandbox
+        binding.approval_policy = source.approval_policy
+        binding.updated_at = now
+        changed.append(binding)
+    if not changed:
+        source.thread_id = new_thread_id
+        source.updated_at = now
+        changed.append(source)
+        bindings.append(source)
+    _save_bot_bindings(bindings)
+    _dedupe_bot_integrations()
+    return _preferred_binding_for_replacement(source, changed)
+
+
+def _retarget_bot_thread_state(old_thread_id: str, new_thread_id: str) -> None:
+    _retarget_bot_targets(old_thread_id, new_thread_id)
+    _retarget_thread_settings(old_thread_id, new_thread_id)
+    _retarget_active_turn(old_thread_id, new_thread_id)
+    _retarget_turn_queue(old_thread_id, new_thread_id)
+    _retarget_bot_details(old_thread_id, new_thread_id)
+    _retarget_slack_thread_icon(old_thread_id, new_thread_id)
+
+
+async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBinding:
+    old_thread_id = binding.thread_id
+    project = _project(binding.project_id)
+    settings = _thread_run_settings(old_thread_id)
+    sandbox = binding.sandbox or settings.sandbox or project.sandbox
+    approval_policy = binding.approval_policy or settings.approval_policy or project.approval_policy
+    thread_name = binding.thread_name or binding.route_prefix or _binding_prefix(binding)
+
+    replacement_params = _project_params(
+        project,
+        {
+            "sandbox": sandbox,
+            "approvalPolicy": approval_policy,
+            "sessionStartSource": "bot-thread-replacement",
+        },
+    )
+    try:
+        response = await codex.request("thread/start", replacement_params)
+    except Exception as exc:
+        text = str(exc).lower()
+        if "unknown variant `bot-thread-replacement`" not in text and "sessionstartsource" not in text:
+            raise
+        replacement_params = _project_params(
+            project,
+            {
+                "sandbox": sandbox,
+                "approvalPolicy": approval_policy,
+                "sessionStartSource": "startup",
+            },
+        )
+        response = await codex.request("thread/start", replacement_params)
+    new_thread_id = response["thread"]["id"]
+    _remember_thread_run_settings(
+        new_thread_id,
+        sandbox=sandbox,
+        approval_policy=approval_policy,
+        model=settings.model,
+        reasoning_effort=settings.reasoning_effort,
+        developer_instructions=settings.developer_instructions,
+    )
+    if thread_name:
+        with contextlib.suppress(Exception):
+            await _set_thread_name(new_thread_id, thread_name)
+        _upsert_indexed_thread(
+            IndexedThread(id=new_thread_id, name=thread_name, cwd=project.path, path=project.path, updatedAt=time.time())
+        )
+    replacement = _retarget_logical_bot_bindings(
+        binding.model_copy(update={"sandbox": sandbox, "approval_policy": approval_policy}),
+        new_thread_id,
+    )
+    _retarget_bot_thread_state(old_thread_id, new_thread_id)
+    _append_bot_event(
+        {
+            "type": "stale_bot_thread_replaced",
+            "provider": binding.provider,
+            "project_id": binding.project_id,
+            "logical_name": _logical_binding_name(binding),
+            "old_thread_id": old_thread_id,
+            "new_thread_id": new_thread_id,
+            "error": _truncate_text(error, 500),
+        }
+    )
+    await hub.publish(
+        {
+            "type": "bot.thread.replaced",
+            "provider": binding.provider,
+            "projectId": binding.project_id,
+            "oldThreadId": old_thread_id,
+            "newThreadId": new_thread_id,
+            "name": thread_name,
+        }
+    )
+    return replacement
+
+
+def _active_turn_stale_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_ACTIVE_TURN_STALE_SECONDS") or "120")
+    except ValueError:
+        return 120.0
+    return max(30.0, seconds)
+
+
+def _queue_recovery_interval_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_QUEUE_RECOVERY_SECONDS") or "30")
+    except ValueError:
+        return 30.0
+    if seconds <= 0:
+        return 0.0
+    return max(10.0, seconds)
+
+
+def _active_turn_is_stale(thread_id: str | None, max_age: float | None = None) -> bool:
+    if not thread_id:
+        return False
+    max_age = _active_turn_stale_seconds() if max_age is None else max_age
+    active = _load_active_turns().get(thread_id)
+    return bool(active and time.time() - active.updated_at > max_age)
+
+
+def _release_stale_active_turn(thread_id: str | None, reason: str) -> None:
+    if not thread_id:
+        return
+    if not _active_turn_is_stale(thread_id):
+        return
+    _append_bot_event({"type": "stale_active_turn_released", "thread_id": thread_id, "reason": reason})
+    _clear_thread_active(thread_id)
 
 
 def _master_binding(project_id: str) -> BotBinding | None:
@@ -1334,13 +2985,46 @@ def _master_binding(project_id: str) -> BotBinding | None:
     return max(masters, key=lambda binding: binding.updated_at)
 
 
+def _orchestrator_binding(project_id: str) -> BotBinding | None:
+    masters = sorted(
+        [binding for binding in _load_bot_bindings() if binding.project_id == project_id and binding.is_master],
+        key=lambda binding: binding.updated_at,
+        reverse=True,
+    )
+    for binding in masters:
+        if (_binding_report_name(binding) or "").strip().lower() in {"orchestrator", "codex"}:
+            return binding
+    return masters[0] if masters else None
+
+
 async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str) -> dict[str, Any]:
     project = _project(binding.project_id)
     settings = _thread_run_settings(binding.thread_id)
     effective_model = settings.model or project.model
     effective_reasoning_effort = settings.reasoning_effort
     reply_target = _conversation_target_for_binding(binding)
-    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+
+    async def queue_binding_turn(event_type: str, reason: str | None = None) -> dict[str, Any]:
+        duplicate = _find_duplicate_queued_turn(binding.thread_id, message=text, source=source)
+        if duplicate:
+            _append_bot_event(
+                {
+                    "type": "event_turn_duplicate_skipped",
+                    "source": source,
+                    "thread_id": binding.thread_id,
+                    "external_conversation_id": binding.external_conversation_id,
+                    "queued_id": duplicate.id,
+                    "queue_depth": _thread_queue_depth(binding.thread_id),
+                }
+            )
+            await _publish_queue_status(binding.thread_id)
+            return {
+                "ok": True,
+                "queued": True,
+                "duplicate": True,
+                "threadId": binding.thread_id,
+                "queuedId": duplicate.id,
+            }
         queued = _enqueue_turn(
             thread_id=binding.thread_id,
             project_id=project.id,
@@ -1354,16 +3038,17 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
         )
         binding.updated_at = time.time()
         _upsert_bot_binding(binding)
-        _append_bot_event(
-            {
-                "type": "event_turn_queued",
-                "source": source,
-                "thread_id": binding.thread_id,
-                "external_conversation_id": binding.external_conversation_id,
-                "queued_id": queued.id,
-                "queue_depth": _thread_queue_depth(binding.thread_id),
-            }
-        )
+        event_payload = {
+            "type": event_type,
+            "source": source,
+            "thread_id": binding.thread_id,
+            "external_conversation_id": binding.external_conversation_id,
+            "queued_id": queued.id,
+            "queue_depth": _thread_queue_depth(binding.thread_id),
+        }
+        if reason:
+            event_payload["reason"] = _truncate_text(reason, 500)
+        _append_bot_event(event_payload)
         await _publish_queue_status(binding.thread_id)
         await hub.publish(
             {
@@ -1378,17 +3063,44 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
         )
         return {"ok": True, "queued": True, "threadId": binding.thread_id, "queuedId": queued.id}
 
-    turn = await _start_thread_turn_now(
-        binding.thread_id,
-        project=project,
-        message=text,
-        sandbox=binding.sandbox,
-        approval_policy=binding.approval_policy,
-        model=effective_model,
-        reasoning_effort=effective_reasoning_effort,
-        source=source,
-        reply_target=reply_target,
-    )
+    _release_stale_active_turn(binding.thread_id, f"{source}:dispatch")
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+        return await queue_binding_turn("event_turn_queued")
+
+    try:
+        turn = await _start_thread_turn_now(
+            binding.thread_id,
+            project=project,
+            message=text,
+            sandbox=binding.sandbox,
+            approval_policy=binding.approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
+            source=source,
+            reply_target=reply_target,
+        )
+    except Exception as exc:
+        if _is_codex_timeout_error(exc):
+            return await queue_binding_turn("event_turn_queued_after_timeout", str(getattr(exc, "detail", exc)))
+        if not _is_stale_thread_error(exc):
+            raise
+        binding = await _replace_stale_bot_thread(binding, str(exc))
+        project = _project(binding.project_id)
+        settings = _thread_run_settings(binding.thread_id)
+        effective_model = settings.model or project.model
+        effective_reasoning_effort = settings.reasoning_effort
+        reply_target = _conversation_target_for_binding(binding)
+        turn = await _start_thread_turn_now(
+            binding.thread_id,
+            project=project,
+            message=text,
+            sandbox=binding.sandbox,
+            approval_policy=binding.approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
+            source=source,
+            reply_target=reply_target,
+        )
     binding.updated_at = time.time()
     _upsert_bot_binding(binding)
     await hub.publish(
@@ -1549,7 +3261,7 @@ def _cross_channel_binding_for_message(
         if binding.external_conversation_id != message.external_conversation_id
     ]
     matches: dict[str, tuple[BotBinding, str]] = {}
-    for binding in sorted(candidates, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
+    for binding in sorted(candidates, key=lambda item: (len(_binding_prefix(item) or ""), item.updated_at), reverse=True):
         for prefix in _binding_prefix_candidates(binding):
             stripped = _strip_prefix(message.text, prefix, allow_bare_word=allow_bare_prefix)
             if stripped is None:
@@ -2031,7 +3743,9 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         with contextlib.suppress(Exception):
             await codex.request("turn/interrupt", {"threadId": binding.thread_id})
         _clear_thread_active(binding.thread_id)
-    if not steer_now and (_thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id)):
+    if not steer_now:
+        _release_stale_active_turn(binding.thread_id, f"{provider}:inbound")
+    async def queue_inbound_turn(event_type: str, reason: str | None = None) -> dict[str, Any]:
         queued = _enqueue_turn(
             thread_id=binding.thread_id,
             project_id=project.id,
@@ -2045,18 +3759,22 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         )
         binding.updated_at = time.time()
         _upsert_bot_binding(binding)
-        _append_bot_event(
-            {
-                "type": "inbound_turn_queued",
-                "provider": provider,
-                "external_conversation_id": message.external_conversation_id,
-                "message_id": message.message_id,
-                "thread_id": binding.thread_id,
-                "queued_id": queued.id,
-                "queue_depth": _thread_queue_depth(binding.thread_id),
-            }
-        )
+        queue_depth = _thread_queue_depth(binding.thread_id)
+        event_payload = {
+            "type": event_type,
+            "provider": provider,
+            "external_conversation_id": message.external_conversation_id,
+            "message_id": message.message_id,
+            "thread_id": binding.thread_id,
+            "queued_id": queued.id,
+            "queue_depth": queue_depth,
+        }
+        if reason:
+            event_payload["reason"] = _truncate_text(reason, 500)
+        _append_bot_event(event_payload)
         await _publish_queue_status(binding.thread_id)
+        if not _thread_is_active(binding.thread_id):
+            asyncio.get_running_loop().call_later(5, _schedule_queue_drain, binding.thread_id)
         await hub.publish(
             {
                 "type": "bot.inbound",
@@ -2069,7 +3787,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
                 "messageId": message.message_id,
                 "queued": True,
                 "queuedId": queued.id,
-                "queueDepth": _thread_queue_depth(binding.thread_id),
+                "queueDepth": queue_depth,
             }
         )
         return {
@@ -2077,9 +3795,12 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             "queued": True,
             "threadId": binding.thread_id,
             "queuedId": queued.id,
-            "queueDepth": _thread_queue_depth(binding.thread_id),
+            "queueDepth": queue_depth,
         }
-    for attempt in range(2):
+
+    if not steer_now and (_thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id)):
+        return await queue_inbound_turn("inbound_turn_queued")
+    for attempt in range(3):
         try:
             await codex.request(
                 "thread/resume",
@@ -2108,43 +3829,50 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             turn = await codex.request("turn/start", turn_params)
             break
         except Exception as exc:
-            if attempt or not _is_stale_thread_error(exc):
+            if _is_codex_timeout_error(exc):
+                _append_bot_event(
+                    {
+                        "type": "inbound_timeout",
+                        "provider": provider,
+                        "external_conversation_id": message.external_conversation_id,
+                        "message_id": message.message_id,
+                        "thread_id": binding.thread_id,
+                        "steered": steer_now,
+                        "error": _truncate_text(str(exc), 500),
+                    }
+                )
+                if not steer_now:
+                    return await queue_inbound_turn("inbound_turn_queued_after_timeout", str(exc))
+                return {
+                    "ok": False,
+                    "timedOut": True,
+                    "threadId": binding.thread_id,
+                    "steered": True,
+                    "error": str(getattr(exc, "detail", exc)),
+                }
+            if not _is_stale_thread_error(exc):
                 raise
             stale_thread_id = binding.thread_id
-            fallback_binding = _fallback_binding_for_stale(binding, message)
-            _remove_bot_binding(binding.id)
             _forget_bot_reply_target(stale_thread_id)
+            binding = await _replace_stale_bot_thread(binding, str(exc))
+            if binding.external_conversation_id != message.external_conversation_id:
+                binding = _clone_binding_for_conversation(binding, message)
+            elif message.connection_id and not binding.connection_id:
+                binding.connection_id = message.connection_id
+                binding.updated_at = time.time()
+                binding = _upsert_bot_binding(binding)
             _append_bot_event(
                 {
                     "type": "stale_binding_repair",
                     "provider": provider,
                     "external_conversation_id": message.external_conversation_id,
                     "old_thread_id": stale_thread_id,
-                    "error": str(exc),
+                    "new_thread_id": binding.thread_id,
+                    "error": _truncate_text(str(exc), 500),
                 }
             )
-            if fallback_binding:
-                binding = (
-                    fallback_binding
-                    if fallback_binding.external_conversation_id == message.external_conversation_id
-                    else _clone_binding_for_conversation(fallback_binding, message)
-                )
-            else:
-                binding = await _start_bot_thread(
-                    BotBindingCreate(
-                        connection_id=message.connection_id or binding.connection_id,
-                        provider=provider,
-                        external_conversation_id=message.external_conversation_id,
-                        project_id=message.project_id or binding.project_id,
-                        external_name=message.external_name or binding.external_name,
-                        thread_name=binding.thread_name,
-                        route_prefix=binding.route_prefix,
-                        is_master=binding.is_master,
-                        post_in_thread=binding.post_in_thread,
-                        sandbox=binding.sandbox,
-                        approval_policy=binding.approval_policy,
-                    )
-                )
+            if attempt >= 2:
+                raise
             project = _project(binding.project_id)
             settings = _thread_run_settings(binding.thread_id)
             effective_model = settings.model or project.model
@@ -2195,6 +3923,109 @@ def _is_stale_thread_error(exc: Exception) -> bool:
     return "no rollout found for thread id" in text or "thread not found" in text
 
 
+def _is_codex_timeout_error(exc: Exception) -> bool:
+    detail = getattr(exc, "detail", None)
+    text = str(detail or exc).lower()
+    return getattr(exc, "status_code", None) == 504 or "timed out after" in text
+
+
+def _thread_read_timeout_response(
+    thread_id: str,
+    limit: int,
+    exc: Exception | str,
+    *,
+    event_type: str = "web_read_timeout",
+) -> dict[str, Any]:
+    indexed = next((thread for thread in _load_thread_index() if thread.id == thread_id), None)
+    bindings = _bindings_for_thread(thread_id)
+    binding = bindings[0] if bindings else None
+    thread = {
+        "id": thread_id,
+        "name": (indexed.name if indexed else None) or (binding.thread_name if binding else None) or "Untitled thread",
+        "cwd": (indexed.cwd if indexed else None),
+        "path": (indexed.path if indexed else None),
+        "turns": [],
+        "status": {"type": "notLoaded"},
+        "messageLimit": limit,
+        "readTimedOut": True,
+    }
+    error = exc if isinstance(exc, str) else str(getattr(exc, "detail", exc))
+    _append_bot_event(
+        {
+            "type": event_type,
+            "thread_id": thread_id,
+            "error": _truncate_text(error, 500),
+        }
+    )
+    return {
+        "ok": False,
+        "timedOut": True,
+        "threadId": thread_id,
+        "error": error,
+        "thread": thread,
+    }
+
+
+def _web_thread_resume_handoff_timeout() -> float:
+    try:
+        return max(0.1, float(os.environ.get("CODEX_WEB_RESUME_HANDOFF_TIMEOUT") or "3"))
+    except ValueError:
+        return 3
+
+
+def _thread_resume_retry_delay() -> float:
+    try:
+        return max(1.0, float(os.environ.get("CODEX_WEB_RESUME_RETRY_DELAY") or "30"))
+    except ValueError:
+        return 30
+
+
+async def _run_web_thread_resume(
+    thread_id: str,
+    project_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return await codex.request("thread/resume", params)
+    except Exception as exc:
+        payload = {
+            "thread_id": thread_id,
+            "project_id": project_id,
+            "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+        }
+        if _is_codex_timeout_error(exc):
+            _append_bot_event({"type": "web_resume_timeout", **payload})
+            return {
+                "ok": False,
+                "timedOut": True,
+                "threadId": thread_id,
+                "error": str(getattr(exc, "detail", exc)),
+            }
+        _append_bot_event({"type": "web_resume_failed", **payload})
+        return {
+            "ok": False,
+            "threadId": thread_id,
+            "error": str(getattr(exc, "detail", exc)),
+        }
+    finally:
+        current = asyncio.current_task()
+        if WEB_THREAD_RESUME_TASKS.get(thread_id) is current:
+            WEB_THREAD_RESUME_TASKS.pop(thread_id, None)
+
+
+def _web_thread_resume_task(
+    thread_id: str,
+    project_id: str,
+    params: dict[str, Any],
+) -> tuple[asyncio.Task[dict[str, Any]], bool]:
+    existing = WEB_THREAD_RESUME_TASKS.get(thread_id)
+    if existing and not existing.done():
+        return existing, False
+    task = asyncio.create_task(_run_web_thread_resume(thread_id, project_id, params))
+    WEB_THREAD_RESUME_TASKS[thread_id] = task
+    return task, True
+
+
 def _is_transient_websocket_disconnect(exc: Exception) -> bool:
     text = str(exc).lower()
     return isinstance(exc, ConnectionClosed) or "keepalive ping timeout" in text or "no close frame received" in text
@@ -2225,7 +4056,7 @@ def _resolve_bot_binding(
         thread_binding = _binding_for_external_thread(bindings, message.external_thread_id)
         if thread_binding:
             return thread_binding, text, False
-    for binding in sorted(bindings, key=lambda item: len(_binding_prefix(item) or ""), reverse=True):
+    for binding in sorted(bindings, key=lambda item: (len(_binding_prefix(item) or ""), item.updated_at), reverse=True):
         for prefix in _binding_prefix_candidates(binding):
             stripped = _strip_prefix(text, prefix, allow_bare_word=allow_bare_prefix)
             if stripped is not None:
@@ -2529,19 +4360,27 @@ def _format_code_block(text: str, language: str = "") -> str:
     return f"```{language}\n{sanitized}\n```"
 
 
+def _strip_outbound_sender_prefix(text: str, prefix: str | None) -> str:
+    normalized = (text or "").strip()
+    sender = (prefix or "").strip()
+    if not normalized or not sender:
+        return normalized
+    stripped = _strip_prefix(normalized, sender)
+    return stripped if stripped else normalized
+
+
 def _format_bot_outbound_item(item: dict[str, Any], prefix: str | None) -> str | None:
     item_type = item.get("type")
-    label = f"{prefix}: " if prefix else ""
     if item_type == "agentMessage":
-        text = (item.get("text") or "").strip()
-        return f"{label}{text}" if text else None
+        text = _strip_outbound_sender_prefix(item.get("text") or "", prefix)
+        return text or None
 
     if item_type == "commandExecution":
         command = (item.get("command") or "").strip()
         output = (item.get("aggregatedOutput") or "").strip()
         if not command and not output:
             return None
-        parts = [f"{label}Command result".strip()]
+        parts = ["Command result"]
         if command:
             parts.append(_format_code_block(_truncate_text(command, 3000), "sh"))
         if output:
@@ -2555,7 +4394,7 @@ def _format_bot_outbound_item(item: dict[str, Any], prefix: str | None) -> str |
         if not changes:
             return None
         summary = f"{len(changes)} file changed" if len(changes) == 1 else f"{len(changes)} files changed"
-        parts = [f"{label}{summary}".strip()]
+        parts = [summary]
         remaining = 26000
         for change in changes[:5]:
             path = change.get("path") or "unknown path"
@@ -2686,7 +4525,14 @@ def _slack_reply_icon(binding: BotBinding) -> str:
     return candidate
 
 
-async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread: bool | None = None) -> dict[str, Any]:
+async def _send_bot_outbound(
+    binding: BotBinding,
+    text: str,
+    *,
+    reply_in_thread: bool | None = None,
+    username: str | None = None,
+    icon_emoji: str | None = None,
+) -> dict[str, Any]:
     connection = _bot_connection(binding.connection_id) if binding.connection_id else None
     if not connection or not connection.bot_token:
         return {"sent": False, "reason": "missing_bot_token"}
@@ -2699,8 +4545,8 @@ async def _send_bot_outbound(binding: BotBinding, text: str, *, reply_in_thread:
                 connection.bot_token,
                 binding.external_conversation_id,
                 text,
-                username=_slack_reply_username(binding),
-                icon_emoji=_slack_reply_icon(binding),
+                username=username or _slack_reply_username(binding),
+                icon_emoji=icon_emoji or _slack_reply_icon(binding),
                 thread_ts=thread_ts,
             )
         if binding.provider == "telegram":
@@ -3022,6 +4868,7 @@ class BotRuntime:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
+        self.slack_payload_locks: dict[str, asyncio.Lock] = {}
         self.lock = asyncio.Lock()
 
     async def sync(self) -> None:
@@ -3148,71 +4995,109 @@ class BotRuntime:
                     lastEnvelopeAt=time.time(),
                     lastPayloadType=payload.get("type"),
                 )
-                try:
-                    if payload.get("type") == "block_actions":
-                        await _handle_slack_interaction(connection, payload)
-                        continue
-                    event = payload.get("event") or {}
-                    if event:
-                        _set_runtime_status(connection, "connected", lastEventAt=time.time(), lastEventType=event.get("type"))
-                    if event.get("type") not in {"message", "app_mention"}:
-                        continue
-                    if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
-                        continue
-                    text = _strip_slack_mentions(event.get("text") or "")
-                    channel = event.get("channel") or connection.default_external_conversation_id
-                    if not text or not channel:
-                        continue
-                    result = await _handle_bot_inbound(
-                        BotInboundMessage(
-                            provider="slack",
-                            external_conversation_id=channel,
-                            connection_id=connection.id,
-                            external_name=connection.default_external_name or channel,
-                            sender_id=event.get("user"),
-                            text=text,
-                            project_id=connection.project_id,
-                            external_thread_id=event.get("thread_ts") or event.get("ts"),
-                            message_id=event.get("ts"),
-                        )
+                self._schedule_slack_payload(connection, payload)
+
+    def _schedule_slack_payload(self, connection: BotConnection, payload: dict[str, Any]) -> None:
+        task = asyncio.create_task(self._handle_slack_payload(connection, payload))
+
+        def done_callback(completed: asyncio.Task[None]) -> None:
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                _set_runtime_status(connection, "connected", lastError=str(exc), lastErrorAt=time.time())
+                _append_bot_event(
+                    {
+                        "type": "inbound_error",
+                        "provider": "slack",
+                        "connection_id": connection.id,
+                        "error": str(exc),
+                    }
+                )
+
+        task.add_done_callback(done_callback)
+
+    async def _handle_slack_payload(self, connection: BotConnection, payload: dict[str, Any]) -> None:
+        try:
+            if payload.get("type") == "block_actions":
+                await _handle_slack_interaction(connection, payload)
+                return
+            event = payload.get("event") or {}
+            if event:
+                _set_runtime_status(connection, "connected", lastEventAt=time.time(), lastEventType=event.get("type"))
+            if event.get("type") not in {"message", "app_mention"}:
+                return
+            if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
+                return
+            text = _strip_slack_mentions(event.get("text") or "")
+            channel = event.get("channel") or connection.default_external_conversation_id
+            if not text or not channel:
+                return
+            lock_key = f"{connection.id}:{channel}"
+            lock = self.slack_payload_locks.setdefault(lock_key, asyncio.Lock())
+            async with lock:
+                result = await _handle_bot_inbound(
+                    BotInboundMessage(
+                        provider="slack",
+                        external_conversation_id=channel,
+                        connection_id=connection.id,
+                        external_name=connection.default_external_name or channel,
+                        sender_id=event.get("user"),
+                        text=text,
+                        project_id=connection.project_id,
+                        external_thread_id=event.get("thread_ts") or event.get("ts"),
+                        message_id=event.get("ts"),
                     )
-                    if result.get("ambiguous") and connection.bot_token:
-                        binding = _first_binding_for_connection("slack", channel)
-                        await asyncio.to_thread(
-                            _post_slack_message,
-                            connection.bot_token,
-                            channel,
-                            _ambiguous_route_message(result.get("availablePrefixes") or []),
-                            username=_slack_reply_username(binding) if binding else None,
-                            icon_emoji=_slack_reply_icon(binding) if binding else None,
-                            thread_ts=event.get("thread_ts") or event.get("ts"),
-                        )
-                except Exception as exc:
-                    event = payload.get("event") or {}
-                    channel = event.get("channel") or (payload.get("channel") or {}).get("id") or connection.default_external_conversation_id
-                    thread_ts = event.get("thread_ts") or event.get("ts") or ((payload.get("message") or {}).get("ts"))
-                    _set_runtime_status(connection, "connected", lastError=str(exc), lastErrorAt=time.time())
-                    _append_bot_event(
-                        {
-                            "type": "inbound_error",
-                            "provider": "slack",
-                            "connection_id": connection.id,
-                            "external_conversation_id": channel,
-                            "message_id": event.get("ts"),
-                            "error": str(exc),
-                        }
-                    )
-                    if channel and connection.bot_token:
-                        binding = _first_binding_for_connection("slack", channel)
-                        await asyncio.to_thread(
-                            _post_slack_message,
-                            connection.bot_token,
-                            channel,
-                            f"Codex could not handle that Slack message: {_truncate_text(str(exc), 500)}",
-                            username=_slack_reply_username(binding) if binding else None,
-                            icon_emoji=_slack_reply_icon(binding) if binding else None,
-                            thread_ts=thread_ts,
-                        )
+                )
+            if result.get("ambiguous") and connection.bot_token:
+                binding = _first_binding_for_connection("slack", channel)
+                await asyncio.to_thread(
+                    _post_slack_message,
+                    connection.bot_token,
+                    channel,
+                    _ambiguous_route_message(result.get("availablePrefixes") or []),
+                    username=_slack_reply_username(binding) if binding else None,
+                    icon_emoji=_slack_reply_icon(binding) if binding else None,
+                    thread_ts=event.get("thread_ts") or event.get("ts"),
+                )
+            elif result.get("timedOut") and connection.bot_token:
+                binding = _first_binding_for_connection("slack", channel)
+                await asyncio.to_thread(
+                    _post_slack_message,
+                    connection.bot_token,
+                    channel,
+                    "Codex is still busy starting that turn, so I could not steer it yet.",
+                    username=_slack_reply_username(binding) if binding else None,
+                    icon_emoji=_slack_reply_icon(binding) if binding else None,
+                    thread_ts=event.get("thread_ts") or event.get("ts"),
+                )
+        except Exception as exc:
+            event = payload.get("event") or {}
+            channel = event.get("channel") or (payload.get("channel") or {}).get("id") or connection.default_external_conversation_id
+            thread_ts = event.get("thread_ts") or event.get("ts") or ((payload.get("message") or {}).get("ts"))
+            _set_runtime_status(connection, "connected", lastError=str(exc), lastErrorAt=time.time())
+            _append_bot_event(
+                {
+                    "type": "inbound_error",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "external_conversation_id": channel,
+                    "message_id": event.get("ts"),
+                    "error": str(exc),
+                }
+            )
+            if channel and connection.bot_token:
+                binding = _first_binding_for_connection("slack", channel)
+                await asyncio.to_thread(
+                    _post_slack_message,
+                    connection.bot_token,
+                    channel,
+                    f"Codex could not handle that Slack message: {_truncate_text(str(exc), 500)}",
+                    username=_slack_reply_username(binding) if binding else None,
+                    icon_emoji=_slack_reply_icon(binding) if binding else None,
+                    thread_ts=thread_ts,
+                )
 
     async def _run_telegram(self, connection: BotConnection) -> None:
         assert connection.bot_token
@@ -3253,6 +5138,219 @@ class BotRuntime:
             if offset is not None:
                 _update_bot_connection(connection.id, telegram_update_offset=offset)
             await asyncio.sleep(10)
+
+
+def _slack_backfill_interval_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS") or "15")
+    except ValueError:
+        return 15.0
+    return max(5.0, seconds)
+
+
+def _slack_backfill_window_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_WINDOW_SECONDS") or "300")
+    except ValueError:
+        return 300.0
+    return max(30.0, min(seconds, 3600.0))
+
+
+def _recent_inbound_message_ids(limit: int = 2000) -> set[str]:
+    if not BOTS_EVENTS_FILE.exists():
+        return set()
+    with BOTS_EVENTS_FILE.open(errors="replace") as handle:
+        lines = deque(handle, maxlen=max(1, limit))
+    message_ids: set[str] = set()
+    for line in lines:
+        with contextlib.suppress(Exception):
+            event = json.loads(line)
+            if event.get("provider") == "slack" and event.get("message_id"):
+                message_ids.add(str(event["message_id"]))
+    return message_ids
+
+
+def _slack_backfill_channels() -> list[tuple[BotConnection, str]]:
+    connections = {connection.id: connection for connection in _load_bot_connections() if connection.provider == "slack" and connection.bot_token}
+    pairs: dict[tuple[str, str], tuple[BotConnection, str]] = {}
+    for binding in _load_bot_bindings():
+        connection = connections.get(binding.connection_id or "")
+        if connection and binding.external_conversation_id:
+            pairs[(connection.id, binding.external_conversation_id)] = (connection, binding.external_conversation_id)
+    for connection in connections.values():
+        if connection.default_external_conversation_id:
+            pairs.setdefault((connection.id, connection.default_external_conversation_id), (connection, connection.default_external_conversation_id))
+    return list(pairs.values())
+
+
+def _slack_backfill_thread_targets() -> list[tuple[BotConnection, str, str]]:
+    connections = {connection.id: connection for connection in _load_bot_connections() if connection.provider == "slack" and connection.bot_token}
+    bindings = {
+        (binding.provider, binding.thread_id, binding.external_conversation_id): binding
+        for binding in _load_bot_bindings()
+        if binding.provider == "slack" and binding.connection_id
+    }
+    targets: list[BotReplyTarget] = []
+    targets.extend(_load_bot_reply_targets().values())
+    targets.extend(_load_bot_delivery_targets().values())
+    targets.extend(active.reply_target for active in _load_active_turns().values() if active.reply_target)
+    pairs: dict[tuple[str, str, str], tuple[BotConnection, str, str]] = {}
+    for target in targets:
+        if target.provider != "slack" or not target.external_conversation_id:
+            continue
+        thread_ts = target.external_thread_id or target.message_id
+        if not thread_ts:
+            continue
+        binding = bindings.get((target.provider, target.thread_id, target.external_conversation_id))
+        if not binding:
+            candidates = [
+                item
+                for item in _load_bot_bindings()
+                if item.provider == "slack"
+                and item.thread_id == target.thread_id
+                and item.external_conversation_id == target.external_conversation_id
+                and item.connection_id
+            ]
+            binding = candidates[0] if candidates else None
+        connection = connections.get(binding.connection_id or "") if binding else None
+        if not connection:
+            continue
+        pairs[(connection.id, target.external_conversation_id, thread_ts)] = (
+            connection,
+            target.external_conversation_id,
+            thread_ts,
+        )
+    return list(pairs.values())
+
+
+async def _run_slack_backfill_cycle() -> None:
+    recent_message_ids = _recent_inbound_message_ids()
+    oldest = f"{max(0.0, time.time() - _slack_backfill_window_seconds()):.6f}"
+    for connection, channel_id in _slack_backfill_channels():
+        url = "https://slack.com/api/conversations.history?" + urllib.parse.urlencode(
+            {"channel": channel_id, "oldest": oldest, "limit": "50"}
+        )
+        response = await asyncio.to_thread(_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
+        if not response.get("ok"):
+            _append_bot_event(
+                {
+                    "type": "slack_backfill_failed",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "external_conversation_id": channel_id,
+                    "error": response.get("error") or str(response),
+                }
+            )
+            continue
+        for event in reversed(response.get("messages") or []):
+            message_id = str(event.get("ts") or "").strip()
+            if not message_id or message_id in SLACK_BACKFILL_SEEN or message_id in recent_message_ids:
+                continue
+            if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
+                SLACK_BACKFILL_SEEN.add(message_id)
+                continue
+            text = _strip_slack_mentions(event.get("text") or "")
+            if not text:
+                SLACK_BACKFILL_SEEN.add(message_id)
+                continue
+            SLACK_BACKFILL_SEEN.add(message_id)
+            result = await _handle_bot_inbound(
+                BotInboundMessage(
+                    provider="slack",
+                    external_conversation_id=channel_id,
+                    connection_id=connection.id,
+                    external_name=connection.default_external_name or channel_id,
+                    sender_id=event.get("user"),
+                    text=text,
+                    project_id=connection.project_id,
+                    external_thread_id=event.get("thread_ts") or message_id,
+                    message_id=message_id,
+                )
+            )
+            _append_bot_event(
+                {
+                    "type": "slack_backfill_dispatched",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "external_conversation_id": channel_id,
+                    "message_id": message_id,
+                    "thread_id": result.get("threadId"),
+                    "queued": result.get("queued", False),
+                    "ok": result.get("ok", False),
+                }
+            )
+    for connection, channel_id, thread_ts in _slack_backfill_thread_targets():
+        thread_key = (connection.id, channel_id, thread_ts)
+        if thread_key in SLACK_BACKFILL_BAD_THREADS:
+            continue
+        url = "https://slack.com/api/conversations.replies?" + urllib.parse.urlencode(
+            {"channel": channel_id, "ts": thread_ts, "oldest": oldest, "limit": "50"}
+        )
+        response = await asyncio.to_thread(_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
+        if not response.get("ok"):
+            if response.get("error") in {"thread_not_found", "channel_not_found", "not_in_channel"}:
+                SLACK_BACKFILL_BAD_THREADS.add(thread_key)
+            _append_bot_event(
+                {
+                    "type": "slack_thread_backfill_failed",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "external_conversation_id": channel_id,
+                    "external_thread_id": thread_ts,
+                    "error": response.get("error") or str(response),
+                }
+            )
+            continue
+        for event in reversed(response.get("messages") or []):
+            message_id = str(event.get("ts") or "").strip()
+            if not message_id or message_id == thread_ts or message_id in SLACK_BACKFILL_SEEN or message_id in recent_message_ids:
+                continue
+            if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
+                SLACK_BACKFILL_SEEN.add(message_id)
+                continue
+            text = _strip_slack_mentions(event.get("text") or "")
+            if not text:
+                SLACK_BACKFILL_SEEN.add(message_id)
+                continue
+            SLACK_BACKFILL_SEEN.add(message_id)
+            result = await _handle_bot_inbound(
+                BotInboundMessage(
+                    provider="slack",
+                    external_conversation_id=channel_id,
+                    connection_id=connection.id,
+                    external_name=connection.default_external_name or channel_id,
+                    sender_id=event.get("user"),
+                    text=text,
+                    project_id=connection.project_id,
+                    external_thread_id=event.get("thread_ts") or thread_ts,
+                    message_id=message_id,
+                )
+            )
+            _append_bot_event(
+                {
+                    "type": "slack_thread_backfill_dispatched",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "external_conversation_id": channel_id,
+                    "external_thread_id": thread_ts,
+                    "message_id": message_id,
+                    "thread_id": result.get("threadId"),
+                    "queued": result.get("queued", False),
+                    "ok": result.get("ok", False),
+                }
+            )
+
+
+async def _slack_backfill_loop() -> None:
+    interval = _slack_backfill_interval_seconds()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_slack_backfill_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "slack_backfill_loop_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
 
 
 def _verify_slack_signature(request: Request, body: bytes) -> None:
@@ -3362,6 +5460,9 @@ class CodexAppServer:
             except Exception as exc:
                 self.last_error = str(exc)
                 await hub.publish({"type": "codex.error", "error": self.last_error})
+                with contextlib.suppress(Exception):
+                    await self.stop()
+                self.last_error = str(exc)
                 raise
 
     async def stop(self) -> None:
@@ -3511,7 +5612,11 @@ class CodexAppServer:
         ):
             await self.start()
         elif not self.ready.is_set():
-            await self.ready.wait()
+            try:
+                await asyncio.wait_for(self.ready.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                await self.stop()
+                await self.start()
 
     async def respond_to_server_request(self, request_id: int | str, result: dict[str, Any]) -> None:
         self.pending_approvals.pop(request_id, None)
@@ -3551,6 +5656,73 @@ def _watchdog_interval() -> float:
     return max(5.0, min(30.0, usec / 2_000_000))
 
 
+def _autonomy_enabled() -> bool:
+    if (DATA_DIR / "AUTONOMY_DISABLED").exists():
+        return False
+    value = (os.environ.get("CODEX_WEB_AUTONOMY_ENABLED") or "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _owner_work_watchdog_interval() -> float:
+    if not _autonomy_enabled():
+        return 0
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_OWNER_WORK_WATCHDOG_SECONDS") or "600")
+    except ValueError:
+        return 600.0
+    if seconds <= 0:
+        return 0
+    return max(60.0, seconds)
+
+
+def _release_gate_watchdog_interval() -> float:
+    if not _autonomy_enabled():
+        return 0
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_RELEASE_GATE_WATCHDOG_SECONDS") or "300")
+    except ValueError:
+        return 300.0
+    if seconds <= 0:
+        return 0
+    return max(60.0, seconds)
+
+
+def _work_item_sla_watchdog_interval() -> float:
+    if not _autonomy_enabled():
+        return 0
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_SLA_WATCHDOG_SECONDS") or "120")
+    except ValueError:
+        return 120.0
+    if seconds <= 0:
+        return 0
+    return max(30.0, seconds)
+
+
+def _orchestrator_watchdog_interval() -> float:
+    if not _autonomy_enabled():
+        return 0
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_ORCHESTRATOR_WATCHDOG_SECONDS") or "180")
+    except ValueError:
+        return 180.0
+    if seconds <= 0:
+        return 0
+    return max(30.0, seconds)
+
+
+def _split_brain_watchdog_interval() -> float:
+    if not _autonomy_enabled():
+        return 0
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_SPLIT_BRAIN_WATCHDOG_SECONDS") or "60")
+    except ValueError:
+        return 60.0
+    if seconds <= 0:
+        return 0
+    return max(15.0, seconds)
+
+
 def _daemon_health() -> dict[str, Any]:
     now = time.time()
     problems: list[str] = []
@@ -3559,6 +5731,8 @@ def _daemon_health() -> dict[str, Any]:
 
     if not codex.proc or codex.proc.poll() is not None:
         problems.append("codex app-server process is not running")
+    elif not codex.ready.is_set():
+        problems.append("codex app-server is not ready")
 
     missing_runtimes = configured_runtime_ids - running_runtime_ids
     if missing_runtimes:
@@ -3612,6 +5786,54 @@ def _recent_bot_events(limit: int = 80) -> list[dict[str, Any]]:
         with contextlib.suppress(Exception):
             events.append(json.loads(line))
     return events
+
+
+def _thread_recent_activity_age_seconds(thread_id: str | None, *, limit: int = 200) -> float | None:
+    if not thread_id:
+        return None
+    now = time.time()
+    for event in reversed(_recent_bot_events(limit)):
+        if event.get("thread_id") != thread_id:
+            continue
+        if event.get("type") not in {
+            "turn_started",
+            "queued_turn_started",
+            "outbound_ready",
+            "inbound_turn_started",
+            "inbound_turn_steered",
+            "owner_work_watchdog_dispatched",
+            "release_gate_watchdog_dispatched",
+        }:
+            continue
+        created_at = event.get("created_at")
+        if isinstance(created_at, (int, float)):
+            return max(0.0, now - float(created_at))
+    return None
+
+
+def _thread_recent_event_count(
+    thread_id: str | None,
+    event_types: set[str],
+    *,
+    within_seconds: float = 1800.0,
+    limit: int = 400,
+) -> int:
+    if not thread_id:
+        return 0
+    now = time.time()
+    count = 0
+    for event in reversed(_recent_bot_events(limit)):
+        if event.get("thread_id") != thread_id:
+            continue
+        if event.get("type") not in event_types:
+            continue
+        created_at = event.get("created_at")
+        if not isinstance(created_at, (int, float)):
+            continue
+        if (now - float(created_at)) > within_seconds:
+            continue
+        count += 1
+    return count
 
 
 def _queued_turn_public(queued: QueuedTurn) -> dict[str, Any]:
@@ -4121,6 +6343,109 @@ async def _support_servicedesk_sweep_loop() -> None:
         await asyncio.sleep(interval)
 
 
+def _gitlab_semantic_dedupe_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_GITLAB_SEMANTIC_DEDUPE_SECONDS") or "300")
+    except ValueError:
+        return 300.0
+    return max(30.0, seconds)
+
+
+def _load_gitlab_semantic_events() -> dict[str, float]:
+    if not GITLAB_SEMANTIC_EVENTS_FILE.exists():
+        return {}
+    with contextlib.suppress(Exception):
+        payload = json.loads(GITLAB_SEMANTIC_EVENTS_FILE.read_text())
+        if isinstance(payload, dict):
+            return {
+                str(key): float(value)
+                for key, value in payload.items()
+                if isinstance(value, (int, float))
+            }
+    return {}
+
+
+def _save_gitlab_semantic_events(events: dict[str, float]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    GITLAB_SEMANTIC_EVENTS_FILE.write_text(json.dumps(events, indent=2, sort_keys=True) + "\n")
+
+
+def _gitlab_semantic_key_for_state(
+    ref: str | None,
+    *,
+    kind: str,
+    labels: list[str],
+    state: str | None,
+) -> str | None:
+    if not ref:
+        return None
+    payload = {
+        "ref": ref,
+        "kind": (kind or "issue").strip().lower(),
+        "labels": sorted({label.strip() for label in labels if label and label.strip()}),
+        "state": (state or "opened").strip().lower(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _gitlab_semantic_key(payload: dict[str, Any]) -> str | None:
+    ref = _project_issue_ref(payload)
+    if not ref:
+        return None
+    attrs = payload.get("object_attributes") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "issue")
+    state = str(attrs.get("state") or attrs.get("status") or "opened")
+    return _gitlab_semantic_key_for_state(
+        ref,
+        kind=kind,
+        labels=_gitlab_label_names(payload),
+        state=state,
+    )
+
+
+def _remember_gitlab_semantic_key(key: str | None, *, reason: str) -> bool:
+    if not key:
+        return True
+    now = time.time()
+    ttl = _gitlab_semantic_dedupe_seconds()
+    events = {
+        stored_key: seen_at
+        for stored_key, seen_at in _load_gitlab_semantic_events().items()
+        if now - seen_at <= max(ttl, 3600.0)
+    }
+    seen_at = events.get(key)
+    if seen_at is not None and now - seen_at < ttl:
+        _append_bot_event(
+            {
+                "type": "gitlab_semantic_duplicate_ignored",
+                "reason": reason,
+                "semantic_key": key,
+                "age_seconds": now - seen_at,
+            }
+        )
+        _save_gitlab_semantic_events(events)
+        return False
+    events[key] = now
+    _save_gitlab_semantic_events(events)
+    return True
+
+
+def _remember_gitlab_semantic_issue_state(
+    ref: str,
+    *,
+    labels: list[str],
+    state: str | None,
+    reason: str,
+) -> None:
+    key = _gitlab_semantic_key_for_state(ref, kind="issue", labels=labels, state=state)
+    if not key:
+        return
+    events = _load_gitlab_semantic_events()
+    events[key] = time.time()
+    _save_gitlab_semantic_events(events)
+    _append_bot_event({"type": "gitlab_semantic_state_recorded", "reason": reason, "ref": ref})
+
+
 def _gitlab_label_names(payload: dict[str, Any]) -> list[str]:
     labels: list[str] = []
 
@@ -4169,6 +6494,239 @@ def _gitlab_project_path_matches(project_path: str, configured_path: str) -> boo
     return project_path == configured_path or project_path.startswith(f"{configured_path}/")
 
 
+def _gitlab_group_path(project_settings: GitLabProjectRoutingSettings) -> str | None:
+    for path in project_settings.project_paths:
+        normalized = (path or "").strip().strip("/")
+        if not normalized:
+            continue
+        return normalized.split("/", 1)[0]
+    return None
+
+
+def _gitlab_token_for_project(project_id: str) -> str | None:
+    env_token = (os.environ.get("CODEX_WEB_GITLAB_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+    with contextlib.suppress(Exception):
+        secrets_path = Path(_project(project_id).path) / "CODEX-SECRETS.md"
+        section = False
+        for line in secrets_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("### "):
+                if line.strip() == "### GitLab codexops":
+                    section = True
+                    continue
+                if section:
+                    break
+            if section and line.startswith("- Token: "):
+                token = line.split(": ", 1)[1].strip()
+                if token:
+                    return token
+    return None
+
+
+def _gitlab_group_issues(
+    project_id: str,
+    project_settings: GitLabProjectRoutingSettings,
+    *,
+    labels: list[str] | None = None,
+    state: str = "opened",
+) -> list[dict[str, Any]]:
+    token = _gitlab_token_for_project(project_id)
+    group = _gitlab_group_path(project_settings)
+    if not token or not group:
+        return []
+    query = {
+        "state": state,
+        "per_page": "100",
+    }
+    if labels:
+        query["labels"] = ",".join(labels)
+    url = f"{GITLAB_API_BASE}/groups/{urllib.parse.quote_plus(group)}/issues?{urllib.parse.urlencode(query)}"
+    response = _get_json(url, headers={"PRIVATE-TOKEN": token})
+    return response if isinstance(response, list) else []
+
+
+def _upsert_work_item_state_from_gitlab_issue(
+    issue: dict[str, Any],
+    *,
+    project_id: str,
+) -> WorkItemState | None:
+    ref = str((issue.get("references") or {}).get("full") or "").strip()
+    if not ref or "#" not in ref:
+        return None
+    project_path = ref.split("#", 1)[0]
+    labels = sorted({str(label).strip() for label in issue.get("labels", []) if str(label).strip()})
+    owners = sorted(
+        {
+            match.group(1).strip().lower()
+            for label in labels
+            for match in [re.match(r"owner::(.+)", label, re.IGNORECASE)]
+            if match
+        }
+    )
+    status_label = _current_status_label(labels)
+    priority = _priority_from_labels(labels)
+    state_name = str(issue.get("state") or "").strip().lower()
+    now = time.time()
+    event_timestamp = _gitlab_issue_timestamp(issue)
+    states = _load_work_item_states()
+    state = states.get(ref)
+    projected_stage = _gitlab_stage_from_projection(
+        state_name=state_name,
+        status_label=status_label,
+        existing_stage=state.current_stage if state else None,
+    )
+    projected_owner = None if projected_stage == "closed" else (owners[0] if owners else None)
+    projected_status_label = None if projected_stage == "closed" else status_label
+    if state is None:
+        state = WorkItemState(
+            ref=ref,
+            project_id=project_id,
+            project_path=project_path,
+            title=str(issue.get("title") or "") or None,
+            url=str(issue.get("web_url") or "") or None,
+            kind="issue",
+            priority=priority,
+            current_owner=projected_owner,
+            current_stage=projected_stage,
+            implementation_owner=projected_owner if projected_owner and projected_owner not in NON_IMPLEMENTATION_OWNERS else None,
+            validation_owner=DEFAULT_VALIDATION_OWNER,
+            release_owner=DEFAULT_RELEASE_OWNER,
+            artifact_state="branch",
+            last_meaningful_update_at=now,
+            last_owner_activity_at=now,
+            last_gitlab_event_at=event_timestamp or now,
+            blocker=None,
+            next_action=None,
+            next_owner=None,
+            release_gate=priority == "priority::P1",
+            status_label=projected_status_label,
+            labels=labels,
+            mr_refs=[],
+            created_at=now,
+            updated_at=now,
+            closed_at=(event_timestamp or now) if projected_stage == "closed" else None,
+        )
+        _append_work_item_event(
+            _work_item_event(
+                ref,
+                "gitlab_issue_backfilled",
+                payload={
+                    "project_id": project_id,
+                    "current_owner": state.current_owner,
+                    "current_stage": state.current_stage,
+                    "priority": state.priority,
+                },
+            )
+        )
+        if state.current_stage == "failed_with_action_owner":
+            state = _reconcile_blocked_work_item_state(
+                state,
+                projected_owner=projected_owner,
+                previous_owner=None,
+                now=now,
+            )
+        state = _ensure_work_item_lane_defaults(state)
+        state.artifact_state = _infer_artifact_state_from_state(state)
+    else:
+        previous_stage = state.current_stage
+        previous_owner = state.current_owner
+        previous_status_label = state.status_label
+        previous_priority = state.priority
+        was_closed = bool(state.closed_at)
+        if _gitlab_projection_is_stale(
+            state,
+            projected_owner=projected_owner,
+            projected_stage=projected_stage,
+            projected_status_label=projected_status_label,
+            event_timestamp=event_timestamp,
+        ):
+            _append_work_item_event(
+                _work_item_event(
+                    ref,
+                    "gitlab_issue_stale_ignored",
+                    payload={
+                        "projected_owner": projected_owner,
+                        "projected_stage": projected_stage,
+                        "projected_status_label": projected_status_label,
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+            )
+            return state
+        state.project_id = project_id
+        state.project_path = project_path
+        state.title = str(issue.get("title") or "") or state.title
+        state.url = str(issue.get("web_url") or "") or state.url
+        state.priority = priority or state.priority
+        state.labels = labels
+        state.status_label = projected_status_label
+        state.release_gate = (priority == "priority::P1") or state.release_gate
+        state.current_stage = projected_stage
+        if projected_owner and (not state.handoff or state.handoff.status != "pending"):
+            state.current_owner = projected_owner
+        state.updated_at = now
+        state.last_gitlab_event_at = event_timestamp or now
+        if projected_stage == "closed":
+            state = _normalize_closed_work_item_state(
+                state,
+                now=now,
+                reason_code="gitlab_closed",
+                closed_at=event_timestamp or now,
+            )
+        else:
+            state.closed_at = None
+            if projected_stage == "implementation_active" and not (state.handoff and state.handoff.status == "pending"):
+                state.blocker = None
+                if _coerce_owner(state.next_owner) != _coerce_owner(state.current_owner):
+                    state.next_owner = None
+        if (
+            previous_stage != state.current_stage
+            or previous_owner != state.current_owner
+            or previous_status_label != state.status_label
+            or previous_priority != state.priority
+            or was_closed != bool(state.closed_at)
+        ):
+            state.last_meaningful_update_at = now
+            state.last_owner_activity_at = now
+        state = _maybe_infer_pending_handoff_from_gitlab_projection(
+            state,
+            previous_owner=previous_owner,
+            owners=owners,
+            status_label=projected_status_label,
+            now=now,
+        )
+        if state.current_stage == "failed_with_action_owner":
+            state = _reconcile_blocked_work_item_state(
+                state,
+                projected_owner=projected_owner,
+                previous_owner=previous_owner,
+                now=now,
+            )
+        state = _ensure_work_item_lane_defaults(state)
+        state.artifact_state = _infer_artifact_state_from_state(state)
+    states[ref] = state
+    _save_work_item_states(states)
+    return state
+
+
+def _sync_work_item_states_from_gitlab() -> dict[str, int]:
+    synced = 0
+    seen_refs: set[str] = set()
+    settings = _load_gitlab_routing_settings()
+    for project_id, project_settings in settings.projects.items():
+        if not project_settings.enabled:
+            continue
+        issues = _gitlab_group_issues(project_id, project_settings, state="opened")
+        for issue in issues:
+            state = _upsert_work_item_state_from_gitlab_issue(issue, project_id=project_id)
+            if not state:
+                continue
+            synced += 1
+            seen_refs.add(state.ref)
+    return {"synced": synced, "refs": len(seen_refs)}
+
+
 def _gitlab_project_settings_for_payload(
     payload: dict[str, Any],
     settings: GitLabRoutingSettings | None = None,
@@ -4196,6 +6754,461 @@ def _gitlab_reference(payload: dict[str, Any]) -> str:
 def _gitlab_url(payload: dict[str, Any]) -> str | None:
     attrs = payload.get("object_attributes") or {}
     return attrs.get("url") or attrs.get("web_url") or (payload.get("project") or {}).get("web_url")
+
+
+def _work_item_stage_from_gitlab_payload(payload: dict[str, Any]) -> str:
+    labels = _gitlab_label_names(payload)
+    status_label = _current_status_label(labels)
+    attrs = payload.get("object_attributes") or {}
+    state = str(attrs.get("state") or attrs.get("status") or "").strip().lower()
+    return _gitlab_stage_from_projection(state_name=state, status_label=status_label)
+
+
+def _upsert_work_item_state_from_gitlab_event(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+) -> WorkItemState | None:
+    ref = _project_issue_ref(payload)
+    if not ref:
+        return None
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "").strip().lower()
+    labels = _gitlab_label_names(payload)
+    owners = _gitlab_owner_agents(payload, _load_gitlab_routing_settings().projects.get(project_id, GitLabProjectRoutingSettings()))
+    status_label = _current_status_label(labels)
+    priority = _priority_from_labels(labels)
+    now = time.time()
+    event_timestamp = _gitlab_payload_timestamp(payload)
+    states = _load_work_item_states()
+    state = states.get(ref)
+    attrs = payload.get("object_attributes") or {}
+    projected_stage = _gitlab_stage_from_projection(
+        state_name=str(attrs.get("state") or attrs.get("status") or "").strip().lower(),
+        status_label=status_label,
+        existing_stage=state.current_stage if state else None,
+    )
+    if kind == "pipeline":
+        projected_stage = "closed"
+    projected_owner = None if projected_stage == "closed" else (owners[0] if owners else None)
+    projected_status_label = None if projected_stage == "closed" else status_label
+    if state is None:
+        state = WorkItemState(
+            ref=ref,
+            project_id=project_id,
+            project_path=str(project.get("path_with_namespace") or "") or None,
+            title=str(attrs.get("title") or attrs.get("name") or "") or None,
+            url=_gitlab_url(payload),
+            kind=str(payload.get("object_kind") or payload.get("event_name") or "") or None,
+            priority=priority,
+            current_owner=projected_owner,
+            current_stage=projected_stage,
+            implementation_owner=projected_owner if projected_owner and projected_owner not in NON_IMPLEMENTATION_OWNERS else None,
+            validation_owner=DEFAULT_VALIDATION_OWNER,
+            release_owner=DEFAULT_RELEASE_OWNER,
+            artifact_state="branch",
+            last_meaningful_update_at=now,
+            last_owner_activity_at=now,
+            last_gitlab_event_at=event_timestamp or now,
+            blocker=None,
+            next_action=None,
+            next_owner=None,
+            release_gate=priority == "priority::P1",
+            status_label=projected_status_label,
+            labels=labels,
+            mr_refs=_mr_refs_from_payload(payload),
+            created_at=now,
+            updated_at=now,
+        )
+        if state.current_stage == "closed":
+            state = _normalize_closed_work_item_state(
+                state,
+                now=now,
+                reason_code="gitlab_closed",
+                closed_at=event_timestamp or now,
+            )
+        _append_work_item_event(
+            _work_item_event(
+                ref,
+                "gitlab_work_item_created",
+                payload={
+                    "project_id": project_id,
+                    "current_owner": state.current_owner,
+                    "current_stage": state.current_stage,
+                    "priority": priority,
+                },
+            )
+        )
+        if state.current_stage == "failed_with_action_owner":
+            state = _reconcile_blocked_work_item_state(
+                state,
+                projected_owner=projected_owner,
+                previous_owner=None,
+                now=now,
+            )
+        state = _ensure_work_item_lane_defaults(state)
+        state.artifact_state = _infer_artifact_state_from_gitlab_payload(payload, current_state=state)
+        if state.current_stage == "closed" and _has_routing_labels(labels):
+            state = _sync_gitlab_issue_labels_from_work_item(state)
+    else:
+        previous_stage = state.current_stage
+        previous_owner = state.current_owner
+        previous_status_label = state.status_label
+        previous_priority = state.priority
+        previous_mr_refs = list(state.mr_refs)
+        was_closed = bool(state.closed_at)
+        if _gitlab_projection_is_stale(
+            state,
+            projected_owner=projected_owner,
+            projected_stage=projected_stage,
+            projected_status_label=projected_status_label,
+            event_timestamp=event_timestamp,
+        ):
+            _append_work_item_event(
+                _work_item_event(
+                    ref,
+                    "gitlab_event_stale_ignored",
+                    payload={
+                        "projected_owner": projected_owner,
+                        "projected_stage": projected_stage,
+                        "projected_status_label": projected_status_label,
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+            )
+            return state
+        state.project_id = project_id
+        state.project_path = str(project.get("path_with_namespace") or "") or state.project_path
+        state.title = str(attrs.get("title") or attrs.get("name") or "") or state.title
+        state.url = _gitlab_url(payload) or state.url
+        state.kind = str(payload.get("object_kind") or payload.get("event_name") or "") or state.kind
+        state.priority = priority or state.priority
+        state.labels = labels
+        state.status_label = projected_status_label
+        state.release_gate = (priority == "priority::P1") or state.release_gate
+        state.current_stage = projected_stage
+        if projected_owner:
+            if not state.handoff or state.handoff.status != "pending":
+                state.current_owner = projected_owner
+        state.updated_at = now
+        state.last_gitlab_event_at = event_timestamp or now
+        state.mr_refs = sorted(set(state.mr_refs + _mr_refs_from_payload(payload)))
+        if projected_stage == "closed":
+            state = _normalize_closed_work_item_state(
+                state,
+                now=now,
+                reason_code="gitlab_closed",
+                closed_at=event_timestamp or now,
+            )
+        else:
+            state.closed_at = None
+            if projected_stage == "implementation_active" and not (state.handoff and state.handoff.status == "pending"):
+                state.blocker = None
+                if _coerce_owner(state.next_owner) != _coerce_owner(state.current_owner):
+                    state.next_owner = None
+        if (
+            previous_stage != state.current_stage
+            or previous_owner != state.current_owner
+            or previous_status_label != state.status_label
+            or previous_priority != state.priority
+            or previous_mr_refs != state.mr_refs
+            or was_closed != bool(state.closed_at)
+        ):
+            state.last_meaningful_update_at = now
+            state.last_owner_activity_at = now
+        state = _maybe_infer_pending_handoff_from_gitlab_projection(
+            state,
+            previous_owner=previous_owner,
+            owners=owners,
+            status_label=projected_status_label,
+            now=now,
+        )
+        if state.current_stage == "failed_with_action_owner":
+            state = _reconcile_blocked_work_item_state(
+                state,
+                projected_owner=projected_owner,
+                previous_owner=previous_owner,
+                now=now,
+            )
+        state = _ensure_work_item_lane_defaults(state)
+        state.artifact_state = _infer_artifact_state_from_gitlab_payload(payload, current_state=state)
+        if state.current_stage == "closed" and _has_routing_labels(labels):
+            state = _sync_gitlab_issue_labels_from_work_item(state)
+    if state.current_stage == "ready_for_validation" and not state.handoff:
+        state.next_owner = state.current_owner
+    states[ref] = state
+    _save_work_item_states(states)
+    _append_work_item_event(
+        _work_item_event(
+            ref,
+            "gitlab_event_projected",
+            payload={
+                "current_owner": state.current_owner,
+                "current_stage": state.current_stage,
+                "status_label": state.status_label,
+                "priority": state.priority,
+                "release_gate": state.release_gate,
+            },
+        )
+    )
+    return state
+
+
+def _work_item_state(ref: str) -> WorkItemState:
+    states = _load_work_item_states()
+    state = states.get(ref)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Work item state not found")
+    return state
+
+
+def _save_work_item_state(state: WorkItemState) -> WorkItemState:
+    states = _load_work_item_states()
+    states[state.ref] = state
+    _save_work_item_states(states)
+    return state
+
+
+def _structured_handoff(ref: str, payload: WorkItemHandoffCreate) -> WorkItemState:
+    state = _work_item_state(ref)
+    state = _ensure_work_item_lane_defaults(state)
+    now = time.time()
+    from_agent = _coerce_owner(payload.from_agent) or payload.from_agent
+    to_agent = _coerce_owner(payload.to_agent) or payload.to_agent
+    artifact_state = _normalize_artifact_state(
+        payload.artifact_state,
+        fallback=_infer_artifact_state_from_state(state),
+    )
+    handoff_error = _validate_handoff_edge(
+        state,
+        from_agent=from_agent,
+        to_agent=to_agent,
+        artifact_state=artifact_state,
+    )
+    if handoff_error:
+        raise HTTPException(status_code=409, detail=handoff_error)
+    if state.handoff:
+        archive_status = "superseded" if state.handoff.status == "pending" else state.handoff.status
+        state = _archive_active_handoff(
+            state,
+            now=now,
+            status=archive_status,
+            reason_code="new_canonical_handoff",
+        )
+    state.handoff = WorkItemHandoff(
+        from_agent=from_agent,
+        to_agent=to_agent,
+        reason=payload.reason,
+        expected_action=payload.expected_action,
+        requested_at=now,
+        status="pending",
+        artifact_state=artifact_state,
+        stage=state.current_stage,
+    )
+    state.current_owner = _coerce_owner(payload.current_owner) or _coerce_owner(payload.from_agent)
+    state.current_stage = _normalize_work_item_stage(
+        payload.current_stage,
+        fallback="ready_for_validation" if _coerce_owner(payload.to_agent) == _coerce_owner(state.validation_owner) else state.current_stage,
+    )
+    state.next_owner = _coerce_owner(payload.to_agent)
+    state.next_action = payload.next_action or payload.expected_action or state.next_action
+    state.blocker = payload.blocker or None
+    state.artifact_state = artifact_state
+    state.status_label = "status::awaiting confirmation"
+    state.updated_at = now
+    state.last_meaningful_update_at = now
+    state.last_owner_activity_at = now
+    state = _record_handoff_history(state, state.handoff)
+    _append_work_item_event(
+        _work_item_event(
+            ref,
+            "handoff_requested",
+            actor=payload.from_agent,
+            payload={
+                "from_agent": payload.from_agent,
+                "to_agent": payload.to_agent,
+                "expected_action": payload.expected_action,
+                "current_stage": state.current_stage,
+                "next_action": state.next_action,
+                "artifact_state": state.artifact_state,
+            },
+        )
+    )
+    state = _sync_work_item_status_label(state)
+    state = _sync_gitlab_issue_labels_from_work_item(state)
+    return _save_work_item_state(state)
+
+
+async def _dispatch_structured_handoff_to_recipient(state: WorkItemState, *, source: str) -> None:
+    if not state.project_id or not state.handoff or state.handoff.status != "pending":
+        return
+    recipient = _coerce_owner(state.handoff.to_agent)
+    if not recipient:
+        return
+    binding = _binding_for_agent(
+        recipient,
+        state.project_id,
+        preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+    )
+    if not binding:
+        _append_bot_event(
+            {
+                "type": "work_item_handoff_dispatch_skipped",
+                "ref": state.ref,
+                "agent": recipient,
+                "reason": "no_binding",
+                "source": source,
+            }
+        )
+        return
+    binding = await _replace_nonperforming_thread_if_needed(binding, source)
+    result = await _dispatch_event_to_binding(binding, _work_item_dispatch_text(state), source)
+    _append_bot_event(
+        {
+            "type": "work_item_handoff_dispatched",
+            "ref": state.ref,
+            "thread_id": binding.thread_id,
+            "agent": recipient,
+            "source": source,
+            "result": result,
+        }
+    )
+
+
+def _schedule_structured_handoff_dispatch(state: WorkItemState, *, source: str) -> None:
+    async def run() -> None:
+        try:
+            await _dispatch_structured_handoff_to_recipient(state, source=source)
+        except Exception as exc:
+            _append_bot_event(
+                {
+                    "type": "work_item_handoff_dispatch_failed",
+                    "ref": state.ref,
+                    "source": source,
+                    "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+                }
+            )
+
+    asyncio.create_task(run())
+
+
+def _structured_ack(ref: str, payload: WorkItemAckCreate) -> WorkItemState:
+    state = _work_item_state(ref)
+    state = _ensure_work_item_lane_defaults(state)
+    actor = _coerce_owner(payload.actor) or payload.actor
+    now = time.time()
+    if not state.handoff:
+        current_owner = _coerce_owner(state.current_owner)
+        next_owner = _coerce_owner(state.next_owner)
+        if (
+            payload.accepted
+            and current_owner
+            and current_owner != actor
+            and next_owner == actor
+            and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
+        ):
+            # Recover a missing structured handoff from the canonical validation/release lane.
+            state.handoff = WorkItemHandoff(
+                from_agent=current_owner,
+                to_agent=actor,
+                reason="Inferred from canonical validation/release lane state.",
+                expected_action=state.next_action,
+                requested_at=state.last_meaningful_update_at or now,
+                acknowledged_at=now,
+                status="accepted",
+                artifact_state=state.artifact_state,
+                stage=state.current_stage,
+            )
+        else:
+            raise HTTPException(status_code=409, detail="No pending handoff for work item")
+    if actor != state.handoff.to_agent:
+        raise HTTPException(status_code=409, detail="Ack actor does not match handoff recipient")
+    artifact_state = _normalize_artifact_state(
+        payload.artifact_state or state.handoff.artifact_state or state.artifact_state,
+        fallback=_infer_artifact_state_from_state(state),
+    )
+    if payload.accepted:
+        handoff_error = _validate_handoff_edge(
+            state,
+            from_agent=state.handoff.from_agent,
+            to_agent=actor,
+            artifact_state=artifact_state,
+        )
+        if handoff_error:
+            raise HTTPException(status_code=409, detail=handoff_error)
+    state.handoff.acknowledged_at = now
+    state.handoff.status = "accepted" if payload.accepted else "rejected"
+    state.handoff.artifact_state = artifact_state
+    state.updated_at = now
+    state.last_meaningful_update_at = now
+    state.last_owner_activity_at = now
+    state.blocker = payload.blocker or None
+    state.artifact_state = artifact_state
+    if payload.accepted:
+        state.current_owner = actor
+        state.next_owner = actor
+        state.next_action = payload.next_action or state.handoff.expected_action or state.next_action
+        state.current_stage = _normalize_work_item_stage(
+            payload.current_stage,
+            fallback="validation_running" if state.current_stage == "ready_for_validation" else state.current_stage,
+        )
+    else:
+        state.current_owner = state.handoff.from_agent
+        state.next_owner = state.handoff.from_agent
+        state.next_action = payload.next_action or state.next_action
+        state.current_stage = _normalize_work_item_stage(
+            payload.current_stage,
+            fallback="failed_with_action_owner" if state.blocker else "implementation_active",
+        )
+    if payload.next_owner is not None:
+        state.next_owner = _coerce_owner(payload.next_owner)
+    state = _record_handoff_history(
+        state,
+        state.handoff,
+        status=state.handoff.status,
+        acknowledged_at=now,
+    )
+    _append_work_item_event(
+        _work_item_event(
+            ref,
+            "handoff_acknowledged" if payload.accepted else "handoff_rejected",
+            actor=payload.actor,
+            payload={
+                "current_owner": state.current_owner,
+                "current_stage": state.current_stage,
+                "next_action": state.next_action,
+                "blocker": state.blocker,
+                "inferred_handoff": bool(state.handoff and state.handoff.reason == "Inferred from canonical validation/release lane state."),
+            },
+        )
+    )
+    state = _sync_work_item_status_label(state)
+    state = _sync_gitlab_issue_labels_from_work_item(state)
+    return _save_work_item_state(state)
+
+
+def _structured_progress(ref: str, payload: WorkItemProgressUpdate) -> WorkItemState:
+    state = _work_item_state(ref)
+    fields_set = payload.model_fields_set
+    state = _touch_work_item_progress(
+        state,
+        actor=payload.actor,
+        current_owner=payload.current_owner,
+        current_stage=payload.current_stage,
+        next_action=payload.next_action,
+        next_owner=payload.next_owner,
+        next_owner_present="next_owner" in fields_set,
+        blocker=payload.blocker,
+        blocker_present="blocker" in fields_set,
+        release_gate=payload.release_gate,
+        status_label=payload.status_label,
+        artifact_state=payload.artifact_state,
+        note=payload.note,
+    )
+    state = _sync_work_item_status_label(state)
+    state = _sync_gitlab_issue_labels_from_work_item(state)
+    return _save_work_item_state(state)
 
 
 def _format_gitlab_event_prompt(payload: dict[str, Any], agent: str | None) -> str:
@@ -4229,10 +7242,566 @@ def _format_gitlab_event_prompt(payload: dict[str, Any], agent: str | None) -> s
         [
             "",
             "Handle this event-driven update within your directive. Inspect the linked GitLab item/MR/pipeline only as needed.",
+            "Before ending the turn, reconcile the affected work item through the codex-web `/api/work-items` handoff/ack/progress endpoints as applicable.",
             "Do not poll GitLab for generic queue state in this turn. Keep any Slack/GitLab update concise and avoid repeating prior evidence.",
         ]
     )
     return "\n".join(lines)
+
+
+def _format_gitlab_event_notice(payload: dict[str, Any], agent: str | None, result: dict[str, Any]) -> str:
+    attrs = payload.get("object_attributes") or {}
+    kind = str(payload.get("object_kind") or payload.get("event_name") or "event").replace("_", " ")
+    action = attrs.get("action") or attrs.get("state") or attrs.get("status") or ""
+    labels = _gitlab_label_names(payload)
+    url = _gitlab_url(payload)
+    route_name = agent or "project"
+    dispatch_state = "queued" if result.get("queued") else "started"
+    lines = [
+        f"GitLab event: {_gitlab_reference(payload)}",
+        f"Kind/status: {kind}{f' / {action}' if action else ''}",
+        f"Routed to: {route_name} ({dispatch_state})",
+    ]
+    if labels:
+        lines.append("Labels: " + ", ".join(labels))
+    if url:
+        lines.append(f"URL: {url}")
+    return "\n".join(lines)
+
+
+async def _send_gitlab_event_notice(
+    binding: BotBinding,
+    payload: dict[str, Any],
+    agent: str | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if binding.provider != "slack":
+        return {"sent": False, "reason": "unsupported_provider"}
+    delivery = await _send_bot_outbound(
+        binding,
+        _format_gitlab_event_notice(payload, agent, result),
+        username="GitLab",
+    )
+    _remember_bot_delivery_target(binding, delivery)
+    _append_bot_event(
+        {
+            "type": "gitlab_notice_sent",
+            "thread_id": binding.thread_id,
+            "provider": binding.provider,
+            "external_conversation_id": binding.external_conversation_id,
+            "agent": agent,
+            "delivery": delivery,
+        }
+    )
+    return delivery
+
+
+async def _run_owner_work_watchdog_cycle() -> None:
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return
+    states = _load_work_item_states()
+    for project_id, project_settings in settings.projects.items():
+        if not project_settings.enabled:
+            continue
+        token = _gitlab_token_for_project(project_id)
+        group = _gitlab_group_path(project_settings)
+        if not token or not group:
+            _append_bot_event(
+                {
+                    "type": "owner_work_watchdog_skipped",
+                    "project_id": project_id,
+                    "reason": "missing_gitlab_token_or_group",
+                }
+            )
+            continue
+        for owner in OWNER_QUEUE_AGENTS:
+            binding = _binding_for_agent(
+                owner,
+                project_id,
+                preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+            )
+            if not binding:
+                continue
+            issues = _gitlab_group_issues(project_id, project_settings, labels=[f"owner::{owner}"])
+            if not issues:
+                continue
+            missing_state_refs = [
+                issue.get("references", {}).get("full", "")
+                for issue in issues
+                if issue.get("references", {}).get("full")
+                and issue.get("state") == "opened"
+                and issue.get("references", {}).get("full") not in states
+            ]
+            if not missing_state_refs:
+                continue
+            binding = await _replace_nonperforming_thread_if_needed(binding, "owner-work-watchdog")
+            dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
+            if not _watchdog_dispatch_allowed(dispatch_key):
+                continue
+            _release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
+            if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+                continue
+            if _thread_recently_active(binding.thread_id):
+                continue
+            refs = ", ".join(missing_state_refs[:8])
+            extra = f", plus {len(missing_state_refs) - 8} more" if len(missing_state_refs) > 8 else ""
+            agent_name = _binding_prefix(binding) or binding.thread_name or owner
+            text = (
+                f"{agent_name}: bounded event-path fallback triggered. "
+                f"GitLab shows owned open items with no canonical codex-web state yet: {refs}{extra}. "
+                f"Reconcile those items through codex-web now, post the exact item and next action in C0B9M89AHCY, "
+                f"and keep working until completion or one concrete escalation."
+            )
+            _record_watchdog_dispatch(dispatch_key)
+            result = await _dispatch_event_to_binding(binding, text, "owner-work-watchdog")
+            _append_bot_event(
+                {
+                    "type": "owner_work_watchdog_dispatched",
+                    "project_id": project_id,
+                    "agent": owner,
+                    "thread_id": binding.thread_id,
+                    "issue_count": len(missing_state_refs),
+                    "result": result,
+                }
+            )
+
+
+async def _run_release_gate_watchdog_cycle() -> None:
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return
+    states = _load_work_item_states()
+    now = time.time()
+    for project_id, project_settings in settings.projects.items():
+        if not project_settings.enabled:
+            continue
+        binding = _binding_for_agent("release manager", project_id)
+        if not binding:
+            continue
+        p1_issues = _gitlab_group_issues(project_id, project_settings, labels=["priority::P1"])
+        if p1_issues:
+            continue
+        stale_release_states = [
+            state
+            for state in states.values()
+            if state.project_id == project_id
+            and _coerce_owner(state.current_owner or state.next_owner) == "release manager"
+            and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
+            and (now - _owner_activity_timestamp(state)) >= _release_validation_sla_seconds()
+        ]
+        if not stale_release_states:
+            continue
+        binding = await _replace_nonperforming_thread_if_needed(binding, "release-gate-watchdog")
+        dispatch_key = f"release-gate:{project_id}:{binding.thread_id}"
+        if not _watchdog_dispatch_allowed(dispatch_key):
+            continue
+        _release_stale_active_turn(binding.thread_id, "release-gate-watchdog")
+        if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+            continue
+        if _thread_recently_active(binding.thread_id):
+            continue
+        refs = ", ".join(state.ref for state in stale_release_states[:8])
+        extra = f", plus {len(stale_release_states) - 8} more" if len(stale_release_states) > 8 else ""
+        text = (
+            "Release Manager: bounded release-lane fallback triggered. "
+            f"Open P1 count is zero, but release-ready items are stale: {refs}{extra}. "
+            "Resume the exact deploy/verify/E2E next action or state one exact blocker in C0B9M89AHCY. "
+            "Reconcile the affected work item in codex-web before ending the turn."
+        )
+        _record_watchdog_dispatch(dispatch_key)
+        result = await _dispatch_event_to_binding(binding, text, "release-gate-watchdog")
+        _append_bot_event(
+            {
+                "type": "release_gate_watchdog_dispatched",
+                "project_id": project_id,
+                "thread_id": binding.thread_id,
+                "result": result,
+            }
+        )
+
+
+def _work_item_dispatch_text(state: WorkItemState) -> str:
+    if state.handoff and state.handoff.status == "pending":
+        return (
+            f"{state.handoff.to_agent}: structured handoff pending for {state.ref}. "
+            f"Acknowledge receipt and intent to process in C0B9M89AHCY now. "
+            f"Expected action: {state.handoff.expected_action or state.next_action or 'process the handoff'}. "
+            f"If you cannot accept it, emit one exact blocker immediately. "
+            f"Use `/api/work-items/{urllib.parse.quote(state.ref, safe='')}/ack` before you stop."
+        )
+    if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
+        return (
+            f"{state.current_owner or state.next_owner or 'owner'}: release/validation lane for {state.ref}. "
+            f"Current stage: {state.current_stage}. "
+            f"Next action: {state.next_action or 'acknowledge and process the release-side lane'}. "
+            f"Close the lane or emit one exact blocker in C0B9M89AHCY. "
+            f"Reconcile the structured work-item progress before ending the turn."
+        )
+    return (
+        f"{state.current_owner or state.next_owner or 'owner'}: owned-work SLA triggered for {state.ref}. "
+        f"Current stage: {state.current_stage}. "
+        f"Next action: {state.next_action or 'state the exact next action and continue the item'}. "
+        f"No passive waiting is allowed. Record the resulting progress or blocker in codex-web before you stop."
+    )
+
+
+def _work_item_sla_threshold_seconds(state: WorkItemState) -> float:
+    if (
+        state.handoff
+        and state.handoff.status == "accepted"
+        and _coerce_owner(state.current_owner) == _coerce_owner(state.handoff.to_agent)
+        and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
+    ):
+        return min(_release_validation_sla_seconds(), _accepted_handoff_owner_idle_seconds())
+    if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
+        return _release_validation_sla_seconds()
+    return _work_item_progress_sla_seconds()
+
+
+def _owner_activity_timestamp(state: WorkItemState) -> float:
+    if state.last_owner_activity_at is not None:
+        return state.last_owner_activity_at
+    if (
+        state.handoff
+        and state.handoff.status == "accepted"
+        and _coerce_owner(state.current_owner) == _coerce_owner(state.handoff.to_agent)
+        and state.handoff.acknowledged_at is not None
+    ):
+        return state.handoff.acknowledged_at
+    return state.last_meaningful_update_at
+
+
+def _human_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m" if secs == 0 else f"{minutes}m {secs}s"
+    hours, mins = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h" if mins == 0 else f"{hours}h {mins}m"
+    days, hrs = divmod(hours, 24)
+    return f"{days}d" if hrs == 0 else f"{days}d {hrs}h"
+
+
+def _orchestrator_watch_reason(state: WorkItemState, *, now: float) -> tuple[str, float] | None:
+    if state.current_stage == "closed" or state.closed_at:
+        return None
+    if _work_item_split_brain_findings(state):
+        return ("split_brain", now - state.updated_at)
+    if state.handoff and state.handoff.status == "pending":
+        pending_age = now - state.handoff.requested_at
+        if pending_age >= min(_work_item_handoff_timeout_seconds(), 300.0):
+            return ("pending_handoff", pending_age)
+    owner = _coerce_owner(state.current_owner or state.next_owner)
+    if not owner:
+        return ("unowned", now - state.updated_at)
+    age = now - state.last_meaningful_update_at
+    if state.current_stage == "failed_with_action_owner":
+        return ("blocked_lane", age)
+    if age >= _work_item_sla_threshold_seconds(state):
+        return ("stale_lane", age)
+    return None
+
+
+def _orchestrator_watchdog_candidates(project_id: str) -> list[tuple[str, WorkItemState, float]]:
+    now = time.time()
+    candidates: list[tuple[str, WorkItemState, float]] = []
+    for state in _load_work_item_states().values():
+        if state.project_id != project_id:
+            continue
+        decision = _orchestrator_watch_reason(state, now=now)
+        if not decision:
+            continue
+        reason, age = decision
+        candidates.append((reason, state, age))
+    candidates.sort(
+        key=lambda item: (
+            0 if item[1].release_gate else 1,
+            0 if item[0] == "unowned" else 1,
+            -(item[2]),
+            item[1].ref,
+        )
+    )
+    return candidates
+
+
+def _format_orchestrator_watchdog_prompt(project_id: str, items: list[tuple[str, WorkItemState, float]]) -> str:
+    project = _project(project_id)
+    lines = [
+        "Orchestrator: autonomous follow-up sweep.",
+        f"Project: {project.name} ({project.path})",
+        "Keep the work-item loop closed until each listed item is assigned, acknowledged, advanced, or closed.",
+        "",
+        "Required in this turn:",
+        "1. Push the named owner or next owner if follow-up is needed.",
+        "2. Record the resulting ownership/progress decision through codex-web `/api/work-items` before you stop.",
+        "3. Do not leave any listed item without one exact next action.",
+        "",
+        "Items needing orchestration:",
+    ]
+    for index, (reason, state, age) in enumerate(items[:8], start=1):
+        owner = state.current_owner or state.next_owner or "unassigned"
+        action = state.next_action or "set one exact next action"
+        lines.append(
+            f"{index}. {state.ref} | trigger={reason} | owner={owner} | stage={state.current_stage} | age={_human_duration(age)}"
+        )
+        lines.append(f"   next_action={action}")
+        if state.handoff and state.handoff.status == "pending":
+            lines.append(
+                "   pending_handoff="
+                + f"{state.handoff.from_agent}->{state.handoff.to_agent} for {_human_duration(time.time() - state.handoff.requested_at)}"
+            )
+        if state.blocker:
+            lines.append(f"   blocker={state.blocker}")
+    if len(items) > 8:
+        lines.append(f"... plus {len(items) - 8} more stale items.")
+    lines.append("")
+    lines.append("If a listed item is already moving, reconcile the structured state anyway and explicitly state who owns the next step.")
+    return "\n".join(lines)
+
+
+def _split_brain_watchdog_candidates(project_id: str) -> list[tuple[WorkItemState, list[str]]]:
+    candidates: list[tuple[WorkItemState, list[str]]] = []
+    for state in _load_work_item_states().values():
+        if state.project_id != project_id or state.current_stage == "closed" or state.closed_at:
+            continue
+        findings = _work_item_split_brain_findings(state)
+        if findings:
+            candidates.append((state, findings))
+    candidates.sort(key=lambda item: (0 if item[0].release_gate else 1, item[0].ref))
+    return candidates
+
+
+def _format_split_brain_watchdog_prompt(project_id: str, items: list[tuple[WorkItemState, list[str]]]) -> str:
+    project = _project(project_id)
+    lines = [
+        "Orchestrator: continuous split-brain monitor triggered.",
+        f"Project: {project.name} ({project.path})",
+        "Reconcile each item to one canonical owner, one canonical stage, and one canonical next action in this turn.",
+        "",
+        "Items with live owner/stage/handoff drift:",
+    ]
+    for index, (state, findings) in enumerate(items[:8], start=1):
+        lines.append(
+            f"{index}. {state.ref} | owner={state.current_owner or 'unassigned'} | stage={state.current_stage} | next_owner={state.next_owner or 'none'}"
+        )
+        for finding in findings:
+            lines.append(f"   - {finding}")
+        if state.next_action:
+            lines.append(f"   next_action={state.next_action}")
+    if len(items) > 8:
+        lines.append(f"... plus {len(items) - 8} more split-brain items.")
+    lines.append("")
+    lines.append("Record the reconciliation through codex-web `/api/work-items` before you stop.")
+    return "\n".join(lines)
+
+
+async def _run_orchestrator_watchdog_cycle() -> None:
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return
+    for project_id, project_settings in settings.projects.items():
+        if not project_settings.enabled:
+            continue
+        binding = _orchestrator_binding(project_id)
+        if not binding:
+            continue
+        items = _orchestrator_watchdog_candidates(project_id)
+        if not items:
+            continue
+        binding = await _replace_nonperforming_thread_if_needed(binding, "orchestrator-watchdog")
+        if _thread_queue_depth(binding.thread_id) >= 3:
+            continue
+        dispatch_key = f"orchestrator-watchdog:{project_id}:{binding.thread_id}"
+        if not _watchdog_dispatch_allowed(dispatch_key):
+            continue
+        _record_watchdog_dispatch(dispatch_key)
+        result = await _dispatch_event_to_binding(
+            binding,
+            _format_orchestrator_watchdog_prompt(project_id, items),
+            "orchestrator-watchdog",
+        )
+        _append_bot_event(
+            {
+                "type": "orchestrator_watchdog_dispatched",
+                "project_id": project_id,
+                "thread_id": binding.thread_id,
+                "item_refs": [state.ref for _, state, _ in items[:8]],
+                "count": len(items),
+                "result": result,
+            }
+        )
+
+
+async def _run_split_brain_watchdog_cycle() -> None:
+    settings = _load_gitlab_routing_settings()
+    if not settings.enabled:
+        return
+    for project_id, project_settings in settings.projects.items():
+        if not project_settings.enabled:
+            continue
+        binding = _orchestrator_binding(project_id)
+        if not binding:
+            continue
+        items = _split_brain_watchdog_candidates(project_id)
+        if not items:
+            continue
+        binding = await _replace_nonperforming_thread_if_needed(binding, "split-brain-watchdog")
+        if _thread_queue_depth(binding.thread_id) >= 3 or _thread_is_active(binding.thread_id):
+            continue
+        dispatch_key = f"split-brain-watchdog:{project_id}:{binding.thread_id}"
+        if not _watchdog_dispatch_allowed(dispatch_key):
+            continue
+        _record_watchdog_dispatch(dispatch_key)
+        result = await _dispatch_event_to_binding(
+            binding,
+            _format_split_brain_watchdog_prompt(project_id, items),
+            "split-brain-watchdog",
+        )
+        _append_bot_event(
+            {
+                "type": "split_brain_watchdog_dispatched",
+                "project_id": project_id,
+                "thread_id": binding.thread_id,
+                "item_refs": [state.ref for state, _ in items[:8]],
+                "count": len(items),
+                "result": result,
+            }
+        )
+
+
+async def _run_work_item_sla_cycle() -> None:
+    states = _load_work_item_states()
+    if not states:
+        return
+    now = time.time()
+    changed = False
+    for ref, state in list(states.items()):
+        if state.current_stage == "closed" or state.closed_at:
+            continue
+        if not state.project_id:
+            continue
+
+        if state.handoff and state.handoff.status == "pending":
+            pending_age = now - state.handoff.requested_at
+            recipient = _coerce_owner(state.handoff.to_agent)
+            if pending_age >= _work_item_handoff_timeout_seconds():
+                state.handoff.status = "expired"
+                state.current_owner = _coerce_owner(state.handoff.from_agent)
+                state.current_stage = "implementation_active"
+                state.next_owner = _coerce_owner(state.handoff.from_agent)
+                state.next_action = state.next_action or "Resume ownership or escalate one exact blocker."
+                state.blocker = "Structured handoff expired without acknowledgement."
+                state.updated_at = now
+                state.last_meaningful_update_at = now
+                _append_work_item_event(
+                    _work_item_event(
+                        ref,
+                        "handoff_expired",
+                        payload={
+                            "from_agent": state.handoff.from_agent,
+                            "to_agent": state.handoff.to_agent,
+                        },
+                    )
+                )
+                changed = True
+            elif recipient:
+                binding = _binding_for_agent(
+                    recipient,
+                    state.project_id,
+                    preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+                )
+                if binding and not _thread_is_active(binding.thread_id) and not _thread_queue_depth(binding.thread_id):
+                    dispatch_key = f"work-item-handoff:{ref}:{binding.thread_id}:{recipient}"
+                    if _watchdog_dispatch_allowed(dispatch_key) and not _thread_recently_active(binding.thread_id):
+                        binding = await _replace_nonperforming_thread_if_needed(binding, "work-item-handoff")
+                        _record_watchdog_dispatch(dispatch_key)
+                        result = await _dispatch_event_to_binding(binding, _work_item_dispatch_text(state), "work-item-sla")
+                        _append_bot_event(
+                            {
+                                "type": "work_item_handoff_watchdog_dispatched",
+                                "ref": ref,
+                                "thread_id": binding.thread_id,
+                                "agent": recipient,
+                                "result": result,
+                            }
+                        )
+            continue
+
+        owner = _coerce_owner(state.current_owner or state.next_owner)
+        if not owner:
+            continue
+        age = now - _owner_activity_timestamp(state)
+        threshold = _work_item_sla_threshold_seconds(state)
+        if age < threshold:
+            continue
+        binding = _binding_for_agent(
+            owner,
+            state.project_id,
+            preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+        )
+        if not binding:
+            continue
+        if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id) or _thread_recently_active(binding.thread_id):
+            continue
+        binding = await _replace_nonperforming_thread_if_needed(binding, "work-item-sla")
+        dispatch_key = f"work-item-sla:{ref}:{binding.thread_id}:{owner}:{state.current_stage}"
+        if not _watchdog_dispatch_allowed(dispatch_key):
+            continue
+        _record_watchdog_dispatch(dispatch_key)
+        result = await _dispatch_event_to_binding(binding, _work_item_dispatch_text(state), "work-item-sla")
+        _append_bot_event(
+            {
+                "type": "work_item_sla_dispatched",
+                "ref": ref,
+                "thread_id": binding.thread_id,
+                "agent": owner,
+                "current_stage": state.current_stage,
+                "age_seconds": age,
+                "result": result,
+            }
+        )
+    if changed:
+        _save_work_item_states(states)
+
+
+async def _work_item_sla_watchdog_loop() -> None:
+    interval = _work_item_sla_watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_work_item_sla_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "work_item_sla_watchdog_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
+
+
+async def _orchestrator_watchdog_loop() -> None:
+    interval = _orchestrator_watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_orchestrator_watchdog_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "orchestrator_watchdog_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
+
+
+async def _split_brain_watchdog_loop() -> None:
+    interval = _split_brain_watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_split_brain_watchdog_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "split_brain_watchdog_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
 
 
 def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
@@ -4252,6 +7821,19 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
             "pendingApprovals": len(codex.pending_approvals),
             "activeTurns": len(active_turns),
             "queuedTurns": sum(len(items) for items in queues.values()),
+            "ownerWorkWatchdogIntervalSeconds": _owner_work_watchdog_interval(),
+            "ownerWorkWatchdogRunning": bool(OWNER_WORK_WATCHDOG_TASK and not OWNER_WORK_WATCHDOG_TASK.done()),
+            "releaseGateWatchdogIntervalSeconds": _release_gate_watchdog_interval(),
+            "releaseGateWatchdogRunning": bool(RELEASE_GATE_WATCHDOG_TASK and not RELEASE_GATE_WATCHDOG_TASK.done()),
+            "workItemSlaWatchdogIntervalSeconds": _work_item_sla_watchdog_interval(),
+            "workItemSlaWatchdogRunning": bool(WORK_ITEM_SLA_TASK and not WORK_ITEM_SLA_TASK.done()),
+            "orchestratorWatchdogIntervalSeconds": _orchestrator_watchdog_interval(),
+            "orchestratorWatchdogRunning": bool(ORCHESTRATOR_WATCHDOG_TASK and not ORCHESTRATOR_WATCHDOG_TASK.done()),
+            "splitBrainWatchdogIntervalSeconds": _split_brain_watchdog_interval(),
+            "splitBrainWatchdogRunning": bool(SPLIT_BRAIN_WATCHDOG_TASK and not SPLIT_BRAIN_WATCHDOG_TASK.done()),
+            "threadMessageLimit": _default_thread_message_limit(),
+            "slackBackfillIntervalSeconds": _slack_backfill_interval_seconds(),
+            "slackBackfillRunning": bool(SLACK_BACKFILL_TASK and not SLACK_BACKFILL_TASK.done()),
         },
         "health": _daemon_health(),
         "projects": [project.model_dump() for project in _load_projects()],
@@ -4279,6 +7861,7 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
             if not project_id or connection.project_id == project_id
         ],
         "bindings": [_binding_public(binding) for binding in bindings],
+        "agentChannelPresence": _agent_channel_presence_payload(_load_agent_channel_presence_settings()),
         "replyTargets": {
             key: target.model_dump()
             for key, target in _load_bot_reply_targets().items()
@@ -4289,6 +7872,11 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
             for key, target in _load_bot_delivery_targets().items()
             if not project_id or target.thread_id in {binding.thread_id for binding in bindings}
         },
+        "workItemStates": [
+            _work_item_state_public(state)
+            for state in sorted(_load_work_item_states().values(), key=lambda item: item.updated_at, reverse=True)[:200]
+            if not project_id or state.project_id == project_id
+        ],
         "recentBotEvents": _recent_bot_events(),
     }
 
@@ -4306,9 +7894,150 @@ async def _watchdog_loop() -> None:
         await asyncio.sleep(interval)
 
 
+def _watchdog_dispatch_cooldown_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_WATCHDOG_DISPATCH_COOLDOWN_SECONDS") or "120")
+    except ValueError:
+        return 120.0
+    return max(5.0, seconds)
+
+
+def _watchdog_recent_activity_grace_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_WATCHDOG_RECENT_ACTIVITY_GRACE_SECONDS") or "300")
+    except ValueError:
+        return 300.0
+    return max(30.0, seconds)
+
+
+def _watchdog_replacement_threshold() -> int:
+    try:
+        value = int(os.environ.get("CODEX_WEB_WATCHDOG_REPLACEMENT_THRESHOLD") or "3")
+    except ValueError:
+        return 3
+    return max(2, value)
+
+
+def _native_recovery_schedule_cooldown_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_NATIVE_RECOVERY_SCHEDULE_COOLDOWN_SECONDS") or "30")
+    except ValueError:
+        return 30.0
+    return max(1.0, seconds)
+
+
+def _watchdog_dispatch_allowed(key: str, *, now: float | None = None) -> bool:
+    ts = now or time.time()
+    last = WATCHDOG_DISPATCH_TIMES.get(key)
+    if last is None:
+        return True
+    return (ts - last) >= _watchdog_dispatch_cooldown_seconds()
+
+
+def _record_watchdog_dispatch(key: str, *, now: float | None = None) -> None:
+    WATCHDOG_DISPATCH_TIMES[key] = now or time.time()
+
+
+def _thread_recently_active(thread_id: str | None) -> bool:
+    age = _thread_recent_activity_age_seconds(thread_id)
+    if age is None:
+        return False
+    return age < _watchdog_recent_activity_grace_seconds()
+
+
+async def _replace_nonperforming_thread_if_needed(binding: BotBinding, reason: str) -> BotBinding:
+    if not binding.thread_id:
+        return binding
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+        return binding
+    if _thread_recently_active(binding.thread_id):
+        return binding
+    dispatch_count = _thread_recent_event_count(
+        binding.thread_id,
+        {
+            "owner_work_watchdog_dispatched",
+            "release_gate_watchdog_dispatched",
+            "work_item_sla_dispatched",
+            "work_item_handoff_watchdog_dispatched",
+        },
+    )
+    if dispatch_count < _watchdog_replacement_threshold():
+        return binding
+    replacement = await _replace_stale_bot_thread(binding, f"autonomous replacement after {dispatch_count} watchdog dispatches ({reason})")
+    _append_bot_event(
+        {
+            "type": "autonomous_thread_replaced",
+            "reason": reason,
+            "old_thread_id": binding.thread_id,
+            "new_thread_id": replacement.thread_id,
+            "logical_name": _logical_binding_name(binding),
+        }
+    )
+    return replacement
+
+
+def _schedule_native_recovery_cycles(*, reason: str = "manual") -> None:
+    global NATIVE_RECOVERY_LAST_SCHEDULED_AT
+    if not _autonomy_enabled():
+        return
+    if IS_SHUTTING_DOWN:
+        return
+    now = time.time()
+    if (now - NATIVE_RECOVERY_LAST_SCHEDULED_AT) < _native_recovery_schedule_cooldown_seconds():
+        return
+    NATIVE_RECOVERY_LAST_SCHEDULED_AT = now
+    _append_bot_event({"type": "native_recovery_scheduled", "reason": reason})
+    asyncio.create_task(_run_owner_work_watchdog_cycle())
+    asyncio.create_task(_run_release_gate_watchdog_cycle())
+    asyncio.create_task(_run_work_item_sla_cycle())
+    asyncio.create_task(_run_orchestrator_watchdog_cycle())
+
+
+async def _owner_work_watchdog_loop() -> None:
+    interval = _owner_work_watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_owner_work_watchdog_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "owner_work_watchdog_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
+
+
+async def _release_gate_watchdog_loop() -> None:
+    interval = _release_gate_watchdog_interval()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            await _run_release_gate_watchdog_cycle()
+        except Exception as exc:
+            _append_bot_event({"type": "release_gate_watchdog_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
+
+
+async def _queue_recovery_loop() -> None:
+    interval = _queue_recovery_interval_seconds()
+    if interval <= 0:
+        return
+    while True:
+        try:
+            for thread_id in _load_turn_queues():
+                if _thread_is_active(thread_id):
+                    _release_stale_active_turn(thread_id, "queue-recovery")
+                if not _thread_is_active(thread_id):
+                    _schedule_queue_drain(thread_id)
+        except Exception as exc:
+            _append_bot_event({"type": "queue_recovery_failed", "error": str(exc)})
+        await asyncio.sleep(interval)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
+    global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
+    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, SLACK_BACKFILL_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = False
     _load_projects()
     _dedupe_bot_integrations()
@@ -4318,17 +8047,27 @@ async def startup() -> None:
         # Keep the HTTP UI up so it can report the app-server failure.
         pass
     await bot_runtime.sync()
-    if codex.ready.is_set():
+    if codex.ready.is_set() and _autonomy_enabled():
         asyncio.create_task(_restore_bot_thread_names())
         asyncio.create_task(_resume_active_threads_after_startup())
     _sd_notify("READY=1\nSTATUS=codex-web started")
     WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
     SUPPORT_SERVICEDESK_SWEEP_TASK = asyncio.create_task(_support_servicedesk_sweep_loop())
+    OWNER_WORK_WATCHDOG_TASK = asyncio.create_task(_owner_work_watchdog_loop())
+    RELEASE_GATE_WATCHDOG_TASK = asyncio.create_task(_release_gate_watchdog_loop())
+    WORK_ITEM_SLA_TASK = asyncio.create_task(_work_item_sla_watchdog_loop())
+    ORCHESTRATOR_WATCHDOG_TASK = asyncio.create_task(_orchestrator_watchdog_loop())
+    SPLIT_BRAIN_WATCHDOG_TASK = asyncio.create_task(_split_brain_watchdog_loop())
+    QUEUE_RECOVERY_TASK = asyncio.create_task(_queue_recovery_loop())
+    SLACK_BACKFILL_TASK = asyncio.create_task(_slack_backfill_loop())
+    _schedule_native_recovery_cycles()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
     global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
+    global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
+    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, SLACK_BACKFILL_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = True
     _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
     if WATCHDOG_TASK:
@@ -4341,6 +8080,41 @@ async def shutdown() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await SUPPORT_SERVICEDESK_SWEEP_TASK
         SUPPORT_SERVICEDESK_SWEEP_TASK = None
+    if OWNER_WORK_WATCHDOG_TASK:
+        OWNER_WORK_WATCHDOG_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await OWNER_WORK_WATCHDOG_TASK
+        OWNER_WORK_WATCHDOG_TASK = None
+    if RELEASE_GATE_WATCHDOG_TASK:
+        RELEASE_GATE_WATCHDOG_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await RELEASE_GATE_WATCHDOG_TASK
+        RELEASE_GATE_WATCHDOG_TASK = None
+    if WORK_ITEM_SLA_TASK:
+        WORK_ITEM_SLA_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await WORK_ITEM_SLA_TASK
+        WORK_ITEM_SLA_TASK = None
+    if ORCHESTRATOR_WATCHDOG_TASK:
+        ORCHESTRATOR_WATCHDOG_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ORCHESTRATOR_WATCHDOG_TASK
+        ORCHESTRATOR_WATCHDOG_TASK = None
+    if SPLIT_BRAIN_WATCHDOG_TASK:
+        SPLIT_BRAIN_WATCHDOG_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await SPLIT_BRAIN_WATCHDOG_TASK
+        SPLIT_BRAIN_WATCHDOG_TASK = None
+    if QUEUE_RECOVERY_TASK:
+        QUEUE_RECOVERY_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await QUEUE_RECOVERY_TASK
+        QUEUE_RECOVERY_TASK = None
+    if SLACK_BACKFILL_TASK:
+        SLACK_BACKFILL_TASK.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await SLACK_BACKFILL_TASK
+        SLACK_BACKFILL_TASK = None
     await bot_runtime.stop()
     await codex.stop()
 
@@ -4352,6 +8126,30 @@ async def index() -> HTMLResponse:
     html = html.replace('href="static/styles.css"', f'href="static/styles.css?v={version}"')
     html = html.replace('src="static/app.js"', f'src="static/app.js?v={version}"')
     return HTMLResponse(html)
+
+
+@app.get("/devstatus")
+async def devstatus() -> HTMLResponse:
+    return HTMLResponse(render_devstatus_html(build_devstatus_context()))
+
+
+@app.get("/devhealth")
+async def devhealth(request: Request) -> HTMLResponse:
+    force_refresh = request.query_params.get("refresh") in {"1", "true", "yes"}
+    queued_turns = sum(len(items) for items in _load_turn_queues().values())
+    status_context = build_devstatus_context(force_refresh=force_refresh)
+    return HTMLResponse(
+        render_devhealth_html(
+            build_devhealth_context(
+                _daemon_health(),
+                active_turns=len(_load_active_turns()),
+                queued_turns=queued_turns,
+                status_context=status_context,
+                work_item_stats=_devhealth_work_item_stats(),
+                refresh_url="/devhealth?refresh=1",
+            )
+        )
+    )
 
 
 @app.websocket("/ws")
@@ -4390,6 +8188,55 @@ async def healthz() -> dict[str, Any]:
     return health
 
 
+def _codex_verifier_credentials() -> tuple[str, str] | None:
+    user = os.environ.get("CODEX_WEB_VERIFIER_USER", "").strip()
+    password = os.environ.get("CODEX_WEB_VERIFIER_PASSWORD", "")
+    if not user or not password:
+        return None
+    return user, password
+
+
+def _basic_auth_credentials(header_value: str | None) -> tuple[str, str] | None:
+    if not header_value:
+        return None
+    scheme, _, encoded = header_value.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return None
+    try:
+        decoded = base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf-8")
+    except Exception:
+        return None
+    username, separator, password = decoded.partition(":")
+    if not separator:
+        return None
+    return username, password
+
+
+@app.get("/api/auth-verifier")
+async def auth_verifier(request: Request) -> dict[str, Any]:
+    expected = _codex_verifier_credentials()
+    if not expected:
+        raise HTTPException(status_code=404, detail="auth verifier disabled")
+    provided = _basic_auth_credentials(request.headers.get("authorization"))
+    if (
+        not provided
+        or not hmac.compare_digest(provided[0], expected[0])
+        or not hmac.compare_digest(provided[1], expected[1])
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="authentication required",
+            headers={"WWW-Authenticate": 'Basic realm="VeridataOps codex-web verifier"'},
+        )
+    health = _daemon_health()
+    return {
+        "ok": health["ok"],
+        "verified": True,
+        "mode": "basic-auth-verifier",
+        "version": _static_version(),
+    }
+
+
 @app.get("/api/diagnostics")
 async def diagnostics(project_id: str | None = None) -> dict[str, Any]:
     return _diagnostic_snapshot(project_id)
@@ -4398,6 +8245,23 @@ async def diagnostics(project_id: str | None = None) -> dict[str, Any]:
 @app.post("/api/diagnostics/route-test")
 async def diagnostics_route_test(payload: BotRouteTest) -> dict[str, Any]:
     return _preview_bot_route(payload)
+
+
+@app.get("/api/integrations/agent-presence")
+async def get_agent_channel_presence() -> dict[str, Any]:
+    return _agent_channel_presence_payload(_load_agent_channel_presence_settings())
+
+
+def _agent_channel_presence_payload(settings: AgentChannelPresenceSettings) -> dict[str, Any]:
+    return settings.model_dump()
+
+
+@app.post("/api/integrations/agent-presence")
+async def update_agent_channel_presence(payload: AgentChannelPresenceSettings) -> dict[str, Any]:
+    settings = _save_agent_channel_presence_settings(payload)
+    _append_bot_event({"type": "agent_channel_presence_updated", "settings": settings.model_dump()})
+    await hub.publish({"type": "agent.channels.updated", "settings": _agent_channel_presence_payload(settings)})
+    return {"ok": True, **_agent_channel_presence_payload(settings)}
 
 
 @app.get("/api/integrations/gitlab")
@@ -4435,6 +8299,65 @@ async def sweep_support_servicedesk() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/work-items")
+async def list_work_items(
+    project_id: str | None = None,
+    owner: str | None = None,
+    stage: str | None = None,
+    release_gate: bool | None = None,
+) -> dict[str, Any]:
+    states = list(_load_work_item_states().values())
+    if project_id:
+        states = [state for state in states if state.project_id == project_id]
+    if owner:
+        normalized_owner = _coerce_owner(owner)
+        states = [state for state in states if _coerce_owner(state.current_owner or state.next_owner) == normalized_owner]
+    if stage:
+        normalized_stage = _normalize_work_item_stage(stage, fallback="")
+        states = [state for state in states if state.current_stage == normalized_stage]
+    if release_gate is not None:
+        states = [state for state in states if state.release_gate is release_gate]
+    states.sort(key=lambda item: item.updated_at, reverse=True)
+    return {
+        "items": [_work_item_state_public(state) for state in states],
+        "count": len(states),
+    }
+
+
+@app.post("/api/work-items/sync-from-gitlab")
+async def sync_work_items_from_gitlab() -> dict[str, Any]:
+    result = _sync_work_item_states_from_gitlab()
+    await hub.publish({"type": "work-item.sync", **result})
+    return {"ok": True, **result}
+
+
+@app.get("/api/work-items/{ref:path}")
+async def get_work_item(ref: str) -> dict[str, Any]:
+    return _work_item_state_public(_work_item_state(ref))
+
+
+@app.post("/api/work-items/{ref:path}/handoff")
+async def create_work_item_handoff(ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
+    state = _structured_handoff(ref, payload)
+    await hub.publish({"type": "work-item.handoff", "ref": ref, "state": _work_item_state_public(state)})
+    _schedule_structured_handoff_dispatch(state, source="work-item-handoff")
+    return {"ok": True, "item": _work_item_state_public(state)}
+
+
+@app.post("/api/work-items/{ref:path}/ack")
+async def ack_work_item_handoff(ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
+    state = _structured_ack(ref, payload)
+    await hub.publish({"type": "work-item.ack", "ref": ref, "state": _work_item_state_public(state)})
+    return {"ok": True, "item": _work_item_state_public(state)}
+
+
+@app.post("/api/work-items/{ref:path}/progress")
+async def update_work_item_progress(ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
+    state = _structured_progress(ref, payload)
+    await hub.publish({"type": "work-item.progress", "ref": ref, "state": _work_item_state_public(state)})
+    return {"ok": True, "item": _work_item_state_public(state)}
+
+
 @app.post("/api/recovery/resume")
 async def recovery_resume() -> dict[str, Any]:
     try:
@@ -4445,7 +8368,7 @@ async def recovery_resume() -> dict[str, Any]:
     stale_thread_ids = {
         thread_id
         for thread_id, active in _load_active_turns().items()
-        if now - active.updated_at > 120
+        if now - active.updated_at > _active_turn_stale_seconds()
     }
     if stale_thread_ids:
         asyncio.create_task(_resume_active_threads_after_startup(stale_thread_ids))
@@ -4602,28 +8525,34 @@ async def gitlab_events(request: Request) -> dict[str, Any]:
         )
         return {"ok": True, "ignored": True, "reason": "project_routing_disabled", "eventId": event_id}
 
-    agents = _gitlab_owner_agents(payload, project_settings)
+    semantic_key = _gitlab_semantic_key(payload)
+    if not _remember_gitlab_semantic_key(semantic_key, reason="gitlab-webhook"):
+        return {"ok": True, "ignored": True, "reason": "semantic_duplicate", "eventId": event_id}
+
+    projected_state = _upsert_work_item_state_from_gitlab_event(payload, project_id=project_id)
+
+    agents = _gitlab_event_target_agents(payload, project_settings, projected_state)
     bindings: list[tuple[str | None, BotBinding]] = []
     for agent in agents:
-        binding = _binding_for_agent(agent, project_id)
-        if binding:
-            bindings.append((agent, binding))
+        bindings.extend((agent, binding) for binding in _gitlab_routing_bindings_for_agent(agent, project_id, project_settings))
     if not bindings:
-        master = _master_binding(project_id)
-        if not master:
+        master_bindings = _gitlab_routing_bindings_for_master(project_id, project_settings)
+        if not master_bindings:
             return {"ok": False, "accepted": False, "reason": "no_matching_binding", "eventId": event_id}
-        bindings.append((None, master))
+        bindings.extend((None, binding) for binding in master_bindings)
 
     results: list[dict[str, Any]] = []
     for agent, binding in bindings:
         prompt = _format_gitlab_event_prompt(payload, agent)
         result = await _dispatch_event_to_binding(binding, prompt, source="gitlab")
+        notice = await _send_gitlab_event_notice(binding, payload, agent, result)
         results.append(
             {
                 "agent": agent,
                 "threadId": result.get("threadId"),
                 "queued": result.get("queued", False),
                 "ok": result.get("ok", False),
+                "slackNoticeSent": notice.get("sent", False),
             }
         )
 
@@ -4633,11 +8562,13 @@ async def gitlab_events(request: Request) -> dict[str, Any]:
             "event_id": event_id,
             "kind": kind,
             "project_id": project_id,
+            "work_item_ref": projected_state.ref if projected_state else None,
             "agents": agents,
             "targets": results,
         }
     )
     await hub.publish({"type": "gitlab.event", "eventId": event_id, "kind": kind, "projectId": project_id, "targets": results})
+    _schedule_native_recovery_cycles()
     return {"ok": True, "accepted": True, "eventId": event_id, "targets": results}
 
 
@@ -4691,6 +8622,8 @@ async def slack_events(request: Request) -> dict[str, Any]:
                 thread_ts=event.get("thread_ts") or event.get("ts"),
             )
         return {"ok": True, "accepted": False, "ambiguous": True, "availablePrefixes": result["availablePrefixes"]}
+    if result.get("timedOut"):
+        return {"ok": True, "accepted": False, "timedOut": True, "threadId": result.get("threadId")}
     return {"ok": True, "accepted": True, "threadId": result["threadId"]}
 
 
@@ -4718,6 +8651,8 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     result = await _handle_bot_inbound(message)
     if result.get("ambiguous"):
         return {"ok": True, "accepted": False, "ambiguous": True, "availablePrefixes": result["availablePrefixes"]}
+    if result.get("timedOut"):
+        return {"ok": True, "accepted": False, "timedOut": True, "threadId": result.get("threadId")}
     return {"ok": True, "accepted": True, "threadId": result["threadId"]}
 
 
@@ -4862,13 +8797,29 @@ async def create_thread(
             approval_policy=approval_policy or project.approval_policy,
             model=model or project.model,
             reasoning_effort=reasoning_effort,
+            developer_instructions=None,
         )
     return response
 
 
 @app.get("/api/threads/{thread_id}")
-async def read_thread(thread_id: str) -> dict[str, Any]:
-    return await codex.request("thread/read", {"threadId": thread_id, "includeTurns": True})
+async def read_thread(thread_id: str, message_limit: int | None = None, turn_limit: int | None = None) -> dict[str, Any]:
+    limit = _coerce_thread_message_limit(message_limit if message_limit is not None else turn_limit)
+    resume_task = WEB_THREAD_RESUME_TASKS.get(thread_id)
+    if resume_task and not resume_task.done():
+        return _thread_read_timeout_response(
+            thread_id,
+            limit,
+            "thread/resume still in progress",
+            event_type="web_read_deferred_for_resume",
+        )
+    try:
+        response = await codex.request("thread/read", {"threadId": thread_id, "includeTurns": True})
+    except Exception as exc:
+        if _is_codex_timeout_error(exc):
+            return _thread_read_timeout_response(thread_id, limit, exc)
+        raise
+    return _trim_thread_messages(response, limit)
 
 
 @app.post("/api/threads/{thread_id}/name")
@@ -4885,6 +8836,7 @@ async def resume_thread(
     approval_policy: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    force_resume: bool = False,
 ) -> dict[str, Any]:
     project = _project(project_id)
     remembered = _thread_run_settings(thread_id)
@@ -4892,12 +8844,14 @@ async def resume_thread(
     effective_approval_policy = approval_policy or remembered.approval_policy or project.approval_policy
     effective_model = model or remembered.model or project.model
     effective_reasoning_effort = reasoning_effort or remembered.reasoning_effort
+    effective_developer_instructions = _effective_developer_instructions(thread_id, remembered.developer_instructions)
     _remember_thread_run_settings(
         thread_id,
         sandbox=effective_sandbox,
         approval_policy=effective_approval_policy,
         model=effective_model,
         reasoning_effort=effective_reasoning_effort,
+        developer_instructions=remembered.developer_instructions,
     )
     params = {
         "threadId": thread_id,
@@ -4907,10 +8861,36 @@ async def resume_thread(
                 "sandbox": effective_sandbox,
                 "approvalPolicy": effective_approval_policy,
                 "model": effective_model,
+                "developerInstructions": effective_developer_instructions,
             },
         ),
     }
-    return await codex.request("thread/resume", params)
+    if not force_resume:
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "skipped": True,
+            "reason": "web_load_uses_thread_read",
+        }
+    task, scheduled = _web_thread_resume_task(thread_id, project.id, params)
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=_web_thread_resume_handoff_timeout())
+    except asyncio.TimeoutError:
+        if scheduled:
+            _append_bot_event(
+                {
+                    "type": "web_resume_backgrounded",
+                    "thread_id": thread_id,
+                    "project_id": project.id,
+                    "timeout_seconds": _web_thread_resume_handoff_timeout(),
+                }
+            )
+        return {
+            "ok": True,
+            "resuming": True,
+            "threadId": thread_id,
+            "alreadyResuming": not scheduled,
+        }
 
 
 @app.post("/api/threads/{thread_id}/turns")
@@ -4921,14 +8901,17 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
     effective_approval_policy = payload.approval_policy or remembered.approval_policy or project.approval_policy
     effective_model = payload.model or remembered.model or project.model
     effective_reasoning_effort = payload.reasoning_effort or remembered.reasoning_effort
+    effective_developer_instructions = _effective_developer_instructions(thread_id, remembered.developer_instructions)
     _remember_thread_run_settings(
         thread_id,
         sandbox=effective_sandbox,
         approval_policy=effective_approval_policy,
         model=effective_model,
         reasoning_effort=effective_reasoning_effort,
+        developer_instructions=remembered.developer_instructions,
     )
-    if _thread_is_active(thread_id) or _thread_queue_depth(thread_id):
+
+    async def queue_web_turn(event_type: str, reason: str | None = None) -> dict[str, Any]:
         queued = _enqueue_turn(
             thread_id=thread_id,
             project_id=project.id,
@@ -4938,22 +8921,57 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
             model=effective_model,
             reasoning_effort=effective_reasoning_effort,
         )
+        queue_depth = _thread_queue_depth(thread_id)
+        event_payload = {
+            "type": event_type,
+            "thread_id": thread_id,
+            "project_id": project.id,
+            "queued_id": queued.id,
+            "queue_depth": queue_depth,
+        }
+        if reason:
+            event_payload["reason"] = _truncate_text(reason, 500)
+        _append_bot_event(event_payload)
         await _publish_queue_status(thread_id)
+        if not _thread_is_active(thread_id):
+            asyncio.get_running_loop().call_later(5, _schedule_queue_drain, thread_id)
         return {
             "queued": True,
             "queuedId": queued.id,
-            "queueDepth": _thread_queue_depth(thread_id),
+            "queueDepth": queue_depth,
             "threadId": thread_id,
         }
-    return await _start_thread_turn_now(
-        thread_id,
-        project=project,
-        message=payload.message,
-        sandbox=effective_sandbox,
-        approval_policy=effective_approval_policy,
-        model=effective_model,
-        reasoning_effort=effective_reasoning_effort,
-    )
+
+    _release_stale_active_turn(thread_id, "web:start")
+    if _thread_is_active(thread_id) or _thread_queue_depth(thread_id):
+        return await queue_web_turn("web_turn_queued")
+    try:
+        return await _start_thread_turn_now(
+            thread_id,
+            project=project,
+            message=payload.message,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
+        )
+    except Exception as exc:
+        if _is_codex_timeout_error(exc):
+            result = await queue_web_turn("web_turn_queued_after_timeout", str(exc))
+            result["timedOut"] = True
+            result["error"] = str(getattr(exc, "detail", exc))
+            return result
+        if _is_stale_thread_error(exc):
+            bindings = _bindings_for_thread(thread_id)
+            if bindings:
+                replacement = await _replace_stale_bot_thread(bindings[0], str(exc))
+                return {
+                    "ok": False,
+                    "staleThreadReplaced": True,
+                    "threadId": replacement.thread_id,
+                    "oldThreadId": thread_id,
+                }
+        raise
 
 
 @app.get("/api/threads/{thread_id}/queue")
@@ -5023,6 +9041,7 @@ async def update_thread_settings(thread_id: str, payload: ThreadRunSettings) -> 
         approval_policy=payload.approval_policy,
         model=payload.model,
         reasoning_effort=payload.reasoning_effort,
+        developer_instructions=payload.developer_instructions,
     )
     return {"ok": True, "threadId": thread_id, **settings.model_dump()}
 

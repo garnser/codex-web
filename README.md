@@ -114,9 +114,23 @@ Optional Support ServiceDesk environment variables:
   open issues.
 - `CODEX_WEB_GITLAB_BASE_URL`, default `https://dev.veridataops.com/gitlab`.
 
-Important: `/codex` is currently nginx-allowlisted to local networks. Real
-Slack and Telegram webhooks need either a separate public nginx location for
-the two webhook paths or an external relay that can reach this host. Outbound
-posting back to Slack/Telegram is intentionally left as the next adapter step;
-the current scaffold creates/resumes Codex threads and starts turns from inbound
-messages.
+Important: `/codex` keeps its nginx trusted-IP allowlist, but non-whitelisted
+access should be challenged at the reverse proxy with Basic Auth rather than a
+URL token or app-specific backdoor. The checked-in nginx source expects:
+
+- `/etc/nginx/snippets/codex-basic-auth.conf`
+- `/etc/nginx/snippets/codex-basic-auth.htpasswd`
+
+Recommended rotation flow:
+
+```bash
+openssl passwd -apr1 'new-password'
+```
+
+Then update the `username:hash` line in
+`/etc/nginx/snippets/codex-basic-auth.htpasswd`, test nginx config, and reload
+nginx. Real Slack and Telegram webhooks still need either a separate public
+nginx location for the two webhook paths or an external relay that can reach
+this host. Outbound posting back to Slack/Telegram is intentionally left as the
+next adapter step; the current scaffold creates/resumes Codex threads and
+starts turns from inbound messages.

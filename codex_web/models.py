@@ -49,6 +49,96 @@ class ThreadRunSettings(BaseModel):
     approval_policy: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    developer_instructions: str | None = None
+
+
+class WorkItemHandoff(BaseModel):
+    from_agent: str
+    to_agent: str
+    reason: str | None = None
+    expected_action: str | None = None
+    requested_at: float
+    acknowledged_at: float | None = None
+    status: str = "pending"
+    reason_code: str | None = None
+    artifact_state: str | None = None
+    stage: str | None = None
+
+
+class WorkItemState(BaseModel):
+    ref: str
+    project_id: str | None = None
+    project_path: str | None = None
+    title: str | None = None
+    url: str | None = None
+    kind: str | None = None
+    priority: str | None = None
+    current_owner: str | None = None
+    current_stage: str = "implementation_active"
+    implementation_owner: str | None = None
+    validation_owner: str | None = None
+    release_owner: str | None = None
+    artifact_state: str = "branch"
+    handoff: WorkItemHandoff | None = None
+    handoff_history: list[WorkItemHandoff] = Field(default_factory=list)
+    last_meaningful_update_at: float
+    last_owner_activity_at: float | None = None
+    last_gitlab_event_at: float | None = None
+    blocker: str | None = None
+    next_action: str | None = None
+    next_owner: str | None = None
+    release_gate: bool = False
+    status_label: str | None = None
+    labels: list[str] = Field(default_factory=list)
+    mr_refs: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    closed_at: float | None = None
+    updated_at: float
+    created_at: float
+
+
+class WorkItemEvent(BaseModel):
+    ref: str
+    event_type: str
+    created_at: float
+    actor: str | None = None
+    payload: dict[str, str | int | float | bool | None | list[str] | dict[str, str]] = Field(default_factory=dict)
+
+
+class WorkItemHandoffCreate(BaseModel):
+    from_agent: str = Field(min_length=1)
+    to_agent: str = Field(min_length=1)
+    reason: str | None = None
+    expected_action: str | None = None
+    current_owner: str | None = None
+    current_stage: str | None = None
+    next_action: str | None = None
+    next_owner: str | None = None
+    blocker: str | None = None
+    artifact_state: str | None = None
+
+
+class WorkItemAckCreate(BaseModel):
+    actor: str = Field(min_length=1)
+    accepted: bool = True
+    next_action: str | None = None
+    current_stage: str | None = None
+    blocker: str | None = None
+    next_owner: str | None = None
+    artifact_state: str | None = None
+
+
+class WorkItemProgressUpdate(BaseModel):
+    actor: str | None = None
+    current_owner: str | None = None
+    current_stage: str | None = None
+    next_action: str | None = None
+    next_owner: str | None = None
+    blocker: str | None = None
+    release_gate: bool | None = None
+    note: str | None = None
+    status_label: str | None = None
+    artifact_state: str | None = None
 
 
 class BotReplyTarget(BaseModel):
@@ -207,24 +297,37 @@ class BotRouteTest(BaseModel):
     message_id: str | None = None
 
 
+class AgentChannelPresenceProjectSettings(BaseModel):
+    agent_channels: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "carl": ["C0B9591ESTB"],
+            "dana": ["C0B9C6MGZ5X"],
+            "james": ["C0B9591ESTB"],
+            "nora": ["C0B9591ESTB"],
+            "quinn": ["C0B9591ESTB"],
+            "riley": ["C0B9591ESTB"],
+        }
+    )
+
+
+class AgentChannelPresenceSettings(BaseModel):
+    projects: dict[str, AgentChannelPresenceProjectSettings] = Field(
+        default_factory=lambda: {
+            "a956644fc336": AgentChannelPresenceProjectSettings()
+        }
+    )
+
+
 class GitLabProjectRoutingSettings(BaseModel):
     enabled: bool = True
+    channel_ids: list[str] = Field(default_factory=list)
+    route_agents: list[str] = Field(default_factory=list)
     project_paths: list[str] = Field(default_factory=list)
     fallback_agents_by_kind: dict[str, list[str]] = Field(
         default_factory=lambda: {
             "build": ["quinn"],
             "merge_request": ["quinn"],
             "pipeline": ["quinn"],
-        }
-    )
-    agent_channels: dict[str, str] = Field(
-        default_factory=lambda: {
-            "carl": "C0B9591ESTB",
-            "dana": "C0B9C6MGZ5X",
-            "james": "C0B9591ESTB",
-            "nora": "C0B9591ESTB",
-            "quinn": "C0B9591ESTB",
-            "riley": "C0B9591ESTB",
         }
     )
 
