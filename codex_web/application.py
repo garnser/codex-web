@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from codex_web.api.approvals import build_approvals_router
+from codex_web.api.bots import build_bots_router
 from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.projects import build_projects_router
@@ -8,16 +9,19 @@ from codex_web.api.runtime import build_runtime_router
 from codex_web.api.system import build_system_router
 from codex_web.api.threads import build_threads_router
 from codex_web.api.ui import build_ui_router
+from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.paths import PROJECTS_FILE
 from codex_web.runtime import core
 from codex_web.services.approvals import ApprovalService
+from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.threads import ThreadService
+from codex_web.services.work_items import WorkItemService
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 
@@ -39,6 +43,8 @@ runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
 context_service = ContextCompactionService(core)
+bot_service = BotService(core)
+work_item_service = WorkItemService(core)
 
 # Legacy code still needing project state consumes the extracted repository.
 core._load_projects = project_repository.load
@@ -100,6 +106,31 @@ EXTRACTED_ROUTE_COUNTS = {
         build_approvals_router(approval_service),
         paths={"/api/approvals", "/api/approvals/{request_id}"},
         key="approvals",
+    ),
+    "bots": replace_routes(
+        app,
+        build_bots_router(bot_service),
+        paths={
+            "/api/bots",
+            "/api/bots/connections",
+            "/api/bots/bindings",
+            "/api/bots/channels",
+            "/api/bots/inbound",
+        },
+        key="bots",
+    ),
+    "work-items": replace_routes(
+        app,
+        build_work_items_router(work_item_service),
+        paths={
+            "/api/work-items",
+            "/api/work-items/sync-from-gitlab",
+            "/api/work-items/{ref:path}",
+            "/api/work-items/{ref:path}/handoff",
+            "/api/work-items/{ref:path}/ack",
+            "/api/work-items/{ref:path}/progress",
+        },
+        key="work-items",
     ),
     "ui": replace_routes(
         app,

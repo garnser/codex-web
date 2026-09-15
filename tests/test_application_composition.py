@@ -52,6 +52,8 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
             "/api/approvals": "approvals",
+            "/api/bots/channels": "bots",
+            "/api/work-items": "work-items",
             "/": "ui",
             "/api/auth-verifier": "system",
             "/api/integrations/gitlab": "integrations",
@@ -74,6 +76,8 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["projects"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["threads"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["runtime"], 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["bots"], 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["work-items"], 0)
 
 
 class WebhookSecurityTests(unittest.TestCase):
