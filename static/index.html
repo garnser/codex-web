@@ -56,6 +56,10 @@
           <div class="token-meter" aria-hidden="true">
             <span id="token-context-fill"></span>
           </div>
+          <div class="token-row">
+            <small id="context-compact-status">Select a thread to manage context</small>
+            <button id="compact-context" class="ghost-button" type="button" disabled>Compact context</button>
+          </div>
           <div class="token-stats">
             <div>
               <span>Last</span>
@@ -278,6 +282,7 @@
     </dialog>
 
     <script src="static/thread_history.js"></script>
+    <script src="static/context_compaction.js"></script>
     <script src="static/app.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>

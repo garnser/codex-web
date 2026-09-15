@@ -33,7 +33,12 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py'
 
       - name: Syntax-check frontend JavaScript
-        run: node --check static/app.js
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in static/*.js; do
+            node --check "$script"
+          done
 
   docker:
     runs-on: ubuntu-latest

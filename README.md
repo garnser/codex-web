@@ -53,6 +53,25 @@ secrets, persistence, direct `docker run` usage, and Codex CLI version pinning.
 When proxied below `/codex/`, the frontend automatically prefixes API and
 WebSocket calls with `/codex`.
 
+## Context compaction
+
+Codex Web uses Codex's native `thread/compact/start` operation for long-running
+threads. Automatic compaction defaults to 75% of the model context window and
+only runs while the thread is idle with no queued turns or unresolved approval.
+The Token Utilization panel also exposes a manual **Compact context** control.
+
+Configure the policy with:
+
+```bash
+CODEX_WEB_AUTO_COMPACT_PERCENT=75
+CODEX_WEB_COMPACT_COOLDOWN_SECONDS=300
+```
+
+Set `CODEX_WEB_AUTO_COMPACT_PERCENT=0` to disable automatic compaction while
+keeping the manual control. Runtime status and manual triggering are also
+available through `GET /api/threads/{thread_id}/context` and
+`POST /api/threads/{thread_id}/compact`.
+
 ## Bot scaffold
 
 The bot bridge is provider-neutral at the core: an external conversation is
