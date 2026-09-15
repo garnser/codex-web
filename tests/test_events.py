@@ -59,12 +59,20 @@ class EventHubTests(unittest.IsolatedAsyncioTestCase):
 
         await hub.publish({"type": "one"})
         await asyncio.sleep(0)
-        await hub.publish({"type": "two"})
-        await hub.publish({"type": "three"})
+        self.assertEqual(len(fast.messages), 1)
 
+        fast.message_received.clear()
+        await hub.publish({"type": "two"})
         await asyncio.wait_for(fast.message_received.wait(), timeout=0.5)
+        self.assertEqual(len(fast.messages), 2)
+
+        fast.message_received.clear()
+        await hub.publish({"type": "three"})
+        await asyncio.wait_for(fast.message_received.wait(), timeout=0.5)
+
         self.assertNotIn(slow, hub._clients)
         self.assertIn(fast, hub._clients)
+        self.assertEqual(len(fast.messages), 3)
 
         gate.set()
         hub.disconnect(fast)  # type: ignore[arg-type]
