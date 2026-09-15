@@ -38,10 +38,12 @@ CODEX_UID=$(id -u) CODEX_GID=$(id -g) docker compose build
 
 Compose creates two named volumes:
 
-- `codex-web-data` -> `/app/data` for codex-web JSON/JSONL state.
+- `codex-web-data` -> `/app/data` for the SQLite runtime database plus compatibility JSON/JSONL state.
 - `codex-home` -> `/home/codex/.codex` for Codex CLI authentication and configuration.
 
-Back up `codex-web-data` before destructive upgrades or storage migrations.
+High-churn runtime state is stored in `/app/data/codex-web.db` using SQLite WAL mode. During the migration window, thread settings, active-turn state, and work-item state are also mirrored to their legacy JSON files on every write. This keeps rollback to an earlier release safe while SQLite is introduced incrementally.
+
+Back up the entire `codex-web-data` volume before destructive upgrades or storage migrations. A consistent backup should include `codex-web.db` together with its `-wal`/`-shm` files when the service is running, or be taken while the service is stopped.
 
 ## Secrets and webhooks
 
