@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+
+from codex_web.services.runtime import RuntimeService
+
+
+def build_runtime_router(service: RuntimeService) -> APIRouter:
+    router = APIRouter(tags=["runtime"])
+
+    @router.get("/api/status")
+    async def status() -> dict[str, Any]:
+        return await service.status()
+
+    @router.get("/api/healthz")
+    async def healthz() -> dict[str, Any]:
+        health = service.health()
+        if not health["ok"]:
+            raise HTTPException(status_code=503, detail=health)
+        return health
+
+    @router.get("/api/account/rate-limits")
+    async def account_rate_limits() -> dict[str, Any]:
+        return await service.rate_limits()
+
+    @router.get("/api/models")
+    async def list_models(include_hidden: bool = False) -> dict[str, Any]:
+        return await service.models(include_hidden=include_hidden)
+
+    return router

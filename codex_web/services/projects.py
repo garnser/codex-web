@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+
+from codex_web.models import Project, ProjectCreate
+from codex_web.storage.projects import ProjectRepository
+
+
+class ProjectNotFoundError(LookupError):
+    pass
+
+
+class InvalidProjectPathError(ValueError):
+    pass
+
+
+class LastProjectDeletionError(ValueError):
+    pass
+
+
+class ProjectService:
+    def __init__(self, repository: ProjectRepository) -> None:
+        self.repository = repository
+
+    def list(self) -> list[Project]:
+        return self.repository.load()
+
+    def get(self, project_id: str | None) -> Project:
+        projects = self.repository.load()
+        if project_id is None:
+            if not projects:
+                raise ProjectNotFoundError("Project not found")
+            return projects[0]
+        for project in projects:
+            if project.id == project_id:
+                return project
+        raise ProjectNotFoundError("Project not found")
+
+    def create(self, payload: ProjectCreate) -> Project:
+        path = Path(payload.path).expanduser().resolve()
+        if not path.exists() or not path.is_dir():
+            raise InvalidProjectPathError("Project path must be an existing directory")
+        projects = self.repository.load()
+        project = Project(
+            id=uuid.uuid4().hex[:12],
+            name=payload.name,
+            path=str(path),
+            model=payload.model,
+            sandbox=payload.sandbox,
+            approval_policy=payload.approval_policy,
+        )
+        projects.append(project)
+        self.repository.save(projects)
+        return project
+
+    def delete(self, project_id: str) -> None:
+        projects = self.repository.load()
+        kept = [project for project in projects if project.id != project_id]
+        if len(kept) == len(projects):
+            raise ProjectNotFoundError("Project not found")
+        if not kept:
+            raise LastProjectDeletionError("At least one project is required")
+        self.repository.save(kept)

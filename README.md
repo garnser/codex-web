@@ -12,7 +12,7 @@ It supports:
 - Scaffolded Slack and Telegram inbound bot webhooks that map external
   conversations to Codex threads.
 
-Run it:
+Run it locally:
 
 ```bash
 cd /home/nbingester/codex-web
@@ -29,6 +29,26 @@ CODEX_WEB_HOST=0.0.0.0 CODEX_WEB_PORT=8765 python server.py
 ```
 
 Only expose it on a trusted network. This interface can drive Codex actions on the host.
+
+## Docker
+
+A container image and Compose stack are included. The image runs as a non-root
+user, bundles the Codex CLI, persists codex-web state and Codex authentication
+in separate volumes, and mounts developer repositories under `/workspace`.
+
+```bash
+cp .env.example .env
+mkdir -p workspace
+docker compose build
+docker compose run --rm codex-web codex login
+docker compose up -d
+```
+
+The Docker healthcheck uses `GET /api/livez`; deeper Codex daemon health remains
+available from `GET /api/healthz`.
+
+See [DOCKER.md](DOCKER.md) for workspace path migration, UID/GID mapping,
+secrets, persistence, direct `docker run` usage, and Codex CLI version pinning.
 
 When proxied below `/codex/`, the frontend automatically prefixes API and
 WebSocket calls with `/codex`.
@@ -75,13 +95,16 @@ Provider webhook endpoints:
 - Telegram Bot API webhook: `POST /bots/telegram/webhook`
 - GitLab project/group webhooks: `POST /bots/gitlab/events`
 
-Optional verification environment variables:
+Webhook verification environment variables:
 
 - `SLACK_SIGNING_SECRET` verifies Slack request signatures.
 - `TELEGRAM_WEBHOOK_SECRET` verifies Telegram's
   `X-Telegram-Bot-Api-Secret-Token` header.
 - `CODEX_WEB_GITLAB_WEBHOOK_SECRET` or `GITLAB_WEBHOOK_SECRET` verifies
   GitLab's `X-Gitlab-Token` header.
+
+Inbound webhook requests fail closed when the corresponding verification secret
+is not configured.
 
 GitLab events are routed to agent threads from `owner::<agent>` labels. Merge
 request and pipeline events without an owner label go to Quinn. Configure
