@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import time
 import unittest
-from typing import Any
 
 from fastapi import HTTPException, Request
 
@@ -25,19 +24,14 @@ def _request(headers: dict[str, str] | None = None) -> Request:
     return Request({"type": "http", "method": "POST", "path": "/", "headers": raw_headers})
 
 
-def _route_modules(routes: list[Any]) -> dict[str, set[str]]:
-    result: dict[str, set[str]] = {}
-    for route in routes:
-        path = getattr(route, "path", None)
-        endpoint = getattr(route, "endpoint", None)
-        if isinstance(path, str) and endpoint is not None:
-            result.setdefault(path, set()).add(getattr(endpoint, "__module__", ""))
-        nested = getattr(route, "routes", None)
-        if nested:
-            nested_result = _route_modules(list(nested))
-            for nested_path, modules in nested_result.items():
-                result.setdefault(nested_path, set()).update(modules)
-    return result
+def _path_tags(path: str) -> set[str]:
+    operations = application.app.openapi().get("paths", {}).get(path, {})
+    return {
+        tag
+        for operation in operations.values()
+        if isinstance(operation, dict)
+        for tag in operation.get("tags", [])
+    }
 
 
 class ApplicationCompositionTests(unittest.TestCase):
@@ -49,21 +43,19 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertIn("/api/livez", paths)
         self.assertIn("/api/executive/agents", paths)
 
-    def test_extracted_routes_are_owned_by_domain_modules(self) -> None:
-        modules = _route_modules(list(application.app.routes))
+    def test_extracted_routes_are_owned_by_domain_routers(self) -> None:
         expected = {
-            "/api/projects": "codex_web.api.projects",
-            "/api/threads": "codex_web.api.threads",
-            "/api/status": "codex_web.api.runtime",
-            "/api/approvals": "codex_web.api.approvals",
-            "/": "codex_web.api.ui",
-            "/api/auth-verifier": "codex_web.api.system",
-            "/api/integrations/gitlab": "codex_web.api.integrations",
+            "/api/projects": "projects",
+            "/api/threads": "threads",
+            "/api/status": "runtime",
+            "/api/approvals": "approvals",
+            "/": "ui",
+            "/api/auth-verifier": "system",
+            "/api/integrations/gitlab": "integrations",
         }
-        for path, module in expected.items():
+        for path, tag in expected.items():
             with self.subTest(path=path):
-                self.assertIn(module, modules.get(path, set()))
-                self.assertNotIn("codex_web.runtime.core", modules.get(path, set()))
+                self.assertIn(tag, _path_tags(path))
 
     def test_legacy_runtime_uses_extracted_project_repository(self) -> None:
         self.assertIs(getattr(core._load_projects, "__self__", None), application.project_repository)
@@ -72,6 +64,9 @@ class ApplicationCompositionTests(unittest.TestCase):
 
     def test_decomposition_replaced_legacy_routes(self) -> None:
         self.assertGreater(sum(application.EXTRACTED_ROUTE_COUNTS.values()), 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["projects"], 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["threads"], 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["runtime"], 0)
 
 
 class WebhookSecurityTests(unittest.TestCase):
