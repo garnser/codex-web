@@ -59,7 +59,11 @@ class ExecutiveIntegrationTests(unittest.TestCase):
 
             first = install_executive_integrated(app, host)
             second = install_executive_integrated(app, host)
-            executive_paths = [route.path for route in app.routes if route.path.startswith("/api/executive/")]
+            executive_paths = [
+                path
+                for route in app.routes
+                if (path := getattr(route, "path", None)) and path.startswith("/api/executive/")
+            ]
 
         self.assertIs(first, second)
         self.assertEqual(len(executive_paths), 5)
