@@ -1,0 +1,27 @@
+services:
+  codex-web:
+    build:
+      context: .
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-latest}
+        CODEX_UID: ${CODEX_UID:-1000}
+        CODEX_GID: ${CODEX_GID:-1000}
+    image: ${CODEX_WEB_IMAGE:-codex-web:local}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CODEX_WEB_HOST: 0.0.0.0
+      CODEX_WEB_PORT: 8765
+    ports:
+      - "${CODEX_WEB_BIND:-127.0.0.1}:${CODEX_WEB_PORT:-8765}:8765"
+    volumes:
+      - codex-web-data:/app/data
+      - codex-home:/home/codex/.codex
+      - ${CODEX_WORKSPACE:-./workspace}:/workspace
+    stop_grace_period: 15s
+
+volumes:
+  codex-web-data:
+  codex-home:
