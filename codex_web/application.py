@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from codex_web.api.approvals import build_approvals_router
+from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
@@ -13,6 +14,7 @@ from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.paths import PROJECTS_FILE
 from codex_web.runtime import core
 from codex_web.services.approvals import ApprovalService
+from codex_web.services.context import ContextCompactionService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.threads import ThreadService
@@ -36,12 +38,18 @@ project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
+context_service = ContextCompactionService(core)
 
 # Legacy code still needing project state consumes the extracted repository.
 core._load_projects = project_repository.load
 core._save_projects = project_repository.save
 
 install_webhook_security(core)
+previous_context_service = getattr(app.state, "context_compaction_service", None)
+if previous_context_service is not None:
+    core.hub.unsubscribe(previous_context_service.observe)
+core.hub.subscribe(context_service.observe)
+app.state.context_compaction_service = context_service
 
 EXTRACTED_ROUTE_COUNTS = {
     "projects": replace_routes(
@@ -66,6 +74,15 @@ EXTRACTED_ROUTE_COUNTS = {
             "/api/turns/interrupt",
         },
         key="threads",
+    ),
+    "context": replace_routes(
+        app,
+        build_context_router(context_service),
+        paths={
+            "/api/threads/{thread_id}/context",
+            "/api/threads/{thread_id}/compact",
+        },
+        key="context",
     ),
     "runtime": replace_routes(
         app,

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket
+
+
+EventListener = Callable[[dict[str, Any]], None]
 
 
 class EventHub:
@@ -12,6 +16,7 @@ class EventHub:
         self._clients: set[WebSocket] = set()
         self._queues: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
+        self._listeners: set[EventListener] = set()
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -26,6 +31,12 @@ class EventHub:
         sender = self._senders.pop(websocket, None)
         if sender is not None and sender is not asyncio.current_task():
             sender.cancel()
+
+    def subscribe(self, listener: EventListener) -> None:
+        self._listeners.add(listener)
+
+    def unsubscribe(self, listener: EventListener) -> None:
+        self._listeners.discard(listener)
 
     async def _sender(self, websocket: WebSocket, queue: asyncio.Queue[dict[str, Any]]) -> None:
         try:
@@ -45,6 +56,14 @@ class EventHub:
             self._senders.pop(websocket, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
+        # Runtime observers must never be able to break browser fan-out. They are
+        # intentionally synchronous and should only update state/schedule work.
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:
+                continue
+
         dead: list[WebSocket] = []
         for websocket in list(self._clients):
             queue = self._queues.get(websocket)

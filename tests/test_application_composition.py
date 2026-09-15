@@ -38,15 +38,18 @@ class ApplicationCompositionTests(unittest.TestCase):
     def test_application_uses_single_core_fastapi_instance(self) -> None:
         self.assertIs(application.app, core.app)
 
-    def test_composed_api_contains_liveness_and_executive_routes(self) -> None:
+    def test_composed_api_contains_liveness_executive_and_context_routes(self) -> None:
         paths = application.app.openapi().get("paths", {})
         self.assertIn("/api/livez", paths)
         self.assertIn("/api/executive/agents", paths)
+        self.assertIn("/api/threads/{thread_id}/context", paths)
+        self.assertIn("/api/threads/{thread_id}/compact", paths)
 
     def test_extracted_routes_are_owned_by_domain_routers(self) -> None:
         expected = {
             "/api/projects": "projects",
             "/api/threads": "threads",
+            "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
             "/api/approvals": "approvals",
             "/": "ui",
@@ -61,6 +64,10 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertIs(getattr(core._load_projects, "__self__", None), application.project_repository)
         self.assertIs(getattr(core._save_projects, "__self__", None), application.project_repository)
         self.assertEqual(core._atomic_write_text.__module__, "codex_web.storage.json_files")
+
+    def test_context_service_observes_shared_event_hub(self) -> None:
+        self.assertIs(application.app.state.context_compaction_service, application.context_service)
+        self.assertIn(application.context_service.observe, core.hub._listeners)
 
     def test_decomposition_replaced_legacy_routes(self) -> None:
         self.assertGreater(sum(application.EXTRACTED_ROUTE_COUNTS.values()), 0)
