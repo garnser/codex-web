@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal, TypeAlias
+
 from pydantic import BaseModel, Field
+
+
+SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
+ApprovalPolicy: TypeAlias = Literal["on-request", "untrusted", "never"]
+ReasoningEffort: TypeAlias = Literal["", "none", "minimal", "low", "medium", "high", "xhigh"]
+BotProvider: TypeAlias = Literal["slack", "telegram"]
 
 
 class Project(BaseModel):
@@ -8,25 +16,25 @@ class Project(BaseModel):
     name: str
     path: str
     model: str | None = None
-    sandbox: str = "workspace-write"
-    approval_policy: str = "on-request"
+    sandbox: SandboxMode = "workspace-write"
+    approval_policy: ApprovalPolicy = "on-request"
 
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     model: str | None = None
-    sandbox: str = "workspace-write"
-    approval_policy: str = "on-request"
+    sandbox: SandboxMode = "workspace-write"
+    approval_policy: ApprovalPolicy = "on-request"
 
 
 class TurnCreate(BaseModel):
     message: str = Field(min_length=1)
     project_id: str | None = None
     model: str | None = None
-    reasoning_effort: str | None = None
-    approval_policy: str | None = None
-    sandbox: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    approval_policy: ApprovalPolicy | None = None
+    sandbox: SandboxMode | None = None
 
 
 class ApprovalDecision(BaseModel):
@@ -41,14 +49,14 @@ class ThreadPrimaryUpdate(BaseModel):
 class ThreadPrimaryChannelUpdate(BaseModel):
     project_id: str = "home"
     external_conversation_id: str | None = None
-    provider: str = "slack"
+    provider: BotProvider = "slack"
 
 
 class ThreadRunSettings(BaseModel):
-    sandbox: str | None = None
-    approval_policy: str | None = None
+    sandbox: SandboxMode | None = None
+    approval_policy: ApprovalPolicy | None = None
     model: str | None = None
-    reasoning_effort: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     developer_instructions: str | None = None
 
 
@@ -147,7 +155,7 @@ class WorkItemProgressUpdate(BaseModel):
 
 class BotReplyTarget(BaseModel):
     thread_id: str
-    provider: str
+    provider: BotProvider
     external_conversation_id: str
     external_thread_id: str | None = None
     message_id: str | None = None
@@ -158,10 +166,10 @@ class ActiveThreadTurn(BaseModel):
     thread_id: str
     turn_id: str | None = None
     project_id: str | None = None
-    sandbox: str | None = None
-    approval_policy: str | None = None
+    sandbox: SandboxMode | None = None
+    approval_policy: ApprovalPolicy | None = None
     model: str | None = None
-    reasoning_effort: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     source: str | None = None
     reply_target: BotReplyTarget | None = None
     started_at: float
@@ -175,10 +183,10 @@ class QueuedTurn(BaseModel):
     thread_id: str
     project_id: str
     message: str
-    sandbox: str | None = None
-    approval_policy: str | None = None
+    sandbox: SandboxMode | None = None
+    approval_policy: ApprovalPolicy | None = None
     model: str | None = None
-    reasoning_effort: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     source: str = "web"
     reply_target: BotReplyTarget | None = None
     attempts: int = 0
@@ -199,7 +207,7 @@ class IndexedThread(BaseModel):
 
 class BotConnection(BaseModel):
     id: str
-    provider: str
+    provider: BotProvider
     name: str
     project_id: str = "home"
     bot_token: str | None = None
@@ -215,7 +223,7 @@ class BotConnection(BaseModel):
 
 class BotConnectionCreate(BaseModel):
     id: str | None = None
-    provider: str = Field(min_length=1)
+    provider: BotProvider
     name: str = Field(min_length=1)
     project_id: str = "home"
     bot_token: str | None = None
@@ -229,7 +237,7 @@ class BotConnectionCreate(BaseModel):
 class BotBinding(BaseModel):
     id: str
     connection_id: str | None = None
-    provider: str
+    provider: BotProvider
     external_conversation_id: str
     thread_id: str
     project_id: str = "home"
@@ -239,8 +247,8 @@ class BotBinding(BaseModel):
     is_master: bool = False
     is_primary_channel: bool = False
     post_in_thread: bool = False
-    sandbox: str = "read-only"
-    approval_policy: str = "on-request"
+    sandbox: SandboxMode = "read-only"
+    approval_policy: ApprovalPolicy = "on-request"
     created_at: float
     updated_at: float
 
@@ -265,7 +273,7 @@ class ApprovalSlackMessage(BaseModel):
 
 class BotBindingCreate(BaseModel):
     connection_id: str | None = None
-    provider: str | None = None
+    provider: BotProvider | None = None
     external_conversation_id: str | None = None
     thread_id: str | None = None
     project_id: str = "home"
@@ -275,12 +283,12 @@ class BotBindingCreate(BaseModel):
     is_master: bool = False
     is_primary_channel: bool = False
     post_in_thread: bool = False
-    sandbox: str = "read-only"
-    approval_policy: str = "on-request"
+    sandbox: SandboxMode = "read-only"
+    approval_policy: ApprovalPolicy = "on-request"
 
 
 class BotInboundMessage(BaseModel):
-    provider: str = Field(min_length=1)
+    provider: BotProvider
     external_conversation_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     connection_id: str | None = None
@@ -293,7 +301,7 @@ class BotInboundMessage(BaseModel):
 
 
 class BotRouteTest(BaseModel):
-    provider: str = "slack"
+    provider: BotProvider = "slack"
     external_conversation_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     project_id: str | None = None
