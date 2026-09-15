@@ -85,6 +85,7 @@ class WorkItemState(BaseModel):
     last_owner_activity_at: float | None = None
     last_gitlab_event_at: float | None = None
     blocker: str | None = None
+    blocking_findings: list[str] = Field(default_factory=list)
     next_action: str | None = None
     next_owner: str | None = None
     release_gate: bool = False
@@ -115,6 +116,7 @@ class WorkItemHandoffCreate(BaseModel):
     next_action: str | None = None
     next_owner: str | None = None
     blocker: str | None = None
+    blocking_findings: list[str] | None = None
     artifact_state: str | None = None
 
 
@@ -124,6 +126,7 @@ class WorkItemAckCreate(BaseModel):
     next_action: str | None = None
     current_stage: str | None = None
     blocker: str | None = None
+    blocking_findings: list[str] | None = None
     next_owner: str | None = None
     artifact_state: str | None = None
 
@@ -135,6 +138,7 @@ class WorkItemProgressUpdate(BaseModel):
     next_action: str | None = None
     next_owner: str | None = None
     blocker: str | None = None
+    blocking_findings: list[str] | None = None
     release_gate: bool | None = None
     note: str | None = None
     status_label: str | None = None

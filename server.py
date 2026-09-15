@@ -10,12 +10,15 @@ import os
 import re
 import socket
 import subprocess
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -106,11 +109,26 @@ QUEUE_RECOVERY_TASK: asyncio.Task[None] | None = None
 SLACK_BACKFILL_TASK: asyncio.Task[None] | None = None
 QUEUE_DRAIN_TASKS: dict[str, asyncio.Task[None]] = {}
 WEB_THREAD_RESUME_TASKS: dict[str, asyncio.Task[dict[str, Any]]] = {}
+ACTIONABLE_OWNER_CONTINUITY_TASKS: dict[str, asyncio.Task[None]] = {}
+HANDOFF_CONTINUITY_TASKS: dict[str, asyncio.Task[None]] = {}
+CODEX_TURN_START_LOCK = asyncio.Lock()
+TERMINAL_RECOVERY_TASKS: dict[str, asyncio.Task[None]] = {}
+THREAD_TERMINAL_FAILURES: dict[str, deque[tuple[float, str]]] = {}
+THREAD_LAST_INPUTS: dict[str, dict[str, Any]] = {}
+THREAD_REPLACEMENTS: dict[str, str] = {}
+THREAD_STEER_TIMES: dict[str, deque[float]] = {}
+STATE_FILE_LOCKS: dict[str, threading.RLock] = {}
 GITLAB_EVENT_IDS: dict[str, float] = {}
 WATCHDOG_DISPATCH_TIMES: dict[str, float] = {}
 SLACK_BACKFILL_SEEN: set[str] = set()
 SLACK_BACKFILL_BAD_THREADS: set[tuple[str, str, str]] = set()
+SLACK_BACKFILL_COOLDOWN_UNTIL = 0.0
+SLACK_BACKFILL_RATE_LIMIT_FAILURES = 0
 NATIVE_RECOVERY_LAST_SCHEDULED_AT = 0.0
+GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
+GITLAB_SYNC_LAST_ERROR: str | None = None
+GITLAB_SYNC_LAST_ERROR_AT = 0.0
+GITLAB_SYNC_LAST_SUCCESS_AT = 0.0
 IS_SHUTTING_DOWN = False
 GITLAB_API_BASE = os.environ.get("CODEX_WEB_GITLAB_API_BASE", "https://dev.veridataops.com/gitlab/api/v4")
 GITLAB_SEMANTIC_EVENTS_FILE = DATA_DIR / "gitlab_semantic_events.json"
@@ -146,6 +164,37 @@ DEFAULT_THREAD_MESSAGE_LIMIT = 100
 hub = EventHub()
 
 
+def _state_file_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    lock = STATE_FILE_LOCKS.get(key)
+    if lock is None:
+        lock = threading.RLock()
+        STATE_FILE_LOCKS[key] = lock
+    return lock
+
+
+def _atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _state_file_lock(path)
+    with lock:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary_path = Path(temporary_name)
+        try:
+            mode = 0o600 if private else 0o644
+            os.fchmod(descriptor, mode)
+            with os.fdopen(descriptor, "w") as handle:
+                descriptor = -1
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            with contextlib.suppress(FileNotFoundError):
+                temporary_path.unlink()
+
+
 def _load_projects() -> list[Project]:
     DATA_DIR.mkdir(exist_ok=True)
     if not PROJECTS_FILE.exists():
@@ -158,8 +207,7 @@ def _load_projects() -> list[Project]:
 
 
 def _save_projects(projects: list[Project]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    PROJECTS_FILE.write_text(json.dumps([p.model_dump() for p in projects], indent=2) + "\n")
+    _atomic_write_text(PROJECTS_FILE, json.dumps([p.model_dump() for p in projects], indent=2) + "\n")
 
 
 def _load_thread_index() -> list[IndexedThread]:
@@ -170,8 +218,7 @@ def _load_thread_index() -> list[IndexedThread]:
 
 
 def _save_thread_index(threads: list[IndexedThread]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    THREAD_INDEX_FILE.write_text(json.dumps([thread.model_dump() for thread in threads], indent=2) + "\n")
+    _atomic_write_text(THREAD_INDEX_FILE, json.dumps([thread.model_dump() for thread in threads], indent=2) + "\n")
 
 
 def _load_bot_reply_targets() -> dict[str, BotReplyTarget]:
@@ -342,7 +389,11 @@ def _master_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | No
     ]
     candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
     for candidate in candidates:
-        target = _active_reply_target_for_binding(candidate) or _reply_target_for_binding(candidate)
+        target = (
+            _active_reply_target_for_binding(candidate)
+            or _reply_target_for_binding(candidate)
+            or _delivery_target_for_binding(candidate)
+        )
         if target:
             return target
     return None
@@ -363,8 +414,10 @@ def _thread_target_for_outbound(binding: BotBinding, reply_in_thread: bool | Non
         return master_target, True if reply_in_thread is None else reply_in_thread
 
     delivery_target = _delivery_target_for_binding(binding)
-    if delivery_target and binding.post_in_thread:
-        return delivery_target, True if reply_in_thread is None else reply_in_thread
+    if delivery_target:
+        should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+        if should_thread:
+            return delivery_target, True
 
     return None, False if reply_in_thread is None else reply_in_thread
 
@@ -537,13 +590,15 @@ def _upsert_indexed_thread(thread: IndexedThread) -> None:
     _save_thread_index(threads)
 
 
+def _remove_indexed_thread(thread_id: str) -> None:
+    threads = _load_thread_index()
+    kept = [thread for thread in threads if thread.id != thread_id]
+    if len(kept) != len(threads):
+        _save_thread_index(kept)
+
+
 def _save_json_private(path: Path, payload: Any) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    _atomic_write_text(path, json.dumps(payload, indent=2) + "\n", private=True)
 
 
 def _work_item_handoff_timeout_seconds() -> float:
@@ -737,6 +792,18 @@ def _normalize_artifact_state(
     return normalized if normalized in allowed else fallback
 
 
+def _normalize_blocking_findings(findings: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in findings or []:
+        text = " ".join(str(raw or "").split()).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized[:20]
+
+
 def _ensure_work_item_lane_defaults(state: WorkItemState) -> WorkItemState:
     state.validation_owner = _coerce_owner(state.validation_owner) or DEFAULT_VALIDATION_OWNER
     state.release_owner = _coerce_owner(state.release_owner) or DEFAULT_RELEASE_OWNER
@@ -754,6 +821,7 @@ def _ensure_work_item_lane_defaults(state: WorkItemState) -> WorkItemState:
                 state.implementation_owner = owner
                 break
     state.artifact_state = _normalize_artifact_state(state.artifact_state, fallback="branch")
+    state.blocking_findings = _normalize_blocking_findings(state.blocking_findings)
     return state
 
 
@@ -1086,6 +1154,19 @@ def _owner_label_from_labels(labels: list[str]) -> str | None:
     return None
 
 
+def _leading_owner_cue_in_action(next_action: str | None) -> str | None:
+    action = (next_action or "").strip().lower()
+    if not action:
+        return None
+    owner_candidates = list(OWNER_QUEUE_AGENTS) + ["release manager"]
+    for owner in owner_candidates:
+        if action.startswith(f"{owner}:"):
+            return owner
+        if action.startswith(f"{owner} "):
+            return owner
+    return None
+
+
 def _work_item_split_brain_findings(state: WorkItemState) -> list[str]:
     state = _ensure_work_item_lane_defaults(state)
     findings: list[str] = []
@@ -1093,6 +1174,7 @@ def _work_item_split_brain_findings(state: WorkItemState) -> list[str]:
     label_owner = _owner_label_from_labels(state.labels)
     current_owner = _coerce_owner(state.current_owner)
     next_owner = _coerce_owner(state.next_owner)
+    action_owner = _leading_owner_cue_in_action(state.next_action)
 
     if canonical_status != state.status_label:
         findings.append(
@@ -1114,6 +1196,18 @@ def _work_item_split_brain_findings(state: WorkItemState) -> list[str]:
         if current_owner != handoff_from:
             findings.append(
                 f"pending handoff current-owner drift: expected={handoff_from or 'none'} stored={current_owner or 'none'}"
+            )
+    elif state.handoff and state.handoff.status == "accepted":
+        handoff_to = _coerce_owner(state.handoff.to_agent)
+        if state.status_label == "status::awaiting confirmation":
+            findings.append("accepted handoff still marked as awaiting confirmation")
+        if current_owner != handoff_to:
+            findings.append(
+                f"accepted handoff owner drift: expected={handoff_to or 'none'} stored={current_owner or 'none'}"
+            )
+        if next_owner and next_owner != handoff_to:
+            findings.append(
+                f"accepted handoff next-owner drift: expected={handoff_to or 'none'} stored={next_owner or 'none'}"
             )
     elif state.status_label == "status::awaiting confirmation":
         findings.append("awaiting-confirmation status without pending handoff")
@@ -1142,7 +1236,38 @@ def _work_item_split_brain_findings(state: WorkItemState) -> list[str]:
         findings.append(
             f"routing error: release owner on pre-merge artifact_state={state.artifact_state}"
         )
+    expected_action_owner = next_owner or current_owner
+    if action_owner and action_owner != expected_action_owner:
+        findings.append(
+            "next-action owner cue drift: "
+            + f"action={action_owner} current={current_owner or 'none'} next={next_owner or 'none'}"
+        )
     return findings
+
+
+def _preserve_accepted_handoff_recipient(
+    state: WorkItemState,
+    *,
+    incoming_owner: str | None,
+    incoming_stage: str | None,
+    incoming_status_label: str | None,
+) -> bool:
+    state = _ensure_work_item_lane_defaults(state)
+    if not state.handoff or state.handoff.status != "accepted":
+        return False
+    recipient = _coerce_owner(state.handoff.to_agent)
+    current_owner = _coerce_owner(state.current_owner)
+    candidate_owner = _coerce_owner(incoming_owner)
+    candidate_stage = _normalize_work_item_stage(incoming_stage, fallback=state.current_stage)
+    if not recipient or current_owner != recipient:
+        return False
+    if not candidate_owner or candidate_owner == recipient:
+        return False
+    if candidate_stage in {"implementation_active", "failed_with_action_owner", "closed"}:
+        return False
+    if incoming_status_label == "status::awaiting confirmation":
+        return True
+    return candidate_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
 
 
 def _reconcile_blocked_work_item_state(
@@ -1342,6 +1467,7 @@ def _normalize_closed_work_item_state(
     state.current_owner = None
     state.next_owner = None
     state.blocker = None
+    state.blocking_findings = []
     state.status_label = None
     state.closed_at = closed_at or state.closed_at or now
     return state
@@ -1358,6 +1484,8 @@ def _touch_work_item_progress(
     next_owner_present: bool = False,
     blocker: str | None = None,
     blocker_present: bool = False,
+    blocking_findings: list[str] | None = None,
+    blocking_findings_present: bool = False,
     release_gate: bool | None = None,
     status_label: str | None = None,
     artifact_state: str | None = None,
@@ -1369,16 +1497,32 @@ def _touch_work_item_progress(
     previous_owner = _coerce_owner(state.current_owner)
     previous_stage = state.current_stage
     incoming_stage = _normalize_work_item_stage(current_stage, fallback=state.current_stage) if current_stage is not None else None
-    if current_owner is not None:
+    preserve_accepted_recipient = _preserve_accepted_handoff_recipient(
+        state,
+        incoming_owner=current_owner,
+        incoming_stage=incoming_stage,
+        incoming_status_label=status_label,
+    )
+    accepted_recipient = _coerce_owner(state.handoff.to_agent) if state.handoff and state.handoff.status == "accepted" else None
+    if current_owner is not None and not preserve_accepted_recipient:
         state.current_owner = _coerce_owner(current_owner)
     if current_stage is not None:
         state.current_stage = incoming_stage
     if next_action is not None:
         state.next_action = next_action or None
     if next_owner_present:
-        state.next_owner = _coerce_owner(next_owner)
+        incoming_next_owner = _coerce_owner(next_owner)
+        if not (
+            preserve_accepted_recipient
+            and accepted_recipient
+            and incoming_next_owner
+            and incoming_next_owner != accepted_recipient
+        ):
+            state.next_owner = incoming_next_owner
     if blocker_present:
         state.blocker = blocker or None
+    if blocking_findings_present:
+        state.blocking_findings = _normalize_blocking_findings(blocking_findings)
     if release_gate is not None:
         state.release_gate = release_gate
     if status_label is not None:
@@ -1428,6 +1572,7 @@ def _touch_work_item_progress(
                 state.status_label = None
     if state.current_stage == "implementation_active" and not (state.handoff and state.handoff.status == "pending"):
         state.blocker = None
+        state.blocking_findings = []
         if _coerce_owner(state.next_owner) != _coerce_owner(state.current_owner):
             state.next_owner = None
     if artifact_state is None:
@@ -1459,6 +1604,7 @@ def _touch_work_item_progress(
                 "next_action": state.next_action,
                 "next_owner": state.next_owner,
                 "blocker": state.blocker,
+                "blocking_findings": state.blocking_findings,
                 "artifact_state": state.artifact_state,
                 "release_gate": state.release_gate,
                 "status_label": state.status_label,
@@ -1650,8 +1796,11 @@ def _load_bot_bindings() -> list[BotBinding]:
 
 
 def _save_bot_bindings(bindings: list[BotBinding]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    BOTS_BINDINGS_FILE.write_text(json.dumps([binding.model_dump() for binding in bindings], indent=2) + "\n")
+    _atomic_write_text(
+        BOTS_BINDINGS_FILE,
+        json.dumps([binding.model_dump() for binding in bindings], indent=2) + "\n",
+        private=True,
+    )
 
 
 def _load_thread_settings() -> dict[str, ThreadRunSettings]:
@@ -1665,9 +1814,10 @@ def _load_thread_settings() -> dict[str, ThreadRunSettings]:
 
 
 def _save_thread_settings(settings: dict[str, ThreadRunSettings]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    THREAD_SETTINGS_FILE.write_text(
-        json.dumps({thread_id: value.model_dump() for thread_id, value in settings.items()}, indent=2) + "\n"
+    _atomic_write_text(
+        THREAD_SETTINGS_FILE,
+        json.dumps({thread_id: value.model_dump() for thread_id, value in settings.items()}, indent=2) + "\n",
+        private=True,
     )
 
 
@@ -1763,6 +1913,7 @@ def _work_item_contract_instructions(thread_id: str | None) -> str | None:
         "- `next_action`: one exact next action",
         "- `next_owner`: set this whenever the next owner differs from the current owner",
         "- `blocker`: one exact blocker if work is blocked, otherwise omit or clear it",
+        "- `blocking_findings`: optional list of additional concrete defects or follow-up findings that support the single canonical blocker",
         "",
         "Handoff rules:",
         "- A handoff is not complete until the sender records `/handoff` and the recipient records `/ack`.",
@@ -1836,9 +1987,10 @@ def _load_active_turns() -> dict[str, ActiveThreadTurn]:
 
 
 def _save_active_turns(active_turns: dict[str, ActiveThreadTurn]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    ACTIVE_TURNS_FILE.write_text(
-        json.dumps({thread_id: active.model_dump() for thread_id, active in active_turns.items()}, indent=2) + "\n"
+    _atomic_write_text(
+        ACTIVE_TURNS_FILE,
+        json.dumps({thread_id: active.model_dump() for thread_id, active in active_turns.items()}, indent=2) + "\n",
+        private=True,
     )
 
 
@@ -1864,8 +2016,8 @@ def _load_turn_queues() -> dict[str, list[QueuedTurn]]:
 
 
 def _save_turn_queues(queues: dict[str, list[QueuedTurn]]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    TURN_QUEUE_FILE.write_text(
+    _atomic_write_text(
+        TURN_QUEUE_FILE,
         json.dumps(
             {
                 thread_id: [queued.model_dump() for queued in items]
@@ -1874,7 +2026,8 @@ def _save_turn_queues(queues: dict[str, list[QueuedTurn]]) -> None:
             },
             indent=2,
         )
-        + "\n"
+        + "\n",
+        private=True,
     )
 
 
@@ -1886,6 +2039,130 @@ def _thread_queue(thread_id: str | None) -> list[QueuedTurn]:
 
 def _thread_queue_depth(thread_id: str | None) -> int:
     return len(_thread_queue(thread_id))
+
+
+def _max_thread_queue_depth() -> int:
+    try:
+        value = int(os.environ.get("CODEX_WEB_MAX_THREAD_QUEUE_DEPTH") or "12")
+    except ValueError:
+        return 12
+    return max(1, min(value, 100))
+
+
+def _steer_window_seconds() -> float:
+    try:
+        value = float(os.environ.get("CODEX_WEB_STEER_WINDOW_SECONDS") or "60")
+    except ValueError:
+        return 60.0
+    return max(1.0, value)
+
+
+def _max_steers_per_window() -> int:
+    try:
+        value = int(os.environ.get("CODEX_WEB_MAX_STEERS_PER_WINDOW") or "4")
+    except ValueError:
+        return 4
+    return max(1, min(value, 50))
+
+
+def _record_thread_steer(thread_id: str, *, now: float | None = None) -> None:
+    timestamp = time.time() if now is None else now
+    window = _steer_window_seconds()
+    recent = THREAD_STEER_TIMES.setdefault(thread_id, deque())
+    while recent and timestamp - recent[0] >= window:
+        recent.popleft()
+    if len(recent) >= _max_steers_per_window():
+        retry_after = max(1, int(window - (timestamp - recent[0])))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "thread_steer_rate_limited",
+                "threadId": thread_id,
+                "retryAfterSeconds": retry_after,
+            },
+        )
+    recent.append(timestamp)
+
+
+WORK_ITEM_WAKEUP_BATCH_HEADER = (
+    "Owned-work wakeup batch. Reconcile every listed item against canonical codex-web state, "
+    "then process each item that is currently actionable."
+)
+
+
+def _work_item_wakeup_entries(message: str) -> list[dict[str, str]]:
+    if message.startswith(WORK_ITEM_WAKEUP_BATCH_HEADER):
+        entries: list[dict[str, str]] = []
+        for line in message.splitlines()[1:]:
+            if not line.startswith("- "):
+                continue
+            with contextlib.suppress(Exception):
+                raw = json.loads(line[2:])
+                if isinstance(raw, dict) and raw.get("ref"):
+                    entries.append({str(key): str(value) for key, value in raw.items() if value is not None})
+        return entries
+
+    ref_match = re.search(r"\bOwned-work wakeup for ([\w.-]+/[\w.-]+#\d+)\b", message, re.IGNORECASE)
+    if not ref_match:
+        return []
+
+    def field(pattern: str) -> str:
+        match = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
+        return " ".join((match.group(1) if match else "").split()).strip()
+
+    entry = {
+        "ref": ref_match.group(1),
+        "classification": field(r"Change classification:\s*([^\.\n]+)"),
+        "stage": field(r"Current stage:\s*([^\.\n]+)"),
+        "next_action": field(r"Exact next action:\s*(.*?)(?:\s+If blocked,|\Z)"),
+    }
+    return [{key: value for key, value in entry.items() if value}]
+
+
+def _render_work_item_wakeup_batch(entries: list[dict[str, str]]) -> str:
+    latest_by_ref: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        ref = entry.get("ref")
+        if not ref:
+            continue
+        normalized = dict(entry)
+        if normalized.get("next_action"):
+            normalized["next_action"] = _truncate_text(normalized["next_action"], 600)
+        latest_by_ref[ref] = normalized
+    lines = [WORK_ITEM_WAKEUP_BATCH_HEADER]
+    lines.extend(
+        "- " + json.dumps(entry, separators=(",", ":"), sort_keys=True)
+        for entry in latest_by_ref.values()
+    )
+    return "\n".join(lines)
+
+
+def _coalesce_queued_work_item_wakeups(items: list[QueuedTurn]) -> tuple[list[QueuedTurn], bool]:
+    candidates = [
+        (index, queued, _work_item_wakeup_entries(queued.message))
+        for index, queued in enumerate(items)
+        if queued.reply_target is None
+    ]
+    candidates = [candidate for candidate in candidates if candidate[2]]
+    if len(candidates) < 2:
+        return items, False
+    first_index, representative, _ = candidates[0]
+    merged_entries = [entry for _, _, entries in candidates for entry in entries]
+    representative.message = _render_work_item_wakeup_batch(merged_entries)
+    candidate_ids = {id(queued) for _, queued, _ in candidates}
+    compacted = [queued for queued in items if id(queued) not in candidate_ids]
+    compacted.insert(min(first_index, len(compacted)), representative)
+    return compacted, True
+
+
+def _compact_turn_queues() -> None:
+    queues = _load_turn_queues()
+    changed = False
+    for thread_id, items in list(queues.items()):
+        queues[thread_id], queue_changed = _coalesce_queued_work_item_wakeups(items)
+        changed = changed or queue_changed
+    if changed:
+        _save_turn_queues(queues)
 
 
 def _enqueue_turn(
@@ -1901,6 +2178,39 @@ def _enqueue_turn(
     reply_target: BotReplyTarget | None = None,
 ) -> QueuedTurn:
     queues = _load_turn_queues()
+    items = queues.setdefault(thread_id, [])
+    for existing in items:
+        if existing.source == source and existing.message == message:
+            return existing
+    incoming_entries = _work_item_wakeup_entries(message) if reply_target is None else []
+    if incoming_entries:
+        wakeup_items = [
+            existing
+            for existing in items
+            if existing.reply_target is None and _work_item_wakeup_entries(existing.message)
+        ]
+        if wakeup_items:
+            representative = wakeup_items[0]
+            entries = [
+                entry
+                for existing in wakeup_items
+                for entry in _work_item_wakeup_entries(existing.message)
+            ]
+            representative.message = _render_work_item_wakeup_batch(entries + incoming_entries)
+            wakeup_ids = {id(existing) for existing in wakeup_items[1:]}
+            queues[thread_id] = [existing for existing in items if id(existing) not in wakeup_ids]
+            _save_turn_queues(queues)
+            return representative
+    if len(items) >= _max_thread_queue_depth():
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "thread_queue_full",
+                "threadId": thread_id,
+                "queueDepth": len(items),
+                "maxQueueDepth": _max_thread_queue_depth(),
+            },
+        )
     queued = QueuedTurn(
         id=uuid.uuid4().hex[:12],
         thread_id=thread_id,
@@ -1914,7 +2224,7 @@ def _enqueue_turn(
         reply_target=reply_target,
         created_at=time.time(),
     )
-    queues.setdefault(thread_id, []).append(queued)
+    items.append(queued)
     _save_turn_queues(queues)
     return queued
 
@@ -2066,6 +2376,130 @@ def _record_thread_activity(message: dict[str, Any]) -> None:
                 _clear_thread_active(thread_id)
 
 
+def _terminal_failure_window_seconds() -> float:
+    try:
+        value = float(os.environ.get("CODEX_WEB_TERMINAL_FAILURE_WINDOW_SECONDS") or "600")
+    except ValueError:
+        return 600.0
+    return max(30.0, value)
+
+
+def _turn_failure_text(message: dict[str, Any]) -> str:
+    params = message.get("params") or {}
+    turn = params.get("turn") or {}
+    error = turn.get("error") or params.get("error")
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        parts = [error.get("message"), error.get("additionalDetails"), error.get("codexErrorInfo")]
+        return " ".join(str(part) for part in parts if part)
+    return str(error or "")
+
+
+def _is_unrecoverable_turn_error(error: str) -> bool:
+    normalized = error.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "array_above_max_length",
+            "array too long",
+            "remote compact task",
+            "maximum length 16384",
+            "context window",
+        )
+    )
+
+
+def _schedule_terminal_thread_recovery(thread_id: str, error: str) -> bool:
+    if not thread_id or thread_id in TERMINAL_RECOVERY_TASKS or IS_SHUTTING_DOWN:
+        return False
+    if not _bindings_for_thread(thread_id):
+        return False
+
+    async def recover() -> None:
+        try:
+            bindings = _bindings_for_thread(thread_id)
+            if not bindings:
+                return
+            last_input = THREAD_LAST_INPUTS.get(thread_id)
+            replacement = await _replace_stale_bot_thread(bindings[0], error)
+            _append_bot_event(
+                {
+                    "type": "terminal_thread_recovered",
+                    "old_thread_id": thread_id,
+                    "new_thread_id": replacement.thread_id,
+                    "error": _truncate_text(error, 500),
+                }
+            )
+            if last_input:
+                project = _project(last_input["project_id"])
+                await _start_thread_turn_now(
+                    replacement.thread_id,
+                    project=project,
+                    message=last_input["message"],
+                    sandbox=last_input.get("sandbox") or replacement.sandbox,
+                    approval_policy=last_input.get("approval_policy") or replacement.approval_policy,
+                    model=last_input.get("model"),
+                    reasoning_effort=last_input.get("reasoning_effort"),
+                    source=f"terminal-recovery:{last_input.get('source') or 'unknown'}",
+                    reply_target=last_input.get("reply_target"),
+                )
+                THREAD_LAST_INPUTS.pop(thread_id, None)
+            else:
+                _schedule_queue_drain(replacement.thread_id)
+        except Exception as exc:
+            _append_bot_event(
+                {
+                    "type": "terminal_thread_recovery_failed",
+                    "thread_id": thread_id,
+                    "error": _truncate_text(str(exc), 500),
+                }
+            )
+        finally:
+            TERMINAL_RECOVERY_TASKS.pop(thread_id, None)
+
+    TERMINAL_RECOVERY_TASKS[thread_id] = asyncio.create_task(recover())
+    return True
+
+
+def _record_terminal_turn_result(message: dict[str, Any]) -> bool:
+    method = message.get("method")
+    if method not in {"turn/completed", "turn/failed"}:
+        return False
+    params = message.get("params") or {}
+    turn = params.get("turn") or {}
+    thread_id = params.get("threadId") or turn.get("threadId")
+    status = str(turn.get("status") or "").lower()
+    error = _turn_failure_text(message)
+    if not thread_id:
+        return False
+    if method != "turn/failed" and status != "failed" and not error:
+        THREAD_TERMINAL_FAILURES.pop(thread_id, None)
+        THREAD_LAST_INPUTS.pop(thread_id, None)
+        return False
+    if not error:
+        error = "turn failed without an error message"
+    now = time.time()
+    failures = THREAD_TERMINAL_FAILURES.setdefault(thread_id, deque())
+    window = _terminal_failure_window_seconds()
+    while failures and now - failures[0][0] >= window:
+        failures.popleft()
+    failures.append((now, error))
+    unrecoverable = _is_unrecoverable_turn_error(error)
+    _append_bot_event(
+        {
+            "type": "terminal_turn_failed",
+            "thread_id": thread_id,
+            "turn_id": turn.get("id") or params.get("turnId"),
+            "failure_count": len(failures),
+            "unrecoverable": unrecoverable,
+            "error": _truncate_text(error, 500),
+        }
+    )
+    threshold_reached = unrecoverable or len(failures) >= 2
+    return threshold_reached and _schedule_terminal_thread_recovery(thread_id, error)
+
+
 async def _publish_queue_status(thread_id: str) -> None:
     await hub.publish(
         {
@@ -2093,49 +2527,63 @@ async def _start_thread_turn_now(
     effective_model = model or settings.model or project.model
     effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
     effective_developer_instructions = _effective_developer_instructions(thread_id, settings.developer_instructions)
-    await codex.request(
-        "thread/resume",
-        {
+    async with CODEX_TURN_START_LOCK:
+        await codex.request(
+            "thread/resume",
+            {
+                "threadId": thread_id,
+                **_project_params(
+                    project,
+                    {
+                        "sandbox": sandbox,
+                        "approvalPolicy": approval_policy,
+                        "model": effective_model,
+                        "developerInstructions": effective_developer_instructions,
+                    },
+                ),
+            },
+        )
+        params: dict[str, Any] = {
             "threadId": thread_id,
-            **_project_params(
-                project,
-                {
-                    "sandbox": sandbox,
-                    "approvalPolicy": approval_policy,
-                    "model": effective_model,
-                    "developerInstructions": effective_developer_instructions,
-                },
-            ),
-        },
-    )
-    params: dict[str, Any] = {
-        "threadId": thread_id,
-        "input": [{"type": "text", "text": message, "text_elements": []}],
-        "cwd": project.path,
-    }
-    if effective_model:
-        params["model"] = effective_model
-    if effective_reasoning_effort:
-        params["effort"] = effective_reasoning_effort
-    if effective_developer_instructions:
-        params["developerInstructions"] = effective_developer_instructions
-    if approval_policy:
-        params["approvalPolicy"] = approval_policy
-    if sandbox:
-        params["sandboxPolicy"] = _sandbox_policy(sandbox, project.path)
-    params["input"][0]["text"] = _with_relay_guard(params["input"][0]["text"], _turn_source_for_relay_guard(thread_id, source))
-    response = await codex.request("turn/start", params)
-    _mark_thread_active(
-        thread_id,
-        turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
-        project_id=project.id,
-        sandbox=sandbox,
-        approval_policy=approval_policy,
-        model=effective_model,
-        reasoning_effort=effective_reasoning_effort,
-        source=source,
-        reply_target=reply_target,
-    )
+            "input": [{"type": "text", "text": message, "text_elements": []}],
+            "cwd": project.path,
+        }
+        if effective_model:
+            params["model"] = effective_model
+        if effective_reasoning_effort:
+            params["effort"] = effective_reasoning_effort
+        if effective_developer_instructions:
+            params["developerInstructions"] = effective_developer_instructions
+        if approval_policy:
+            params["approvalPolicy"] = approval_policy
+        if sandbox:
+            params["sandboxPolicy"] = _sandbox_policy(sandbox, project.path)
+        params["input"][0]["text"] = _with_relay_guard(
+            params["input"][0]["text"],
+            _turn_source_for_relay_guard(thread_id, source),
+        )
+        response = await codex.request("turn/start", params)
+        THREAD_LAST_INPUTS[thread_id] = {
+            "project_id": project.id,
+            "message": message,
+            "sandbox": sandbox,
+            "approval_policy": approval_policy,
+            "model": effective_model,
+            "reasoning_effort": effective_reasoning_effort,
+            "source": source,
+            "reply_target": reply_target,
+        }
+        _mark_thread_active(
+            thread_id,
+            turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
+            project_id=project.id,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            model=effective_model,
+            reasoning_effort=effective_reasoning_effort,
+            source=source,
+            reply_target=reply_target,
+        )
     _append_bot_event(
         {
             "type": "turn_started",
@@ -2791,15 +3239,11 @@ def _retarget_thread_settings(old_thread_id: str, new_thread_id: str) -> None:
 
 def _retarget_active_turn(old_thread_id: str, new_thread_id: str) -> None:
     active_turns = _load_active_turns()
-    active = active_turns.pop(old_thread_id, None)
-    if not active:
-        return
-    if active.reply_target and active.reply_target.thread_id == old_thread_id:
-        active.reply_target = active.reply_target.model_copy(update={"thread_id": new_thread_id})
-    active.thread_id = new_thread_id
-    active.updated_at = time.time()
-    active_turns.setdefault(new_thread_id, active)
-    _save_active_turns(active_turns)
+    if active_turns.pop(old_thread_id, None) is not None:
+        # A replacement is a new Codex session. The old turn may still emit a
+        # completion event under the old id, so migrating its marker creates a
+        # permanently busy replacement thread.
+        _save_active_turns(active_turns)
 
 
 def _retarget_turn_queue(old_thread_id: str, new_thread_id: str) -> None:
@@ -2868,6 +3312,30 @@ def _retarget_bot_thread_state(old_thread_id: str, new_thread_id: str) -> None:
     _retarget_slack_thread_icon(old_thread_id, new_thread_id)
 
 
+async def _archive_replaced_bot_thread(old_thread_id: str, new_thread_id: str) -> bool:
+    _remove_indexed_thread(old_thread_id)
+    try:
+        await codex.request("thread/archive", {"threadId": old_thread_id})
+    except Exception as exc:
+        _append_bot_event(
+            {
+                "type": "stale_bot_thread_archive_failed",
+                "old_thread_id": old_thread_id,
+                "new_thread_id": new_thread_id,
+                "error": _truncate_text(str(exc), 500),
+            }
+        )
+        return False
+    _append_bot_event(
+        {
+            "type": "stale_bot_thread_archived",
+            "old_thread_id": old_thread_id,
+            "new_thread_id": new_thread_id,
+        }
+    )
+    return True
+
+
 async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBinding:
     old_thread_id = binding.thread_id
     project = _project(binding.project_id)
@@ -2918,7 +3386,13 @@ async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBindi
         binding.model_copy(update={"sandbox": sandbox, "approval_policy": approval_policy}),
         new_thread_id,
     )
+    for prior_thread_id, replacement_thread_id in list(THREAD_REPLACEMENTS.items()):
+        if replacement_thread_id == old_thread_id:
+            THREAD_REPLACEMENTS[prior_thread_id] = new_thread_id
+    THREAD_REPLACEMENTS[old_thread_id] = new_thread_id
+    THREAD_TERMINAL_FAILURES.pop(old_thread_id, None)
     _retarget_bot_thread_state(old_thread_id, new_thread_id)
+    archived_old_thread = await _archive_replaced_bot_thread(old_thread_id, new_thread_id)
     _append_bot_event(
         {
             "type": "stale_bot_thread_replaced",
@@ -2927,6 +3401,7 @@ async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBindi
             "logical_name": _logical_binding_name(binding),
             "old_thread_id": old_thread_id,
             "new_thread_id": new_thread_id,
+            "archived_old_thread": archived_old_thread,
             "error": _truncate_text(error, 500),
         }
     )
@@ -2941,6 +3416,99 @@ async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBindi
         }
     )
     return replacement
+
+
+async def _replace_stale_web_thread(thread_id: str, project: Project, error: str) -> str:
+    """Replace an unusable browser-only thread while preserving its run settings."""
+    settings = _thread_run_settings(thread_id)
+    response = await codex.request(
+        "thread/start",
+        _project_params(
+            project,
+            {
+                "sandbox": settings.sandbox or project.sandbox,
+                "approvalPolicy": settings.approval_policy or project.approval_policy,
+                "sessionStartSource": "startup",
+            },
+        ),
+    )
+    new_thread_id = response["thread"]["id"]
+    _remember_thread_run_settings(
+        new_thread_id,
+        sandbox=settings.sandbox or project.sandbox,
+        approval_policy=settings.approval_policy or project.approval_policy,
+        model=settings.model,
+        reasoning_effort=settings.reasoning_effort,
+        developer_instructions=settings.developer_instructions,
+    )
+    indexed = next((item for item in _load_thread_index() if item.id == thread_id), None)
+    thread_name = indexed.name if indexed else None
+    if thread_name:
+        with contextlib.suppress(Exception):
+            await _set_thread_name(new_thread_id, thread_name)
+        _upsert_indexed_thread(
+            IndexedThread(
+                id=new_thread_id,
+                name=thread_name,
+                cwd=project.path,
+                path=project.path,
+                updatedAt=time.time(),
+            )
+        )
+    for prior_thread_id, replacement_thread_id in list(THREAD_REPLACEMENTS.items()):
+        if replacement_thread_id == thread_id:
+            THREAD_REPLACEMENTS[prior_thread_id] = new_thread_id
+    THREAD_REPLACEMENTS[thread_id] = new_thread_id
+    THREAD_TERMINAL_FAILURES.pop(thread_id, None)
+    _retarget_bot_thread_state(thread_id, new_thread_id)
+    archived_old_thread = await _archive_replaced_bot_thread(thread_id, new_thread_id)
+    event = {
+        "type": "stale_web_thread_replaced",
+        "project_id": project.id,
+        "old_thread_id": thread_id,
+        "new_thread_id": new_thread_id,
+        "archived_old_thread": archived_old_thread,
+        "error": _truncate_text(error, 500),
+    }
+    _append_bot_event(event)
+    await hub.publish(
+        {
+            "type": "bot.thread.replaced",
+            "projectId": project.id,
+            "oldThreadId": thread_id,
+            "newThreadId": new_thread_id,
+            "name": thread_name,
+        }
+    )
+    return new_thread_id
+
+
+def _replacement_thread_id(thread_id: str) -> str | None:
+    replacement = THREAD_REPLACEMENTS.get(thread_id)
+    seen = {thread_id}
+    while replacement and replacement not in seen:
+        seen.add(replacement)
+        next_replacement = THREAD_REPLACEMENTS.get(replacement)
+        if not next_replacement:
+            return replacement
+        replacement = next_replacement
+    return replacement
+
+
+def _raise_if_thread_replaced(thread_id: str) -> None:
+    replacement = _replacement_thread_id(thread_id)
+    if not replacement:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "thread_replaced",
+            "staleThreadReplaced": True,
+            "oldThreadId": thread_id,
+            "newThreadId": replacement,
+            "threadId": replacement,
+        },
+    )
 
 
 def _active_turn_stale_seconds() -> float:
@@ -3280,6 +3848,18 @@ def _cross_channel_binding_for_message(
     if len(current_bindings) == 1:
         return current_bindings[0], message.text, False
     return None, message.text, False
+
+
+def _is_top_level_external_message(message: BotInboundMessage) -> bool:
+    return bool(
+        message.message_id
+        and message.external_thread_id
+        and message.external_thread_id == message.message_id
+    )
+
+
+def _has_single_master_binding(bindings: list[BotBinding]) -> bool:
+    return len([binding for binding in bindings if binding.is_master]) == 1
 
 
 def _fallback_binding_for_stale(binding: BotBinding, message: BotInboundMessage) -> BotBinding | None:
@@ -3650,7 +4230,13 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
     bindings = _bindings_for_connection(provider, message.external_conversation_id)
     project_id = message.project_id or (bindings[0].project_id if bindings else "home")
     steer_now, route_message = _steer_route_message(message)
-    exact_binding = None if steer_now else _binding_for_external_target(
+    master_catch_all = not steer_now and _has_single_master_binding(bindings)
+    prefer_external_thread = (
+        not steer_now
+        and not master_catch_all
+        and not _is_top_level_external_message(route_message)
+    )
+    exact_binding = None if not prefer_external_thread else _binding_for_external_target(
         provider,
         project_id,
         message.external_conversation_id,
@@ -3668,7 +4254,7 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
         binding, routed_text, route_error = _resolve_bot_binding(
             bindings,
             route_message,
-            prefer_external_thread=not steer_now,
+            prefer_external_thread=prefer_external_thread,
             allow_master_fallback=not steer_now,
             allow_bare_prefix=steer_now,
         )
@@ -3827,6 +4413,16 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
             if effective_reasoning_effort:
                 turn_params["effort"] = effective_reasoning_effort
             turn = await codex.request("turn/start", turn_params)
+            THREAD_LAST_INPUTS[binding.thread_id] = {
+                "project_id": project.id,
+                "message": prompt,
+                "sandbox": binding.sandbox,
+                "approval_policy": binding.approval_policy,
+                "model": effective_model,
+                "reasoning_effort": effective_reasoning_effort,
+                "source": f"steer:{provider}" if steer_now else provider,
+                "reply_target": reply_target,
+            }
             break
         except Exception as exc:
             if _is_codex_timeout_error(exc):
@@ -3920,7 +4516,15 @@ async def _handle_bot_inbound(message: BotInboundMessage) -> dict[str, Any]:
 
 def _is_stale_thread_error(exc: Exception) -> bool:
     text = str(exc).lower()
-    return "no rollout found for thread id" in text or "thread not found" in text
+    return any(
+        marker in text
+        for marker in (
+            "no rollout found for thread id",
+            "thread not found",
+            "already has an active writer",
+            "thread-store conflict",
+        )
+    )
 
 
 def _is_codex_timeout_error(exc: Exception) -> bool:
@@ -4259,6 +4863,78 @@ async def _project_scoped_bindings_for_thread(thread_id: str) -> list[BotBinding
     return bindings
 
 
+def _mentioned_work_item_states(text: str) -> list[WorkItemState]:
+    states = _load_work_item_states()
+    refs = set(re.findall(r"\b[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#\d+\b", text))
+    mentioned = [states[ref] for ref in refs if ref in states]
+    for iid in set(re.findall(r"(?<![A-Za-z0-9_./-])#(\d+)\b", text)):
+        matches = [state for ref, state in states.items() if ref.endswith(f"#{iid}")]
+        if len(matches) == 1 and all(state.ref != matches[0].ref for state in mentioned):
+            mentioned.append(matches[0])
+    return mentioned
+
+
+def _workflow_outbound_claim_findings(text: str) -> tuple[list[str], list[WorkItemState]]:
+    mentioned = _mentioned_work_item_states(text)
+    if len(mentioned) != 1:
+        return [], mentioned
+    state = _ensure_work_item_lane_defaults(mentioned[0])
+    findings: list[str] = []
+    owner_names = sorted(
+        set(OWNER_QUEUE_AGENTS) | {"orchestrator", "release manager", "compliance manager"},
+        key=len,
+        reverse=True,
+    )
+    owners = "|".join(re.escape(owner) for owner in owner_names)
+    owner_patterns = (
+        rf"\bcurrent[_ ]owner\s*[=:]\s*`?({owners})\b",
+        rf"\bowned by\s+`?({owners})\b",
+        rf"\bownership\s+(?:moved|transferred)\s+to\s+`?({owners})\b",
+    )
+    claimed_owner: str | None = None
+    for pattern in owner_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            claimed_owner = _coerce_owner(match.group(1))
+            break
+    canonical_owner = _coerce_owner(state.current_owner)
+    if claimed_owner and claimed_owner != canonical_owner:
+        findings.append(
+            f"owner claim mismatch for {state.ref}: claimed={claimed_owner} canonical={canonical_owner or 'none'}"
+        )
+
+    stage_match = re.search(r"\bcurrent[_ ]stage\s*[=:]\s*`?([a-z][a-z0-9 _-]*)", text, re.IGNORECASE)
+    if stage_match:
+        claimed_stage = stage_match.group(1).strip().lower().replace(" ", "_").rstrip("._-")
+        if claimed_stage != state.current_stage:
+            findings.append(
+                f"stage claim mismatch for {state.ref}: claimed={claimed_stage} canonical={state.current_stage}"
+            )
+
+    if re.search(r"\bhandoff\s+(?:is\s+|was\s+)?accepted\b", text, re.IGNORECASE):
+        handoff_status = state.handoff.status if state.handoff else None
+        if handoff_status != "accepted":
+            findings.append(
+                f"handoff claim mismatch for {state.ref}: claimed=accepted canonical={handoff_status or 'none'}"
+            )
+    return findings, mentioned
+
+
+def _canonical_workflow_correction(report_name: str, states: list[WorkItemState], findings: list[str]) -> str:
+    snapshots = []
+    for state in states:
+        handoff = state.handoff.status if state.handoff else "none"
+        snapshots.append(
+            f"{state.ref}: current_owner={state.current_owner or 'none'}, "
+            f"current_stage={state.current_stage}, handoff={handoff}, "
+            f"next_owner={state.next_owner or 'none'}"
+        )
+    return (
+        f"{report_name}: Codex-web withheld an agent update because its workflow claim conflicted "
+        f"with canonical state. {'; '.join(findings)}. Canonical state: {'; '.join(snapshots)}."
+    )
+
+
 async def _record_bot_outbound(message: dict[str, Any]) -> None:
     if message.get("method") != "item/completed":
         return
@@ -4282,6 +4958,16 @@ async def _record_bot_outbound(message: dict[str, Any]) -> None:
         outbound_text = _format_bot_outbound_item(item, report_name)
         if not outbound_text:
             continue
+        workflow_findings, mentioned_states = _workflow_outbound_claim_findings(outbound_text)
+        workflow_verification: dict[str, Any] | None = None
+        if workflow_findings:
+            workflow_verification = {
+                "corrected": True,
+                "findings": workflow_findings,
+                "refs": [state.ref for state in mentioned_states],
+                "original_text": _truncate_text(outbound_text, 1000),
+            }
+            outbound_text = _canonical_workflow_correction(report_name, mentioned_states, workflow_findings)
         event = {
             "type": "outbound_ready",
             "provider": binding.provider,
@@ -4293,6 +4979,8 @@ async def _record_bot_outbound(message: dict[str, Any]) -> None:
             "item_type": item.get("type"),
             "text": outbound_text,
         }
+        if workflow_verification:
+            event["workflow_verification"] = workflow_verification
         delivery = await _send_bot_outbound(binding, outbound_text)
         _remember_bot_delivery_target(binding, delivery)
         event["delivery"] = delivery
@@ -5156,6 +5844,104 @@ def _slack_backfill_window_seconds() -> float:
     return max(30.0, min(seconds, 3600.0))
 
 
+def _slack_backfill_rate_limit_min_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MIN_SECONDS") or "60")
+    except ValueError:
+        return 60.0
+    return max(5.0, seconds)
+
+
+def _slack_backfill_rate_limit_max_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MAX_SECONDS") or "900")
+    except ValueError:
+        return 900.0
+    return max(_slack_backfill_rate_limit_min_seconds(), seconds)
+
+
+def _slack_backfill_cooldown_remaining_seconds() -> float:
+    return max(0.0, SLACK_BACKFILL_COOLDOWN_UNTIL - time.time())
+
+
+def _slack_backfill_retry_after(headers: Any) -> float | None:
+    try:
+        value = headers.get("Retry-After")
+    except Exception:
+        value = None
+    if not value:
+        return None
+    with contextlib.suppress(ValueError):
+        return max(0.0, float(value))
+    return None
+
+
+def _slack_backfill_get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode() or "{}")
+            payload["_http_status"] = response.status
+            return payload
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        if exc.code == 429:
+            return {
+                "ok": False,
+                "error": "ratelimited",
+                "_http_status": exc.code,
+                "_retry_after": _slack_backfill_retry_after(exc.headers),
+                "_detail": detail,
+            }
+        return {
+            "ok": False,
+            "error": f"HTTP {exc.code}: {detail}",
+            "_http_status": exc.code,
+            "_detail": detail,
+        }
+
+
+def _slack_backfill_is_rate_limited(response: dict[str, Any]) -> bool:
+    return response.get("_http_status") == 429 or response.get("error") == "ratelimited"
+
+
+def _slack_backfill_apply_rate_limit(response: dict[str, Any], context: dict[str, Any]) -> None:
+    global SLACK_BACKFILL_COOLDOWN_UNTIL, SLACK_BACKFILL_RATE_LIMIT_FAILURES
+    SLACK_BACKFILL_RATE_LIMIT_FAILURES += 1
+    minimum = _slack_backfill_rate_limit_min_seconds()
+    maximum = _slack_backfill_rate_limit_max_seconds()
+    retry_after = response.get("_retry_after")
+    fallback = min(maximum, minimum * (2 ** min(SLACK_BACKFILL_RATE_LIMIT_FAILURES - 1, 4)))
+    delay = max(minimum, float(retry_after) if retry_after is not None else fallback)
+    delay = min(maximum, delay)
+    SLACK_BACKFILL_COOLDOWN_UNTIL = max(SLACK_BACKFILL_COOLDOWN_UNTIL, time.time() + delay)
+    _append_bot_event(
+        {
+            "type": "slack_backfill_cooldown_set",
+            "provider": "slack",
+            "delay_seconds": delay,
+            "retry_after": retry_after,
+            "failure_count": SLACK_BACKFILL_RATE_LIMIT_FAILURES,
+            **context,
+        }
+    )
+
+
+def _slack_backfill_record_failure(event_type: str, response: dict[str, Any], context: dict[str, Any]) -> bool:
+    _append_bot_event(
+        {
+            "type": event_type,
+            "provider": "slack",
+            **context,
+            "error": response.get("error") or str(response),
+        }
+    )
+    if _slack_backfill_is_rate_limited(response):
+        _slack_backfill_apply_rate_limit(response, context)
+        return True
+    return False
+
+
 def _recent_inbound_message_ids(limit: int = 2000) -> set[str]:
     if not BOTS_EVENTS_FILE.exists():
         return set()
@@ -5224,24 +6010,27 @@ def _slack_backfill_thread_targets() -> list[tuple[BotConnection, str, str]]:
 
 
 async def _run_slack_backfill_cycle() -> None:
+    global SLACK_BACKFILL_RATE_LIMIT_FAILURES
     recent_message_ids = _recent_inbound_message_ids()
     oldest = f"{max(0.0, time.time() - _slack_backfill_window_seconds()):.6f}"
     for connection, channel_id in _slack_backfill_channels():
         url = "https://slack.com/api/conversations.history?" + urllib.parse.urlencode(
             {"channel": channel_id, "oldest": oldest, "limit": "50"}
         )
-        response = await asyncio.to_thread(_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
+        response = await asyncio.to_thread(_slack_backfill_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
         if not response.get("ok"):
-            _append_bot_event(
+            rate_limited = _slack_backfill_record_failure(
+                "slack_backfill_failed",
+                response,
                 {
-                    "type": "slack_backfill_failed",
-                    "provider": "slack",
                     "connection_id": connection.id,
                     "external_conversation_id": channel_id,
-                    "error": response.get("error") or str(response),
-                }
+                },
             )
+            if rate_limited:
+                return
             continue
+        SLACK_BACKFILL_RATE_LIMIT_FAILURES = 0
         for event in reversed(response.get("messages") or []):
             message_id = str(event.get("ts") or "").strip()
             if not message_id or message_id in SLACK_BACKFILL_SEEN or message_id in recent_message_ids:
@@ -5286,21 +6075,23 @@ async def _run_slack_backfill_cycle() -> None:
         url = "https://slack.com/api/conversations.replies?" + urllib.parse.urlencode(
             {"channel": channel_id, "ts": thread_ts, "oldest": oldest, "limit": "50"}
         )
-        response = await asyncio.to_thread(_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
+        response = await asyncio.to_thread(_slack_backfill_get_json, url, {"Authorization": f"Bearer {connection.bot_token}"})
         if not response.get("ok"):
             if response.get("error") in {"thread_not_found", "channel_not_found", "not_in_channel"}:
                 SLACK_BACKFILL_BAD_THREADS.add(thread_key)
-            _append_bot_event(
+            rate_limited = _slack_backfill_record_failure(
+                "slack_thread_backfill_failed",
+                response,
                 {
-                    "type": "slack_thread_backfill_failed",
-                    "provider": "slack",
                     "connection_id": connection.id,
                     "external_conversation_id": channel_id,
                     "external_thread_id": thread_ts,
-                    "error": response.get("error") or str(response),
-                }
+                },
             )
+            if rate_limited:
+                return
             continue
+        SLACK_BACKFILL_RATE_LIMIT_FAILURES = 0
         for event in reversed(response.get("messages") or []):
             message_id = str(event.get("ts") or "").strip()
             if not message_id or message_id == thread_ts or message_id in SLACK_BACKFILL_SEEN or message_id in recent_message_ids:
@@ -5346,6 +6137,10 @@ async def _slack_backfill_loop() -> None:
     if interval <= 0:
         return
     while True:
+        cooldown = _slack_backfill_cooldown_remaining_seconds()
+        if cooldown > 0:
+            await asyncio.sleep(max(interval, cooldown))
+            continue
         try:
             await _run_slack_backfill_cycle()
         except Exception as exc:
@@ -5397,10 +6192,8 @@ def _codex_request_timeout(method: str) -> float | None:
         return 15
     if method in {"thread/list", "thread/read", "account/rateLimits/read"}:
         return 10
-    if method in {"thread/resume", "thread/start", "thread/name/set"}:
-        return 20
-    if method == "turn/start":
-        return 30
+    if method in {"thread/resume", "thread/start", "thread/name/set", "turn/start"}:
+        return 60
     if method == "turn/interrupt":
         return 10
     return 20
@@ -5560,10 +6353,12 @@ class CodexAppServer:
             method = message.get("method")
             params = message.get("params") or {}
             thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+            terminal_recovery_scheduled = _record_terminal_turn_result(message)
             if method == "thread/name/updated":
                 asyncio.create_task(_restore_bot_thread_name(thread_id))
             if method in {"turn/completed", "turn/failed"}:
-                _schedule_queue_drain(thread_id)
+                if not terminal_recovery_scheduled:
+                    _schedule_queue_drain(thread_id)
             elif method == "thread/status/changed":
                 status_type = (params.get("status") or {}).get("type")
                 if status_type in {"idle", "systemError", "notLoaded"}:
@@ -5748,6 +6543,40 @@ def _daemon_health() -> dict[str, Any]:
             if now - error_at > 120:
                 problems.append(f"bot runtime has been in error for {int(now - error_at)}s: {connection_id}")
 
+    bound_thread_ids = {binding.thread_id for binding in _load_bot_bindings()}
+    terminal_failures = {
+        thread_id: list(failures)
+        for thread_id, failures in THREAD_TERMINAL_FAILURES.items()
+        if thread_id in bound_thread_ids and failures and now - failures[-1][0] < _terminal_failure_window_seconds()
+    }
+    if terminal_failures:
+        problems.append(f"terminal turn failures unresolved for {len(terminal_failures)} bound thread(s)")
+
+    queues = _load_turn_queues()
+    stale_queues = {
+        thread_id: len(items)
+        for thread_id, items in queues.items()
+        if items and now - min(item.created_at for item in items) > 900
+    }
+    if stale_queues:
+        problems.append(f"queued turns have waited over 900s for {len(stale_queues)} thread(s)")
+
+    recent_delivery_failures = [
+        event
+        for event in _recent_bot_events(120)
+        if now - float(event.get("created_at") or 0) < 300
+        and isinstance(event.get("delivery"), dict)
+        and event["delivery"].get("sent") is False
+    ]
+    if len(recent_delivery_failures) >= 3:
+        problems.append(f"{len(recent_delivery_failures)} outbound bot deliveries failed in the last 300s")
+
+    slack_backfill_cooldown = _slack_backfill_cooldown_remaining_seconds()
+    if SLACK_BACKFILL_RATE_LIMIT_FAILURES >= 2 and slack_backfill_cooldown > 0:
+        problems.append(f"Slack backfill rate limited for another {int(slack_backfill_cooldown)}s")
+    if GITLAB_SYNC_CONSECUTIVE_FAILURES >= 2:
+        problems.append(f"GitLab sync failed {GITLAB_SYNC_CONSECUTIVE_FAILURES} consecutive times")
+
     return {
         "ok": not problems,
         "problems": problems,
@@ -5755,6 +6584,15 @@ def _daemon_health() -> dict[str, Any]:
         "codexPid": codex.proc.pid if codex.proc else None,
         "runtimeConnections": len(bot_runtime.tasks),
         "runtimeStatus": list(BOT_RUNTIME_STATUS.values()),
+        "terminalFailureThreads": len(terminal_failures),
+        "terminalRecoveryThreads": len(TERMINAL_RECOVERY_TASKS),
+        "staleQueueThreads": stale_queues,
+        "recentDeliveryFailures": len(recent_delivery_failures),
+        "slackBackfillCooldownRemainingSeconds": slack_backfill_cooldown,
+        "gitlabSyncConsecutiveFailures": GITLAB_SYNC_CONSECUTIVE_FAILURES,
+        "gitlabSyncLastError": GITLAB_SYNC_LAST_ERROR,
+        "gitlabSyncLastErrorAt": GITLAB_SYNC_LAST_ERROR_AT or None,
+        "gitlabSyncLastSuccessAt": GITLAB_SYNC_LAST_SUCCESS_AT or None,
     }
 
 
@@ -5777,10 +6615,29 @@ def _static_version() -> str:
     return mtime_version
 
 
+def _tail_text_lines(path: Path, limit: int) -> list[str]:
+    if limit <= 0 or not path.exists():
+        return []
+    block_size = 64 * 1024
+    chunks: deque[bytes] = deque()
+    newline_count = 0
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= limit:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.appendleft(chunk)
+            newline_count += chunk.count(b"\n")
+    return b"".join(chunks).decode("utf-8", errors="replace").splitlines()[-limit:]
+
+
 def _recent_bot_events(limit: int = 80) -> list[dict[str, Any]]:
     if not BOTS_EVENTS_FILE.exists():
         return []
-    lines = BOTS_EVENTS_FILE.read_text(errors="replace").splitlines()[-max(1, min(limit, 300)) :]
+    lines = _tail_text_lines(BOTS_EVENTS_FILE, max(1, min(limit, 300)))
     events: list[dict[str, Any]] = []
     for line in lines:
         with contextlib.suppress(Exception):
@@ -5889,8 +6746,14 @@ def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
     route_error = False
     route_source = "none"
     would_clone = False
+    master_catch_all = not steer_now and _has_single_master_binding(bindings)
+    prefer_external_thread = (
+        not steer_now
+        and not master_catch_all
+        and not _is_top_level_external_message(message)
+    )
 
-    exact_binding = None if steer_now else _binding_for_external_target(
+    exact_binding = None if not prefer_external_thread else _binding_for_external_target(
         provider,
         project_id,
         message.external_conversation_id,
@@ -5904,7 +6767,7 @@ def _preview_bot_route(payload: BotRouteTest) -> dict[str, Any]:
         binding, routed_text, route_error = _resolve_bot_binding(
             bindings,
             route_message,
-            prefer_external_thread=not steer_now,
+            prefer_external_thread=prefer_external_thread,
             allow_master_fallback=not steer_now,
             allow_bare_prefix=steer_now,
         )
@@ -6654,6 +7517,25 @@ def _upsert_work_item_state_from_gitlab_issue(
                 )
             )
             return state
+        if _preserve_accepted_handoff_recipient(
+            state,
+            incoming_owner=projected_owner,
+            incoming_stage=projected_stage,
+            incoming_status_label=projected_status_label,
+        ):
+            _append_work_item_event(
+                _work_item_event(
+                    ref,
+                    "gitlab_issue_accepted_handoff_projection_ignored",
+                    payload={
+                        "projected_owner": projected_owner,
+                        "projected_stage": projected_stage,
+                        "projected_status_label": projected_status_label,
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+            )
+            return state
         state.project_id = project_id
         state.project_path = project_path
         state.title = str(issue.get("title") or "") or state.title
@@ -6689,13 +7571,6 @@ def _upsert_work_item_state_from_gitlab_issue(
         ):
             state.last_meaningful_update_at = now
             state.last_owner_activity_at = now
-        state = _maybe_infer_pending_handoff_from_gitlab_projection(
-            state,
-            previous_owner=previous_owner,
-            owners=owners,
-            status_label=projected_status_label,
-            now=now,
-        )
         if state.current_stage == "failed_with_action_owner":
             state = _reconcile_blocked_work_item_state(
                 state,
@@ -6878,6 +7753,25 @@ def _upsert_work_item_state_from_gitlab_event(
                 )
             )
             return state
+        if _preserve_accepted_handoff_recipient(
+            state,
+            incoming_owner=projected_owner,
+            incoming_stage=projected_stage,
+            incoming_status_label=projected_status_label,
+        ):
+            _append_work_item_event(
+                _work_item_event(
+                    ref,
+                    "gitlab_event_accepted_handoff_projection_ignored",
+                    payload={
+                        "projected_owner": projected_owner,
+                        "projected_stage": projected_stage,
+                        "projected_status_label": projected_status_label,
+                        "event_timestamp": event_timestamp,
+                    },
+                )
+            )
+            return state
         state.project_id = project_id
         state.project_path = str(project.get("path_with_namespace") or "") or state.project_path
         state.title = str(attrs.get("title") or attrs.get("name") or "") or state.title
@@ -6917,13 +7811,6 @@ def _upsert_work_item_state_from_gitlab_event(
         ):
             state.last_meaningful_update_at = now
             state.last_owner_activity_at = now
-        state = _maybe_infer_pending_handoff_from_gitlab_projection(
-            state,
-            previous_owner=previous_owner,
-            owners=owners,
-            status_label=projected_status_label,
-            now=now,
-        )
         if state.current_stage == "failed_with_action_owner":
             state = _reconcile_blocked_work_item_state(
                 state,
@@ -7014,6 +7901,8 @@ def _structured_handoff(ref: str, payload: WorkItemHandoffCreate) -> WorkItemSta
     state.next_owner = _coerce_owner(payload.to_agent)
     state.next_action = payload.next_action or payload.expected_action or state.next_action
     state.blocker = payload.blocker or None
+    if payload.blocking_findings is not None:
+        state.blocking_findings = _normalize_blocking_findings(payload.blocking_findings)
     state.artifact_state = artifact_state
     state.status_label = "status::awaiting confirmation"
     state.updated_at = now
@@ -7031,6 +7920,8 @@ def _structured_handoff(ref: str, payload: WorkItemHandoffCreate) -> WorkItemSta
                 "expected_action": payload.expected_action,
                 "current_stage": state.current_stage,
                 "next_action": state.next_action,
+                "blocker": state.blocker,
+                "blocking_findings": state.blocking_findings,
                 "artifact_state": state.artifact_state,
             },
         )
@@ -7093,6 +7984,256 @@ def _schedule_structured_handoff_dispatch(state: WorkItemState, *, source: str) 
     asyncio.create_task(run())
 
 
+async def _run_handoff_continuity_check(
+    ref: str,
+    *,
+    expected_recipient: str | None,
+    expected_requested_at: float | None,
+    source: str,
+) -> None:
+    delay = _handoff_continuity_delay_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+    try:
+        state = _work_item_state(ref)
+    except HTTPException:
+        return
+    handoff = state.handoff
+    if not handoff or handoff.status != "pending":
+        return
+    recipient = _coerce_owner(handoff.to_agent)
+    if expected_recipient and recipient != expected_recipient:
+        return
+    if expected_requested_at is not None and handoff.requested_at != expected_requested_at:
+        return
+    if not state.project_id or not recipient:
+        return
+    binding = _binding_for_agent(
+        recipient,
+        state.project_id,
+        preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+    )
+    if not binding:
+        return
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id) or _thread_recently_active(binding.thread_id):
+        return
+    binding = await _replace_nonperforming_thread_if_needed(binding, source)
+    dispatch_key = f"handoff-continuity:{ref}:{binding.thread_id}:{recipient}:{handoff.requested_at}"
+    if not _watchdog_dispatch_allowed(dispatch_key):
+        return
+    _record_watchdog_dispatch(dispatch_key)
+    result = await _dispatch_event_to_binding(binding, _work_item_dispatch_text(state), source)
+    _append_bot_event(
+        {
+            "type": "work_item_handoff_continuity_dispatched",
+            "ref": ref,
+            "thread_id": binding.thread_id,
+            "agent": recipient,
+            "result": result,
+        }
+    )
+
+
+def _schedule_handoff_continuity_check(
+    state: WorkItemState,
+    *,
+    source: str,
+) -> None:
+    handoff = state.handoff
+    if not handoff or handoff.status != "pending":
+        return
+    recipient = _coerce_owner(handoff.to_agent)
+    if not recipient:
+        return
+    existing = HANDOFF_CONTINUITY_TASKS.get(state.ref)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def run() -> None:
+        try:
+            await _run_handoff_continuity_check(
+                state.ref,
+                expected_recipient=recipient,
+                expected_requested_at=handoff.requested_at,
+                source=source,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _append_bot_event(
+                {
+                    "type": "handoff_continuity_check_failed",
+                    "ref": state.ref,
+                    "source": source,
+                    "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+                }
+            )
+        finally:
+            current = HANDOFF_CONTINUITY_TASKS.get(state.ref)
+            if current is task:
+                HANDOFF_CONTINUITY_TASKS.pop(state.ref, None)
+
+    task = asyncio.create_task(run())
+    HANDOFF_CONTINUITY_TASKS[state.ref] = task
+
+
+def _actionable_owner_dispatch_stage(stage: str | None) -> bool:
+    return stage in {
+        "implementation_active",
+        "failed_with_action_owner",
+        "ready_for_validation",
+        "validation_running",
+        "ready_to_close",
+    }
+
+
+async def _dispatch_actionable_owner_to_responsible_thread(
+    state: WorkItemState,
+    *,
+    source: str,
+    actor: str | None = None,
+) -> None:
+    if state.current_stage == "closed" or state.closed_at:
+        return
+    if not _actionable_owner_dispatch_stage(state.current_stage):
+        return
+    if state.handoff and state.handoff.status == "pending":
+        return
+    owner = _coerce_owner(state.current_owner or state.next_owner)
+    if not owner:
+        return
+    if _coerce_owner(actor) == owner:
+        return
+    binding = _binding_for_agent(
+        owner,
+        state.project_id or "",
+        preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+    )
+    if not binding:
+        return
+    if _thread_is_active(binding.thread_id) or _thread_queue_depth(binding.thread_id):
+        return
+    binding = await _replace_nonperforming_thread_if_needed(binding, source)
+    dispatch_key = f"work-item-owner-progress:{state.ref}:{binding.thread_id}:{owner}:{state.current_stage}"
+    if not _watchdog_dispatch_allowed(dispatch_key):
+        return
+    _record_watchdog_dispatch(dispatch_key)
+    result = await _dispatch_event_to_binding(binding, _work_item_dispatch_text(state), source)
+    _append_bot_event(
+        {
+            "type": "work_item_owner_progress_dispatched",
+            "ref": state.ref,
+            "thread_id": binding.thread_id,
+            "agent": owner,
+            "current_stage": state.current_stage,
+            "source": source,
+            "actor": actor,
+            "result": result,
+        }
+    )
+
+
+def _schedule_actionable_owner_dispatch(
+    state: WorkItemState,
+    *,
+    source: str,
+    actor: str | None = None,
+) -> None:
+    async def run() -> None:
+        try:
+            await _dispatch_actionable_owner_to_responsible_thread(
+                state,
+                source=source,
+                actor=actor,
+            )
+        except Exception as exc:
+            _append_bot_event(
+                {
+                    "type": "work_item_owner_progress_dispatch_failed",
+                    "ref": state.ref,
+                    "source": source,
+                    "actor": actor,
+                    "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+                }
+            )
+
+    asyncio.create_task(run())
+
+
+async def _run_actionable_owner_continuity_check(
+    ref: str,
+    *,
+    expected_owner: str | None,
+    expected_stage: str | None,
+    source: str,
+) -> None:
+    delay = _actionable_owner_continuity_delay_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+    try:
+        state = _work_item_state(ref)
+    except HTTPException:
+        return
+    if state.current_stage == "closed" or state.closed_at:
+        return
+    if not _actionable_owner_dispatch_stage(state.current_stage):
+        return
+    current_owner = _coerce_owner(state.current_owner or state.next_owner)
+    if expected_owner and current_owner != expected_owner:
+        return
+    if expected_stage and state.current_stage != expected_stage:
+        return
+    await _dispatch_actionable_owner_to_responsible_thread(
+        state,
+        source=source,
+        actor=None,
+    )
+
+
+def _schedule_actionable_owner_continuity_check(
+    state: WorkItemState,
+    *,
+    source: str,
+) -> None:
+    if state.current_stage == "closed" or state.closed_at:
+        return
+    if not _actionable_owner_dispatch_stage(state.current_stage):
+        return
+    owner = _coerce_owner(state.current_owner or state.next_owner)
+    if not owner:
+        return
+    existing = ACTIONABLE_OWNER_CONTINUITY_TASKS.get(state.ref)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def run() -> None:
+        try:
+            await _run_actionable_owner_continuity_check(
+                state.ref,
+                expected_owner=owner,
+                expected_stage=state.current_stage,
+                source=source,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _append_bot_event(
+                {
+                    "type": "actionable_owner_continuity_check_failed",
+                    "ref": state.ref,
+                    "source": source,
+                    "error": _truncate_text(str(getattr(exc, "detail", exc)), 500),
+                }
+            )
+        finally:
+            current = ACTIONABLE_OWNER_CONTINUITY_TASKS.get(state.ref)
+            if current is task:
+                ACTIONABLE_OWNER_CONTINUITY_TASKS.pop(state.ref, None)
+
+    task = asyncio.create_task(run())
+    ACTIONABLE_OWNER_CONTINUITY_TASKS[state.ref] = task
+
+
 def _structured_ack(ref: str, payload: WorkItemAckCreate) -> WorkItemState:
     state = _work_item_state(ref)
     state = _ensure_work_item_lane_defaults(state)
@@ -7144,6 +8285,8 @@ def _structured_ack(ref: str, payload: WorkItemAckCreate) -> WorkItemState:
     state.last_meaningful_update_at = now
     state.last_owner_activity_at = now
     state.blocker = payload.blocker or None
+    if payload.blocking_findings is not None:
+        state.blocking_findings = _normalize_blocking_findings(payload.blocking_findings)
     state.artifact_state = artifact_state
     if payload.accepted:
         state.current_owner = actor
@@ -7179,6 +8322,7 @@ def _structured_ack(ref: str, payload: WorkItemAckCreate) -> WorkItemState:
                 "current_stage": state.current_stage,
                 "next_action": state.next_action,
                 "blocker": state.blocker,
+                "blocking_findings": state.blocking_findings,
                 "inferred_handoff": bool(state.handoff and state.handoff.reason == "Inferred from canonical validation/release lane state."),
             },
         )
@@ -7201,6 +8345,8 @@ def _structured_progress(ref: str, payload: WorkItemProgressUpdate) -> WorkItemS
         next_owner_present="next_owner" in fields_set,
         blocker=payload.blocker,
         blocker_present="blocker" in fields_set,
+        blocking_findings=payload.blocking_findings,
+        blocking_findings_present="blocking_findings" in fields_set,
         release_gate=payload.release_gate,
         status_label=payload.status_label,
         artifact_state=payload.artifact_state,
@@ -7422,26 +8568,41 @@ async def _run_release_gate_watchdog_cycle() -> None:
 
 
 def _work_item_dispatch_text(state: WorkItemState) -> str:
+    findings_suffix = ""
+    if state.blocking_findings:
+        findings_suffix = " Supporting findings: " + "; ".join(state.blocking_findings[:3]) + "."
     if state.handoff and state.handoff.status == "pending":
         return (
             f"{state.handoff.to_agent}: structured handoff pending for {state.ref}. "
             f"Acknowledge receipt and intent to process in C0B9M89AHCY now. "
-            f"Expected action: {state.handoff.expected_action or state.next_action or 'process the handoff'}. "
+            f"Expected action: {state.handoff.expected_action or state.next_action or 'process the handoff'}.{findings_suffix} "
             f"If you cannot accept it, emit one exact blocker immediately. "
             f"Use `/api/work-items/{urllib.parse.quote(state.ref, safe='')}/ack` before you stop."
+        )
+    if (
+        state.handoff
+        and state.handoff.status == "accepted"
+        and _coerce_owner(state.current_owner) == _coerce_owner(state.handoff.to_agent)
+    ):
+        return (
+            f"{state.current_owner or state.next_owner or 'owner'}: accepted handoff is live for {state.ref}. "
+            f"Current stage: {state.current_stage}. "
+            f"Next action: {state.next_action or 'continue the owned lane now'}.{findings_suffix} "
+            f"Do not leave the lane parked after acknowledgement. "
+            f"Record concrete progress, an exact blocker, or an exact handoff in codex-web before you stop."
         )
     if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
         return (
             f"{state.current_owner or state.next_owner or 'owner'}: release/validation lane for {state.ref}. "
             f"Current stage: {state.current_stage}. "
-            f"Next action: {state.next_action or 'acknowledge and process the release-side lane'}. "
+            f"Next action: {state.next_action or 'acknowledge and process the release-side lane'}.{findings_suffix} "
             f"Close the lane or emit one exact blocker in C0B9M89AHCY. "
             f"Reconcile the structured work-item progress before ending the turn."
         )
     return (
         f"{state.current_owner or state.next_owner or 'owner'}: owned-work SLA triggered for {state.ref}. "
         f"Current stage: {state.current_stage}. "
-        f"Next action: {state.next_action or 'state the exact next action and continue the item'}. "
+        f"Next action: {state.next_action or 'state the exact next action and continue the item'}.{findings_suffix} "
         f"No passive waiting is allowed. Record the resulting progress or blocker in codex-web before you stop."
     )
 
@@ -7451,9 +8612,10 @@ def _work_item_sla_threshold_seconds(state: WorkItemState) -> float:
         state.handoff
         and state.handoff.status == "accepted"
         and _coerce_owner(state.current_owner) == _coerce_owner(state.handoff.to_agent)
-        and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
     ):
-        return min(_release_validation_sla_seconds(), _accepted_handoff_owner_idle_seconds())
+        if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
+            return min(_release_validation_sla_seconds(), _accepted_handoff_owner_idle_seconds())
+        return min(_work_item_progress_sla_seconds(), _accepted_handoff_owner_idle_seconds())
     if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
         return _release_validation_sla_seconds()
     return _work_item_progress_sla_seconds()
@@ -7556,6 +8718,8 @@ def _format_orchestrator_watchdog_prompt(project_id: str, items: list[tuple[str,
             )
         if state.blocker:
             lines.append(f"   blocker={state.blocker}")
+        if state.blocking_findings:
+            lines.append("   blocking_findings=" + " | ".join(state.blocking_findings[:3]))
     if len(items) > 8:
         lines.append(f"... plus {len(items) - 8} more stale items.")
     lines.append("")
@@ -7592,6 +8756,8 @@ def _format_split_brain_watchdog_prompt(project_id: str, items: list[tuple[WorkI
             lines.append(f"   - {finding}")
         if state.next_action:
             lines.append(f"   next_action={state.next_action}")
+        if state.blocking_findings:
+            lines.append("   blocking_findings=" + " | ".join(state.blocking_findings[:3]))
     if len(items) > 8:
         lines.append(f"... plus {len(items) - 8} more split-brain items.")
     lines.append("")
@@ -7834,6 +9000,8 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
             "threadMessageLimit": _default_thread_message_limit(),
             "slackBackfillIntervalSeconds": _slack_backfill_interval_seconds(),
             "slackBackfillRunning": bool(SLACK_BACKFILL_TASK and not SLACK_BACKFILL_TASK.done()),
+            "slackBackfillCooldownRemainingSeconds": _slack_backfill_cooldown_remaining_seconds(),
+            "slackBackfillCooldownUntil": SLACK_BACKFILL_COOLDOWN_UNTIL or None,
         },
         "health": _daemon_health(),
         "projects": [project.model_dump() for project in _load_projects()],
@@ -7890,7 +9058,11 @@ async def _watchdog_loop() -> None:
         if health["ok"]:
             _sd_notify("WATCHDOG=1\nSTATUS=codex-web healthy")
         else:
-            _sd_notify("STATUS=codex-web unhealthy: " + "; ".join(health["problems"]))
+            # Service health is reported separately from process liveness. Keep
+            # feeding systemd's watchdog while the API is responsive so an
+            # operational warning (for example a stale queue) does not create a
+            # destructive restart loop that makes recovery impossible.
+            _sd_notify("WATCHDOG=1\nSTATUS=codex-web unhealthy: " + "; ".join(health["problems"]))
         await asyncio.sleep(interval)
 
 
@@ -7916,6 +9088,22 @@ def _watchdog_replacement_threshold() -> int:
     except ValueError:
         return 3
     return max(2, value)
+
+
+def _actionable_owner_continuity_delay_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_ACTIONABLE_OWNER_CONTINUITY_DELAY_SECONDS") or "45")
+    except ValueError:
+        return 45.0
+    return max(5.0, seconds)
+
+
+def _handoff_continuity_delay_seconds() -> float:
+    try:
+        seconds = float(os.environ.get("CODEX_WEB_HANDOFF_CONTINUITY_DELAY_SECONDS") or "45")
+    except ValueError:
+        return 45.0
+    return max(5.0, seconds)
 
 
 def _native_recovery_schedule_cooldown_seconds() -> float:
@@ -8040,6 +9228,7 @@ async def startup() -> None:
     global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, SLACK_BACKFILL_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = False
     _load_projects()
+    _compact_turn_queues()
     _dedupe_bot_integrations()
     try:
         await codex.start()
@@ -8115,6 +9304,12 @@ async def shutdown() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await SLACK_BACKFILL_TASK
         SLACK_BACKFILL_TASK = None
+    for task in list(ACTIONABLE_OWNER_CONTINUITY_TASKS.values()):
+        task.cancel()
+    ACTIONABLE_OWNER_CONTINUITY_TASKS.clear()
+    for task in list(HANDOFF_CONTINUITY_TASKS.values()):
+        task.cancel()
+    HANDOFF_CONTINUITY_TASKS.clear()
     await bot_runtime.stop()
     await codex.stop()
 
@@ -8326,7 +9521,25 @@ async def list_work_items(
 
 @app.post("/api/work-items/sync-from-gitlab")
 async def sync_work_items_from_gitlab() -> dict[str, Any]:
-    result = _sync_work_item_states_from_gitlab()
+    global GITLAB_SYNC_CONSECUTIVE_FAILURES, GITLAB_SYNC_LAST_ERROR
+    global GITLAB_SYNC_LAST_ERROR_AT, GITLAB_SYNC_LAST_SUCCESS_AT
+    try:
+        result = _sync_work_item_states_from_gitlab()
+    except Exception as exc:
+        GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
+        GITLAB_SYNC_LAST_ERROR = _truncate_text(str(exc), 500)
+        GITLAB_SYNC_LAST_ERROR_AT = time.time()
+        _append_bot_event(
+            {
+                "type": "gitlab_work_item_sync_failed",
+                "failure_count": GITLAB_SYNC_CONSECUTIVE_FAILURES,
+                "error": GITLAB_SYNC_LAST_ERROR,
+            }
+        )
+        raise
+    GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
+    GITLAB_SYNC_LAST_ERROR = None
+    GITLAB_SYNC_LAST_SUCCESS_AT = time.time()
     await hub.publish({"type": "work-item.sync", **result})
     return {"ok": True, **result}
 
@@ -8341,6 +9554,7 @@ async def create_work_item_handoff(ref: str, payload: WorkItemHandoffCreate) -> 
     state = _structured_handoff(ref, payload)
     await hub.publish({"type": "work-item.handoff", "ref": ref, "state": _work_item_state_public(state)})
     _schedule_structured_handoff_dispatch(state, source="work-item-handoff")
+    _schedule_handoff_continuity_check(state, source="work-item-handoff-continuity")
     return {"ok": True, "item": _work_item_state_public(state)}
 
 
@@ -8348,6 +9562,10 @@ async def create_work_item_handoff(ref: str, payload: WorkItemHandoffCreate) -> 
 async def ack_work_item_handoff(ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
     state = _structured_ack(ref, payload)
     await hub.publish({"type": "work-item.ack", "ref": ref, "state": _work_item_state_public(state)})
+    _schedule_actionable_owner_dispatch(state, source="work-item-ack", actor=payload.actor)
+    _schedule_actionable_owner_continuity_check(state, source="work-item-ack-continuity")
+    if _work_item_split_brain_findings(state):
+        _schedule_native_recovery_cycles(reason="work-item-ack-routing-drift")
     return {"ok": True, "item": _work_item_state_public(state)}
 
 
@@ -8355,6 +9573,10 @@ async def ack_work_item_handoff(ref: str, payload: WorkItemAckCreate) -> dict[st
 async def update_work_item_progress(ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
     state = _structured_progress(ref, payload)
     await hub.publish({"type": "work-item.progress", "ref": ref, "state": _work_item_state_public(state)})
+    _schedule_actionable_owner_dispatch(state, source="work-item-progress", actor=payload.actor)
+    _schedule_actionable_owner_continuity_check(state, source="work-item-progress-continuity")
+    if _work_item_split_brain_findings(state):
+        _schedule_native_recovery_cycles(reason="work-item-progress-routing-drift")
     return {"ok": True, "item": _work_item_state_public(state)}
 
 
@@ -8804,6 +10026,7 @@ async def create_thread(
 
 @app.get("/api/threads/{thread_id}")
 async def read_thread(thread_id: str, message_limit: int | None = None, turn_limit: int | None = None) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     limit = _coerce_thread_message_limit(message_limit if message_limit is not None else turn_limit)
     resume_task = WEB_THREAD_RESUME_TASKS.get(thread_id)
     if resume_task and not resume_task.done():
@@ -8824,6 +10047,7 @@ async def read_thread(thread_id: str, message_limit: int | None = None, turn_lim
 
 @app.post("/api/threads/{thread_id}/name")
 async def rename_thread(thread_id: str, payload: ThreadRename) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     await _set_thread_name(thread_id, payload.name)
     return {"ok": True, "threadId": thread_id, "name": payload.name}
 
@@ -8838,6 +10062,7 @@ async def resume_thread(
     reasoning_effort: str | None = None,
     force_resume: bool = False,
 ) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     project = _project(project_id)
     remembered = _thread_run_settings(thread_id)
     effective_sandbox = sandbox or remembered.sandbox or project.sandbox
@@ -8893,8 +10118,34 @@ async def resume_thread(
         }
 
 
+@app.post("/api/threads/{thread_id}/replace")
+async def replace_bot_thread(thread_id: str) -> dict[str, Any]:
+    existing_replacement = _replacement_thread_id(thread_id)
+    if existing_replacement:
+        return {
+            "ok": True,
+            "alreadyReplaced": True,
+            "oldThreadId": thread_id,
+            "newThreadId": existing_replacement,
+            "queueDepth": _thread_queue_depth(existing_replacement),
+        }
+    bindings = _bindings_for_thread(thread_id)
+    if not bindings:
+        raise HTTPException(status_code=404, detail="No bot binding for this thread")
+    replacement = await _replace_stale_bot_thread(bindings[0], "manual replacement requested")
+    _schedule_queue_drain(replacement.thread_id)
+    return {
+        "ok": True,
+        "oldThreadId": thread_id,
+        "newThreadId": replacement.thread_id,
+        "binding": _binding_public(replacement),
+        "queueDepth": _thread_queue_depth(replacement.thread_id),
+    }
+
+
 @app.post("/api/threads/{thread_id}/turns")
 async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     project = _project(payload.project_id)
     remembered = _thread_run_settings(thread_id)
     effective_sandbox = payload.sandbox or remembered.sandbox or project.sandbox
@@ -8965,17 +10216,22 @@ async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
             bindings = _bindings_for_thread(thread_id)
             if bindings:
                 replacement = await _replace_stale_bot_thread(bindings[0], str(exc))
-                return {
-                    "ok": False,
-                    "staleThreadReplaced": True,
-                    "threadId": replacement.thread_id,
-                    "oldThreadId": thread_id,
-                }
+                new_thread_id = replacement.thread_id
+            else:
+                new_thread_id = await _replace_stale_web_thread(thread_id, project, str(exc))
+            return {
+                "ok": False,
+                "staleThreadReplaced": True,
+                "threadId": new_thread_id,
+                "oldThreadId": thread_id,
+                "newThreadId": new_thread_id,
+            }
         raise
 
 
 @app.get("/api/threads/{thread_id}/queue")
 async def thread_queue(thread_id: str) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     return {
         "threadId": thread_id,
         "active": _thread_is_active(thread_id),
@@ -8994,6 +10250,7 @@ async def thread_queue(thread_id: str) -> dict[str, Any]:
 
 @app.post("/api/threads/{thread_id}/queue/steer")
 async def steer_queued_turn(thread_id: str) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     queued = _pop_latest_queued_turn(thread_id)
     if not queued:
         raise HTTPException(status_code=404, detail="No queued message for this thread")
@@ -9002,6 +10259,7 @@ async def steer_queued_turn(thread_id: str) -> dict[str, Any]:
 
 @app.post("/api/threads/{thread_id}/queue/{queued_id}/steer")
 async def steer_specific_queued_turn(thread_id: str, queued_id: str) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     queued = _pop_queued_turn(thread_id, queued_id)
     if not queued:
         raise HTTPException(status_code=404, detail="Queued message not found for this thread")
@@ -9010,6 +10268,11 @@ async def steer_specific_queued_turn(thread_id: str, queued_id: str) -> dict[str
 
 async def _steer_queued_turn(thread_id: str, queued: QueuedTurn) -> dict[str, Any]:
     if _thread_is_active(thread_id):
+        try:
+            _record_thread_steer(thread_id)
+        except HTTPException:
+            _requeue_turn_front(queued)
+            raise
         with contextlib.suppress(Exception):
             await codex.request("turn/interrupt", {"threadId": thread_id})
         _clear_thread_active(thread_id)
@@ -9035,6 +10298,7 @@ async def _steer_queued_turn(thread_id: str, queued: QueuedTurn) -> dict[str, An
 
 @app.post("/api/threads/{thread_id}/settings")
 async def update_thread_settings(thread_id: str, payload: ThreadRunSettings) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     settings = _remember_thread_run_settings(
         thread_id,
         sandbox=payload.sandbox,
@@ -9053,6 +10317,7 @@ async def list_thread_settings() -> dict[str, Any]:
 
 @app.get("/api/threads/{thread_id}/settings")
 async def get_thread_settings(thread_id: str) -> dict[str, Any]:
+    _raise_if_thread_replaced(thread_id)
     return {"threadId": thread_id, **_thread_run_settings(thread_id).model_dump()}
 
 

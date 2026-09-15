@@ -126,8 +126,8 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
             self._state(
                 stage="validation_running",
                 owner="release manager",
-                meaningful_at=200.0,
-                gitlab_at=190.0,
+                meaningful_at=20.0,
+                gitlab_at=10.0,
                 handoff=handoff,
                 status_label="status::in progress",
                 next_owner="release manager",
@@ -181,6 +181,62 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.current_owner, "carl")
         self.assertEqual(updated.next_owner, "quinn")
         self.assertEqual(updated.handoff.status if updated.handoff else None, "pending")
+
+    def test_issue_projection_does_not_infer_handoff_from_gitlab_labels_alone(self) -> None:
+        self._save(
+            self._state(
+                stage="implementation_active",
+                owner="orchestrator",
+                meaningful_at=200.0,
+                gitlab_at=190.0,
+                handoff=None,
+                status_label="status::in progress",
+                next_owner="release manager",
+            )
+        )
+
+        server._upsert_work_item_state_from_gitlab_issue(
+            self._issue_payload(
+                state="opened",
+                updated_at=_iso(34),
+                labels=["owner::orchestrator", "status::awaiting confirmation"],
+            ),
+            project_id="platform",
+        )
+
+        updated = self._load()
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.current_owner, "orchestrator")
+        self.assertEqual(updated.status_label, "status::in progress")
+        self.assertEqual(updated.current_stage, "implementation_active")
+
+    def test_event_projection_does_not_infer_handoff_from_gitlab_labels_alone(self) -> None:
+        self._save(
+            self._state(
+                stage="implementation_active",
+                owner="orchestrator",
+                meaningful_at=200.0,
+                gitlab_at=190.0,
+                handoff=None,
+                status_label="status::in progress",
+                next_owner="release manager",
+            )
+        )
+
+        server._upsert_work_item_state_from_gitlab_event(
+            self._event_payload(
+                state="opened",
+                updated_at=_iso(35),
+                labels=["owner::orchestrator", "status::awaiting confirmation"],
+            ),
+            project_id="platform",
+        )
+
+        updated = self._load()
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.current_owner, "orchestrator")
+        self.assertEqual(updated.status_label, "status::in progress")
+        self.assertEqual(updated.current_stage, "implementation_active")
 
     def test_close_projection_clears_handoff_and_blocker(self) -> None:
         handoff = WorkItemHandoff(
@@ -317,6 +373,43 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
 
         events = [json.loads(line) for line in self.events_file.read_text().splitlines() if line.strip()]
         self.assertIn("gitlab_event_stale_ignored", [event["event_type"] for event in events])
+
+    def test_gitlab_event_ignores_sender_projection_after_accepted_release_handoff(self) -> None:
+        handoff = WorkItemHandoff(
+            from_agent="quinn",
+            to_agent="release manager",
+            requested_at=180.0,
+            acknowledged_at=190.0,
+            status="accepted",
+            artifact_state="merged_main",
+            stage="validation_running",
+        )
+        self._save(
+            self._state(
+                stage="validation_running",
+                owner="release manager",
+                meaningful_at=20.0,
+                gitlab_at=10.0,
+                handoff=handoff,
+                status_label="status::in progress",
+                next_owner="release manager",
+            )
+        )
+
+        server._upsert_work_item_state_from_gitlab_event(
+            self._event_payload(
+                state="opened",
+                updated_at=_iso(35),
+                labels=["owner::quinn", "status::awaiting confirmation"],
+            ),
+            project_id="platform",
+        )
+
+        updated = self._load()
+        self.assertEqual(updated.current_stage, "validation_running")
+        self.assertEqual(updated.current_owner, "release manager")
+        self.assertEqual(updated.status_label, "status::in progress")
+        self.assertEqual(updated.handoff.status if updated.handoff else None, "accepted")
 
     def test_blocked_event_reconciles_actionable_owner_and_clears_pending_handoff(self) -> None:
         handoff = WorkItemHandoff(

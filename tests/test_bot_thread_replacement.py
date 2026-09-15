@@ -131,6 +131,102 @@ class BotThreadReplacementTests(unittest.TestCase):
             ],
         )
 
+    def test_thread_target_for_outbound_uses_master_delivery_target_for_passive_binding(self) -> None:
+        master = BotBinding(
+            id="binding-master",
+            provider="slack",
+            external_conversation_id="C0B9M89AHCY",
+            thread_id="thread-master",
+            project_id="a956644fc336",
+            thread_name="Orchestrator",
+            route_prefix="Orchestrator",
+            is_master=True,
+            sandbox="danger-full-access",
+            approval_policy="never",
+            created_at=1.0,
+            updated_at=20.0,
+        )
+        passive = BotBinding(
+            id="binding-release",
+            provider="slack",
+            external_conversation_id="C0B9M89AHCY",
+            thread_id="thread-release",
+            project_id="a956644fc336",
+            thread_name="Release Manager - Production Deployments Agent",
+            route_prefix="Release Manager",
+            sandbox="danger-full-access",
+            approval_policy="never",
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        master_target = BotReplyTarget(
+            thread_id="thread-master",
+            provider="slack",
+            external_conversation_id="C0B9M89AHCY",
+            external_thread_id="parent-thread",
+            message_id="msg-1",
+            updated_at=25.0,
+        )
+
+        with (
+            patch.object(server, "_bindings_for_project", return_value=[master, passive]),
+            patch.object(server, "_active_reply_target_for_binding", return_value=None),
+            patch.object(server, "_reply_target_for_binding", return_value=None),
+            patch.object(
+                server,
+                "_delivery_target_for_binding",
+                side_effect=lambda binding: master_target if binding.thread_id == "thread-master" else None,
+            ),
+        ):
+            target, should_thread = server._thread_target_for_outbound(passive)
+
+        self.assertEqual(target, master_target)
+        self.assertTrue(should_thread)
+
+    def test_send_bot_outbound_threads_when_target_requests_threading_even_if_post_in_thread_is_false(self) -> None:
+        binding = BotBinding(
+            id="binding-release",
+            connection_id="conn-1",
+            provider="slack",
+            external_conversation_id="C0B9M89AHCY",
+            thread_id="thread-release",
+            project_id="a956644fc336",
+            thread_name="Release Manager - Production Deployments Agent",
+            route_prefix="Release Manager",
+            post_in_thread=False,
+            sandbox="danger-full-access",
+            approval_policy="never",
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        target = BotReplyTarget(
+            thread_id="thread-release",
+            provider="slack",
+            external_conversation_id="C0B9M89AHCY",
+            external_thread_id="known-thread",
+            message_id="known-msg",
+            updated_at=15.0,
+        )
+
+        with (
+            patch.object(
+                server,
+                "_bot_connection",
+                return_value=type("Conn", (), {"bot_token": "xoxb-token"})(),
+            ),
+            patch.object(server, "_thread_target_for_outbound", return_value=(target, True)),
+            patch.object(server, "_slack_reply_username", return_value="Codex · Release Manager"),
+            patch.object(server, "_slack_reply_icon", return_value=":large_orange_diamond:"),
+            patch.object(
+                server,
+                "_post_slack_message",
+                return_value={"sent": True, "providerResponse": {"ok": True, "ts": "1"}},
+            ) as post_message,
+        ):
+            asyncio.run(server._send_bot_outbound(binding, "status"))
+
+        self.assertEqual(post_message.call_args.kwargs["thread_ts"], "known-thread")
+
 
 if __name__ == "__main__":
     unittest.main()

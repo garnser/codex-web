@@ -15,8 +15,10 @@ from codex_web.models import (
     QueuedTurn,
     ThreadRunSettings,
     TurnCreate,
+    WorkItemAckCreate,
     WorkItemHandoff,
     WorkItemHandoffCreate,
+    WorkItemProgressUpdate,
     WorkItemState,
 )
 
@@ -311,13 +313,95 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
             patch.object(server, "_work_item_state_public", return_value=public_state),
             patch.object(server.hub, "publish", new=AsyncMock()) as publish,
             patch.object(server, "_schedule_structured_handoff_dispatch") as schedule_dispatch,
+            patch.object(server, "_schedule_handoff_continuity_check") as schedule_continuity,
         ):
             result = asyncio.run(server.create_work_item_handoff(state.ref, payload))
 
         structured_handoff.assert_called_once_with(state.ref, payload)
         publish.assert_awaited_once()
         schedule_dispatch.assert_called_once_with(state, source="work-item-handoff")
+        schedule_continuity.assert_called_once_with(state, source="work-item-handoff-continuity")
         self.assertEqual(result, {"ok": True, "item": public_state})
+
+    def test_ack_work_item_handoff_schedules_actionable_owner_dispatch(self) -> None:
+        state = WorkItemState(
+            ref="veridataops/saas-app#271",
+            project_id="home",
+            current_owner="james",
+            current_stage="failed_with_action_owner",
+            last_meaningful_update_at=1,
+            updated_at=1,
+            created_at=1,
+        )
+        public_state = {"ref": state.ref}
+        payload = WorkItemAckCreate(actor="Quinn", accepted=False)
+        with (
+            patch.object(server, "_structured_ack", return_value=state) as structured_ack,
+            patch.object(server, "_work_item_state_public", return_value=public_state),
+            patch.object(server.hub, "publish", new=AsyncMock()) as publish,
+            patch.object(server, "_schedule_actionable_owner_dispatch") as schedule_dispatch,
+        ):
+            result = asyncio.run(server.ack_work_item_handoff(state.ref, payload))
+
+        structured_ack.assert_called_once_with(state.ref, payload)
+        publish.assert_awaited_once()
+        schedule_dispatch.assert_called_once_with(state, source="work-item-ack", actor=payload.actor)
+        self.assertEqual(result, {"ok": True, "item": public_state})
+
+    def test_update_work_item_progress_schedules_actionable_owner_dispatch(self) -> None:
+        state = WorkItemState(
+            ref="veridataops/saas-app#271",
+            project_id="home",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=1,
+            updated_at=1,
+            created_at=1,
+        )
+        public_state = {"ref": state.ref}
+        payload = WorkItemProgressUpdate(
+            actor="Orchestrator",
+            current_owner="James",
+            current_stage="implementation_active",
+            next_action="Fix the shipped gate and hand back to Release Manager.",
+            next_owner="James",
+        )
+        with (
+            patch.object(server, "_structured_progress", return_value=state) as structured_progress,
+            patch.object(server, "_work_item_state_public", return_value=public_state),
+            patch.object(server.hub, "publish", new=AsyncMock()) as publish,
+            patch.object(server, "_schedule_actionable_owner_dispatch") as schedule_dispatch,
+        ):
+            result = asyncio.run(server.update_work_item_progress(state.ref, payload))
+
+        structured_progress.assert_called_once_with(state.ref, payload)
+        publish.assert_awaited_once()
+        schedule_dispatch.assert_called_once_with(state, source="work-item-progress", actor=payload.actor)
+        self.assertEqual(result, {"ok": True, "item": public_state})
+
+    def test_update_work_item_progress_schedules_native_recovery_on_routing_drift(self) -> None:
+        state = WorkItemState(
+            ref="veridataops/saas-app#271",
+            project_id="home",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=1,
+            updated_at=1,
+            created_at=1,
+        )
+        public_state = {"ref": state.ref}
+        payload = WorkItemProgressUpdate(actor="Orchestrator", next_action="Quinn to validate MR !247.")
+        with (
+            patch.object(server, "_structured_progress", return_value=state),
+            patch.object(server, "_work_item_state_public", return_value=public_state),
+            patch.object(server.hub, "publish", new=AsyncMock()),
+            patch.object(server, "_schedule_actionable_owner_dispatch"),
+            patch.object(server, "_work_item_split_brain_findings", return_value=["next-action owner cue drift"]),
+            patch.object(server, "_schedule_native_recovery_cycles") as schedule_recovery,
+        ):
+            asyncio.run(server.update_work_item_progress(state.ref, payload))
+
+        schedule_recovery.assert_called_once_with(reason="work-item-progress-routing-drift")
 
     def test_start_turn_persists_base_instructions_but_sends_effective_instructions(self) -> None:
         project = Project(

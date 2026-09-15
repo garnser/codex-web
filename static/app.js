@@ -27,6 +27,7 @@ const state = {
   refreshQueued: false,
   searchTimer: null,
   commLogRenderPending: false,
+  threadReplacements: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -164,11 +165,52 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const text = await response.text();
     logEvent("api.error", { path, status: response.status, text });
-    throw new Error(text || response.statusText);
+    let detail = null;
+    try {
+      const payload = JSON.parse(text);
+      detail = payload?.detail || payload;
+    } catch {
+      detail = null;
+    }
+    const message = typeof detail === "string" ? detail : (detail?.code || text || response.statusText);
+    const error = new Error(message);
+    error.status = response.status;
+    error.detail = detail;
+    throw error;
   }
   const result = await response.json();
   logEvent("api.response", { path, status: response.status });
   return result;
+}
+
+function replacementFrom(value) {
+  const detail = value?.detail || value;
+  if (!detail?.staleThreadReplaced && detail?.code !== "thread_replaced") return null;
+  const oldThreadId = detail.oldThreadId;
+  const newThreadId = detail.newThreadId || detail.threadId;
+  return oldThreadId && newThreadId ? { oldThreadId, newThreadId } : null;
+}
+
+async function applyThreadReplacement(oldThreadId, newThreadId) {
+  if (!oldThreadId || !newThreadId || oldThreadId === newThreadId) return;
+  state.threadReplacements.set(oldThreadId, newThreadId);
+  state.activeTurnsByThread.delete(oldThreadId);
+  state.queuedDepthByThread.delete(oldThreadId);
+  if (state.threadSettings?.[oldThreadId] && !state.threadSettings[newThreadId]) {
+    state.threadSettings[newThreadId] = state.threadSettings[oldThreadId];
+  }
+  if (state.tokenUsageByThread?.[oldThreadId] && !state.tokenUsageByThread[newThreadId]) {
+    state.tokenUsageByThread[newThreadId] = state.tokenUsageByThread[oldThreadId];
+  }
+  if (state.threadId !== oldThreadId) {
+    scheduleRefresh(0);
+    return;
+  }
+  state.threadId = newThreadId;
+  state.activeAgentMessage = null;
+  setWaiting(false);
+  await refresh();
+  await loadThread(newThreadId);
 }
 
 function activeProject() {
@@ -1370,23 +1412,46 @@ async function sendPrompt() {
   } else {
     markThreadBusy(threadId);
   }
+  const threadOptions = selectedThreadTurnOptions(threadId);
+  const turnPayload = {
+    message: prompt,
+    project_id: state.projectId,
+    sandbox: currentRunSettings().sandbox,
+    approval_policy: currentRunSettings().approvalPolicy,
+    model: threadOptions.model,
+    reasoning_effort: threadOptions.reasoningEffort,
+  };
   try {
-    const threadOptions = selectedThreadTurnOptions(threadId);
-    const response = await api(`/api/threads/${threadId}/turns`, {
-      method: "POST",
-      body: JSON.stringify({
-        message: prompt,
-        project_id: state.projectId,
-        sandbox: currentRunSettings().sandbox,
-        approval_policy: currentRunSettings().approvalPolicy,
-        model: threadOptions.model,
-        reasoning_effort: threadOptions.reasoningEffort,
-      }),
-    });
+    let targetThreadId = threadId;
+    let response;
+    try {
+      response = await api(`/api/threads/${targetThreadId}/turns`, {
+        method: "POST",
+        body: JSON.stringify(turnPayload),
+      });
+    } catch (error) {
+      const replacement = replacementFrom(error);
+      if (!replacement) throw error;
+      await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
+      targetThreadId = replacement.newThreadId;
+      response = await api(`/api/threads/${targetThreadId}/turns`, {
+        method: "POST",
+        body: JSON.stringify(turnPayload),
+      });
+    }
+    const replacement = replacementFrom(response);
+    if (replacement) {
+      await applyThreadReplacement(replacement.oldThreadId, replacement.newThreadId);
+      targetThreadId = replacement.newThreadId;
+      response = await api(`/api/threads/${targetThreadId}/turns`, {
+        method: "POST",
+        body: JSON.stringify(turnPayload),
+      });
+    }
     if (response.queued) {
-      attachQueuedSteer(message, threadId, response.queuedId);
+      attachQueuedSteer(message, targetThreadId, response.queuedId);
       setQueuedMessageId(message, response.queuedId);
-      setThreadQueueDepth(threadId, response.queueDepth || queuedDepth(threadId) || 1);
+      setThreadQueueDepth(targetThreadId, response.queueDepth || queuedDepth(targetThreadId) || 1);
     }
   } catch (error) {
     if (willQueue) {
@@ -1456,6 +1521,12 @@ function connectEvents() {
 }
 
 function handleEvent(event) {
+  if (event.type === "bot.thread.replaced") {
+    applyThreadReplacement(event.oldThreadId, event.newThreadId).catch((error) => {
+      logEvent("thread.replacement.error", { message: error.message });
+    });
+    return;
+  }
   if (event.type === "bot.inbound") {
     if (event.threadId === state.threadId) {
       const message = addMessage(event.queued ? "You (queued)" : "You", event.text || "", "user", new Date());
