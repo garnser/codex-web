@@ -17,18 +17,6 @@ class _Host:
         self.DATA_DIR = data_dir
 
 
-def _route_paths(routes: list[object]) -> list[str]:
-    paths: list[str] = []
-    for route in routes:
-        path = getattr(route, "path", None)
-        if isinstance(path, str):
-            paths.append(path)
-        nested = getattr(route, "routes", None)
-        if nested:
-            paths.extend(_route_paths(list(nested)))
-    return paths
-
-
 class ExecutiveRoutingTests(unittest.TestCase):
     def test_routes_architecture_to_cto(self) -> None:
         self.assertEqual(route_agent("Should we migrate our API and database architecture?").id, "cto")
@@ -71,7 +59,11 @@ class ExecutiveIntegrationTests(unittest.TestCase):
 
             first = install_executive_integrated(app, host)
             second = install_executive_integrated(app, host)
-            executive_paths = [path for path in _route_paths(list(app.routes)) if path.startswith("/api/executive/")]
+            executive_paths = [
+                path
+                for path in app.openapi().get("paths", {})
+                if path.startswith("/api/executive/")
+            ]
 
         self.assertIs(first, second)
         self.assertEqual(len(executive_paths), 5)
