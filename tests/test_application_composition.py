@@ -53,6 +53,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         modules = _route_modules(list(application.app.routes))
         expected = {
             "/api/projects": "codex_web.api.projects",
+            "/api/threads": "codex_web.api.threads",
             "/api/status": "codex_web.api.runtime",
             "/api/approvals": "codex_web.api.approvals",
             "/": "codex_web.api.ui",
