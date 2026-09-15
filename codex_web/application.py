@@ -13,7 +13,13 @@ from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.integrations.webhook_security import install_webhook_security
-from codex_web.paths import PROJECTS_FILE
+from codex_web.paths import (
+    ACTIVE_TURNS_FILE,
+    PROJECTS_FILE,
+    STATE_DB_FILE,
+    THREAD_SETTINGS_FILE,
+    WORK_ITEM_STATES_FILE,
+)
 from codex_web.runtime import core
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.bots import BotService
@@ -24,6 +30,8 @@ from codex_web.services.threads import ThreadService
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
+from codex_web.storage.runtime_state import RuntimeStateRepositories
+from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 # Keep one FastAPI application and one runtime lifecycle while domains are
@@ -38,6 +46,13 @@ core._state_file_lock = state_file_lock
 core._atomic_write_text = atomic_write_text
 
 project_repository = ProjectRepository(PROJECTS_FILE)
+state_store = SQLiteStateStore(STATE_DB_FILE)
+runtime_state = RuntimeStateRepositories(
+    state_store,
+    thread_settings_file=THREAD_SETTINGS_FILE,
+    active_turns_file=ACTIVE_TURNS_FILE,
+    work_item_states_file=WORK_ITEM_STATES_FILE,
+)
 project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
@@ -46,9 +61,20 @@ context_service = ContextCompactionService(core)
 bot_service = BotService(core)
 work_item_service = WorkItemService(core)
 
-# Legacy code still needing project state consumes the extracted repository.
+# Legacy code still needing project/runtime state consumes the extracted
+# repositories. SQLite is primary for high-churn runtime documents; the
+# repository mirrors legacy JSON on every write during the migration window so
+# rolling back to the previous release remains safe.
 core._load_projects = project_repository.load
 core._save_projects = project_repository.save
+core._load_thread_settings = runtime_state.thread_settings.load
+core._save_thread_settings = runtime_state.thread_settings.save
+core._load_active_turns = runtime_state.active_turns.load
+core._save_active_turns = runtime_state.active_turns.save
+core._load_work_item_states = runtime_state.work_item_states.load
+core._save_work_item_states = runtime_state.work_item_states.save
+app.state.sqlite_state_store = state_store
+app.state.runtime_state_repositories = runtime_state
 
 install_webhook_security(core)
 previous_context_service = getattr(app.state, "context_compaction_service", None)

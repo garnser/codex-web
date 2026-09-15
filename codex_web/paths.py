@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+STATE_DB_FILE = DATA_DIR / "codex-web.db"
 PROJECTS_FILE = DATA_DIR / "projects.json"
 BOTS_CONNECTIONS_FILE = DATA_DIR / "bot_connections.json"
 BOTS_BINDINGS_FILE = DATA_DIR / "bot_bindings.json"
