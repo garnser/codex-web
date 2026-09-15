@@ -1,0 +1,8 @@
+Codex Web Executive Control Plane
+Copyright 2026
+
+The executive-agent concepts and SaaS-oriented adaptation in this branch are derived in part from OpenExecutive by Sente Labs AI:
+https://github.com/SenteLabsAI/OpenExecutive
+
+The upstream OpenExecutive project is licensed under the Apache License, Version 2.0.
+Derived portions have been substantially adapted for codex-web, including OpenAI Responses API support, SaaS/software-company executive roles and routing, Board-mode multi-agent synthesis, runtime-context controls, and Codex delegation.
