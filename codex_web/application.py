@@ -8,6 +8,7 @@ from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.system import build_system_router
 from codex_web.api.threads import build_threads_router
+from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
@@ -27,6 +28,7 @@ from codex_web.services.context import ContextCompactionService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.threads import ThreadService
+from codex_web.services.turns import TurnService
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
@@ -57,6 +59,7 @@ project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
+turn_service = TurnService(core)
 context_service = ContextCompactionService(core)
 bot_service = BotService(core)
 work_item_service = WorkItemService(core)
@@ -106,6 +109,19 @@ EXTRACTED_ROUTE_COUNTS = {
             "/api/turns/interrupt",
         },
         key="threads",
+    ),
+    "turns": replace_routes(
+        app,
+        build_turns_router(turn_service),
+        paths={
+            "/api/threads/{thread_id}/resume",
+            "/api/threads/{thread_id}/replace",
+            "/api/threads/{thread_id}/turns",
+            "/api/threads/{thread_id}/queue",
+            "/api/threads/{thread_id}/queue/steer",
+            "/api/threads/{thread_id}/queue/{queued_id}/steer",
+        },
+        key="turns",
     ),
     "context": replace_routes(
         app,
