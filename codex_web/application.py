@@ -5,6 +5,7 @@ from codex_web.api.integrations import build_integrations_router
 from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.system import build_system_router
+from codex_web.api.threads import build_threads_router
 from codex_web.api.ui import build_ui_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
@@ -14,6 +15,7 @@ from codex_web.runtime import core
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.threads import ThreadService
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 
@@ -33,6 +35,7 @@ project_repository = ProjectRepository(PROJECTS_FILE)
 project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
+thread_service = ThreadService(core)
 
 # Legacy code still needing project state consumes the extracted repository.
 core._load_projects = project_repository.load
@@ -46,6 +49,23 @@ EXTRACTED_ROUTE_COUNTS = {
         build_projects_router(project_service),
         paths={"/api/projects", "/api/projects/{project_id}"},
         key="projects",
+    ),
+    "threads": replace_routes(
+        app,
+        build_threads_router(thread_service),
+        paths={
+            "/api/threads",
+            "/api/threads/{thread_id}",
+            "/api/threads/{thread_id}/name",
+            "/api/threads/{thread_id}/settings",
+            "/api/thread-settings",
+            "/api/threads/{thread_id}/primary",
+            "/api/threads/{thread_id}/primary-channel",
+            "/api/threads/{thread_id}/archive",
+            "/api/threads/{thread_id}/unarchive",
+            "/api/turns/interrupt",
+        },
+        key="threads",
     ),
     "runtime": replace_routes(
         app,
