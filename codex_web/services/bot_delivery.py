@@ -6,6 +6,7 @@ from typing import Any
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.models import BotBinding, BotConnection
+from codex_web.services.bot_targets import install_bot_target_service
 
 
 class BotDeliveryService:
@@ -300,6 +301,11 @@ def install_bot_delivery_service(
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
 ) -> BotDeliveryService:
+    # Delivery depends on canonical reply-target semantics. Install that owner
+    # here so every composition path gets the same behavior before traffic can
+    # reach provider delivery.
+    install_bot_target_service(app, host)
+
     existing = getattr(app.state, "bot_delivery_service", None)
     if isinstance(existing, BotDeliveryService) and existing.host is host:
         service = existing
