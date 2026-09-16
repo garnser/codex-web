@@ -195,74 +195,6 @@ def _atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
                 temporary_path.unlink()
 
 
-def _load_projects() -> list[Project]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not PROJECTS_FILE.exists():
-        defaults = [
-            Project(id="home", name="Home", path=str(Path.home())),
-        ]
-        _save_projects(defaults)
-        return defaults
-    return [Project.model_validate(item) for item in json.loads(PROJECTS_FILE.read_text())]
-
-
-def _save_projects(projects: list[Project]) -> None:
-    _atomic_write_text(PROJECTS_FILE, json.dumps([p.model_dump() for p in projects], indent=2) + "\n")
-
-
-def _load_thread_index() -> list[IndexedThread]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not THREAD_INDEX_FILE.exists():
-        return []
-    return [IndexedThread.model_validate(item) for item in json.loads(THREAD_INDEX_FILE.read_text())]
-
-
-def _save_thread_index(threads: list[IndexedThread]) -> None:
-    _atomic_write_text(THREAD_INDEX_FILE, json.dumps([thread.model_dump() for thread in threads], indent=2) + "\n")
-
-
-def _load_bot_reply_targets() -> dict[str, BotReplyTarget]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not BOT_REPLY_TARGETS_FILE.exists():
-        return {}
-    payload = json.loads(BOT_REPLY_TARGETS_FILE.read_text())
-    return {thread_id: BotReplyTarget.model_validate(item) for thread_id, item in payload.items()}
-
-
-def _save_bot_reply_targets(targets: dict[str, BotReplyTarget]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    BOT_REPLY_TARGETS_FILE.write_text(
-        json.dumps({thread_id: target.model_dump() for thread_id, target in targets.items()}, indent=2) + "\n"
-    )
-
-
-def _load_slack_thread_icons() -> dict[str, str]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not SLACK_THREAD_ICONS_FILE.exists():
-        return {}
-    return {str(key): str(value) for key, value in json.loads(SLACK_THREAD_ICONS_FILE.read_text()).items()}
-
-
-def _save_slack_thread_icons(icons: dict[str, str]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    SLACK_THREAD_ICONS_FILE.write_text(json.dumps(icons, indent=2, sort_keys=True) + "\n")
-
-
-def _load_bot_delivery_targets() -> dict[str, BotReplyTarget]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not BOT_DELIVERY_TARGETS_FILE.exists():
-        return {}
-    payload = json.loads(BOT_DELIVERY_TARGETS_FILE.read_text())
-    return {thread_id: BotReplyTarget.model_validate(item) for thread_id, item in payload.items()}
-
-
-def _save_bot_delivery_targets(targets: dict[str, BotReplyTarget]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    BOT_DELIVERY_TARGETS_FILE.write_text(
-        json.dumps({thread_id: target.model_dump() for thread_id, target in targets.items()}, indent=2) + "\n"
-    )
-
-
 def _reply_target_key(binding: BotBinding) -> str:
     return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
 
@@ -474,54 +406,6 @@ def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) ->
     return ordered
 
 
-def _load_bot_details() -> dict[str, list[BotThreadDetail]]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not BOT_DETAILS_FILE.exists():
-        return {}
-    payload = json.loads(BOT_DETAILS_FILE.read_text())
-    return {
-        thread_id: [BotThreadDetail.model_validate(item) for item in items]
-        for thread_id, items in payload.items()
-    }
-
-
-def _save_bot_details(details: dict[str, list[BotThreadDetail]]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    BOT_DETAILS_FILE.write_text(
-        json.dumps(
-            {thread_id: [item.model_dump() for item in items[-20:]] for thread_id, items in details.items()},
-            indent=2,
-        )
-        + "\n"
-    )
-
-
-def _load_approval_messages() -> dict[str, list[ApprovalSlackMessage]]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not APPROVAL_MESSAGES_FILE.exists():
-        return {}
-    payload = json.loads(APPROVAL_MESSAGES_FILE.read_text())
-    return {
-        request_id: [ApprovalSlackMessage.model_validate(item) for item in items]
-        for request_id, items in payload.items()
-    }
-
-
-def _save_approval_messages(messages: dict[str, list[ApprovalSlackMessage]]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    APPROVAL_MESSAGES_FILE.write_text(
-        json.dumps(
-            {
-                request_id: [message.model_dump() for message in items]
-                for request_id, items in messages.items()
-                if items
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-
-
 def _remember_approval_message(
     request_id: int | str,
     *,
@@ -684,25 +568,6 @@ def _accepted_handoff_owner_idle_seconds() -> float:
     except ValueError:
         return 300.0
     return max(60.0, seconds)
-
-
-def _load_work_item_states() -> dict[str, WorkItemState]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not WORK_ITEM_STATES_FILE.exists():
-        return {}
-    raw = json.loads(WORK_ITEM_STATES_FILE.read_text())
-    return {
-        ref: WorkItemState.model_validate(item)
-        for ref, item in raw.items()
-        if isinstance(ref, str)
-    }
-
-
-def _save_work_item_states(states: dict[str, WorkItemState]) -> None:
-    _save_json_private(
-        WORK_ITEM_STATES_FILE,
-        {ref: state.model_dump() for ref, state in sorted(states.items())},
-    )
 
 
 def _append_work_item_event(event: WorkItemEvent) -> None:
@@ -1614,17 +1479,6 @@ def _touch_work_item_progress(
     return state
 
 
-def _load_bot_connections() -> list[BotConnection]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not BOTS_CONNECTIONS_FILE.exists():
-        return []
-    return [BotConnection.model_validate(item) for item in json.loads(BOTS_CONNECTIONS_FILE.read_text())]
-
-
-def _save_bot_connections(connections: list[BotConnection]) -> None:
-    _save_json_private(BOTS_CONNECTIONS_FILE, [connection.model_dump() for connection in connections])
-
-
 def _bot_connection(connection_id: str) -> BotConnection:
     for connection in _load_bot_connections():
         if connection.id == connection_id:
@@ -1788,39 +1642,6 @@ def _update_bot_connection(connection_id: str, **updates: Any) -> None:
         _save_bot_connections(connections)
 
 
-def _load_bot_bindings() -> list[BotBinding]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not BOTS_BINDINGS_FILE.exists():
-        return []
-    return [BotBinding.model_validate(item) for item in json.loads(BOTS_BINDINGS_FILE.read_text())]
-
-
-def _save_bot_bindings(bindings: list[BotBinding]) -> None:
-    _atomic_write_text(
-        BOTS_BINDINGS_FILE,
-        json.dumps([binding.model_dump() for binding in bindings], indent=2) + "\n",
-        private=True,
-    )
-
-
-def _load_thread_settings() -> dict[str, ThreadRunSettings]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not THREAD_SETTINGS_FILE.exists():
-        return {}
-    return {
-        thread_id: ThreadRunSettings.model_validate(settings)
-        for thread_id, settings in json.loads(THREAD_SETTINGS_FILE.read_text()).items()
-    }
-
-
-def _save_thread_settings(settings: dict[str, ThreadRunSettings]) -> None:
-    _atomic_write_text(
-        THREAD_SETTINGS_FILE,
-        json.dumps({thread_id: value.model_dump() for thread_id, value in settings.items()}, indent=2) + "\n",
-        private=True,
-    )
-
-
 def _remember_thread_run_settings(
     thread_id: str,
     *,
@@ -1974,61 +1795,6 @@ def _sync_bot_binding_settings(thread_id: str, settings: ThreadRunSettings) -> N
             changed = True
     if changed:
         _save_bot_bindings(bindings)
-
-
-def _load_active_turns() -> dict[str, ActiveThreadTurn]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not ACTIVE_TURNS_FILE.exists():
-        return {}
-    return {
-        thread_id: ActiveThreadTurn.model_validate(active)
-        for thread_id, active in json.loads(ACTIVE_TURNS_FILE.read_text()).items()
-    }
-
-
-def _save_active_turns(active_turns: dict[str, ActiveThreadTurn]) -> None:
-    _atomic_write_text(
-        ACTIVE_TURNS_FILE,
-        json.dumps({thread_id: active.model_dump() for thread_id, active in active_turns.items()}, indent=2) + "\n",
-        private=True,
-    )
-
-
-def _load_turn_queues() -> dict[str, list[QueuedTurn]]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not TURN_QUEUE_FILE.exists():
-        return {}
-    raw = TURN_QUEUE_FILE.read_text()
-    if not raw.strip():
-        _append_bot_event({"type": "turn_queue_file_empty", "path": str(TURN_QUEUE_FILE)})
-        _save_turn_queues({})
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        _append_bot_event({"type": "turn_queue_file_invalid", "path": str(TURN_QUEUE_FILE), "error": str(exc)})
-        _save_turn_queues({})
-        return {}
-    return {
-        thread_id: [QueuedTurn.model_validate(item) for item in items]
-        for thread_id, items in payload.items()
-    }
-
-
-def _save_turn_queues(queues: dict[str, list[QueuedTurn]]) -> None:
-    _atomic_write_text(
-        TURN_QUEUE_FILE,
-        json.dumps(
-            {
-                thread_id: [queued.model_dump() for queued in items]
-                for thread_id, items in queues.items()
-                if items
-            },
-            indent=2,
-        )
-        + "\n",
-        private=True,
-    )
 
 
 def _thread_queue(thread_id: str | None) -> list[QueuedTurn]:
@@ -2304,26 +2070,6 @@ def _legacy_agent_channel_presence_from_gitlab_file() -> AgentChannelPresenceSet
     return AgentChannelPresenceSettings()
 
 
-def _load_agent_channel_presence_settings() -> AgentChannelPresenceSettings:
-    DATA_DIR.mkdir(exist_ok=True)
-    if AGENT_CHANNEL_PRESENCE_FILE.exists():
-        raw = json.loads(AGENT_CHANNEL_PRESENCE_FILE.read_text())
-        return _normalize_agent_channel_presence_settings(_migrate_agent_channel_presence_settings(raw))
-    settings = _legacy_agent_channel_presence_from_gitlab_file()
-    normalized = _normalize_agent_channel_presence_settings(settings)
-    _save_agent_channel_presence_settings(normalized)
-    return normalized
-
-
-def _save_agent_channel_presence_settings(
-    settings: AgentChannelPresenceSettings,
-) -> AgentChannelPresenceSettings:
-    normalized = _normalize_agent_channel_presence_settings(settings)
-    DATA_DIR.mkdir(exist_ok=True)
-    AGENT_CHANNEL_PRESENCE_FILE.write_text(json.dumps(normalized.model_dump(), indent=2) + "\n")
-    return normalized
-
-
 def _normalize_string_list(values: list[Any] | tuple[Any, ...] | set[Any] | None) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -2419,22 +2165,6 @@ def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
         ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
         projects=project_settings_by_id,
     )
-
-
-def _load_gitlab_routing_settings() -> GitLabRoutingSettings:
-    DATA_DIR.mkdir(exist_ok=True)
-    if GITLAB_ROUTING_FILE.exists():
-        return _normalize_gitlab_routing_settings(_migrate_gitlab_routing_settings(json.loads(GITLAB_ROUTING_FILE.read_text())))
-    normalized = _normalize_gitlab_routing_settings(GitLabRoutingSettings())
-    _save_gitlab_routing_settings(normalized)
-    return normalized
-
-
-def _save_gitlab_routing_settings(settings: GitLabRoutingSettings) -> GitLabRoutingSettings:
-    normalized = _normalize_gitlab_routing_settings(settings)
-    DATA_DIR.mkdir(exist_ok=True)
-    GITLAB_ROUTING_FILE.write_text(json.dumps(normalized.model_dump(), indent=2) + "\n")
-    return normalized
 
 
 def _parse_agent_channel_overrides() -> dict[str, list[str]]:
@@ -5334,26 +5064,6 @@ def _is_support_servicedesk_ticket_payload(payload: dict[str, Any]) -> bool:
     return bool(attrs.get("iid")) and state not in {"closed", "merged"}
 
 
-def _load_support_servicedesk_state() -> dict[str, Any]:
-    DATA_DIR.mkdir(exist_ok=True)
-    if not SUPPORT_SERVICEDESK_STATE_FILE.exists():
-        return {"tickets": {}, "last_sweep_at": None}
-    try:
-        payload = json.loads(SUPPORT_SERVICEDESK_STATE_FILE.read_text())
-    except json.JSONDecodeError:
-        payload = {}
-    tickets = payload.get("tickets") if isinstance(payload, dict) else {}
-    return {
-        "tickets": tickets if isinstance(tickets, dict) else {},
-        "last_sweep_at": payload.get("last_sweep_at") if isinstance(payload, dict) else None,
-    }
-
-
-def _save_support_servicedesk_state(state: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    SUPPORT_SERVICEDESK_STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
-
-
 def _remember_support_servicedesk_ticket(payload: dict[str, Any], source: str, event_id: str | None = None) -> bool:
     ticket_key = _support_servicedesk_ticket_key(payload)
     if not ticket_key:
@@ -5623,25 +5333,6 @@ def _gitlab_semantic_dedupe_seconds() -> float:
     except ValueError:
         return 300.0
     return max(30.0, seconds)
-
-
-def _load_gitlab_semantic_events() -> dict[str, float]:
-    if not GITLAB_SEMANTIC_EVENTS_FILE.exists():
-        return {}
-    with contextlib.suppress(Exception):
-        payload = json.loads(GITLAB_SEMANTIC_EVENTS_FILE.read_text())
-        if isinstance(payload, dict):
-            return {
-                str(key): float(value)
-                for key, value in payload.items()
-                if isinstance(value, (int, float))
-            }
-    return {}
-
-
-def _save_gitlab_semantic_events(events: dict[str, float]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    GITLAB_SEMANTIC_EVENTS_FILE.write_text(json.dumps(events, indent=2, sort_keys=True) + "\n")
 
 
 def _gitlab_semantic_key_for_state(
