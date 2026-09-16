@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from codex_web.models import BotBinding, BotInboundMessage, BotReplyTarget
 
@@ -11,6 +11,10 @@ class BotTargetService:
 
     def __init__(self, host: Any) -> None:
         self.host = host
+
+    def _compat(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
+        """Use a host override when installed, otherwise keep standalone use valid."""
+        return getattr(self.host, name, fallback)
 
     @staticmethod
     def reply_target_key(binding: BotBinding) -> str:
@@ -137,15 +141,14 @@ class BotTargetService:
             if candidate.is_master and candidate.external_conversation_id == binding.external_conversation_id
         ]
         candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
+        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
+        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
+        delivery_for = self._compat("_delivery_target_for_binding", self.delivery_target_for_binding)
         for candidate in candidates:
             # Keep the host-level compatibility seam intact. Existing consumers
             # and tests can replace one target source without replacing the
             # entire target-selection service.
-            target = (
-                h._active_reply_target_for_binding(candidate)
-                or h._reply_target_for_binding(candidate)
-                or h._delivery_target_for_binding(candidate)
-            )
+            target = active_for(candidate) or reply_for(candidate) or delivery_for(candidate)
             if target:
                 return target
         return None
@@ -156,20 +159,25 @@ class BotTargetService:
         reply_in_thread: bool | None = None,
     ) -> tuple[BotReplyTarget | None, bool]:
         h = self.host
-        active_target = h._active_reply_target_for_binding(binding)
+        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
+        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
+        master_for = self._compat("_master_reply_target_for_binding", self.master_reply_target_for_binding)
+        delivery_for = self._compat("_delivery_target_for_binding", self.delivery_target_for_binding)
+
+        active_target = active_for(binding)
         if active_target:
             return active_target, True if reply_in_thread is None else reply_in_thread
 
-        own_target = h._reply_target_for_binding(binding)
+        own_target = reply_for(binding)
         if own_target:
             should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             return own_target, should_thread
 
-        master_target = h._master_reply_target_for_binding(binding)
+        master_target = master_for(binding)
         if master_target:
             return master_target, True if reply_in_thread is None else reply_in_thread
 
-        delivery_target = h._delivery_target_for_binding(binding)
+        delivery_target = delivery_for(binding)
         if delivery_target:
             should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             if should_thread:
@@ -180,11 +188,17 @@ class BotTargetService:
     def outbound_bindings_for_thread(self, thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
         h = self.host
         targets = h._load_bot_reply_targets()
+        active_provider_for = self._compat(
+            "_active_reply_target_for_thread_provider",
+            self.active_reply_target_for_thread_provider,
+        )
+        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
+        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
 
         def score(binding: BotBinding) -> tuple[int, float, int, float]:
-            active_target = h._active_reply_target_for_thread_provider(binding.thread_id, binding.provider)
+            active_target = active_provider_for(binding.thread_id, binding.provider)
             if active_target:
-                target = h._active_reply_target_for_binding(binding)
+                target = active_for(binding)
                 return (
                     2 if target else 0,
                     target.updated_at if target else 0,
@@ -215,7 +229,7 @@ class BotTargetService:
             key = (binding.provider, binding.external_conversation_id, binding.thread_id)
             if key in seen or selected.get(binding.provider) is None:
                 continue
-            if h._active_reply_target_for_binding(binding) or h._reply_target_for_binding(binding):
+            if active_for(binding) or reply_for(binding):
                 continue
             if binding.post_in_thread:
                 continue
