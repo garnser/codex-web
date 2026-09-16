@@ -247,11 +247,12 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "integrations": replace_routes(
         app,
-        build_integrations_router(core),
+        build_integrations_router(core, gitlab_service),
         paths={
             "/api/integrations/agent-presence",
             "/api/integrations/gitlab",
             "/api/integrations/gitlab/support-servicedesk/sweep",
+            "/bots/gitlab/events",
         },
         key="integrations",
     ),

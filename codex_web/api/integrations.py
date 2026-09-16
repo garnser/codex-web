@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.models import AgentChannelPresenceSettings, GitLabRoutingSettings
 
@@ -23,7 +23,7 @@ def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, An
     }
 
 
-def build_integrations_router(host: Any) -> APIRouter:
+def build_integrations_router(host: Any, gitlab_service: Any | None = None) -> APIRouter:
     router = APIRouter(tags=["integrations"])
 
     @router.get("/api/integrations/agent-presence")
@@ -64,5 +64,10 @@ def build_integrations_router(host: Any) -> APIRouter:
                 {"type": "support_servicedesk_sweep_failed", "error": host._truncate_text(str(exc), 500)}
             )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if gitlab_service is not None:
+        @router.post("/bots/gitlab/events")
+        async def gitlab_events(request: Request) -> dict[str, Any]:
+            return await gitlab_service.handle_event(request)
 
     return router
