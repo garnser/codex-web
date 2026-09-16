@@ -5,10 +5,13 @@ import contextlib
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import HTTPException
+
+from codex_web.observability import RuntimeMetrics, log_event
 
 
 logger = logging.getLogger(__name__)
@@ -36,11 +39,13 @@ class CodexRuntime:
         command: tuple[str, ...] = ("codex", "app-server"),
         cwd: Path | None = None,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         self.host = host
         self.command = command
         self.cwd = cwd or Path.home()
         self._popen = popen
+        self.metrics = metrics
 
         self.proc: subprocess.Popen[str] | None = None
         self.next_id = 1
@@ -72,6 +77,16 @@ class CodexRuntime:
                 text=True,
                 bufsize=1,
             )
+            if self.metrics:
+                self.metrics.increment("codex.process_starts")
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.process_started",
+                "Codex app-server process started",
+                pid=self.proc.pid,
+                command=" ".join(self.command),
+            )
             self.reader_task = asyncio.create_task(self._read_loop(), name="codex-app-server-stdout")
             self.stderr_task = asyncio.create_task(self._stderr_loop(), name="codex-app-server-stderr")
 
@@ -92,10 +107,20 @@ class CodexRuntime:
                 )
                 await self.notify("initialized", {})
                 self.ready.set()
+                if self.metrics:
+                    self.metrics.increment("codex.ready")
                 await self.host.hub.publish({"type": "codex.ready", "initialize": init})
             except Exception as exc:
                 self.last_error = str(exc)
-                logger.exception("Codex app-server failed to initialize")
+                if self.metrics:
+                    self.metrics.increment("codex.initialization_failures")
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "codex.initialize_failed",
+                    "Codex app-server failed to initialize",
+                    error=str(exc),
+                )
                 await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
                 with contextlib.suppress(Exception):
                     await self.stop()
@@ -105,6 +130,7 @@ class CodexRuntime:
     async def stop(self) -> None:
         self._fail_pending(RuntimeError("Codex app-server stopped"))
         if self.proc and self.proc.poll() is None:
+            pid = self.proc.pid
             self.proc.terminate()
             try:
                 await asyncio.wait_for(asyncio.to_thread(self.proc.wait), timeout=5)
@@ -112,6 +138,13 @@ class CodexRuntime:
                 self.proc.kill()
                 with contextlib.suppress(Exception):
                     await asyncio.to_thread(self.proc.wait)
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.process_stopped",
+                "Codex app-server process stopped",
+                pid=pid,
+            )
 
         self.proc = None
         self.ready.clear()
@@ -127,10 +160,14 @@ class CodexRuntime:
         self.stderr_task = None
 
     def _fail_pending(self, exc: Exception) -> None:
+        failed = 0
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(exc)
+                failed += 1
         self.pending.clear()
+        if self.metrics and failed:
+            self.metrics.increment("codex.pending_requests_failed", failed)
 
     async def _stderr_loop(self) -> None:
         assert self.proc and self.proc.stderr
@@ -140,7 +177,15 @@ class CodexRuntime:
                 return
             text = line.rstrip("\n")
             self.last_error = text
-            logger.warning("codex app-server stderr: %s", text)
+            if self.metrics:
+                self.metrics.increment("codex.stderr_lines")
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.stderr",
+                "Codex app-server wrote to stderr",
+                text=text,
+            )
             await self.host.hub.publish({"type": "codex.stderr", "text": text})
 
     async def _read_loop(self) -> None:
@@ -151,7 +196,15 @@ class CodexRuntime:
                 self.ready.clear()
                 self.last_error = "Codex app-server stopped"
                 self._fail_pending(RuntimeError(self.last_error))
-                logger.warning("codex app-server stdout closed")
+                if self.metrics:
+                    self.metrics.increment("codex.unexpected_closes")
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "codex.stdout_closed",
+                    "Codex app-server stdout closed",
+                    pid=self.proc.pid if self.proc else None,
+                )
                 if self.proc and self.proc.poll() is not None:
                     self.proc = None
                 await self.host.hub.publish({"type": "codex.closed"})
@@ -160,6 +213,8 @@ class CodexRuntime:
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
+                if self.metrics:
+                    self.metrics.increment("codex.raw_lines")
                 await self.host.hub.publish({"type": "codex.raw", "text": line.rstrip("\n")})
                 continue
 
@@ -171,6 +226,8 @@ class CodexRuntime:
             future = self.pending.pop(message_id, None)
             if future and not future.done():
                 if "error" in message:
+                    if self.metrics:
+                        self.metrics.increment("codex.rpc_errors")
                     future.set_exception(RuntimeError(message["error"]))
                 else:
                     future.set_result(message.get("result", {}))
@@ -183,6 +240,8 @@ class CodexRuntime:
             if approval_settings.approval_policy == "never":
                 result = self.host._approval_result(message["method"], "acceptForSession")
                 await self._send({"id": message_id, "result": result})
+                if self.metrics:
+                    self.metrics.increment("codex.approvals_auto_resolved")
                 await self.host.hub.publish(
                     {"type": "approval.auto_resolved", "id": message_id, "result": result}
                 )
@@ -198,6 +257,8 @@ class CodexRuntime:
                 return
 
             self.pending_approvals[message_id] = message
+            if self.metrics:
+                self.metrics.increment("codex.approvals_requested")
             await self.host._record_bot_approval_request(message)
             await self.host.hub.publish({"type": "approval.request", "request": message})
             return
@@ -214,6 +275,8 @@ class CodexRuntime:
                 name=f"restore-thread-name-{thread_id or 'unknown'}",
             )
         if method in {"turn/completed", "turn/failed"}:
+            if self.metrics:
+                self.metrics.increment(f"codex.events.{method.replace('/', '_')}")
             if not terminal_recovery_scheduled:
                 self.host._schedule_queue_drain(thread_id)
         elif method == "thread/status/changed":
@@ -241,16 +304,38 @@ class CodexRuntime:
         await self._send({"method": method, "id": message_id, "params": params})
 
         timeout = request_timeout(method)
+        started = time.monotonic()
+        if self.metrics:
+            self.metrics.increment("codex.rpc_requests")
+            self.metrics.increment(f"codex.rpc_requests.{method.replace('/', '_')}")
         try:
             if timeout is None:
-                return await future
-            return await asyncio.wait_for(future, timeout=timeout)
+                result = await future
+            else:
+                result = await asyncio.wait_for(future, timeout=timeout)
+            if self.metrics:
+                self.metrics.increment("codex.rpc_success")
+            return result
         except asyncio.TimeoutError as exc:
             self.pending.pop(message_id, None)
             self.last_error = f"{method} timed out after {timeout}s"
-            logger.warning("codex app-server request timed out: %s", self.last_error)
+            if self.metrics:
+                self.metrics.increment("codex.rpc_timeouts")
+                self.metrics.increment(f"codex.rpc_timeouts.{method.replace('/', '_')}")
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.rpc_timeout",
+                "Codex app-server request timed out",
+                method=method,
+                request_id=message_id,
+                timeout_seconds=timeout,
+            )
             await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
             raise HTTPException(status_code=504, detail=self.last_error) from exc
+        finally:
+            if self.metrics:
+                self.metrics.observe("codex.rpc_duration", time.monotonic() - started)
 
     async def notify(self, method: str, params: Any = None) -> None:
         await self._send({"method": method, "params": params})
@@ -268,12 +353,16 @@ class CodexRuntime:
             try:
                 await asyncio.wait_for(self.ready.wait(), timeout=15)
             except asyncio.TimeoutError:
+                if self.metrics:
+                    self.metrics.increment("codex.readiness_timeouts")
                 await self.stop()
                 await self.start()
 
     async def respond_to_server_request(self, request_id: int | str, result: dict[str, Any]) -> None:
         self.pending_approvals.pop(request_id, None)
         await self._send({"id": request_id, "result": result})
+        if self.metrics:
+            self.metrics.increment("codex.approvals_resolved")
         await self.host.hub.publish({"type": "approval.resolved", "id": request_id, "result": result})
 
 
