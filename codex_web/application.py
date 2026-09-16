@@ -25,6 +25,7 @@ from codex_web.paths import (
     WORK_ITEM_STATES_FILE,
 )
 from codex_web.runtime import core
+from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.approvals import ApprovalService
@@ -102,6 +103,12 @@ turn_service = TurnService(core)
 # routers or provider workers can receive traffic.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
+bot_runtime = install_bot_runtime(
+    app,
+    core,
+    slack_client=slack_client,
+    telegram_client=telegram_client,
+)
 bot_delivery_service = install_bot_delivery_service(
     app,
     core,
