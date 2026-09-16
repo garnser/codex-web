@@ -5018,89 +5018,18 @@ async def recovery_resume() -> dict[str, Any]:
 
 
 
-@app.get("/api/bots")
-async def bot_status() -> dict[str, Any]:
-    bindings = _load_bot_bindings()
-    connections = _load_bot_connections()
-    gitlab_settings = _load_gitlab_routing_settings()
-    gitlab_enabled = gitlab_settings.enabled and any(
-        project.enabled and project.project_paths
-        for project in gitlab_settings.projects.values()
-    )
-    return {
-        "providers": {
-            "slack": {
-                "enabled": True,
-                "signatureVerification": bool(
-                    os.environ.get("SLACK_SIGNING_SECRET")
-                    or any(connection.signing_secret for connection in connections if connection.provider == "slack")
-                ),
-                "eventsPath": "/bots/slack/events",
-            },
-            "telegram": {
-                "enabled": True,
-                "secretVerification": bool(
-                    os.environ.get("TELEGRAM_WEBHOOK_SECRET")
-                    or any(connection.webhook_secret for connection in connections if connection.provider == "telegram")
-                ),
-                "webhookPath": "/bots/telegram/webhook",
-            },
-            "gitlab": {
-                "enabled": gitlab_enabled,
-                "tokenVerification": bool(
-                    os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
-                    or os.environ.get("GITLAB_WEBHOOK_SECRET")
-                ),
-                "webhookPath": "/bots/gitlab/events",
-            },
-        },
-        "connections": len(connections),
-        "bindings": len(bindings),
-        "runtimeConnections": len(bot_runtime.tasks),
-        "runtimeStatus": list(BOT_RUNTIME_STATUS.values()),
-    }
 
 
-@app.get("/api/bots/connections")
-async def list_bot_connections() -> list[dict[str, Any]]:
-    return [_bot_connection_public(connection) for connection in _load_bot_connections()]
 
 
-@app.post("/api/bots/connections")
-async def save_bot_connection(payload: BotConnectionCreate) -> dict[str, Any]:
-    connection = _upsert_bot_connection(payload)
-    await bot_runtime.sync()
-    return _bot_connection_public(connection)
 
 
-@app.get("/api/bots/bindings")
-async def list_bot_bindings() -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for binding in _load_bot_bindings():
-        item = binding.model_dump()
-        if binding.provider == "slack":
-            item["slack_icon"] = _slack_reply_icon(binding)
-            item["slack_username"] = _slack_reply_username(binding)
-        results.append(item)
-    return results
 
 
-@app.get("/api/bots/channels")
-async def list_bot_channels(project_id: str = "home") -> list[dict[str, str]]:
-    _project(project_id)
-    return _bot_channels(project_id)
 
 
-@app.post("/api/bots/bindings")
-async def create_bot_binding(payload: BotBindingCreate) -> dict[str, Any]:
-    binding = await _start_bot_thread(payload)
-    await bot_runtime.sync()
-    return binding.model_dump()
 
 
-@app.post("/api/bots/inbound")
-async def bot_inbound(payload: BotInboundMessage) -> dict[str, Any]:
-    return await _handle_bot_inbound(payload)
 
 
 @app.post("/bots/telegram/webhook")
