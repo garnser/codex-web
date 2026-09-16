@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Executive control plane fixture</title>
+</head>
+<body>
+  <div class="topbar"><div class="controls"></div></div>
+  <select id="sandbox"><option value="workspace-write" selected>workspace-write</option></select>
+  <select id="approval-policy"><option value="on-request" selected>on-request</option></select>
+  <div id="projects">
+    <div class="item active"><div class="item-main"><strong>Home</strong></div></div>
+  </div>
+  <script>
+    window.__executiveRequests = [];
+    const payloads = {
+      '/api/executive/agents': {
+        provider: 'openai',
+        model: 'gpt-test',
+        agents: [
+          { id: 'chief-of-staff', title: 'Chief of Staff', name: 'Alex' },
+          { id: 'cto', title: 'CTO', name: 'Morgan' }
+        ],
+        executionRoles: [
+          { id: 'orchestrator', name: 'Orchestrator', lane: 'coordination' },
+          { id: 'james', name: 'James', lane: 'implementation' },
+          { id: 'quinn', name: 'Quinn', lane: 'validation' }
+        ]
+      },
+      '/api/executive/context': { company: { company_name: 'FixtureCo', stage: 'growth' } },
+      '/api/projects': [
+        { id: 'home', name: 'Home' },
+        { id: 'product', name: 'Product' }
+      ],
+      '/api/work-items': {
+        items: [
+          {
+            ref: 'acme/product#42',
+            project_id: 'product',
+            current_stage: 'implementation_active',
+            current_owner: 'james',
+            next_owner: 'james',
+            title: 'Canonical feature'
+          },
+          {
+            ref: 'acme/product#41',
+            project_id: 'product',
+            current_stage: 'closed',
+            current_owner: 'james',
+            closed_at: 1,
+            title: 'Closed feature'
+          }
+        ]
+      }
+    };
+
+    window.fetch = async (url, options = {}) => {
+      const path = new URL(url, window.location.href).pathname;
+      const body = options.body ? JSON.parse(options.body) : null;
+      window.__executiveRequests.push({ path, method: options.method || 'GET', body });
+      let payload;
+      if (path === '/api/executive/chat') {
+        payload = {
+          reply: 'Use the canonical work-item lane.',
+          agent_id: 'cto',
+          agent_name: 'Morgan',
+          agent_title: 'CTO',
+          model: 'gpt-test',
+          consulted: []
+        };
+      } else if (path === '/api/executive/delegate') {
+        payload = {
+          threadId: 'thread-james',
+          sandbox: 'workspace-write',
+          approvalPolicy: 'on-request',
+          executionRole: { id: 'james', name: 'James' },
+          dispatchMode: 'canonical-work-item',
+          createdNewThread: false
+        };
+      } else {
+        payload = payloads[path];
+      }
+      if (payload === undefined) return new Response(JSON.stringify({ detail: `Unhandled ${path}` }), { status: 404 });
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+  </script>
+  <script src="/static/executive-ui.js"></script>
+</body>
+</html>
