@@ -3690,17 +3690,6 @@ async def _run_support_servicedesk_sweep_once() -> dict[str, Any]:
     return {"ok": True, "checked": len(payloads), "accepted": accepted, "duplicates": duplicates, "results": results}
 
 
-async def _support_servicedesk_sweep_loop() -> None:
-    interval = _support_servicedesk_sweep_interval()
-    if interval <= 0 or not _gitlab_api_token():
-        return
-    while True:
-        try:
-            result = await _run_support_servicedesk_sweep_once()
-            _append_bot_event({"type": "support_servicedesk_sweep_completed", **{key: value for key, value in result.items() if key != "results"}})
-        except Exception as exc:
-            _append_bot_event({"type": "support_servicedesk_sweep_failed", "error": _truncate_text(str(exc), 500)})
-        await asyncio.sleep(interval)
 
 
 def _gitlab_semantic_dedupe_seconds() -> float:
@@ -4537,40 +4526,10 @@ def _format_split_brain_watchdog_prompt(project_id: str, items: list[tuple[WorkI
 
 
 
-async def _work_item_sla_watchdog_loop() -> None:
-    interval = _work_item_sla_watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            await _run_work_item_sla_cycle()
-        except Exception as exc:
-            _append_bot_event({"type": "work_item_sla_watchdog_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
-async def _orchestrator_watchdog_loop() -> None:
-    interval = _orchestrator_watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            await _run_orchestrator_watchdog_cycle()
-        except Exception as exc:
-            _append_bot_event({"type": "orchestrator_watchdog_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
-async def _split_brain_watchdog_loop() -> None:
-    interval = _split_brain_watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            await _run_split_brain_watchdog_cycle()
-        except Exception as exc:
-            _append_bot_event({"type": "split_brain_watchdog_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
 def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
@@ -4659,21 +4618,6 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
     }
 
 
-async def _watchdog_loop() -> None:
-    interval = _watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        health = _daemon_health()
-        if health["ok"]:
-            _sd_notify("WATCHDOG=1\nSTATUS=codex-web healthy")
-        else:
-            # Service health is reported separately from process liveness. Keep
-            # feeding systemd's watchdog while the API is responsive so an
-            # operational warning (for example a stale queue) does not create a
-            # destructive restart loop that makes recovery impossible.
-            _sd_notify("WATCHDOG=1\nSTATUS=codex-web unhealthy: " + "; ".join(health["problems"]))
-        await asyncio.sleep(interval)
 
 
 def _watchdog_dispatch_cooldown_seconds() -> float:
@@ -4791,137 +4735,14 @@ def _schedule_native_recovery_cycles(*, reason: str = "manual") -> None:
     asyncio.create_task(_run_orchestrator_watchdog_cycle())
 
 
-async def _owner_work_watchdog_loop() -> None:
-    interval = _owner_work_watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            await _run_owner_work_watchdog_cycle()
-        except Exception as exc:
-            _append_bot_event({"type": "owner_work_watchdog_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
-async def _release_gate_watchdog_loop() -> None:
-    interval = _release_gate_watchdog_interval()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            await _run_release_gate_watchdog_cycle()
-        except Exception as exc:
-            _append_bot_event({"type": "release_gate_watchdog_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
-async def _queue_recovery_loop() -> None:
-    interval = _queue_recovery_interval_seconds()
-    if interval <= 0:
-        return
-    while True:
-        try:
-            for thread_id in _load_turn_queues():
-                if _thread_is_active(thread_id):
-                    _release_stale_active_turn(thread_id, "queue-recovery")
-                if not _thread_is_active(thread_id):
-                    _schedule_queue_drain(thread_id)
-        except Exception as exc:
-            _append_bot_event({"type": "queue_recovery_failed", "error": str(exc)})
-        await asyncio.sleep(interval)
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
-    global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
-    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, IS_SHUTTING_DOWN
-    IS_SHUTTING_DOWN = False
-    _load_projects()
-    _compact_turn_queues()
-    _dedupe_bot_integrations()
-    try:
-        await codex.start()
-    except Exception:
-        # Keep the HTTP UI up so it can report the app-server failure.
-        pass
-    await bot_runtime.sync()
-    if codex.ready.is_set() and _autonomy_enabled():
-        asyncio.create_task(_restore_bot_thread_names())
-        asyncio.create_task(_resume_active_threads_after_startup())
-    _sd_notify("READY=1\nSTATUS=codex-web started")
-    WATCHDOG_TASK = asyncio.create_task(_watchdog_loop())
-    SUPPORT_SERVICEDESK_SWEEP_TASK = asyncio.create_task(_support_servicedesk_sweep_loop())
-    OWNER_WORK_WATCHDOG_TASK = asyncio.create_task(_owner_work_watchdog_loop())
-    RELEASE_GATE_WATCHDOG_TASK = asyncio.create_task(_release_gate_watchdog_loop())
-    WORK_ITEM_SLA_TASK = asyncio.create_task(_work_item_sla_watchdog_loop())
-    ORCHESTRATOR_WATCHDOG_TASK = asyncio.create_task(_orchestrator_watchdog_loop())
-    SPLIT_BRAIN_WATCHDOG_TASK = asyncio.create_task(_split_brain_watchdog_loop())
-    QUEUE_RECOVERY_TASK = asyncio.create_task(_queue_recovery_loop())
-    slack_provider_service = getattr(app.state, "slack_provider_service", None)
-    if slack_provider_service is not None:
-        await slack_provider_service.start()
-    _schedule_native_recovery_cycles()
 
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
-    global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
-    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, IS_SHUTTING_DOWN
-    IS_SHUTTING_DOWN = True
-    _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
-    if WATCHDOG_TASK:
-        WATCHDOG_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await WATCHDOG_TASK
-        WATCHDOG_TASK = None
-    if SUPPORT_SERVICEDESK_SWEEP_TASK:
-        SUPPORT_SERVICEDESK_SWEEP_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await SUPPORT_SERVICEDESK_SWEEP_TASK
-        SUPPORT_SERVICEDESK_SWEEP_TASK = None
-    if OWNER_WORK_WATCHDOG_TASK:
-        OWNER_WORK_WATCHDOG_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await OWNER_WORK_WATCHDOG_TASK
-        OWNER_WORK_WATCHDOG_TASK = None
-    if RELEASE_GATE_WATCHDOG_TASK:
-        RELEASE_GATE_WATCHDOG_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await RELEASE_GATE_WATCHDOG_TASK
-        RELEASE_GATE_WATCHDOG_TASK = None
-    if WORK_ITEM_SLA_TASK:
-        WORK_ITEM_SLA_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await WORK_ITEM_SLA_TASK
-        WORK_ITEM_SLA_TASK = None
-    if ORCHESTRATOR_WATCHDOG_TASK:
-        ORCHESTRATOR_WATCHDOG_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await ORCHESTRATOR_WATCHDOG_TASK
-        ORCHESTRATOR_WATCHDOG_TASK = None
-    if SPLIT_BRAIN_WATCHDOG_TASK:
-        SPLIT_BRAIN_WATCHDOG_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await SPLIT_BRAIN_WATCHDOG_TASK
-        SPLIT_BRAIN_WATCHDOG_TASK = None
-    if QUEUE_RECOVERY_TASK:
-        QUEUE_RECOVERY_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await QUEUE_RECOVERY_TASK
-        QUEUE_RECOVERY_TASK = None
-    slack_provider_service = getattr(app.state, "slack_provider_service", None)
-    if slack_provider_service is not None:
-        await slack_provider_service.stop()
-    for task in list(ACTIONABLE_OWNER_CONTINUITY_TASKS.values()):
-        task.cancel()
-    ACTIONABLE_OWNER_CONTINUITY_TASKS.clear()
-    for task in list(HANDOFF_CONTINUITY_TASKS.values()):
-        task.cancel()
-    HANDOFF_CONTINUITY_TASKS.clear()
-    await bot_runtime.stop()
-    await codex.stop()
 
 
 @app.get("/")
