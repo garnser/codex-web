@@ -8,6 +8,7 @@ from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.deployment import install_deployment_configuration
 from codex_web.runtime.workers import install_worker_supervisor
+from codex_web.services.autonomy import install_autonomy_service
 from codex_web.storage.configuration_state import install_configuration_state
 from codex_web.storage.operational_state import install_operational_state
 
@@ -32,6 +33,11 @@ install_codex_runtime(_application.app, _runtime)
 # runtime. Install it before worker supervision so startup synchronizes the
 # extracted Slack/Telegram runtime rather than the legacy class instance.
 install_bot_runtime(_application.app, _runtime)
+
+# Autonomous work-item decisions are owned by a dedicated service. Install it
+# before worker supervision so periodic workers invoke the extracted cycle
+# implementations from their first iteration.
+install_autonomy_service(_application.app, _runtime)
 
 # The executable entrypoint owns lifecycle composition. This replaces the
 # compatibility runtime's startup/shutdown handlers with an extracted worker
