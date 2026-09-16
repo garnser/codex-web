@@ -4789,29 +4789,8 @@ async def websocket_events(websocket: WebSocket) -> None:
         hub.disconnect(websocket)
 
 
-@app.get("/api/status")
-async def status() -> dict[str, Any]:
-    try:
-        await codex.ensure_started()
-    except Exception:
-        pass
-    return {
-        "ok": codex.ready.is_set(),
-        "pid": codex.proc.pid if codex.proc else None,
-        "error": None if codex.ready.is_set() else codex.last_error,
-        "version": _static_version(),
-        "pendingApprovals": list(codex.pending_approvals.values()),
-        "activeTurns": len(_load_active_turns()),
-        "queuedTurns": sum(len(items) for items in _load_turn_queues().values()),
-    }
 
 
-@app.get("/api/healthz")
-async def healthz() -> dict[str, Any]:
-    health = _daemon_health()
-    if not health["ok"]:
-        raise HTTPException(status_code=503, detail=health)
-    return health
 
 
 def _codex_verifier_credentials() -> tuple[str, str] | None:
@@ -5035,18 +5014,8 @@ async def recovery_resume() -> dict[str, Any]:
     }
 
 
-@app.get("/api/account/rate-limits")
-async def account_rate_limits() -> dict[str, Any]:
-    return await codex.request("account/rateLimits/read")
 
 
-@app.get("/api/models")
-async def list_models(include_hidden: bool = False) -> dict[str, Any]:
-    try:
-        return await codex.request("model/list", {"includeHidden": include_hidden, "limit": 100})
-    except Exception as exc:
-        _append_bot_event({"type": "model_list_failed", "error": str(exc)})
-        return {"data": [], "nextCursor": None, "error": str(exc)}
 
 
 @app.get("/api/bots")
@@ -5163,34 +5132,6 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     return {"ok": True, "accepted": True, "threadId": result["threadId"]}
 
 
-@app.get("/api/projects")
-async def list_projects() -> list[dict[str, Any]]:
-    return [project.model_dump() for project in _load_projects()]
-
-
-@app.post("/api/projects")
-async def create_project(payload: ProjectCreate) -> dict[str, Any]:
-    path = Path(payload.path).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
-        raise HTTPException(status_code=400, detail="Project path must be an existing directory")
-    projects = _load_projects()
-    project_id = uuid.uuid4().hex[:12]
-    project = Project(id=project_id, name=payload.name, path=str(path), model=payload.model, sandbox=payload.sandbox, approval_policy=payload.approval_policy)
-    projects.append(project)
-    _save_projects(projects)
-    return project.model_dump()
-
-
-@app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str) -> dict[str, bool]:
-    projects = _load_projects()
-    kept = [project for project in projects if project.id != project_id]
-    if len(kept) == len(projects):
-        raise HTTPException(status_code=404, detail="Project not found")
-    if not kept:
-        raise HTTPException(status_code=400, detail="At least one project is required")
-    _save_projects(kept)
-    return {"ok": True}
 
 
 
@@ -5231,15 +5172,12 @@ async def delete_project(project_id: str) -> dict[str, bool]:
 
 
 
-@app.get("/api/approvals")
-async def approvals() -> list[dict[str, Any]]:
-    return list(codex.pending_approvals.values())
 
 
-@app.post("/api/approvals/{request_id}")
-async def decide_approval(request_id: str, payload: ApprovalDecision) -> dict[str, bool]:
-    normalized_id = _request_id_value(request_id)
-    return await _resolve_approval_request(normalized_id, payload.decision, actor="Codex Web")
+
+
+
+
 
 
 def _sandbox_policy(mode: str, cwd: str) -> dict[str, Any]:
