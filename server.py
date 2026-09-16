@@ -23,19 +23,23 @@ install_operational_state(_application.app, _runtime)
 # deployments generic and explicitly configured.
 install_deployment_configuration(_application.app, _runtime)
 
-# Codex and autonomy runtime ownership is composed in application.py so direct
-# application imports see the same implementation as this executable entrypoint.
-# Structured logs and local diagnostics attach before long-lived provider and
-# worker tasks begin.
+# Codex, autonomy and bot routing/delivery ownership is composed in
+# application.py so direct application imports see the same implementation as
+# this executable entrypoint. Structured logs attach before long-lived tasks.
 install_observability(_application.app, _runtime)
 
-# Active provider connection lifecycle is extracted from the compatibility
-# runtime. Install it before worker supervision so startup synchronizes the
-# extracted Slack/Telegram runtime rather than the legacy class instance.
-install_bot_runtime(_application.app, _runtime)
+# Active provider connection lifecycle shares the exact async Slack/Telegram
+# clients used by routing/delivery and management services.
+install_bot_runtime(
+    _application.app,
+    _runtime,
+    slack_client=_application.app.state.slack_client,
+    telegram_client=_application.app.state.telegram_client,
+)
 
-# The executable entrypoint owns lifecycle supervision. The active Codex and
-# autonomy implementations are already present on the compatibility host.
+# The executable entrypoint owns lifecycle supervision. The active Codex,
+# autonomy and bot integration implementations are already present on the
+# compatibility host.
 install_worker_supervisor(_application.app, _runtime)
 
 
