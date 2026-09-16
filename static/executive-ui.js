@@ -1,5 +1,6 @@
 const EXEC_BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
 const EXEC_SESSION_KEY = 'codex-web-executive-session';
+let executiveApiModule = null;
 
 const executiveState = {
   agents: [],
@@ -13,17 +14,10 @@ const executiveState = {
 };
 localStorage.setItem(EXEC_SESSION_KEY, executiveState.sessionId);
 
-function execApi(path, options = {}) {
-  return fetch(`${EXEC_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  }).then(async (response) => {
-    const text = await response.text();
-    let payload = {};
-    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { detail: text }; }
-    if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail || payload));
-    return payload;
-  });
+async function execApi(path, options = {}) {
+  executiveApiModule ||= import(`${EXEC_BASE}/static/api_client.js`);
+  const { request } = await executiveApiModule;
+  return request(path, options);
 }
 
 function injectExecutiveStyles() {
