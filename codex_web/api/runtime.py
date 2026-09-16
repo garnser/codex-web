@@ -21,6 +21,10 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
             raise HTTPException(status_code=503, detail=health)
         return health
 
+    @router.get("/api/operations")
+    async def operations(window_seconds: float = 900.0) -> dict[str, Any]:
+        return service.operations(window_seconds=window_seconds)
+
     @router.get("/api/account/rate-limits")
     async def account_rate_limits() -> dict[str, Any]:
         return await service.rate_limits()
