@@ -14,6 +14,8 @@ from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.integrations.slack_client import SlackClient
+from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
@@ -26,6 +28,8 @@ from codex_web.runtime import core
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.bot_delivery import install_bot_delivery_service
+from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import GitLabService
@@ -65,7 +69,6 @@ approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
 turn_service = TurnService(core)
 context_service = ContextCompactionService(core)
-bot_service = BotService(core)
 gitlab_client = GitLabClient()
 work_item_service = WorkItemService(core, gitlab_client)
 gitlab_service = GitLabService(core, gitlab_client)
@@ -91,6 +94,26 @@ app.state.runtime_state_repositories = runtime_state
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
 autonomy_service = install_autonomy_service(app, core)
+
+# Bot routing/delivery share the same async provider clients used by management
+# and long-lived runtime paths. Rebind the historical host entrypoints before
+# routers or provider workers can receive traffic.
+slack_client = SlackClient()
+telegram_client = TelegramClient()
+bot_delivery_service = install_bot_delivery_service(
+    app,
+    core,
+    slack_client=slack_client,
+    telegram_client=telegram_client,
+)
+bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
+bot_service = BotService(
+    core,
+    slack_client=slack_client,
+    routing_service=bot_routing_service,
+)
+app.state.slack_client = slack_client
+app.state.telegram_client = telegram_client
 
 # Preserve the legacy ServiceDesk hook used by both the route and the worker,
 # but route it through the extracted async GitLab service.
