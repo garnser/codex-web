@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
+from codex_web.execution_contracts import ROLE_CONTRACTS
 from codex_web.executive import (
     AGENTS,
     ContextUpdate,
@@ -168,6 +169,7 @@ def install_executive_integrated(app: FastAPI, host: Any) -> MultiProviderExecut
                 }
                 for agent in AGENTS.values()
             ],
+            "executionRoles": [role.public() for role in ROLE_CONTRACTS.values()],
             **service.provider_status(),
         }
 
