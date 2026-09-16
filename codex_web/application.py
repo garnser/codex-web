@@ -13,6 +13,7 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
+from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
@@ -25,6 +26,7 @@ from codex_web.runtime import core
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.gitlab import GitLabService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.threads import ThreadService
@@ -62,7 +64,9 @@ thread_service = ThreadService(core)
 turn_service = TurnService(core)
 context_service = ContextCompactionService(core)
 bot_service = BotService(core)
-work_item_service = WorkItemService(core)
+gitlab_client = GitLabClient()
+work_item_service = WorkItemService(core, gitlab_client)
+gitlab_service = GitLabService(core, gitlab_client)
 
 # Legacy code still needing project/runtime state consumes the extracted
 # repositories. SQLite is primary for high-churn runtime documents; the
@@ -78,6 +82,11 @@ core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
+
+# Preserve the legacy ServiceDesk hook used by both the route and the worker,
+# but route it through the extracted async GitLab service.
+core._run_support_servicedesk_sweep_once = gitlab_service.sweep_support_servicedesk
+app.state.gitlab_service = gitlab_service
 
 install_webhook_security(core)
 previous_context_service = getattr(app.state, "context_compaction_service", None)

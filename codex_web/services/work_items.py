@@ -4,20 +4,21 @@ import asyncio
 import time
 from typing import Any
 
+from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 
 
 class WorkItemService:
-    """Work-item API behavior with blocking persistence/GitLab work isolated.
+    """Work-item API behavior with blocking state transitions isolated.
 
-    The compatibility runtime still owns the detailed state machine. This
-    service owns the HTTP-facing orchestration and guarantees that synchronous
-    GitLab requests and read/modify/write state operations do not run on the
-    FastAPI event loop.
+    GitLab reads used by synchronization are native async I/O. The compatibility
+    runtime still owns the detailed work-item state machine, which is executed in
+    worker threads until that logic is extracted independently.
     """
 
-    def __init__(self, host: Any) -> None:
+    def __init__(self, host: Any, gitlab: GitLabClient | None = None) -> None:
         self.host = host
+        self.gitlab = gitlab or GitLabClient()
 
     async def list(
         self,
@@ -63,9 +64,38 @@ class WorkItemService:
             "count": len(states),
         }
 
+    async def _sync_from_gitlab_async(self) -> dict[str, int]:
+        synced = 0
+        seen_refs: set[str] = set()
+        settings = self.host._load_gitlab_routing_settings()
+        for project_id, project_settings in settings.projects.items():
+            if not project_settings.enabled:
+                continue
+            token = self.host._gitlab_token_for_project(project_id)
+            group = self.host._gitlab_group_path(project_settings)
+            if not token or not group:
+                continue
+            issues = await self.gitlab.group_issues(
+                self.host.GITLAB_API_BASE,
+                group,
+                token=token,
+                state="opened",
+            )
+            for issue in issues:
+                state = await asyncio.to_thread(
+                    self.host._upsert_work_item_state_from_gitlab_issue,
+                    issue,
+                    project_id=project_id,
+                )
+                if not state:
+                    continue
+                synced += 1
+                seen_refs.add(state.ref)
+        return {"synced": synced, "refs": len(seen_refs)}
+
     async def sync_from_gitlab(self) -> dict[str, Any]:
         try:
-            result = await asyncio.to_thread(self.host._sync_work_item_states_from_gitlab)
+            result = await self._sync_from_gitlab_async()
         except Exception as exc:
             self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
             self.host.GITLAB_SYNC_LAST_ERROR = self.host._truncate_text(str(exc), 500)
