@@ -14,8 +14,8 @@ export function apiBase() {
 
 export async function request(path, options = {}) {
   const response = await fetch(`${apiBase()}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
   const text = await response.text();
   let payload = null;
