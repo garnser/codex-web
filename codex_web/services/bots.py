@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
+from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_routing import BotRoutingService
 
 
@@ -23,6 +24,11 @@ class BotService:
         self.host = host
         self.slack_client = slack_client or SlackClient()
         self.routing_service = routing_service
+        # The real compatibility host exposes its FastAPI app and is composed
+        # after auxiliary persistence. Lightweight service test hosts need not
+        # emulate the whole application just to exercise channel discovery.
+        app = getattr(host, "app", None)
+        self.detail_service = install_bot_detail_service(app, host) if getattr(app, "state", None) is not None else None
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
