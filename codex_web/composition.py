@@ -48,7 +48,7 @@ def replace_routes(
     path_set = set(paths)
     filtered, removed = _filter_routes(list(app.router.routes), path_set)
     app.router.routes[:] = filtered
-    app.include_router(router)
+    app.router.include_router(router)
     app.openapi_schema = None
     setattr(app.state, marker, True)
     setattr(app.state, f"domain_router_{key}_legacy_removed", removed)
