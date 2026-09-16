@@ -6,6 +6,7 @@ from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
+from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
 from codex_web.api.threads import build_threads_router
 from codex_web.api.turns import build_turns_router
@@ -37,6 +38,7 @@ from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import GitLabService
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
@@ -120,6 +122,12 @@ bot_delivery_service = install_bot_delivery_service(
     telegram_client=telegram_client,
 )
 bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
+slack_provider_service = install_slack_provider_service(
+    app,
+    core,
+    slack_client=slack_client,
+    routing_service=bot_routing_service,
+)
 bot_service = BotService(
     core,
     slack_client=slack_client,
@@ -214,6 +222,12 @@ EXTRACTED_ROUTE_COUNTS = {
             "/api/bots/inbound",
         },
         key="bots",
+    ),
+    "slack": replace_routes(
+        app,
+        build_slack_router(slack_provider_service),
+        paths={"/bots/slack/events"},
+        key="slack",
     ),
     "work-items": replace_routes(
         app,

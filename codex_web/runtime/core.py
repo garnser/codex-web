@@ -3930,8 +3930,13 @@ def _daemon_health() -> dict[str, Any]:
     if len(recent_delivery_failures) >= 3:
         problems.append(f"{len(recent_delivery_failures)} outbound bot deliveries failed in the last 300s")
 
-    slack_backfill_cooldown = _slack_backfill_cooldown_remaining_seconds()
-    if SLACK_BACKFILL_RATE_LIMIT_FAILURES >= 2 and slack_backfill_cooldown > 0:
+    slack_provider_service = getattr(app.state, "slack_provider_service", None)
+    slack_provider_health = slack_provider_service.health() if slack_provider_service is not None else {
+        "cooldownRemainingSeconds": 0.0,
+        "rateLimitFailures": 0,
+    }
+    slack_backfill_cooldown = float(slack_provider_health["cooldownRemainingSeconds"])
+    if int(slack_provider_health["rateLimitFailures"]) >= 2 and slack_backfill_cooldown > 0:
         problems.append(f"Slack backfill rate limited for another {int(slack_backfill_cooldown)}s")
     if GITLAB_SYNC_CONSECUTIVE_FAILURES >= 2:
         problems.append(f"GitLab sync failed {GITLAB_SYNC_CONSECUTIVE_FAILURES} consecutive times")
@@ -5422,6 +5427,13 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
         bindings = [binding for binding in bindings if binding.project_id == project_id]
     queues = _load_turn_queues()
     active_turns = _load_active_turns()
+    slack_provider_service = getattr(app.state, "slack_provider_service", None)
+    slack_provider_health = slack_provider_service.health() if slack_provider_service is not None else {
+        "intervalSeconds": 0.0,
+        "running": False,
+        "cooldownRemainingSeconds": 0.0,
+        "cooldownUntil": None,
+    }
     return {
         "generatedAt": time.time(),
         "version": _static_version(),
@@ -5443,10 +5455,10 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
             "splitBrainWatchdogIntervalSeconds": _split_brain_watchdog_interval(),
             "splitBrainWatchdogRunning": bool(SPLIT_BRAIN_WATCHDOG_TASK and not SPLIT_BRAIN_WATCHDOG_TASK.done()),
             "threadMessageLimit": _default_thread_message_limit(),
-            "slackBackfillIntervalSeconds": _slack_backfill_interval_seconds(),
-            "slackBackfillRunning": bool(SLACK_BACKFILL_TASK and not SLACK_BACKFILL_TASK.done()),
-            "slackBackfillCooldownRemainingSeconds": _slack_backfill_cooldown_remaining_seconds(),
-            "slackBackfillCooldownUntil": SLACK_BACKFILL_COOLDOWN_UNTIL or None,
+            "slackBackfillIntervalSeconds": slack_provider_health["intervalSeconds"],
+            "slackBackfillRunning": slack_provider_health["running"],
+            "slackBackfillCooldownRemainingSeconds": slack_provider_health["cooldownRemainingSeconds"],
+            "slackBackfillCooldownUntil": slack_provider_health["cooldownUntil"],
         },
         "health": _daemon_health(),
         "projects": [project.model_dump() for project in _load_projects()],
@@ -5670,7 +5682,7 @@ async def _queue_recovery_loop() -> None:
 async def startup() -> None:
     global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
     global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
-    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, SLACK_BACKFILL_TASK, IS_SHUTTING_DOWN
+    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = False
     _load_projects()
     _compact_turn_queues()
@@ -5693,7 +5705,9 @@ async def startup() -> None:
     ORCHESTRATOR_WATCHDOG_TASK = asyncio.create_task(_orchestrator_watchdog_loop())
     SPLIT_BRAIN_WATCHDOG_TASK = asyncio.create_task(_split_brain_watchdog_loop())
     QUEUE_RECOVERY_TASK = asyncio.create_task(_queue_recovery_loop())
-    SLACK_BACKFILL_TASK = asyncio.create_task(_slack_backfill_loop())
+    slack_provider_service = getattr(app.state, "slack_provider_service", None)
+    if slack_provider_service is not None:
+        await slack_provider_service.start()
     _schedule_native_recovery_cycles()
 
 
@@ -5701,7 +5715,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     global SUPPORT_SERVICEDESK_SWEEP_TASK, WATCHDOG_TASK, IS_SHUTTING_DOWN
     global WATCHDOG_TASK, OWNER_WORK_WATCHDOG_TASK, RELEASE_GATE_WATCHDOG_TASK, WORK_ITEM_SLA_TASK
-    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, SLACK_BACKFILL_TASK, IS_SHUTTING_DOWN
+    global ORCHESTRATOR_WATCHDOG_TASK, SPLIT_BRAIN_WATCHDOG_TASK, QUEUE_RECOVERY_TASK, IS_SHUTTING_DOWN
     IS_SHUTTING_DOWN = True
     _sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
     if WATCHDOG_TASK:
@@ -5744,11 +5758,9 @@ async def shutdown() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await QUEUE_RECOVERY_TASK
         QUEUE_RECOVERY_TASK = None
-    if SLACK_BACKFILL_TASK:
-        SLACK_BACKFILL_TASK.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await SLACK_BACKFILL_TASK
-        SLACK_BACKFILL_TASK = None
+    slack_provider_service = getattr(app.state, "slack_provider_service", None)
+    if slack_provider_service is not None:
+        await slack_provider_service.stop()
     for task in list(ACTIONABLE_OWNER_CONTINUITY_TASKS.values()):
         task.cancel()
     ACTIONABLE_OWNER_CONTINUITY_TASKS.clear()
