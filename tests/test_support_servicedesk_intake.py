@@ -22,9 +22,15 @@ def _support_issue_payload() -> dict:
     }
 
 
-def test_support_servicedesk_ticket_detection_defaults_to_support_project(monkeypatch) -> None:
+def test_support_servicedesk_ticket_detection_is_disabled_without_project_config(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH", raising=False)
     monkeypatch.delenv("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATHS", raising=False)
+
+    assert not server._is_support_servicedesk_ticket_payload(_support_issue_payload())
+
+
+def test_support_servicedesk_ticket_detection_uses_configured_project(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH", "veridataops/support")
 
     assert server._is_support_servicedesk_ticket_payload(_support_issue_payload())
 
