@@ -61,7 +61,7 @@ jobs:
             sleep 0.2
           done
 
-          npx playwright test tests/browser/thread_history.spec.js --workers=1 --reporter=line
+          npx playwright test tests/browser --workers=1 --reporter=line
 
   docker:
     runs-on: ubuntu-latest
