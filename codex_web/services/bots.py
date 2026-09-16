@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
+from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_routing import BotRoutingService
 
 
@@ -23,6 +24,9 @@ class BotService:
         self.host = host
         self.slack_client = slack_client or SlackClient()
         self.routing_service = routing_service
+        # BotService is composed after auxiliary persistence, making it the
+        # natural owner for the remaining per-thread bot detail mutation seam.
+        self.detail_service = install_bot_detail_service(host.app, host)
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
