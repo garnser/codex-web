@@ -26,6 +26,7 @@ from codex_web.paths import (
 )
 from codex_web.runtime import core
 from codex_web.runtime.codex import install_codex_runtime
+from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
@@ -67,7 +68,6 @@ project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
-turn_service = TurnService(core)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_service = WorkItemService(core, gitlab_client)
@@ -93,7 +93,9 @@ app.state.runtime_state_repositories = runtime_state
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
+turn_execution_service = install_turn_execution_service(app, core)
 autonomy_service = install_autonomy_service(app, core)
+turn_service = TurnService(core)
 
 # Bot routing/delivery share the same async provider clients used by management
 # and long-lived runtime paths. Rebind the historical host entrypoints before
