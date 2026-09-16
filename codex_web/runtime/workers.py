@@ -6,7 +6,7 @@ from typing import Any, Awaitable
 
 
 class WorkerSupervisor:
-    """Own background worker startup/shutdown outside the legacy core module."""
+    """Own background worker startup/shutdown and periodic loop execution."""
 
     WORKERS: tuple[tuple[str, str, str], ...] = (
         ("watchdog", "WATCHDOG_TASK", "_watchdog_loop"),
@@ -32,7 +32,7 @@ class WorkerSupervisor:
         task.add_done_callback(self.bootstrap_tasks.discard)
 
     def _start_worker(self, name: str, global_name: str, function_name: str) -> None:
-        worker = getattr(self.host, function_name)
+        worker = getattr(self, function_name)
         task = asyncio.create_task(worker(), name=f"codex-web:{name}")
         self.tasks[name] = task
         # Preserve compatibility for diagnostics that still read these globals.
@@ -100,6 +100,123 @@ class WorkerSupervisor:
 
     def status(self) -> dict[str, bool]:
         return {name: not task.done() for name, task in self.tasks.items()}
+
+    async def _watchdog_loop(self) -> None:
+        interval = self.host._watchdog_interval()
+        if interval <= 0:
+            return
+        while True:
+            health = self.host._daemon_health()
+            if health["ok"]:
+                self.host._sd_notify("WATCHDOG=1\nSTATUS=codex-web healthy")
+            else:
+                self.host._sd_notify(
+                    "WATCHDOG=1\nSTATUS=codex-web unhealthy: " + "; ".join(health["problems"])
+                )
+            await asyncio.sleep(interval)
+
+    async def _support_servicedesk_sweep_loop(self) -> None:
+        interval = self.host._support_servicedesk_sweep_interval()
+        if interval <= 0 or not self.host._gitlab_api_token():
+            return
+        while True:
+            try:
+                result = await self.host._run_support_servicedesk_sweep_once()
+                self.host._append_bot_event(
+                    {
+                        "type": "support_servicedesk_sweep_completed",
+                        **{key: value for key, value in result.items() if key != "results"},
+                    }
+                )
+            except Exception as exc:
+                self.host._append_bot_event(
+                    {
+                        "type": "support_servicedesk_sweep_failed",
+                        "error": self.host._truncate_text(str(exc), 500),
+                    }
+                )
+            await asyncio.sleep(interval)
+
+    async def _owner_work_watchdog_loop(self) -> None:
+        await self._simple_periodic_loop(
+            self.host._owner_work_watchdog_interval,
+            self.host._run_owner_work_watchdog_cycle,
+            "owner_work_watchdog_failed",
+        )
+
+    async def _release_gate_watchdog_loop(self) -> None:
+        await self._simple_periodic_loop(
+            self.host._release_gate_watchdog_interval,
+            self.host._run_release_gate_watchdog_cycle,
+            "release_gate_watchdog_failed",
+        )
+
+    async def _work_item_sla_watchdog_loop(self) -> None:
+        await self._simple_periodic_loop(
+            self.host._work_item_sla_watchdog_interval,
+            self.host._run_work_item_sla_cycle,
+            "work_item_sla_watchdog_failed",
+        )
+
+    async def _orchestrator_watchdog_loop(self) -> None:
+        await self._simple_periodic_loop(
+            self.host._orchestrator_watchdog_interval,
+            self.host._run_orchestrator_watchdog_cycle,
+            "orchestrator_watchdog_failed",
+        )
+
+    async def _split_brain_watchdog_loop(self) -> None:
+        await self._simple_periodic_loop(
+            self.host._split_brain_watchdog_interval,
+            self.host._run_split_brain_watchdog_cycle,
+            "split_brain_watchdog_failed",
+        )
+
+    async def _simple_periodic_loop(
+        self,
+        interval_getter: Any,
+        cycle: Any,
+        failure_event: str,
+    ) -> None:
+        interval = interval_getter()
+        if interval <= 0:
+            return
+        while True:
+            try:
+                await cycle()
+            except Exception as exc:
+                self.host._append_bot_event({"type": failure_event, "error": str(exc)})
+            await asyncio.sleep(interval)
+
+    async def _queue_recovery_loop(self) -> None:
+        interval = self.host._queue_recovery_interval_seconds()
+        if interval <= 0:
+            return
+        while True:
+            try:
+                for thread_id in self.host._load_turn_queues():
+                    if self.host._thread_is_active(thread_id):
+                        self.host._release_stale_active_turn(thread_id, "queue-recovery")
+                    if not self.host._thread_is_active(thread_id):
+                        self.host._schedule_queue_drain(thread_id)
+            except Exception as exc:
+                self.host._append_bot_event({"type": "queue_recovery_failed", "error": str(exc)})
+            await asyncio.sleep(interval)
+
+    async def _slack_backfill_loop(self) -> None:
+        interval = self.host._slack_backfill_interval_seconds()
+        if interval <= 0:
+            return
+        while True:
+            cooldown = self.host._slack_backfill_cooldown_remaining_seconds()
+            if cooldown > 0:
+                await asyncio.sleep(max(interval, cooldown))
+                continue
+            try:
+                await self.host._run_slack_backfill_cycle()
+            except Exception as exc:
+                self.host._append_bot_event({"type": "slack_backfill_loop_failed", "error": str(exc)})
+            await asyncio.sleep(interval)
 
 
 def _same_handler(left: Any, right: Any) -> bool:
