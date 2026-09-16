@@ -201,6 +201,29 @@ class WorkerSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(getattr(app.router.on_startup[0], "__self__", None), second)
         self.assertIs(getattr(app.router.on_shutdown[0], "__self__", None), second)
 
+    async def test_install_works_without_legacy_lifecycle_handlers(self) -> None:
+        host = _Host()
+        delattr(host.__class__, "startup")
+        delattr(host.__class__, "shutdown")
+        try:
+            app = FastAPI()
+            supervisor = install_worker_supervisor(app, host)
+
+            self.assertIs(app.state.worker_supervisor, supervisor)
+            self.assertEqual(len(app.router.on_startup), 1)
+            self.assertEqual(len(app.router.on_shutdown), 1)
+            self.assertIs(getattr(app.router.on_startup[0], "__self__", None), supervisor)
+            self.assertIs(getattr(app.router.on_shutdown[0], "__self__", None), supervisor)
+        finally:
+            async def startup(self) -> None:
+                raise AssertionError("legacy startup should have been removed")
+
+            async def shutdown(self) -> None:
+                raise AssertionError("legacy shutdown should have been removed")
+
+            setattr(_Host, "startup", startup)
+            setattr(_Host, "shutdown", shutdown)
+
     async def test_periodic_cycle_failures_are_isolated_and_reported(self) -> None:
         host = _Host()
         supervisor = WorkerSupervisor(host)
