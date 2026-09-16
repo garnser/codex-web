@@ -13,8 +13,9 @@ class ThreadRecoveryService:
     """Own stale-thread replacement and state retargeting.
 
     The compatibility host still stores replacement/failure maps while the
-    migration is in progress, but all mutation and replacement semantics live
-    here so callers share one implementation.
+    migration is in progress, but all replacement coordination lives here so
+    callers share one implementation. Subdomain mutations such as bot details
+    remain delegated through their host compatibility entrypoints.
     """
 
     def __init__(self, host: Any) -> None:
@@ -95,16 +96,6 @@ class ThreadRecoveryService:
         queues.setdefault(new_thread_id, []).extend(queued)
         h._save_turn_queues(queues)
 
-    def retarget_bot_details(self, old_thread_id: str, new_thread_id: str) -> None:
-        h = self.host
-        details = h._load_bot_details()
-        old_items = details.pop(old_thread_id, [])
-        if not old_items:
-            return
-        details.setdefault(new_thread_id, [])
-        details[new_thread_id] = (details[new_thread_id] + old_items)[-20:]
-        h._save_bot_details(details)
-
     def retarget_slack_thread_icon(self, old_thread_id: str, new_thread_id: str) -> None:
         h = self.host
         icons = h._load_slack_thread_icons()
@@ -120,7 +111,7 @@ class ThreadRecoveryService:
         self.retarget_thread_settings(old_thread_id, new_thread_id)
         self.retarget_active_turn(old_thread_id, new_thread_id)
         self.retarget_turn_queue(old_thread_id, new_thread_id)
-        self.retarget_bot_details(old_thread_id, new_thread_id)
+        h._retarget_bot_details(old_thread_id, new_thread_id)
         self.retarget_slack_thread_icon(old_thread_id, new_thread_id)
 
     async def archive_replaced_bot_thread(self, old_thread_id: str, new_thread_id: str) -> bool:
@@ -345,7 +336,6 @@ def install_thread_recovery_service(app: Any, host: Any) -> ThreadRecoveryServic
     host._retarget_thread_settings = service.retarget_thread_settings
     host._retarget_active_turn = service.retarget_active_turn
     host._retarget_turn_queue = service.retarget_turn_queue
-    host._retarget_bot_details = service.retarget_bot_details
     host._retarget_slack_thread_icon = service.retarget_slack_thread_icon
     host._retarget_bot_thread_state = service.retarget_bot_thread_state
     host._archive_replaced_bot_thread = service.archive_replaced_bot_thread
