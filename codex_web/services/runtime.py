@@ -4,10 +4,15 @@ import time
 from collections import Counter
 from typing import Any
 
+from fastapi import HTTPException
+
 
 class RuntimeService:
     def __init__(self, host: Any) -> None:
         self.host = host
+        # Preserve the historical direct-call healthz entrypoint without
+        # retaining a second implementation in the legacy runtime.
+        host.healthz = self.healthz
 
     async def status(self) -> dict[str, Any]:
         try:
@@ -26,6 +31,12 @@ class RuntimeService:
 
     def health(self) -> dict[str, Any]:
         return self.host._daemon_health()
+
+    async def healthz(self) -> dict[str, Any]:
+        health = self.health()
+        if not health["ok"]:
+            raise HTTPException(status_code=503, detail=health)
+        return health
 
     def operations(self, *, window_seconds: float = 900.0) -> dict[str, Any]:
         h = self.host

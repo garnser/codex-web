@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from codex_web.services.runtime import RuntimeService
 
@@ -16,10 +16,7 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
 
     @router.get("/api/healthz")
     async def healthz() -> dict[str, Any]:
-        health = service.health()
-        if not health["ok"]:
-            raise HTTPException(status_code=503, detail=health)
-        return health
+        return await service.healthz()
 
     @router.get("/api/operations")
     async def operations(window_seconds: float = 900.0) -> dict[str, Any]:
