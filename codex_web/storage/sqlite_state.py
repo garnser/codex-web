@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 class SQLiteStateStore:
@@ -23,8 +24,23 @@ class SQLiteStateStore:
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Provide transactional use while always closing the DB handle.
+
+        `sqlite3.Connection.__exit__` commits or rolls back but does not close the
+        connection. Keeping close ownership here avoids leaking file descriptors
+        across the many short state-store reads performed by the runtime.
+        """
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS state_documents (
@@ -36,7 +52,7 @@ class SQLiteStateStore:
             )
 
     def get(self, namespace: str) -> Any | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT payload FROM state_documents WHERE namespace = ?",
                 (namespace,),
@@ -47,7 +63,7 @@ class SQLiteStateStore:
 
     def put(self, namespace: str, payload: Any) -> None:
         serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
@@ -62,7 +78,7 @@ class SQLiteStateStore:
             connection.commit()
 
     def contains(self, namespace: str) -> bool:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT 1 FROM state_documents WHERE namespace = ?",
                 (namespace,),

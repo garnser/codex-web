@@ -11,6 +11,40 @@ from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
+class _TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.closed = False
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self.connection.__exit__(exc_type, exc_value, traceback)
+
+    def execute(self, *args, **kwargs):
+        return self.connection.execute(*args, **kwargs)
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def close(self) -> None:
+        self.closed = True
+        self.connection.close()
+
+
+class _TrackingStore(SQLiteStateStore):
+    def __init__(self, path: Path) -> None:
+        self.connections: list[_TrackingConnection] = []
+        super().__init__(path)
+
+    def _connect(self):
+        tracked = _TrackingConnection(super()._connect())
+        self.connections.append(tracked)
+        return tracked
+
+
 class SQLiteStateStoreTests(unittest.TestCase):
     def test_imports_legacy_json_once_and_uses_sqlite_as_primary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,8 +96,11 @@ class SQLiteStateStoreTests(unittest.TestCase):
             self.assertEqual(db_payload, file_payload)
             self.assertEqual(db_payload["thread-2"]["sandbox"], "workspace-write")
 
-            with sqlite3.connect(database) as connection:
+            connection = sqlite3.connect(database)
+            try:
                 journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+            finally:
+                connection.close()
             self.assertEqual(str(journal_mode).lower(), "wal")
 
     def test_private_compatibility_mirror_uses_restricted_permissions(self) -> None:
@@ -80,6 +117,17 @@ class SQLiteStateStoreTests(unittest.TestCase):
             repository.save({"thread": ThreadRunSettings(model="gpt-test")})
 
             self.assertEqual(legacy.stat().st_mode & 0o777, 0o600)
+
+    def test_every_store_connection_is_closed_after_use(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _TrackingStore(Path(tmp) / "codex-web.db")
+
+            store.put("example", {"value": 1})
+            self.assertEqual(store.get("example"), {"value": 1})
+            self.assertTrue(store.contains("example"))
+
+            self.assertGreaterEqual(len(store.connections), 4)
+            self.assertTrue(all(connection.closed for connection in store.connections))
 
 
 if __name__ == "__main__":
