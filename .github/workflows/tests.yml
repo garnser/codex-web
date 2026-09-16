@@ -41,6 +41,28 @@ jobs:
             node --check "$script"
           done
 
+      - name: Install Chromium browser test runtime
+        run: |
+          npm install --no-save @playwright/test@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run frontend browser tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m http.server 18766 --bind 127.0.0.1 > /tmp/codex-web-static.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" >/dev/null 2>&1 || true; cat /tmp/codex-web-static.log || true' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18766/static/index.html >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          npx playwright test tests/browser/thread_history.spec.js --workers=1 --reporter=line
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15

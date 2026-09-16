@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Thread history fixture</title>
+    <style>
+      #messages {
+        height: 120px;
+        overflow: auto;
+        width: 400px;
+      }
+      article.message {
+        box-sizing: border-box;
+        height: 24px;
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="thread-meta">thread-1 · Browser test</div>
+    <div id="thread-history-control"></div>
+    <div id="messages"></div>
+
+    <script>
+      window.__fetchBeforeThreadHistory = window.fetch;
+    </script>
+    <script src="/static/thread_history.js"></script>
+    <script>
+      const messages = document.getElementById("messages");
+      const history = window.codexThreadHistory;
+      window.__reloadCalls = [];
+
+      function message(index) {
+        const article = document.createElement("article");
+        article.className = "message";
+        article.dataset.index = String(index);
+        article.textContent = `message ${index}`;
+        return article;
+      }
+
+      for (let index = 60; index < 100; index += 1) {
+        messages.appendChild(message(index));
+      }
+
+      history.configure({
+        reloadThread: async (threadId) => {
+          const beforeHeight = messages.scrollHeight;
+          const fragment = document.createDocumentFragment();
+          for (let index = 20; index < 60; index += 1) {
+            fragment.appendChild(message(index));
+          }
+          messages.prepend(fragment);
+          const addedHeight = messages.scrollHeight - beforeHeight;
+          window.__reloadCalls.push({
+            threadId,
+            limit: history.messageLimit(threadId),
+            addedHeight,
+          });
+          history.recordThread(threadId, {
+            messagesTruncated: true,
+            messagesOmitted: 20,
+            messageLimit: 80,
+          });
+          history.afterThreadRendered(threadId, messages);
+        },
+      });
+      history.recordThread("thread-1", {
+        messagesTruncated: true,
+        messagesOmitted: 60,
+        messageLimit: 40,
+      });
+      history.afterThreadRendered("thread-1", messages);
+    </script>
+  </body>
+</html>

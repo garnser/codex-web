@@ -183,6 +183,21 @@ async function api(path, options = {}) {
   return result;
 }
 
+function threadHistoryController() {
+  return window.codexThreadHistory || null;
+}
+
+function scrollMessagesToBottom() {
+  const messages = $("messages");
+  if (!messages) return;
+  const history = threadHistoryController();
+  if (history?.requestBottomScroll) {
+    history.requestBottomScroll(messages);
+    return;
+  }
+  messages.scrollTo({ top: messages.scrollHeight, behavior: "auto" });
+}
+
 function replacementFrom(value) {
   const detail = value?.detail || value;
   if (!detail?.staleThreadReplaced && detail?.code !== "thread_replaced") return null;
@@ -935,7 +950,7 @@ function addMessage(role, text, type = role, timestamp = new Date()) {
   `;
   message.querySelector(".body").textContent = text || "";
   $("messages").appendChild(message);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
   return message;
 }
 
@@ -1024,7 +1039,7 @@ function addFileChangeMessage(changes, timestamp = new Date()) {
     summary.querySelector("small").textContent = label;
   });
   $("messages").appendChild(message);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
   return message;
 }
 
@@ -1064,7 +1079,7 @@ function addCommandMessage(label, command, output = "", open = false, timestamp 
     summary.querySelector("small").textContent = details.open ? expandedLabel : collapsedLabel;
   });
   $("messages").appendChild(message);
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
   return message;
 }
 
@@ -1074,7 +1089,7 @@ function appendAgentDelta(text) {
   }
   const body = state.activeAgentMessage.querySelector(".body");
   body.textContent += text;
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollMessagesToBottom();
 }
 
 function displayUserMessageText(text) {
@@ -1359,24 +1374,24 @@ async function loadThread(threadId) {
   state.threadId = threadId;
   updateWaitingFromState();
   renderTokenUsage();
-  const settings = currentRunSettings();
-  const threadOptions = selectedThreadTurnOptions(threadId);
-  const qs = new URLSearchParams({
-    project_id: state.projectId,
-    sandbox: settings.sandbox,
-    approval_policy: settings.approvalPolicy,
-  });
-  if (threadOptions.model) qs.set("model", threadOptions.model);
-  if (threadOptions.reasoningEffort) qs.set("reasoning_effort", threadOptions.reasoningEffort);
-  const data = await api(`/api/threads/${threadId}`);
+  const history = threadHistoryController();
+  const readQs = new URLSearchParams();
+  const messageLimit = history?.messageLimit?.(threadId);
+  if (messageLimit) readQs.set("message_limit", String(messageLimit));
+  const query = readQs.toString();
+  const data = await api(`/api/threads/${threadId}${query ? `?${query}` : ""}`);
   const thread = data.thread || data;
+  history?.recordThread?.(threadId, thread);
   hydrateThreadActivity(thread);
   await refreshQueueStatus(threadId);
   renderThread(thread);
+  history?.afterThreadRendered?.(threadId, $("messages"));
   renderThreads();
   renderTokenUsage();
   updateWaitingFromState();
 }
+
+threadHistoryController()?.configure?.({ reloadThread: loadThread });
 
 async function newThread() {
   persistRunSettings();
