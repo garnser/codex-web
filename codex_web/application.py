@@ -40,6 +40,7 @@ from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
+from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
@@ -124,6 +125,7 @@ bot_delivery_service = install_bot_delivery_service(
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
+thread_recovery_service = install_thread_recovery_service(app, core)
 bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
 slack_provider_service = install_slack_provider_service(
     app,
