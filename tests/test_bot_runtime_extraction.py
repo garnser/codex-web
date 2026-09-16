@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 import unittest
-from types import SimpleNamespace
 
 from fastapi import FastAPI
 
@@ -29,6 +28,14 @@ class _ProbeRuntime(BotRuntime):
     async def _run_connection(self, connection: BotConnection) -> None:
         self.started.append(connection.id)
         await asyncio.Event().wait()
+
+
+class _FakeSlackClient:
+    pass
+
+
+class _FakeTelegramClient:
+    pass
 
 
 class BotRuntimeExtractionTests(unittest.IsolatedAsyncioTestCase):
@@ -61,14 +68,18 @@ class BotRuntimeExtractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_installer_replaces_legacy_runtime_and_is_idempotent(self) -> None:
         host = _Host()
         app = FastAPI()
+        slack = _FakeSlackClient()
+        telegram = _FakeTelegramClient()
 
-        first = install_bot_runtime(app, host)
+        first = install_bot_runtime(app, host, slack_client=slack, telegram_client=telegram)
         second = install_bot_runtime(app, host)
 
         self.assertIs(first, second)
         self.assertIs(host.bot_runtime, first)
         self.assertIs(app.state.bot_runtime, first)
         self.assertEqual(type(first).__module__, "codex_web.runtime.bots")
+        self.assertIs(first.slack, slack)
+        self.assertIs(first.telegram, telegram)
 
 
 if __name__ == "__main__":

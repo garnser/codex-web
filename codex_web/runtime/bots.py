@@ -8,14 +8,24 @@ from typing import Any
 
 import websockets
 
+from codex_web.integrations.slack_client import SlackClient
+from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.models import BotConnection, BotInboundMessage
 
 
 class BotRuntime:
     """Own long-lived Slack/Telegram connection lifecycle outside core.py."""
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        slack_client: SlackClient | None = None,
+        telegram_client: TelegramClient | None = None,
+    ) -> None:
         self.host = host
+        self.slack = slack_client or SlackClient()
+        self.telegram = telegram_client or TelegramClient()
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
         self.slack_payload_locks: dict[str, asyncio.Lock] = {}
@@ -132,7 +142,7 @@ class BotRuntime:
 
     async def _run_slack(self, connection: BotConnection) -> None:
         assert connection.slack_app_token
-        socket_url = await asyncio.to_thread(self.host._slack_socket_url, connection.slack_app_token)
+        socket_url = await self.slack.socket_url(connection.slack_app_token)
         self.host._set_runtime_status(connection, "connecting", lastError=None)
         await self.host.hub.publish(
             {"type": "bot.runtime", "provider": "slack", "connectionId": connection.id, "status": "connected"}
@@ -216,8 +226,7 @@ class BotRuntime:
                 )
             if result.get("ambiguous") and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await asyncio.to_thread(
-                    self.host._post_slack_message,
+                await self.slack.post_message(
                     connection.bot_token,
                     channel,
                     self.host._ambiguous_route_message(result.get("availablePrefixes") or []),
@@ -227,8 +236,7 @@ class BotRuntime:
                 )
             elif result.get("timedOut") and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await asyncio.to_thread(
-                    self.host._post_slack_message,
+                await self.slack.post_message(
                     connection.bot_token,
                     channel,
                     "Codex is still busy starting that turn, so I could not steer it yet.",
@@ -257,8 +265,7 @@ class BotRuntime:
             )
             if channel and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await asyncio.to_thread(
-                    self.host._post_slack_message,
+                await self.slack.post_message(
                     connection.bot_token,
                     channel,
                     f"Codex could not handle that Slack message: {self.host._truncate_text(str(exc), 500)}",
@@ -275,10 +282,7 @@ class BotRuntime:
             {"type": "bot.runtime", "provider": "telegram", "connectionId": connection.id, "status": "polling"}
         )
         while True:
-            url = f"https://api.telegram.org/bot{connection.bot_token}/getUpdates?timeout=0"
-            if offset is not None:
-                url += f"&offset={offset}"
-            response = await asyncio.to_thread(self.host._get_json, url)
+            response = await self.telegram.get_updates(connection.bot_token, offset=offset, timeout=0)
             if not response.get("ok"):
                 raise RuntimeError(f"Telegram getUpdates failed: {response}")
             for update in response.get("result") or []:
@@ -314,7 +318,13 @@ class BotRuntime:
             await asyncio.sleep(10)
 
 
-def install_bot_runtime(app: Any, host: Any) -> BotRuntime:
+def install_bot_runtime(
+    app: Any,
+    host: Any,
+    *,
+    slack_client: SlackClient | None = None,
+    telegram_client: TelegramClient | None = None,
+) -> BotRuntime:
     """Replace the compatibility BotRuntime instance before lifecycle startup."""
 
     existing = getattr(app.state, "bot_runtime", None)
@@ -322,7 +332,11 @@ def install_bot_runtime(app: Any, host: Any) -> BotRuntime:
         host.bot_runtime = existing
         return existing
 
-    runtime = BotRuntime(host)
+    runtime = BotRuntime(
+        host,
+        slack_client=slack_client,
+        telegram_client=telegram_client,
+    )
     host.bot_runtime = runtime
     app.state.bot_runtime = runtime
     return runtime
