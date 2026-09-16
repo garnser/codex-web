@@ -4,7 +4,16 @@ import unittest
 
 from pydantic import ValidationError
 
-from codex_web.models import BotConnectionCreate, ProjectCreate, ThreadRunSettings, TurnCreate
+from codex_web.models import (
+    AgentChannelPresenceProjectSettings,
+    AgentChannelPresenceSettings,
+    BotConnectionCreate,
+    GitLabProjectRoutingSettings,
+    GitLabRoutingSettings,
+    ProjectCreate,
+    ThreadRunSettings,
+    TurnCreate,
+)
 
 
 class ApiModelValidationTests(unittest.TestCase):
@@ -38,6 +47,31 @@ class ApiModelValidationTests(unittest.TestCase):
         bot = BotConnectionCreate(provider="slack", name="team bot")
         self.assertEqual(project.sandbox, "workspace-write")
         self.assertEqual(bot.provider, "slack")
+
+    def test_fresh_integration_models_do_not_embed_deployment_topology(self) -> None:
+        self.assertEqual(AgentChannelPresenceProjectSettings().agent_channels, {})
+        self.assertEqual(AgentChannelPresenceSettings().projects, {})
+        self.assertEqual(GitLabRoutingSettings().projects, {})
+
+    def test_explicit_integration_topology_round_trips(self) -> None:
+        presence = AgentChannelPresenceSettings(
+            projects={
+                "project-a": AgentChannelPresenceProjectSettings(
+                    agent_channels={"agent-a": ["channel-a"]}
+                )
+            }
+        )
+        routing = GitLabRoutingSettings(
+            projects={
+                "project-a": GitLabProjectRoutingSettings(
+                    project_paths=["example/team"],
+                    channel_ids=["channel-a"],
+                )
+            }
+        )
+
+        self.assertEqual(presence.projects["project-a"].agent_channels["agent-a"], ["channel-a"])
+        self.assertEqual(routing.projects["project-a"].project_paths, ["example/team"])
 
 
 if __name__ == "__main__":

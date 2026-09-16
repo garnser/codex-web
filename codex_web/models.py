@@ -310,24 +310,11 @@ class BotRouteTest(BaseModel):
 
 
 class AgentChannelPresenceProjectSettings(BaseModel):
-    agent_channels: dict[str, list[str]] = Field(
-        default_factory=lambda: {
-            "carl": ["C0B9591ESTB"],
-            "dana": ["C0B9C6MGZ5X"],
-            "james": ["C0B9591ESTB"],
-            "nora": ["C0B9591ESTB"],
-            "quinn": ["C0B9591ESTB"],
-            "riley": ["C0B9591ESTB"],
-        }
-    )
+    agent_channels: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class AgentChannelPresenceSettings(BaseModel):
-    projects: dict[str, AgentChannelPresenceProjectSettings] = Field(
-        default_factory=lambda: {
-            "a956644fc336": AgentChannelPresenceProjectSettings()
-        }
-    )
+    projects: dict[str, AgentChannelPresenceProjectSettings] = Field(default_factory=dict)
 
 
 class GitLabProjectRoutingSettings(BaseModel):
@@ -347,8 +334,4 @@ class GitLabProjectRoutingSettings(BaseModel):
 class GitLabRoutingSettings(BaseModel):
     enabled: bool = True
     ignored_event_kinds: list[str] = Field(default_factory=lambda: ["note", "wiki_page"])
-    projects: dict[str, GitLabProjectRoutingSettings] = Field(
-        default_factory=lambda: {
-            "a956644fc336": GitLabProjectRoutingSettings(project_paths=["veridataops/"])
-        }
-    )
+    projects: dict[str, GitLabProjectRoutingSettings] = Field(default_factory=dict)
