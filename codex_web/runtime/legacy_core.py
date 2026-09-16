@@ -4817,61 +4817,20 @@ def _basic_auth_credentials(header_value: str | None) -> tuple[str, str] | None:
     return username, password
 
 
-@app.get("/api/auth-verifier")
-async def auth_verifier(request: Request) -> dict[str, Any]:
-    expected = _codex_verifier_credentials()
-    if not expected:
-        raise HTTPException(status_code=404, detail="auth verifier disabled")
-    provided = _basic_auth_credentials(request.headers.get("authorization"))
-    if (
-        not provided
-        or not hmac.compare_digest(provided[0], expected[0])
-        or not hmac.compare_digest(provided[1], expected[1])
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="authentication required",
-            headers={"WWW-Authenticate": 'Basic realm="VeridataOps codex-web verifier"'},
-        )
-    health = _daemon_health()
-    return {
-        "ok": health["ok"],
-        "verified": True,
-        "mode": "basic-auth-verifier",
-        "version": _static_version(),
-    }
 
 
-@app.get("/api/diagnostics")
-async def diagnostics(project_id: str | None = None) -> dict[str, Any]:
-    return _diagnostic_snapshot(project_id)
 
 
-@app.post("/api/diagnostics/route-test")
-async def diagnostics_route_test(payload: BotRouteTest) -> dict[str, Any]:
-    return _preview_bot_route(payload)
 
 
-@app.get("/api/integrations/agent-presence")
-async def get_agent_channel_presence() -> dict[str, Any]:
-    return _agent_channel_presence_payload(_load_agent_channel_presence_settings())
 
 
 def _agent_channel_presence_payload(settings: AgentChannelPresenceSettings) -> dict[str, Any]:
     return settings.model_dump()
 
 
-@app.post("/api/integrations/agent-presence")
-async def update_agent_channel_presence(payload: AgentChannelPresenceSettings) -> dict[str, Any]:
-    settings = _save_agent_channel_presence_settings(payload)
-    _append_bot_event({"type": "agent_channel_presence_updated", "settings": settings.model_dump()})
-    await hub.publish({"type": "agent.channels.updated", "settings": _agent_channel_presence_payload(settings)})
-    return {"ok": True, **_agent_channel_presence_payload(settings)}
 
 
-@app.get("/api/integrations/gitlab")
-async def get_gitlab_integration() -> dict[str, Any]:
-    return _gitlab_integration_payload(_load_gitlab_routing_settings())
 
 
 def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, Any]:
@@ -4885,23 +4844,8 @@ def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, An
     }
 
 
-@app.post("/api/integrations/gitlab")
-async def update_gitlab_integration(payload: GitLabRoutingSettings) -> dict[str, Any]:
-    settings = _save_gitlab_routing_settings(payload)
-    _append_bot_event({"type": "gitlab_routing_updated", "settings": settings.model_dump()})
-    await hub.publish({"type": "gitlab.routing.updated", "settings": _gitlab_integration_payload(settings)})
-    return {"ok": True, **_gitlab_integration_payload(settings)}
 
 
-@app.post("/api/integrations/gitlab/support-servicedesk/sweep")
-async def sweep_support_servicedesk() -> dict[str, Any]:
-    if not _gitlab_api_token():
-        raise HTTPException(status_code=503, detail="GitLab token is not configured for Support ServiceDesk sweep")
-    try:
-        return await _run_support_servicedesk_sweep_once()
-    except Exception as exc:
-        _append_bot_event({"type": "support_servicedesk_sweep_failed", "error": _truncate_text(str(exc), 500)})
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 
