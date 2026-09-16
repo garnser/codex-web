@@ -130,17 +130,21 @@ class BotTargetService:
     def master_reply_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
         if binding.is_master:
             return None
+        h = self.host
         candidates = [
             candidate
-            for candidate in self.host._bindings_for_project(binding.provider, binding.project_id)
+            for candidate in h._bindings_for_project(binding.provider, binding.project_id)
             if candidate.is_master and candidate.external_conversation_id == binding.external_conversation_id
         ]
         candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
         for candidate in candidates:
+            # Keep the host-level compatibility seam intact. Existing consumers
+            # and tests can replace one target source without replacing the
+            # entire target-selection service.
             target = (
-                self.active_reply_target_for_binding(candidate)
-                or self.reply_target_for_binding(candidate)
-                or self.delivery_target_for_binding(candidate)
+                h._active_reply_target_for_binding(candidate)
+                or h._reply_target_for_binding(candidate)
+                or h._delivery_target_for_binding(candidate)
             )
             if target:
                 return target
@@ -151,34 +155,36 @@ class BotTargetService:
         binding: BotBinding,
         reply_in_thread: bool | None = None,
     ) -> tuple[BotReplyTarget | None, bool]:
-        active_target = self.active_reply_target_for_binding(binding)
+        h = self.host
+        active_target = h._active_reply_target_for_binding(binding)
         if active_target:
             return active_target, True if reply_in_thread is None else reply_in_thread
 
-        own_target = self.reply_target_for_binding(binding)
+        own_target = h._reply_target_for_binding(binding)
         if own_target:
-            should_thread = self.host._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             return own_target, should_thread
 
-        master_target = self.master_reply_target_for_binding(binding)
+        master_target = h._master_reply_target_for_binding(binding)
         if master_target:
             return master_target, True if reply_in_thread is None else reply_in_thread
 
-        delivery_target = self.delivery_target_for_binding(binding)
+        delivery_target = h._delivery_target_for_binding(binding)
         if delivery_target:
-            should_thread = self.host._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             if should_thread:
                 return delivery_target, True
 
         return None, False if reply_in_thread is None else reply_in_thread
 
     def outbound_bindings_for_thread(self, thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
-        targets = self.host._load_bot_reply_targets()
+        h = self.host
+        targets = h._load_bot_reply_targets()
 
         def score(binding: BotBinding) -> tuple[int, float, int, float]:
-            active_target = self.active_reply_target_for_thread_provider(binding.thread_id, binding.provider)
+            active_target = h._active_reply_target_for_thread_provider(binding.thread_id, binding.provider)
             if active_target:
-                target = self.active_reply_target_for_binding(binding)
+                target = h._active_reply_target_for_binding(binding)
                 return (
                     2 if target else 0,
                     target.updated_at if target else 0,
@@ -186,7 +192,7 @@ class BotTargetService:
                     binding.updated_at,
                 )
             target = targets.get(self.reply_target_key(binding))
-            target_score = target.updated_at if (target and self.host._should_reply_in_external_thread(binding)) else 0
+            target_score = target.updated_at if (target and h._should_reply_in_external_thread(binding)) else 0
             return (
                 1 if target_score else 0,
                 target_score,
@@ -209,7 +215,7 @@ class BotTargetService:
             key = (binding.provider, binding.external_conversation_id, binding.thread_id)
             if key in seen or selected.get(binding.provider) is None:
                 continue
-            if self.active_reply_target_for_binding(binding) or self.reply_target_for_binding(binding):
+            if h._active_reply_target_for_binding(binding) or h._reply_target_for_binding(binding):
                 continue
             if binding.post_in_thread:
                 continue
