@@ -190,215 +190,30 @@ def _atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
                 temporary_path.unlink()
 
 
-def _reply_target_key(binding: BotBinding) -> str:
-    return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
 
 
-def _conversation_target_for_binding(binding: BotBinding) -> BotReplyTarget:
-    return BotReplyTarget(
-        thread_id=binding.thread_id,
-        provider=binding.provider,
-        external_conversation_id=binding.external_conversation_id,
-        external_thread_id=None,
-        message_id=None,
-        updated_at=time.time(),
-    )
 
 
-def _external_target_key(provider: str, external_conversation_id: str, external_id: str) -> str:
-    return f"{provider}:{external_conversation_id}:external:{external_id}"
 
 
-def _remember_bot_reply_target(binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
-    if not message.external_thread_id and not message.message_id:
-        return None
-    targets = _load_bot_reply_targets()
-    target = BotReplyTarget(
-        thread_id=binding.thread_id,
-        provider=binding.provider,
-        external_conversation_id=binding.external_conversation_id,
-        external_thread_id=message.external_thread_id,
-        message_id=message.message_id,
-        updated_at=time.time(),
-    )
-    targets[_reply_target_key(binding)] = target
-    for external_id in {message.external_thread_id, message.message_id}:
-        if external_id:
-            targets[_external_target_key(binding.provider, binding.external_conversation_id, external_id)] = target
-    _save_bot_reply_targets(targets)
-    return target
 
 
-def _reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
-    targets = _load_bot_reply_targets()
-    target = targets.get(_reply_target_key(binding)) or targets.get(binding.thread_id)
-    if not target:
-        return None
-    if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
-        return None
-    return target
 
 
-def _delivery_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
-    targets = _load_bot_delivery_targets()
-    target = targets.get(_reply_target_key(binding)) or targets.get(binding.thread_id)
-    if not target:
-        return None
-    if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
-        return None
-    return target
 
 
-def _active_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
-    active = _load_active_turns().get(binding.thread_id)
-    target = active.reply_target if active else None
-    if not target:
-        return None
-    if target.provider != binding.provider or target.external_conversation_id != binding.external_conversation_id:
-        return None
-    return target
 
 
-def _active_reply_target_for_thread_provider(thread_id: str, provider: str) -> BotReplyTarget | None:
-    active = _load_active_turns().get(thread_id)
-    target = active.reply_target if active else None
-    if target and target.provider == provider:
-        return target
-    return None
 
 
-def _target_for_external_thread(
-    provider: str,
-    external_conversation_id: str,
-    external_thread_id: str | None,
-) -> BotReplyTarget | None:
-    if not external_thread_id:
-        return None
-    normalized_provider = provider.lower()
-    for targets in (_load_bot_reply_targets(), _load_bot_delivery_targets()):
-        direct = targets.get(_external_target_key(normalized_provider, external_conversation_id, external_thread_id))
-        if direct:
-            return direct
-        for target in targets.values():
-            if target.provider != normalized_provider or target.external_conversation_id != external_conversation_id:
-                continue
-            if target.external_thread_id == external_thread_id or target.message_id == external_thread_id:
-                return target
-    return None
 
 
-def _remember_bot_delivery_target(binding: BotBinding, delivery: dict[str, Any]) -> None:
-    response = delivery.get("providerResponse") or {}
-    ts = response.get("ts")
-    if not delivery.get("sent") or not ts:
-        return
-    targets = _load_bot_delivery_targets()
-    target = BotReplyTarget(
-        thread_id=binding.thread_id,
-        provider=binding.provider,
-        external_conversation_id=binding.external_conversation_id,
-        external_thread_id=str(ts),
-        message_id=str(ts),
-        updated_at=time.time(),
-    )
-    targets[_reply_target_key(binding)] = target
-    targets[_external_target_key(binding.provider, binding.external_conversation_id, str(ts))] = target
-    _save_bot_delivery_targets(targets)
 
 
-def _master_reply_target_for_binding(binding: BotBinding) -> BotReplyTarget | None:
-    if binding.is_master:
-        return None
-    candidates = [
-        candidate
-        for candidate in _bindings_for_project(binding.provider, binding.project_id)
-        if candidate.is_master and candidate.external_conversation_id == binding.external_conversation_id
-    ]
-    candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
-    for candidate in candidates:
-        target = (
-            _active_reply_target_for_binding(candidate)
-            or _reply_target_for_binding(candidate)
-            or _delivery_target_for_binding(candidate)
-        )
-        if target:
-            return target
-    return None
 
 
-def _thread_target_for_outbound(binding: BotBinding, reply_in_thread: bool | None = None) -> tuple[BotReplyTarget | None, bool]:
-    active_target = _active_reply_target_for_binding(binding)
-    if active_target:
-        return active_target, True if reply_in_thread is None else reply_in_thread
-
-    own_target = _reply_target_for_binding(binding)
-    if own_target:
-        should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
-        return own_target, should_thread
-
-    master_target = _master_reply_target_for_binding(binding)
-    if master_target:
-        return master_target, True if reply_in_thread is None else reply_in_thread
-
-    delivery_target = _delivery_target_for_binding(binding)
-    if delivery_target:
-        should_thread = _should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
-        if should_thread:
-            return delivery_target, True
-
-    return None, False if reply_in_thread is None else reply_in_thread
 
 
-def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
-    targets = _load_bot_reply_targets()
-
-    def score(binding: BotBinding) -> tuple[int, float, int, float]:
-        active_target = _active_reply_target_for_thread_provider(binding.thread_id, binding.provider)
-        if active_target:
-            target = _active_reply_target_for_binding(binding)
-            return (
-                2 if target else 0,
-                target.updated_at if target else 0,
-                0,
-                binding.updated_at,
-            )
-        target = targets.get(_reply_target_key(binding))
-        target_score = target.updated_at if (target and _should_reply_in_external_thread(binding)) else 0
-        return (
-            1 if target_score else 0,
-            target_score,
-            1 if binding.is_primary_channel else 0,
-            binding.updated_at,
-        )
-
-    selected: dict[str, BotBinding] = {}
-    for binding in bindings:
-        current = selected.get(binding.provider)
-        if current is None or score(binding) > score(current):
-            selected[binding.provider] = binding
-
-    ordered: list[BotBinding] = list(selected.values())
-    seen = {
-        (binding.provider, binding.external_conversation_id, binding.thread_id)
-        for binding in ordered
-    }
-    for binding in bindings:
-        key = (binding.provider, binding.external_conversation_id, binding.thread_id)
-        if key in seen:
-            continue
-        primary = selected.get(binding.provider)
-        if primary is None:
-            continue
-        # Keep the best interactive binding per provider, but also mirror agent
-        # updates into any additional passive report-channel bindings explicitly
-        # attached to the same thread.
-        if _active_reply_target_for_binding(binding) or _reply_target_for_binding(binding):
-            continue
-        if binding.post_in_thread:
-            continue
-        ordered.append(binding)
-        seen.add(key)
-    return ordered
 
 
 
@@ -1519,22 +1334,6 @@ def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
 
 
 
-def _retarget_bot_targets(old_thread_id: str, new_thread_id: str) -> None:
-    def rewrite(targets: dict[str, BotReplyTarget]) -> dict[str, BotReplyTarget]:
-        rewritten: dict[str, BotReplyTarget] = {}
-        for key, target in targets.items():
-            next_key = key
-            if key == old_thread_id:
-                next_key = new_thread_id
-            elif key.endswith(f":{old_thread_id}") and ":external:" not in key:
-                next_key = f"{key.rsplit(':', 1)[0]}:{new_thread_id}"
-            if target.thread_id == old_thread_id:
-                target = target.model_copy(update={"thread_id": new_thread_id, "updated_at": time.time()})
-            rewritten[next_key] = target
-        return rewritten
-
-    _save_bot_reply_targets(rewrite(_load_bot_reply_targets()))
-    _save_bot_delivery_targets(rewrite(_load_bot_delivery_targets()))
 
 
 
@@ -2180,19 +1979,6 @@ async def _set_thread_primary_channel(
     return [binding for binding in bindings if binding.thread_id == thread_id and binding.project_id == project.id]
 
 
-def _forget_bot_reply_target(thread_id: str) -> None:
-    for loader, saver in (
-        (_load_bot_reply_targets, _save_bot_reply_targets),
-        (_load_bot_delivery_targets, _save_bot_delivery_targets),
-    ):
-        targets = loader()
-        removed = False
-        for key, target in list(targets.items()):
-            if key == thread_id or target.thread_id == thread_id:
-                targets.pop(key, None)
-                removed = True
-        if removed:
-            saver(targets)
 
 
 def _project(project_id: str | None) -> Project:
