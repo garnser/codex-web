@@ -1,0 +1,51 @@
+name: Apply Executive contract UI
+
+on:
+  push:
+    branches:
+      - feature/executive-agent-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message != 'Expose execution role contracts in Executive UI'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/executive-agent-contracts
+      - name: Patch Executive UI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('static/executive-ui.js')
+          s=p.read_text()
+          reps={
+          '''  agents: [],\n  activeAgent: 'chief-of-staff',''':'''  agents: [],\n  executionRoles: [],\n  activeAgent: 'chief-of-staff',''',
+          '''  const approvalPolicy = document.getElementById('approval-policy')?.value || null;\n  setExecutiveStatus(drawer, 'Delegating to Codex…');''':'''  const approvalPolicy = document.getElementById('approval-policy')?.value || null;\n  const executionRoleId = drawer.querySelector('#executive-execution-role')?.value || null;\n  const changeClassification = drawer.querySelector('#executive-change-classification')?.value || null;\n  setExecutiveStatus(drawer, 'Delegating to Codex…');''',
+          '''        agent_id: executiveState.lastAgent,\n        project_id: projectId,''':'''        agent_id: executiveState.lastAgent,\n        execution_role_id: executionRoleId,\n        change_classification: changeClassification,\n        project_id: projectId,''',
+          '''    setExecutiveStatus(drawer, `Delegated to thread ${result.threadId} · ${result.sandbox} · ${result.approvalPolicy}`, 'ok');''':'''    const roleName = result.executionRole?.name || 'auto-routed role';\n    setExecutiveStatus(drawer, `Delegated to ${roleName} · thread ${result.threadId} · ${result.sandbox} · ${result.approvalPolicy}`, 'ok');''',
+          '''  executiveState.agents = agentData.agents || [];\n  executiveState.provider = agentData;''':'''  executiveState.agents = agentData.agents || [];\n  executiveState.executionRoles = agentData.executionRoles || [];\n  executiveState.provider = agentData;''',
+          '''  const projectSelect = drawer.querySelector('#executive-project');''':'''  const executionRoleSelect = drawer.querySelector('#executive-execution-role');\n  executionRoleSelect.innerHTML = '<option value="">Auto-route from objective</option>';\n  executiveState.executionRoles.forEach((role) => {\n    const option = document.createElement('option');\n    option.value = role.id;\n    option.textContent = `${role.name} · ${role.lane}`;\n    option.title = role.description || '';\n    executionRoleSelect.appendChild(option);\n  });\n\n  const projectSelect = drawer.querySelector('#executive-project');''',
+          '''      <label>Codex project<select id="executive-project"></select></label>\n      <label class="wide"><input type="checkbox" id="executive-runtime-context"> Include Codex operational context in LLM request</label>''':'''      <label>Codex project<select id="executive-project"></select></label>\n      <label>Execution role<select id="executive-execution-role"><option value="">Auto-route from objective</option></select></label>\n      <label>Change class<select id="executive-change-classification"><option value="">Agent classifies before work</option><option value="cosmetic-only">Cosmetic only</option><option value="localized functional">Localized functional</option><option value="shared-surface">Shared surface</option><option value="release/security-sensitive">Release / security sensitive</option></select></label>\n      <label class="wide"><input type="checkbox" id="executive-runtime-context"> Include Codex operational context in LLM request</label>''',
+          '''      <div class="executive-note">Use <strong>Executive advisor</strong> for one functional leader or <strong>Board review</strong> for a multi-function decision. “Delegate to Codex” hands the resulting objective to a native Codex thread and preserves the current workspace sandbox and approval policy.</div>''':'''      <div class="executive-note">Use <strong>Executive advisor</strong> for one functional leader or <strong>Board review</strong> for a multi-function decision. “Delegate to Codex” auto-routes or explicitly selects an operational execution contract (James, Dana, Quinn, Release Manager, etc.), preserves sandbox/approval policy, and keeps advisory personas separate from execution ownership.</div>''',
+          }
+          for old,new in reps.items():
+              if old not in s:
+                  raise SystemExit(f'missing expected UI anchor: {old[:100]}')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/apply-executive-contract-ui.yml
+      - name: Validate JavaScript
+        run: node --check static/executive-ui.js
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add static/executive-ui.js .github/workflows/apply-executive-contract-ui.yml
+          git commit -m 'Expose execution role contracts in Executive UI'
+          git push origin HEAD:feature/executive-agent-contracts
