@@ -115,16 +115,28 @@ class ExecutiveIntegrationTests(unittest.TestCase):
 
             first = install_executive_integrated(app, host)
             second = install_executive_integrated(app, host)
-            executive_paths = [
+            executive_paths = {
                 path
                 for path in app.openapi().get("paths", {})
                 if path.startswith("/api/executive/")
-            ]
+            }
+            provider_status = first.provider_status()
 
         self.assertIs(first, second)
-        self.assertEqual(len(executive_paths), 5)
-        self.assertEqual(len(executive_paths), len(set(executive_paths)))
-        self.assertEqual(first.provider_status()["stateBackend"], "sqlite")
+        self.assertEqual(
+            executive_paths,
+            {
+                "/api/executive/agents",
+                "/api/executive/context",
+                "/api/executive/knowledge",
+                "/api/executive/knowledge/{entry_id}",
+                "/api/executive/runtime",
+                "/api/executive/chat",
+                "/api/executive/delegate",
+            },
+        )
+        self.assertEqual(provider_status["stateBackend"], "sqlite")
+        self.assertEqual(provider_status["knowledgeBackend"], "sqlite")
 
     def test_ollama_defaults_are_local_and_do_not_require_key_at_construction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(

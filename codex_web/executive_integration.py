@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import time
@@ -15,6 +16,10 @@ from codex_web.executive import (
     ExecutiveChatRequest,
     ExecutiveService,
 )
+from codex_web.services.executive_knowledge import (
+    ExecutiveKnowledgeStore,
+    ExecutiveKnowledgeUpsert,
+)
 from codex_web.storage.executive_state import ExecutiveStateStore
 
 
@@ -27,6 +32,11 @@ class MultiProviderExecutiveService(ExecutiveService):
         # rest of codex-web, importing legacy JSON on first access and keeping
         # compatibility mirrors for rollback.
         self.store = ExecutiveStateStore(host)
+        self.knowledge = ExecutiveKnowledgeStore(host)
+        self._knowledge_prompt: contextvars.ContextVar[str] = contextvars.ContextVar(
+            "executive_knowledge_prompt",
+            default="",
+        )
         self.provider = (os.environ.get("CODEX_WEB_EXECUTIVE_PROVIDER") or "openai").strip().lower()
         if self.provider not in {"openai", "ollama", "openai-compatible"}:
             self.provider = "openai-compatible"
@@ -59,6 +69,16 @@ class MultiProviderExecutiveService(ExecutiveService):
         return self._openai_client
 
     async def _respond(self, instructions: str, messages: list[dict[str, str]]) -> str:
+        knowledge_prompt = self._knowledge_prompt.get()
+        if knowledge_prompt:
+            instructions = (
+                f"{instructions}\n\nDURABLE COMPANY / PROJECT KNOWLEDGE\n"
+                "The following entries are explicitly maintained operational knowledge. "
+                "Use them as factual context, preserve their scope/provenance, and do not "
+                "invent facts that are not present.\n"
+                f"{knowledge_prompt}"
+            )
+
         client = self._client()
         if self.provider == "openai":
             response = await client.responses.create(
@@ -129,9 +149,31 @@ class MultiProviderExecutiveService(ExecutiveService):
         self.store.replace_history(session_id, [compacted, *recent])
 
     async def chat(self, request: ExecutiveChatRequest):
-        result = await super().chat(request)
+        knowledge_prompt = self.knowledge.prompt_for(request.message)
+        token = self._knowledge_prompt.set(knowledge_prompt)
+        try:
+            result = await super().chat(request)
+        finally:
+            self._knowledge_prompt.reset(token)
         await self._compact_session_if_needed(request.session_id)
         return result
+
+    async def delegate(self, request: DelegateRequest) -> dict[str, Any]:
+        project_id = request.project_id
+        if request.work_item_ref:
+            try:
+                state = self.host._work_item_state(request.work_item_ref)
+                project_id = state.project_id or project_id
+            except Exception:
+                pass
+        knowledge_prompt = self.knowledge.prompt_for(request.task, project_id=project_id)
+        if knowledge_prompt:
+            existing = request.executive_reply.strip()
+            augmented = (
+                (existing + "\n\n") if existing else ""
+            ) + "Durable company/project knowledge:\n" + knowledge_prompt
+            request = request.model_copy(update={"executive_reply": augmented})
+        return await super().delegate(request)
 
     def provider_status(self) -> dict[str, Any]:
         return {
@@ -144,6 +186,8 @@ class MultiProviderExecutiveService(ExecutiveService):
             "maxContextTokens": self.store.max_context_tokens,
             "compactTargetTokens": self.store.compact_target_tokens,
             "stateBackend": "sqlite",
+            "knowledgeEntries": len(self.knowledge.list()),
+            "knowledgeBackend": "sqlite",
         }
 
 
@@ -180,6 +224,33 @@ def install_executive_integrated(app: FastAPI, host: Any) -> MultiProviderExecut
     @router.post("/api/executive/context")
     async def update_context(payload: ContextUpdate) -> dict[str, Any]:
         return {"ok": True, "company": service.store.save_company(payload.company).model_dump()}
+
+    @router.get("/api/executive/knowledge")
+    async def list_knowledge(
+        scope: str | None = None,
+        project_id: str | None = None,
+        q: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if q:
+            entries = service.knowledge.search(q, project_id=project_id, limit=limit)
+        else:
+            entries = service.knowledge.list(scope=scope, project_id=project_id)[: max(1, min(limit, 100))]
+        return {"items": [entry.model_dump() for entry in entries]}
+
+    @router.post("/api/executive/knowledge")
+    async def upsert_knowledge(payload: ExecutiveKnowledgeUpsert) -> dict[str, Any]:
+        try:
+            entry = service.knowledge.upsert(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True, "item": entry.model_dump()}
+
+    @router.delete("/api/executive/knowledge/{entry_id}")
+    async def delete_knowledge(entry_id: str) -> dict[str, Any]:
+        if not service.knowledge.delete(entry_id):
+            raise HTTPException(status_code=404, detail="Executive knowledge entry not found")
+        return {"ok": True}
 
     @router.get("/api/executive/runtime")
     async def executive_runtime() -> dict[str, Any]:
