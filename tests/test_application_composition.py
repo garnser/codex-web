@@ -53,6 +53,7 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/status": "runtime",
             "/api/approvals": "approvals",
             "/api/bots/channels": "bots",
+            "/bots/slack/events": "bots",
             "/api/work-items": "work-items",
             "/": "ui",
             "/api/auth-verifier": "system",
@@ -77,6 +78,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["threads"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["runtime"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["bots"], 0)
+        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["slack"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["work-items"], 0)
 
 

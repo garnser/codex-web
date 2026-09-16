@@ -31,6 +31,37 @@ class SlackClient:
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
+    async def _get_with_metadata(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        token: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        response = await client.get(
+            f"https://slack.com/api/{method}",
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        data = payload if isinstance(payload, dict) else {}
+        data["_http_status"] = response.status_code
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                data["_retry_after"] = max(0.0, float(retry_after))
+            except ValueError:
+                pass
+        if response.status_code == 429:
+            data.setdefault("ok", False)
+            data.setdefault("error", "ratelimited")
+            return data
+        response.raise_for_status()
+        return data
+
     async def _post(
         self,
         client: httpx.AsyncClient,
@@ -100,6 +131,44 @@ class SlackClient:
             "name": name,
             "label": name if name.startswith("#") else f"#{name}",
         }
+
+    async def history(
+        self,
+        token: str,
+        channel: str,
+        *,
+        oldest: str,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            return await self._get_with_metadata(
+                client,
+                "conversations.history",
+                token,
+                {"channel": channel, "oldest": oldest, "limit": str(limit)},
+            )
+
+    async def replies(
+        self,
+        token: str,
+        channel: str,
+        thread_ts: str,
+        *,
+        oldest: str,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        async with self._client() as client:
+            return await self._get_with_metadata(
+                client,
+                "conversations.replies",
+                token,
+                {
+                    "channel": channel,
+                    "ts": thread_ts,
+                    "oldest": oldest,
+                    "limit": str(limit),
+                },
+            )
 
     async def socket_url(self, app_token: str) -> str:
         async with self._client() as client:
