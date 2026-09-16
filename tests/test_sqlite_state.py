@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -63,8 +64,6 @@ class SQLiteStateStoreTests(unittest.TestCase):
             self.assertEqual(loaded["thread-1"].sandbox, "read-only")
             self.assertTrue(store.contains("thread_settings"))
 
-            # Once migrated, the database is authoritative rather than a stale
-            # or manually modified compatibility file.
             legacy.write_text(json.dumps({"thread-1": {"sandbox": "workspace-write"}}))
             loaded_again = repository.load()
             self.assertEqual(loaded_again["thread-1"].sandbox, "read-only")
@@ -103,6 +102,54 @@ class SQLiteStateStoreTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(str(journal_mode).lower(), "wal")
 
+    def test_concurrent_snapshots_merge_unrelated_map_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SQLiteStateStore(root / "codex-web.db")
+            legacy = root / "thread_settings.json"
+            first = ModelMapRepository(
+                store,
+                namespace="thread_settings",
+                legacy_path=legacy,
+                model=ThreadRunSettings,
+            )
+            second = ModelMapRepository(
+                store,
+                namespace="thread_settings",
+                legacy_path=legacy,
+                model=ThreadRunSettings,
+            )
+            store.put("thread_settings", {"existing": {"sandbox": "read-only"}})
+
+            first_values = first.load()
+            second_values = second.load()
+            first_values["first"] = ThreadRunSettings(model="gpt-first")
+            second_values["second"] = ThreadRunSettings(model="gpt-second")
+
+            first.save(first_values)
+            second.save(second_values)
+
+            final = store.get("thread_settings")
+            self.assertEqual(set(final), {"existing", "first", "second"})
+            self.assertEqual(final["first"]["model"], "gpt-first")
+            self.assertEqual(final["second"]["model"], "gpt-second")
+            self.assertEqual(json.loads(legacy.read_text()), final)
+
+    def test_database_and_directory_are_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            database = root / "codex-web.db"
+            store = SQLiteStateStore(database)
+            store.put("example", {"value": 1})
+
+            if os.name != "nt":
+                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(database.stat().st_mode & 0o777, 0o600)
+                for suffix in ("-wal", "-shm"):
+                    candidate = Path(f"{database}{suffix}")
+                    if candidate.exists():
+                        self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+
     def test_private_compatibility_mirror_uses_restricted_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -125,8 +172,9 @@ class SQLiteStateStoreTests(unittest.TestCase):
             store.put("example", {"value": 1})
             self.assertEqual(store.get("example"), {"value": 1})
             self.assertTrue(store.contains("example"))
+            store.update("example", lambda payload: {**payload, "value": 2}, default={})
 
-            self.assertGreaterEqual(len(store.connections), 4)
+            self.assertGreaterEqual(len(store.connections), 5)
             self.assertTrue(all(connection.closed for connection in store.connections))
 
 

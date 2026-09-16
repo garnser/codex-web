@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Generic, TypeVar
 
@@ -15,7 +17,12 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ModelMapRepository(Generic[T]):
-    """SQLite-primary map storage with rollback-safe legacy JSON mirroring."""
+    """SQLite-primary map storage with rollback-safe legacy JSON mirroring.
+
+    A load/save pair keeps a context-local snapshot. save() computes only the
+    keys changed by that caller and atomically merges the delta into the latest
+    SQLite document, preventing unrelated concurrent updates from being lost.
+    """
 
     def __init__(
         self,
@@ -33,6 +40,10 @@ class ModelMapRepository(Generic[T]):
         self.model = model
         self.private = private
         self.key_filter = key_filter
+        self._snapshot: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"codex_web_{namespace}_snapshot",
+            default=None,
+        )
 
     def _legacy_payload(self) -> dict[str, Any]:
         if not self.legacy_path.exists():
@@ -51,8 +62,10 @@ class ModelMapRepository(Generic[T]):
         return payload if isinstance(payload, dict) else {}
 
     def load(self) -> dict[str, T]:
+        raw = self._raw()
+        self._snapshot.set(copy.deepcopy(raw))
         result: dict[str, T] = {}
-        for key, value in self._raw().items():
+        for key, value in raw.items():
             if not isinstance(key, str):
                 continue
             if self.key_filter is not None and not self.key_filter(key):
@@ -66,12 +79,31 @@ class ModelMapRepository(Generic[T]):
             for key, value in sorted(values.items())
             if self.key_filter is None or self.key_filter(key)
         }
-        # SQLite is the source of truth. Keep the old file synchronized during
-        # the migration window so downgrading to the previous release is safe.
-        self.store.put(self.namespace, payload)
+        base = self._snapshot.get()
+        if base is None:
+            self.store.put(self.namespace, payload)
+            merged = payload
+        else:
+            changed = {
+                key: value
+                for key, value in payload.items()
+                if key not in base or base.get(key) != value
+            }
+            deleted = set(base) - set(payload)
+
+            def merge(current: Any) -> dict[str, Any]:
+                latest = dict(current) if isinstance(current, dict) else {}
+                for key in deleted:
+                    latest.pop(key, None)
+                latest.update(changed)
+                return latest
+
+            merged = self.store.update(self.namespace, merge, default={})
+
+        self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(
             self.legacy_path,
-            json.dumps(payload, indent=2) + "\n",
+            json.dumps(merged, indent=2) + "\n",
             private=self.private,
         )
 
