@@ -18,7 +18,12 @@ class ThreadService:
     def __init__(self, host: Any) -> None:
         self.host = host
 
-    async def list(self, project_id: str | None, archived: bool, search: str | None) -> dict[str, Any]:
+    async def list(
+        self,
+        project_id: str | None = None,
+        archived: bool = False,
+        search: str | None = None,
+    ) -> dict[str, Any]:
         project_path = self.host._project(project_id).path if project_id else None
         params: dict[str, Any] = {
             "limit": 100,
@@ -105,12 +110,11 @@ class ThreadService:
 
     async def create(
         self,
-        *,
-        project_id: str | None,
-        sandbox: str | None,
-        approval_policy: str | None,
-        model: str | None,
-        reasoning_effort: str | None,
+        project_id: str | None = None,
+        sandbox: str | None = None,
+        approval_policy: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         project = self.host._project(project_id)
         response = await self.host.codex.request(
@@ -141,9 +145,8 @@ class ThreadService:
     async def read(
         self,
         thread_id: str,
-        *,
-        message_limit: int | None,
-        turn_limit: int | None,
+        message_limit: int | None = None,
+        turn_limit: int | None = None,
     ) -> dict[str, Any]:
         self.host._raise_if_thread_replaced(thread_id)
         limit = self.host._coerce_thread_message_limit(
