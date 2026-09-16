@@ -4,6 +4,7 @@ import sys
 
 from codex_web import application as _application
 from codex_web.runtime import core as _runtime
+from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.workers import install_worker_supervisor
 from codex_web.storage.configuration_state import install_configuration_state
 from codex_web.storage.operational_state import install_operational_state
@@ -14,6 +15,11 @@ from codex_web.storage.operational_state import install_operational_state
 # first cycle.
 install_configuration_state(_application.app, _runtime)
 install_operational_state(_application.app, _runtime)
+
+# Active provider connection lifecycle is extracted from the compatibility
+# runtime. Install it before worker supervision so startup synchronizes the
+# extracted Slack/Telegram runtime rather than the legacy class instance.
+install_bot_runtime(_application.app, _runtime)
 
 # The executable entrypoint owns lifecycle composition. This replaces the
 # compatibility runtime's startup/shutdown handlers with an extracted worker
