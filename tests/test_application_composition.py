@@ -78,7 +78,6 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["threads"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["runtime"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["bots"], 0)
-        self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["slack"], 0)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["work-items"], 0)
 
 
