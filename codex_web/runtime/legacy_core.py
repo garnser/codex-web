@@ -401,61 +401,12 @@ def _outbound_bindings_for_thread(thread_id: str, bindings: list[BotBinding]) ->
     return ordered
 
 
-def _remember_approval_message(
-    request_id: int | str,
-    *,
-    connection_id: str,
-    channel: str,
-    message_ts: str,
-    context: str,
-    thread_id: str | None = None,
-) -> None:
-    messages = _load_approval_messages()
-    key = str(request_id)
-    current = messages.setdefault(key, [])
-    if any(item.connection_id == connection_id and item.channel == channel and item.message_ts == message_ts for item in current):
-        return
-    current.append(
-        ApprovalSlackMessage(
-            request_id=key,
-            connection_id=connection_id,
-            channel=channel,
-            message_ts=message_ts,
-            context=context,
-            thread_id=thread_id,
-            created_at=time.time(),
-        )
-    )
-    _save_approval_messages(messages)
 
 
-def _forget_approval_messages(request_id: int | str) -> None:
-    messages = _load_approval_messages()
-    if messages.pop(str(request_id), None) is not None:
-        _save_approval_messages(messages)
 
 
-def _record_bot_detail(thread_id: str, item_type: str, title: str, text: str) -> None:
-    if not text.strip():
-        return
-    details = _load_bot_details()
-    items = details.setdefault(thread_id, [])
-    items.append(
-        BotThreadDetail(
-            thread_id=thread_id,
-            item_type=item_type,
-            title=title,
-            text=text,
-            created_at=time.time(),
-        )
-    )
-    details[thread_id] = items[-20:]
-    _save_bot_details(details)
 
 
-def _latest_bot_detail(thread_id: str) -> BotThreadDetail | None:
-    items = _load_bot_details().get(thread_id) or []
-    return items[-1] if items else None
 
 
 def _upsert_indexed_thread(thread: IndexedThread) -> None:
@@ -1550,17 +1501,8 @@ def _binding_for_agent(
     return candidates[0]
 
 
-def _logical_binding_name(binding: BotBinding) -> str:
-    name = _binding_report_name(binding) or binding.thread_name or _binding_prefix(binding)
-    return name.strip().lower()
 
 
-def _same_logical_binding(candidate: BotBinding, source: BotBinding) -> bool:
-    return (
-        candidate.provider == source.provider
-        and candidate.project_id == source.project_id
-        and _logical_binding_name(candidate) == _logical_binding_name(source)
-    )
 
 
 def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
@@ -1575,11 +1517,6 @@ def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
     )
 
 
-def _preferred_binding_for_replacement(source: BotBinding, bindings: list[BotBinding]) -> BotBinding:
-    for binding in bindings:
-        if binding.external_conversation_id == source.external_conversation_id:
-            return binding
-    return bindings[0] if bindings else source
 
 
 def _retarget_bot_targets(old_thread_id: str, new_thread_id: str) -> None:
@@ -1600,287 +1537,28 @@ def _retarget_bot_targets(old_thread_id: str, new_thread_id: str) -> None:
     _save_bot_delivery_targets(rewrite(_load_bot_delivery_targets()))
 
 
-def _retarget_thread_settings(old_thread_id: str, new_thread_id: str) -> None:
-    settings = _load_thread_settings()
-    old_settings = settings.pop(old_thread_id, None)
-    if old_settings and new_thread_id not in settings:
-        settings[new_thread_id] = old_settings
-    if old_settings:
-        _save_thread_settings(settings)
 
 
-def _retarget_active_turn(old_thread_id: str, new_thread_id: str) -> None:
-    active_turns = _load_active_turns()
-    if active_turns.pop(old_thread_id, None) is not None:
-        # A replacement is a new Codex session. The old turn may still emit a
-        # completion event under the old id, so migrating its marker creates a
-        # permanently busy replacement thread.
-        _save_active_turns(active_turns)
 
 
-def _retarget_turn_queue(old_thread_id: str, new_thread_id: str) -> None:
-    queues = _load_turn_queues()
-    queued = queues.pop(old_thread_id, [])
-    if not queued:
-        return
-    for item in queued:
-        item.thread_id = new_thread_id
-        if item.reply_target and item.reply_target.thread_id == old_thread_id:
-            item.reply_target = item.reply_target.model_copy(update={"thread_id": new_thread_id})
-    queues.setdefault(new_thread_id, []).extend(queued)
-    _save_turn_queues(queues)
 
 
-def _retarget_bot_details(old_thread_id: str, new_thread_id: str) -> None:
-    details = _load_bot_details()
-    old_items = details.pop(old_thread_id, [])
-    if not old_items:
-        return
-    details.setdefault(new_thread_id, [])
-    details[new_thread_id] = (details[new_thread_id] + old_items)[-20:]
-    _save_bot_details(details)
 
 
-def _retarget_slack_thread_icon(old_thread_id: str, new_thread_id: str) -> None:
-    icons = _load_slack_thread_icons()
-    icon = icons.pop(old_thread_id, None)
-    if icon and new_thread_id not in icons:
-        icons[new_thread_id] = icon
-    if icon:
-        _save_slack_thread_icons(icons)
 
 
-def _retarget_logical_bot_bindings(source: BotBinding, new_thread_id: str) -> BotBinding:
-    bindings = _load_bot_bindings()
-    now = time.time()
-    changed: list[BotBinding] = []
-    canonical_thread_name = source.thread_name or source.route_prefix or _binding_prefix(source)
-    for binding in bindings:
-        if binding.thread_id != source.thread_id and not _same_logical_binding(binding, source):
-            continue
-        binding.thread_id = new_thread_id
-        if not binding.thread_name and canonical_thread_name:
-            binding.thread_name = canonical_thread_name
-        binding.sandbox = source.sandbox
-        binding.approval_policy = source.approval_policy
-        binding.updated_at = now
-        changed.append(binding)
-    if not changed:
-        source.thread_id = new_thread_id
-        source.updated_at = now
-        changed.append(source)
-        bindings.append(source)
-    _save_bot_bindings(bindings)
-    _dedupe_bot_integrations()
-    return _preferred_binding_for_replacement(source, changed)
 
 
-def _retarget_bot_thread_state(old_thread_id: str, new_thread_id: str) -> None:
-    _retarget_bot_targets(old_thread_id, new_thread_id)
-    _retarget_thread_settings(old_thread_id, new_thread_id)
-    _retarget_active_turn(old_thread_id, new_thread_id)
-    _retarget_turn_queue(old_thread_id, new_thread_id)
-    _retarget_bot_details(old_thread_id, new_thread_id)
-    _retarget_slack_thread_icon(old_thread_id, new_thread_id)
 
 
-async def _archive_replaced_bot_thread(old_thread_id: str, new_thread_id: str) -> bool:
-    _remove_indexed_thread(old_thread_id)
-    try:
-        await codex.request("thread/archive", {"threadId": old_thread_id})
-    except Exception as exc:
-        _append_bot_event(
-            {
-                "type": "stale_bot_thread_archive_failed",
-                "old_thread_id": old_thread_id,
-                "new_thread_id": new_thread_id,
-                "error": _truncate_text(str(exc), 500),
-            }
-        )
-        return False
-    _append_bot_event(
-        {
-            "type": "stale_bot_thread_archived",
-            "old_thread_id": old_thread_id,
-            "new_thread_id": new_thread_id,
-        }
-    )
-    return True
 
 
-async def _replace_stale_bot_thread(binding: BotBinding, error: str) -> BotBinding:
-    old_thread_id = binding.thread_id
-    project = _project(binding.project_id)
-    settings = _thread_run_settings(old_thread_id)
-    sandbox = binding.sandbox or settings.sandbox or project.sandbox
-    approval_policy = binding.approval_policy or settings.approval_policy or project.approval_policy
-    thread_name = binding.thread_name or binding.route_prefix or _binding_prefix(binding)
-
-    replacement_params = _project_params(
-        project,
-        {
-            "sandbox": sandbox,
-            "approvalPolicy": approval_policy,
-            "sessionStartSource": "bot-thread-replacement",
-        },
-    )
-    try:
-        response = await codex.request("thread/start", replacement_params)
-    except Exception as exc:
-        text = str(exc).lower()
-        if "unknown variant `bot-thread-replacement`" not in text and "sessionstartsource" not in text:
-            raise
-        replacement_params = _project_params(
-            project,
-            {
-                "sandbox": sandbox,
-                "approvalPolicy": approval_policy,
-                "sessionStartSource": "startup",
-            },
-        )
-        response = await codex.request("thread/start", replacement_params)
-    new_thread_id = response["thread"]["id"]
-    _remember_thread_run_settings(
-        new_thread_id,
-        sandbox=sandbox,
-        approval_policy=approval_policy,
-        model=settings.model,
-        reasoning_effort=settings.reasoning_effort,
-        developer_instructions=settings.developer_instructions,
-    )
-    if thread_name:
-        with contextlib.suppress(Exception):
-            await _set_thread_name(new_thread_id, thread_name)
-        _upsert_indexed_thread(
-            IndexedThread(id=new_thread_id, name=thread_name, cwd=project.path, path=project.path, updatedAt=time.time())
-        )
-    replacement = _retarget_logical_bot_bindings(
-        binding.model_copy(update={"sandbox": sandbox, "approval_policy": approval_policy}),
-        new_thread_id,
-    )
-    for prior_thread_id, replacement_thread_id in list(THREAD_REPLACEMENTS.items()):
-        if replacement_thread_id == old_thread_id:
-            THREAD_REPLACEMENTS[prior_thread_id] = new_thread_id
-    THREAD_REPLACEMENTS[old_thread_id] = new_thread_id
-    THREAD_TERMINAL_FAILURES.pop(old_thread_id, None)
-    _retarget_bot_thread_state(old_thread_id, new_thread_id)
-    archived_old_thread = await _archive_replaced_bot_thread(old_thread_id, new_thread_id)
-    _append_bot_event(
-        {
-            "type": "stale_bot_thread_replaced",
-            "provider": binding.provider,
-            "project_id": binding.project_id,
-            "logical_name": _logical_binding_name(binding),
-            "old_thread_id": old_thread_id,
-            "new_thread_id": new_thread_id,
-            "archived_old_thread": archived_old_thread,
-            "error": _truncate_text(error, 500),
-        }
-    )
-    await hub.publish(
-        {
-            "type": "bot.thread.replaced",
-            "provider": binding.provider,
-            "projectId": binding.project_id,
-            "oldThreadId": old_thread_id,
-            "newThreadId": new_thread_id,
-            "name": thread_name,
-        }
-    )
-    return replacement
 
 
-async def _replace_stale_web_thread(thread_id: str, project: Project, error: str) -> str:
-    """Replace an unusable browser-only thread while preserving its run settings."""
-    settings = _thread_run_settings(thread_id)
-    response = await codex.request(
-        "thread/start",
-        _project_params(
-            project,
-            {
-                "sandbox": settings.sandbox or project.sandbox,
-                "approvalPolicy": settings.approval_policy or project.approval_policy,
-                "sessionStartSource": "startup",
-            },
-        ),
-    )
-    new_thread_id = response["thread"]["id"]
-    _remember_thread_run_settings(
-        new_thread_id,
-        sandbox=settings.sandbox or project.sandbox,
-        approval_policy=settings.approval_policy or project.approval_policy,
-        model=settings.model,
-        reasoning_effort=settings.reasoning_effort,
-        developer_instructions=settings.developer_instructions,
-    )
-    indexed = next((item for item in _load_thread_index() if item.id == thread_id), None)
-    thread_name = indexed.name if indexed else None
-    if thread_name:
-        with contextlib.suppress(Exception):
-            await _set_thread_name(new_thread_id, thread_name)
-        _upsert_indexed_thread(
-            IndexedThread(
-                id=new_thread_id,
-                name=thread_name,
-                cwd=project.path,
-                path=project.path,
-                updatedAt=time.time(),
-            )
-        )
-    for prior_thread_id, replacement_thread_id in list(THREAD_REPLACEMENTS.items()):
-        if replacement_thread_id == thread_id:
-            THREAD_REPLACEMENTS[prior_thread_id] = new_thread_id
-    THREAD_REPLACEMENTS[thread_id] = new_thread_id
-    THREAD_TERMINAL_FAILURES.pop(thread_id, None)
-    _retarget_bot_thread_state(thread_id, new_thread_id)
-    archived_old_thread = await _archive_replaced_bot_thread(thread_id, new_thread_id)
-    event = {
-        "type": "stale_web_thread_replaced",
-        "project_id": project.id,
-        "old_thread_id": thread_id,
-        "new_thread_id": new_thread_id,
-        "archived_old_thread": archived_old_thread,
-        "error": _truncate_text(error, 500),
-    }
-    _append_bot_event(event)
-    await hub.publish(
-        {
-            "type": "bot.thread.replaced",
-            "projectId": project.id,
-            "oldThreadId": thread_id,
-            "newThreadId": new_thread_id,
-            "name": thread_name,
-        }
-    )
-    return new_thread_id
 
 
-def _replacement_thread_id(thread_id: str) -> str | None:
-    replacement = THREAD_REPLACEMENTS.get(thread_id)
-    seen = {thread_id}
-    while replacement and replacement not in seen:
-        seen.add(replacement)
-        next_replacement = THREAD_REPLACEMENTS.get(replacement)
-        if not next_replacement:
-            return replacement
-        replacement = next_replacement
-    return replacement
 
 
-def _raise_if_thread_replaced(thread_id: str) -> None:
-    replacement = _replacement_thread_id(thread_id)
-    if not replacement:
-        return
-    raise HTTPException(
-        status_code=409,
-        detail={
-            "code": "thread_replaced",
-            "staleThreadReplaced": True,
-            "oldThreadId": thread_id,
-            "newThreadId": replacement,
-            "threadId": replacement,
-        },
-    )
 
 
 def _active_turn_stale_seconds() -> float:
