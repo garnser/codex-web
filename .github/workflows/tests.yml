@@ -23,11 +23,12 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
+          cache-dependency-path: requirements.lock
 
-      - name: Install dependencies
+      - name: Install locked dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.lock
 
       - name: Run Python tests
         run: python -m unittest discover -s tests -p 'test_*.py'
@@ -54,6 +55,13 @@ jobs:
 
       - name: Build container image
         run: docker build --tag codex-web:test .
+
+      - name: Verify pinned Codex version
+        run: |
+          expected="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"
+          actual="$(docker run --rm --entrypoint codex codex-web:test --version)"
+          echo "Expected Codex ${expected}; image reports: ${actual}"
+          printf '%s' "$actual" | grep -F "$expected"
 
       - name: Smoke-test container liveness
         shell: bash
