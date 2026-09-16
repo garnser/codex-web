@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  await import(`${BASE}/static/control_plane_ui.js`);
   let refreshTimer = null;
   let lastThreadId = null;
 
