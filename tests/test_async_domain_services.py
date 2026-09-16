@@ -17,16 +17,47 @@ class _Hub:
         self.events.append(event)
 
 
+class _SlackClient:
+    def __init__(self) -> None:
+        self.thread_id: int | None = None
+        self.tokens: list[str] = []
+
+    async def list_channels(self, token: str) -> list[dict[str, str]]:
+        await asyncio.sleep(0)
+        self.thread_id = threading.get_ident()
+        self.tokens.append(token)
+        return [{"provider": "slack", "id": "C123", "name": "general", "label": "#general"}]
+
+    async def channel_info(self, token: str, channel_id: str):
+        await asyncio.sleep(0)
+        return None
+
+
 class _BotHost:
     def __init__(self) -> None:
-        self.worker_thread_id: int | None = None
+        self.BOT_CHANNEL_CACHE = {}
+        self.connections = [
+            SimpleNamespace(
+                project_id="home",
+                provider="slack",
+                bot_token="xoxb-test",
+            )
+        ]
 
     def _project(self, project_id: str):
         return SimpleNamespace(id=project_id)
 
+    def _known_bot_channels(self, project_id: str):
+        return []
+
+    def _load_bot_connections(self):
+        return self.connections
+
+    def _channel_needs_name(self, channel):
+        return not channel.get("name")
+
     def _bot_channels(self, project_id: str):
-        self.worker_thread_id = threading.get_ident()
-        return [{"provider": "slack", "id": "C123", "name": project_id}]
+        raise AssertionError("legacy synchronous channel discovery must not be used")
 
 
 class _WorkItemHost:
@@ -68,16 +99,18 @@ class _WorkItemHost:
 
 
 class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bot_channel_discovery_runs_off_event_loop(self) -> None:
+    async def test_bot_channel_discovery_uses_async_client_not_legacy_sync_helper(self) -> None:
         host = _BotHost()
-        service = BotService(host)
+        slack = _SlackClient()
+        service = BotService(host, slack_client=slack)
         event_loop_thread = threading.get_ident()
 
         channels = await service.list_channels("home")
 
         self.assertEqual(channels[0]["id"], "C123")
-        self.assertIsNotNone(host.worker_thread_id)
-        self.assertNotEqual(host.worker_thread_id, event_loop_thread)
+        self.assertEqual(slack.thread_id, event_loop_thread)
+        self.assertEqual(slack.tokens, ["xoxb-test"])
+        self.assertEqual(host.BOT_CHANNEL_CACHE["home"][1], channels)
 
     async def test_gitlab_work_item_sync_runs_off_event_loop(self) -> None:
         host = _WorkItemHost()
