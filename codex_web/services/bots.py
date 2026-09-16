@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import os
+import time
 from typing import Any
 
+from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
 
 
 class BotService:
-    """Bot management operations separated from the legacy runtime routes.
+    """Bot management operations separated from the legacy runtime routes."""
 
-    Provider discovery remains implemented by the compatibility runtime for now,
-    but potentially blocking synchronous provider calls are always executed in a
-    worker thread instead of the FastAPI event loop.
-    """
-
-    def __init__(self, host: Any) -> None:
+    def __init__(self, host: Any, *, slack_client: SlackClient | None = None) -> None:
         self.host = host
+        self.slack_client = slack_client or SlackClient()
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
@@ -90,9 +88,35 @@ class BotService:
 
     async def list_channels(self, project_id: str) -> list[dict[str, str]]:
         self.host._project(project_id)
-        # Slack conversations.list is synchronous in the compatibility provider
-        # layer and can paginate repeatedly. Never execute it on the event loop.
-        return await asyncio.to_thread(self.host._bot_channels, project_id)
+        cached = self.host.BOT_CHANNEL_CACHE.get(project_id)
+        if cached and time.time() - cached[0] < 300:
+            return cached[1]
+
+        channels = {
+            (item["provider"], item["id"]): item
+            for item in self.host._known_bot_channels(project_id)
+        }
+        for connection in self.host._load_bot_connections():
+            if connection.project_id != project_id or connection.provider != "slack" or not connection.bot_token:
+                continue
+            with contextlib.suppress(Exception):
+                for channel in await self.slack_client.list_channels(connection.bot_token):
+                    channels[(channel["provider"], channel["id"])] = channel
+
+            unresolved = [
+                channel
+                for channel in channels.values()
+                if channel["provider"] == "slack" and self.host._channel_needs_name(channel)
+            ]
+            for channel in unresolved:
+                with contextlib.suppress(Exception):
+                    resolved = await self.slack_client.channel_info(connection.bot_token, channel["id"])
+                    if resolved:
+                        channels[(resolved["provider"], resolved["id"])] = resolved
+
+        result = sorted(channels.values(), key=lambda item: (item["provider"], item["label"]))
+        self.host.BOT_CHANNEL_CACHE[project_id] = (time.time(), result)
+        return result
 
     async def create_binding(self, payload: BotBindingCreate) -> dict[str, Any]:
         binding = await self.host._start_bot_thread(payload)
