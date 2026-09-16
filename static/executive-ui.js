@@ -3,6 +3,7 @@ const EXEC_SESSION_KEY = 'codex-web-executive-session';
 
 const executiveState = {
   agents: [],
+  executionRoles: [],
   activeAgent: 'chief-of-staff',
   sessionId: localStorage.getItem(EXEC_SESSION_KEY) || crypto.randomUUID(),
   lastQuestion: '',
@@ -134,6 +135,8 @@ async function delegateToCodex(drawer) {
   const projectId = drawer.querySelector('#executive-project').value || 'home';
   const sandbox = document.getElementById('sandbox')?.value || null;
   const approvalPolicy = document.getElementById('approval-policy')?.value || null;
+  const executionRoleId = drawer.querySelector('#executive-execution-role')?.value || null;
+  const changeClassification = drawer.querySelector('#executive-change-classification')?.value || null;
   setExecutiveStatus(drawer, 'Delegating to Codex…');
   try {
     const result = await execApi('/api/executive/delegate', {
@@ -142,12 +145,15 @@ async function delegateToCodex(drawer) {
         task: executiveState.lastQuestion,
         executive_reply: executiveState.lastReply,
         agent_id: executiveState.lastAgent,
+        execution_role_id: executionRoleId,
+        change_classification: changeClassification,
         project_id: projectId,
         sandbox,
         approval_policy: approvalPolicy,
       }),
     });
-    setExecutiveStatus(drawer, `Delegated to thread ${result.threadId} · ${result.sandbox} · ${result.approvalPolicy}`, 'ok');
+    const roleName = result.executionRole?.name || 'auto-routed role';
+    setExecutiveStatus(drawer, `Delegated to ${roleName} · thread ${result.threadId} · ${result.sandbox} · ${result.approvalPolicy}`, 'ok');
   } catch (error) {
     setExecutiveStatus(drawer, error.message, 'error');
   }
@@ -160,6 +166,7 @@ async function loadExecutiveData(drawer) {
     execApi('/api/projects'),
   ]);
   executiveState.agents = agentData.agents || [];
+  executiveState.executionRoles = agentData.executionRoles || [];
   executiveState.provider = agentData;
 
   const agentSelect = drawer.querySelector('#executive-agent');
@@ -170,6 +177,16 @@ async function loadExecutiveData(drawer) {
     option.textContent = `${agent.title} · ${agent.name}`;
     if (agent.id === executiveState.activeAgent) option.selected = true;
     agentSelect.appendChild(option);
+  });
+
+  const executionRoleSelect = drawer.querySelector('#executive-execution-role');
+  executionRoleSelect.innerHTML = '<option value="">Auto-route from objective</option>';
+  executiveState.executionRoles.forEach((role) => {
+    const option = document.createElement('option');
+    option.value = role.id;
+    option.textContent = `${role.name} · ${role.lane}`;
+    option.title = role.description || '';
+    executionRoleSelect.appendChild(option);
   });
 
   const projectSelect = drawer.querySelector('#executive-project');
@@ -218,6 +235,8 @@ function buildExecutiveDrawer() {
       <label>Mode<select id="executive-mode"><option value="advisor">Executive advisor</option><option value="board">Board review</option></select></label>
       <label>Executive<select id="executive-agent"></select></label>
       <label>Codex project<select id="executive-project"></select></label>
+      <label>Execution role<select id="executive-execution-role"><option value="">Auto-route from objective</option></select></label>
+      <label>Change class<select id="executive-change-classification"><option value="">Agent classifies before work</option><option value="cosmetic-only">Cosmetic only</option><option value="localized functional">Localized functional</option><option value="shared-surface">Shared surface</option><option value="release/security-sensitive">Release / security sensitive</option></select></label>
       <label class="wide"><input type="checkbox" id="executive-runtime-context"> Include Codex operational context in LLM request</label>
       <div class="executive-provider"></div>
       <details class="executive-context">
@@ -238,7 +257,7 @@ function buildExecutiveDrawer() {
       </details>
     </div>
     <div class="executive-messages">
-      <div class="executive-note">Use <strong>Executive advisor</strong> for one functional leader or <strong>Board review</strong> for a multi-function decision. “Delegate to Codex” hands the resulting objective to a native Codex thread and preserves the current workspace sandbox and approval policy.</div>
+      <div class="executive-note">Use <strong>Executive advisor</strong> for one functional leader or <strong>Board review</strong> for a multi-function decision. “Delegate to Codex” auto-routes or explicitly selects an operational execution contract (James, Dana, Quinn, Release Manager, etc.), preserves sandbox/approval policy, and keeps advisory personas separate from execution ownership.</div>
     </div>
     <div class="executive-composer">
       <textarea id="executive-prompt" placeholder="Ask about architecture, roadmap, delivery, pricing, growth, runway, churn, security…"></textarea>
