@@ -29,10 +29,9 @@ from codex_web.runtime import core
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
-from codex_web.services.approvals import install_approval_service
+from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
-from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
@@ -74,6 +73,7 @@ runtime_state = RuntimeStateRepositories(
 )
 project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
+approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
@@ -97,8 +97,6 @@ core._save_work_item_states = runtime_state.work_item_states.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
-approval_service = install_approval_service(app, core)
-bot_detail_service = install_bot_detail_service(app, core)
 
 # Compose extracted runtime ownership here rather than in server.py so direct
 # application imports and tests observe the same implementation as the CLI
