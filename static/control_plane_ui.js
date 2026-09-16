@@ -1,3 +1,4 @@
+(async () => {
 const CONTROL_BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
 const { request: apiRequest } = await import(`${CONTROL_BASE}/static/api_client.js`);
 
@@ -331,3 +332,4 @@ window.addEventListener('DOMContentLoaded', () => {
   installOperations();
   watchForExecutiveDrawer();
 });
+})();
