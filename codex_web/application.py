@@ -35,7 +35,7 @@ from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
-from codex_web.services.gitlab import GitLabService
+from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.slack_provider import install_slack_provider_service
@@ -77,7 +77,7 @@ context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(app, core, gitlab_client)
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
-gitlab_service = GitLabService(core, gitlab_client)
+gitlab_service = install_gitlab_service(app, core, gitlab_client)
 
 # Legacy code still needing project/runtime state consumes the extracted
 # repositories. SQLite is primary for mutable runtime documents; repositories
@@ -135,11 +135,6 @@ bot_service = BotService(
 )
 app.state.slack_client = slack_client
 app.state.telegram_client = telegram_client
-
-# Preserve the legacy ServiceDesk hook used by both the route and the worker,
-# but route it through the extracted async GitLab service.
-core._run_support_servicedesk_sweep_once = gitlab_service.sweep_support_servicedesk
-app.state.gitlab_service = gitlab_service
 
 install_webhook_security(core)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
