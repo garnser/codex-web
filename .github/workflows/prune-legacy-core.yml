@@ -1,0 +1,93 @@
+name: prune legacy core
+
+on:
+  push:
+    branches:
+      - refactor/remove-dead-runtime-compat
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Remove extracted legacy definitions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          from pathlib import Path
+
+          path = Path('codex_web/runtime/core.py')
+          source = path.read_text()
+          tree = ast.parse(source)
+          lines = source.splitlines(keepends=True)
+
+          remove_names = {
+              '_codex_request_timeout',
+              '_run_owner_work_watchdog_cycle',
+              '_run_release_gate_watchdog_cycle',
+              '_run_work_item_sla_cycle',
+              '_run_orchestrator_watchdog_cycle',
+              '_run_split_brain_watchdog_cycle',
+          }
+          ranges: list[tuple[int, int, str | None]] = []
+
+          for node in tree.body:
+              if isinstance(node, ast.ClassDef) and node.name == 'CodexAppServer':
+                  ranges.append((node.lineno - 1, node.end_lineno, None))
+                  continue
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in remove_names:
+                  ranges.append((node.lineno - 1, node.end_lineno, None))
+                  continue
+              if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                  targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                  if any(isinstance(target, ast.Name) and target.id == 'codex' for target in targets):
+                      value = node.value
+                      if (
+                          isinstance(value, ast.Call)
+                          and isinstance(value.func, ast.Name)
+                          and value.func.id == 'CodexAppServer'
+                      ):
+                          ranges.append((node.lineno - 1, node.end_lineno, 'codex: Any = None\n'))
+
+          found = {
+              node.name
+              for node in tree.body
+              if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+              and (node.name == 'CodexAppServer' or node.name in remove_names)
+          }
+          expected = {'CodexAppServer', *remove_names}
+          missing = expected - found
+          if missing:
+              raise SystemExit(f'Expected legacy definitions were not found: {sorted(missing)}')
+          if not any(replacement is not None for _, _, replacement in ranges):
+              raise SystemExit('Expected codex = CodexAppServer() assignment was not found')
+
+          for start, end, replacement in sorted(ranges, reverse=True):
+              lines[start:end] = [replacement] if replacement is not None else []
+
+          updated = ''.join(lines)
+          ast.parse(updated)
+          path.write_text(updated)
+          print(f'Removed {len(ranges)} legacy blocks; core.py is now {len(updated.splitlines())} lines')
+          PY
+
+      - name: Remove one-shot workflow and commit result
+        shell: bash
+        run: |
+          rm .github/workflows/prune-legacy-core.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add codex_web/runtime/core.py .github/workflows/prune-legacy-core.yml
+          git commit -m 'Remove dead Codex and autonomy implementations from core'
+          git push origin HEAD:refactor/remove-dead-runtime-compat
