@@ -38,6 +38,7 @@ from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
@@ -137,6 +138,11 @@ bot_service = BotService(
 )
 app.state.slack_client = slack_client
 app.state.telegram_client = telegram_client
+
+# Replace the legacy core startup/shutdown callbacks after all runtime and
+# provider services have been composed. The supervisor keeps the historical
+# task globals populated for diagnostics while owning cancellation and shutdown.
+runtime_supervisor = install_runtime_supervisor(app, core)
 
 install_webhook_security(core)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
