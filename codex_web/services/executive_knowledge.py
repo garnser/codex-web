@@ -124,6 +124,8 @@ class ExecutiveKnowledgeStore:
     ) -> list[ExecutiveKnowledgeEntry]:
         query_terms = self._terms(query)
         entries = self.list(project_id=project_id)
+        if project_id is None:
+            entries = [entry for entry in entries if entry.scope == "company"]
         if not query_terms:
             return entries[: max(1, min(limit, 20))]
 
