@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -40,7 +41,12 @@ class ExecutiveKnowledgeStore:
 
     def __init__(self, host: Any) -> None:
         app_state = getattr(getattr(getattr(host, "app", None), "state", None), "sqlite_state_store", None)
-        self.store = app_state or SQLiteStateStore(STATE_DB_FILE)
+        if app_state is not None:
+            self.store = app_state
+            return
+        data_dir = getattr(host, "DATA_DIR", None)
+        fallback_path = Path(data_dir) / STATE_DB_FILE.name if data_dir is not None else STATE_DB_FILE
+        self.store = SQLiteStateStore(fallback_path)
 
     def _rows(self) -> dict[str, dict[str, Any]]:
         payload = self.store.get(self.NAMESPACE)
