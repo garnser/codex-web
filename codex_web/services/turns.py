@@ -18,13 +18,12 @@ class TurnService:
     async def resume(
         self,
         thread_id: str,
-        *,
-        project_id: str | None,
-        sandbox: str | None,
-        approval_policy: str | None,
-        model: str | None,
-        reasoning_effort: str | None,
-        force_resume: bool,
+        project_id: str | None = None,
+        sandbox: str | None = None,
+        approval_policy: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        force_resume: bool = False,
     ) -> dict[str, Any]:
         self.host._raise_if_thread_replaced(thread_id)
         project = self.host._project(project_id)
