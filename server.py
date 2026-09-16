@@ -5,6 +5,7 @@ import sys
 from codex_web import application as _application
 from codex_web.runtime import core as _runtime
 from codex_web.runtime.bots import install_bot_runtime
+from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.deployment import install_deployment_configuration
 from codex_web.runtime.workers import install_worker_supervisor
 from codex_web.storage.configuration_state import install_configuration_state
@@ -21,6 +22,11 @@ install_operational_state(_application.app, _runtime)
 # settings are available. This preserves legacy installations while keeping new
 # deployments generic and explicitly configured.
 install_deployment_configuration(_application.app, _runtime)
+
+# The Codex subprocess/JSON-RPC lifecycle is now owned outside the compatibility
+# runtime. Install it before any worker or provider runtime can start making
+# requests so every service observes the extracted client from first startup.
+install_codex_runtime(_application.app, _runtime)
 
 # Active provider connection lifecycle is extracted from the compatibility
 # runtime. Install it before worker supervision so startup synchronizes the
