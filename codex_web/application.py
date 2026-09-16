@@ -42,6 +42,7 @@ from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
+from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
@@ -76,6 +77,7 @@ thread_service = ThreadService(core)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(app, core, gitlab_client)
+work_item_contract_service = install_work_item_contract_service(app, core)
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
 gitlab_service = install_gitlab_service(app, core, gitlab_client)
 
