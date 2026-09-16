@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+
+class RuntimeSupervisor:
+    """Own long-lived process tasks and application lifecycle coordination."""
+
+    LEGACY_TASK_ATTRS = {
+        "systemd-watchdog": "WATCHDOG_TASK",
+        "support-servicedesk": "SUPPORT_SERVICEDESK_SWEEP_TASK",
+        "owner-work": "OWNER_WORK_WATCHDOG_TASK",
+        "release-gate": "RELEASE_GATE_WATCHDOG_TASK",
+        "work-item-sla": "WORK_ITEM_SLA_TASK",
+        "orchestrator": "ORCHESTRATOR_WATCHDOG_TASK",
+        "split-brain": "SPLIT_BRAIN_WATCHDOG_TASK",
+        "queue-recovery": "QUEUE_RECOVERY_TASK",
+    }
+
+    def __init__(self, app: Any, host: Any) -> None:
+        self.app = app
+        self.host = host
+        self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.startup_tasks: set[asyncio.Task[Any]] = set()
+        self.started = False
+
+    def _spawn(self, name: str, coroutine: Awaitable[None]) -> asyncio.Task[None]:
+        task = asyncio.create_task(coroutine, name=f"codex-web:{name}")
+        self.tasks[name] = task
+        legacy_attr = self.LEGACY_TASK_ATTRS.get(name)
+        if legacy_attr:
+            setattr(self.host, legacy_attr, task)
+        return task
+
+    def _spawn_startup_task(self, name: str, coroutine: Awaitable[Any]) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coroutine, name=f"codex-web:{name}")
+        self.startup_tasks.add(task)
+        task.add_done_callback(self.startup_tasks.discard)
+        return task
+
+    async def _cycle_loop(
+        self,
+        interval_getter: Callable[[], float],
+        cycle: Callable[[], Awaitable[None]],
+        *,
+        failure_event: str,
+    ) -> None:
+        interval = float(interval_getter())
+        if interval <= 0:
+            return
+        while True:
+            try:
+                await cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.host._append_bot_event({"type": failure_event, "error": str(exc)})
+            await asyncio.sleep(interval)
+
+    async def _systemd_watchdog_loop(self) -> None:
+        h = self.host
+        interval = float(h._watchdog_interval())
+        if interval <= 0:
+            return
+        while True:
+            health = h._daemon_health()
+            if health["ok"]:
+                h._sd_notify("WATCHDOG=1\nSTATUS=codex-web healthy")
+            else:
+                h._sd_notify(
+                    "WATCHDOG=1\nSTATUS=codex-web unhealthy: "
+                    + "; ".join(health["problems"])
+                )
+            await asyncio.sleep(interval)
+
+    async def _support_servicedesk_loop(self) -> None:
+        h = self.host
+        interval = float(h._support_servicedesk_sweep_interval())
+        if interval <= 0 or not h._gitlab_api_token():
+            return
+        while True:
+            try:
+                result = await h._run_support_servicedesk_sweep_once()
+                h._append_bot_event(
+                    {
+                        "type": "support_servicedesk_sweep_completed",
+                        **{key: value for key, value in result.items() if key != "results"},
+                    }
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                h._append_bot_event(
+                    {
+                        "type": "support_servicedesk_sweep_failed",
+                        "error": h._truncate_text(str(exc), 500),
+                    }
+                )
+            await asyncio.sleep(interval)
+
+    async def _queue_recovery_loop(self) -> None:
+        h = self.host
+        interval = float(h._queue_recovery_interval_seconds())
+        if interval <= 0:
+            return
+        while True:
+            try:
+                for thread_id in h._load_turn_queues():
+                    if h._thread_is_active(thread_id):
+                        h._release_stale_active_turn(thread_id, "queue-recovery")
+                    if not h._thread_is_active(thread_id):
+                        h._schedule_queue_drain(thread_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                h._append_bot_event({"type": "queue_recovery_failed", "error": str(exc)})
+            await asyncio.sleep(interval)
+
+    def task_status(self) -> dict[str, dict[str, bool]]:
+        return {
+            name: {
+                "running": not task.done(),
+                "done": task.done(),
+                "cancelled": task.cancelled(),
+            }
+            for name, task in self.tasks.items()
+        }
+
+    async def start(self) -> None:
+        if self.started:
+            return
+        self.started = True
+        h = self.host
+        h.IS_SHUTTING_DOWN = False
+        h._load_projects()
+        h._compact_turn_queues()
+        h._dedupe_bot_integrations()
+        try:
+            await h.codex.start()
+        except Exception:
+            # Keep the HTTP UI available so it can report app-server failures.
+            pass
+        await h.bot_runtime.sync()
+        if h.codex.ready.is_set() and h._autonomy_enabled():
+            self._spawn_startup_task("restore-thread-names", h._restore_bot_thread_names())
+            self._spawn_startup_task("resume-active-threads", h._resume_active_threads_after_startup())
+
+        h._sd_notify("READY=1\nSTATUS=codex-web started")
+        self._spawn("systemd-watchdog", self._systemd_watchdog_loop())
+        self._spawn("support-servicedesk", self._support_servicedesk_loop())
+        self._spawn(
+            "owner-work",
+            self._cycle_loop(
+                h._owner_work_watchdog_interval,
+                h._run_owner_work_watchdog_cycle,
+                failure_event="owner_work_watchdog_failed",
+            ),
+        )
+        self._spawn(
+            "release-gate",
+            self._cycle_loop(
+                h._release_gate_watchdog_interval,
+                h._run_release_gate_watchdog_cycle,
+                failure_event="release_gate_watchdog_failed",
+            ),
+        )
+        self._spawn(
+            "work-item-sla",
+            self._cycle_loop(
+                h._work_item_sla_watchdog_interval,
+                h._run_work_item_sla_cycle,
+                failure_event="work_item_sla_watchdog_failed",
+            ),
+        )
+        self._spawn(
+            "orchestrator",
+            self._cycle_loop(
+                h._orchestrator_watchdog_interval,
+                h._run_orchestrator_watchdog_cycle,
+                failure_event="orchestrator_watchdog_failed",
+            ),
+        )
+        self._spawn(
+            "split-brain",
+            self._cycle_loop(
+                h._split_brain_watchdog_interval,
+                h._run_split_brain_watchdog_cycle,
+                failure_event="split_brain_watchdog_failed",
+            ),
+        )
+        self._spawn("queue-recovery", self._queue_recovery_loop())
+
+        slack_provider_service = getattr(self.app.state, "slack_provider_service", None)
+        if slack_provider_service is not None:
+            await slack_provider_service.start()
+        h._schedule_native_recovery_cycles()
+
+    async def stop(self) -> None:
+        h = self.host
+        h.IS_SHUTTING_DOWN = True
+        h._sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
+
+        tasks = list(self.tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.tasks.clear()
+        for legacy_attr in self.LEGACY_TASK_ATTRS.values():
+            setattr(h, legacy_attr, None)
+
+        startup_tasks = list(self.startup_tasks)
+        for task in startup_tasks:
+            task.cancel()
+        if startup_tasks:
+            await asyncio.gather(*startup_tasks, return_exceptions=True)
+        self.startup_tasks.clear()
+
+        slack_provider_service = getattr(self.app.state, "slack_provider_service", None)
+        if slack_provider_service is not None:
+            await slack_provider_service.stop()
+
+        continuity_tasks = [
+            *list(h.ACTIONABLE_OWNER_CONTINUITY_TASKS.values()),
+            *list(h.HANDOFF_CONTINUITY_TASKS.values()),
+        ]
+        for task in continuity_tasks:
+            task.cancel()
+        if continuity_tasks:
+            await asyncio.gather(*continuity_tasks, return_exceptions=True)
+        h.ACTIONABLE_OWNER_CONTINUITY_TASKS.clear()
+        h.HANDOFF_CONTINUITY_TASKS.clear()
+
+        await h.bot_runtime.stop()
+        await h.codex.stop()
+        self.started = False
+
+
+def _replace_lifecycle_handler(handlers: list[Any], legacy: Any, replacement: Any) -> None:
+    replaced = False
+    for index, handler in enumerate(list(handlers)):
+        if handler is legacy:
+            handlers[index] = replacement
+            replaced = True
+    if not replaced and replacement not in handlers:
+        handlers.append(replacement)
+
+
+def install_runtime_supervisor(app: Any, host: Any) -> RuntimeSupervisor:
+    existing = getattr(app.state, "runtime_supervisor", None)
+    if isinstance(existing, RuntimeSupervisor) and existing.host is host:
+        return existing
+
+    service = RuntimeSupervisor(app, host)
+    app.state.runtime_supervisor = service
+    _replace_lifecycle_handler(app.router.on_startup, host.startup, service.start)
+    _replace_lifecycle_handler(app.router.on_shutdown, host.shutdown, service.stop)
+    return service
