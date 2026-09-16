@@ -3,12 +3,14 @@
   const PAGE_SIZE = 40;
   const MAX_LIMIT = 1000;
   const LIVE_DOM_CAP = 200;
+  const STICKY_BOTTOM_THRESHOLD = 96;
 
   const requestedLimits = new Map();
   const threadMeta = new Map();
   const locallyPruned = new Set();
   let pendingScrollRestore = null;
   let renderTimer = null;
+  let restoringScroll = false;
 
   const originalFetch = window.fetch.bind(window);
 
@@ -36,6 +38,67 @@
 
   function effectiveLimit(threadId) {
     return requestedLimits.get(threadId) || INITIAL_LIMIT;
+  }
+
+  function scrollTopDescriptor(element) {
+    let prototype = Object.getPrototypeOf(element);
+    while (prototype) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "scrollTop");
+      if (descriptor?.get && descriptor?.set) return descriptor;
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    return null;
+  }
+
+  function installCoalescedMessageScrolling(messages) {
+    const descriptor = scrollTopDescriptor(messages);
+    if (!descriptor) return;
+
+    const nativeGet = () => descriptor.get.call(messages);
+    const nativeSet = (value) => descriptor.set.call(messages, value);
+    const nearBottom = () => (
+      messages.scrollHeight - messages.clientHeight - nativeGet() <= STICKY_BOTTOM_THRESHOLD
+    );
+
+    let stickToBottom = nearBottom();
+    let scrollFrame = null;
+
+    messages.addEventListener("scroll", () => {
+      stickToBottom = nearBottom();
+    }, { passive: true });
+
+    try {
+      Object.defineProperty(messages, "scrollTop", {
+        configurable: true,
+        get: nativeGet,
+        set(value) {
+          const target = Number(value);
+          if (!Number.isFinite(target)) {
+            nativeSet(value);
+            return;
+          }
+
+          const requestsBottom = target >= messages.scrollHeight - 2;
+          if (restoringScroll || !requestsBottom) {
+            nativeSet(target);
+            return;
+          }
+
+          // app.js requests a bottom scroll after every append and every token
+          // delta. Ignore those requests while the user is reading above the
+          // live tail, and collapse the rest to at most one layout write/frame.
+          if (pendingScrollRestore || !stickToBottom || scrollFrame !== null) return;
+          scrollFrame = requestAnimationFrame(() => {
+            scrollFrame = null;
+            if (pendingScrollRestore || !stickToBottom) return;
+            nativeSet(messages.scrollHeight);
+          });
+        },
+      });
+    } catch {
+      // If a browser does not allow shadowing the native accessor, retain the
+      // existing scrolling behavior instead of breaking the message pane.
+    }
   }
 
   function updateControl() {
@@ -115,8 +178,13 @@
     if (!messages || threadId !== pendingScrollRestore.threadId) return;
 
     const addedHeight = Math.max(0, messages.scrollHeight - pendingScrollRestore.scrollHeight);
-    messages.scrollTop = pendingScrollRestore.scrollTop + addedHeight;
-    pendingScrollRestore = null;
+    restoringScroll = true;
+    try {
+      messages.scrollTop = pendingScrollRestore.scrollTop + addedHeight;
+    } finally {
+      restoringScroll = false;
+      pendingScrollRestore = null;
+    }
   }
 
   function afterMessageRender() {
@@ -162,6 +230,7 @@
   window.addEventListener("DOMContentLoaded", () => {
     const messages = document.getElementById("messages");
     if (messages) {
+      installCoalescedMessageScrolling(messages);
       const observer = new MutationObserver(afterMessageRender);
       observer.observe(messages, { childList: true });
     }
