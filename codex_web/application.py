@@ -40,6 +40,7 @@ from codex_web.services.runtime import RuntimeService
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_items import WorkItemService
+from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.runtime_state import RuntimeStateRepositories
@@ -75,9 +76,9 @@ work_item_service = WorkItemService(core, gitlab_client)
 gitlab_service = GitLabService(core, gitlab_client)
 
 # Legacy code still needing project/runtime state consumes the extracted
-# repositories. SQLite is primary for high-churn runtime documents; the
-# repository mirrors legacy JSON on every write during the migration window so
-# rolling back to the previous release remains safe.
+# repositories. SQLite is primary for mutable runtime documents; repositories
+# mirror legacy JSON on every write during the migration window so rolling back
+# to the previous release remains safe.
 core._load_projects = project_repository.load
 core._save_projects = project_repository.save
 core._load_thread_settings = runtime_state.thread_settings.load
@@ -88,6 +89,7 @@ core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
+auxiliary_state = install_auxiliary_state(app, core)
 
 # Compose extracted runtime ownership here rather than in server.py so direct
 # application imports and tests observe the same implementation as the CLI
