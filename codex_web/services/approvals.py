@@ -9,6 +9,11 @@ from codex_web.models import ApprovalSlackMessage
 class ApprovalService:
     def __init__(self, host: Any) -> None:
         self.host = host
+        # ApprovalService is already composed by application.py. Rebind the
+        # historical mutation seams here so this extraction does not require a
+        # second application-composition edit.
+        host._remember_approval_message = self.remember_message
+        host._forget_approval_messages = self.forget_messages
 
     def list(self) -> list[dict[str, Any]]:
         return list(self.host.codex.pending_approvals.values())
@@ -58,15 +63,3 @@ class ApprovalService:
         messages = self.host._load_approval_messages()
         if messages.pop(str(request_id), None) is not None:
             self.host._save_approval_messages(messages)
-
-
-def install_approval_service(app: Any, host: Any) -> ApprovalService:
-    existing = getattr(app.state, "approval_service", None)
-    if isinstance(existing, ApprovalService) and existing.host is host:
-        service = existing
-    else:
-        service = ApprovalService(host)
-        app.state.approval_service = service
-    host._remember_approval_message = service.remember_message
-    host._forget_approval_messages = service.forget_messages
-    return service
