@@ -14,6 +14,15 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from codex_web.execution_contracts import (
+    ROLE_CONTRACTS,
+    ExecutionRoleContract,
+    execution_contract_prompt,
+    execution_role,
+    execution_role_catalog_prompt,
+    route_execution_role,
+)
+
 
 @dataclass(frozen=True)
 class ExecutiveAgent:
@@ -189,6 +198,8 @@ class DelegateRequest(BaseModel):
     task: str = Field(min_length=1, max_length=50000)
     executive_reply: str = ""
     agent_id: str = "chief-of-staff"
+    execution_role_id: str | None = None
+    change_classification: Literal["cosmetic-only", "localized functional", "shared-surface", "release/security-sensitive"] | None = None
     project_id: str = "home"
     sandbox: str | None = None
     approval_policy: str | None = None
@@ -242,7 +253,7 @@ def _agent(agent_id: str | None) -> ExecutiveAgent:
 
 def _build_instructions(agent: ExecutiveAgent, company_prompt: str, runtime_prompt: str = "") -> str:
     runtime = f"\n\nCODEX-WEB RUNTIME CONTEXT\n{runtime_prompt}" if runtime_prompt else ""
-    return f"{GLOBAL_OPERATING_SYSTEM}\n\nROLE\n{ROLE_INSTRUCTIONS[agent.id]}\n\nCOMPANY CONTEXT\n{company_prompt}{runtime}"
+    return f"{GLOBAL_OPERATING_SYSTEM}\n\nROLE\n{ROLE_INSTRUCTIONS[agent.id]}\n\nEXECUTION ROLE CATALOG\n{execution_role_catalog_prompt()}\n\nCOMPANY CONTEXT\n{company_prompt}{runtime}"
 
 
 def _build_board_instructions(company_prompt: str, runtime_prompt: str = "") -> str:
@@ -250,6 +261,9 @@ def _build_board_instructions(company_prompt: str, runtime_prompt: str = "") -> 
     return f"""{GLOBAL_OPERATING_SYSTEM}
 
 You are the Chief of Staff chairing an executive review. You will receive independent specialist views. Synthesize them rather than merely summarizing them. Resolve conflicts, call out unknowns, and produce one prioritized recommendation.
+
+EXECUTION ROLE CATALOG
+{execution_role_catalog_prompt()}
 
 COMPANY CONTEXT
 {company_prompt}{runtime}
@@ -263,12 +277,28 @@ Output:
 """.strip()
 
 
-def _codex_execution_instructions(agent: ExecutiveAgent, company: CompanyContext) -> str:
-    return f"""You are the implementation counterpart for the {agent.title} in a SaaS/software-development company.
+def _codex_execution_instructions(
+    agent: ExecutiveAgent,
+    company: CompanyContext,
+    execution_role_contract: ExecutionRoleContract,
+    change_classification: str | None = None,
+) -> str:
+    return f"""You are the Codex execution counterpart for the {agent.title} executive advisor in a SaaS/software-development company.
 
+EXECUTIVE CONTEXT
 {ROLE_INSTRUCTIONS[agent.id]}
 
-You are operating inside Codex Web. Inspect the actual workspace before changing it. Translate the executive objective into concrete repository/infrastructure work. Preserve existing architecture unless there is a justified reason to change it. Use tests, linting and focused validation. Do not bypass Codex sandbox or approval controls. If the objective is strategic rather than directly implementable, first produce a concrete implementation plan and identify the smallest safe next change.
+The executive persona is advisory. Your operational authority and lane are defined by the execution contract below. When the executive recommendation conflicts with the execution contract, do not silently cross lanes: preserve the objective, refuse/reroute the incompatible action, and record the exact owner or Orchestrator decision needed.
+
+{execution_contract_prompt(execution_role_contract, change_classification)}
+
+CODEX-WEB EXECUTION RULES
+- Inspect the actual workspace and canonical work-item state before changing anything.
+- Use codex-web handoff/progress/ack state for ownership transitions; do not emulate handoffs only in prose.
+- Keep GitLab owner/status labels synchronized with codex-web state in the same turn when the integration is available.
+- Preserve Codex sandbox and approval controls.
+- Use tests, linting, focused validation, and exact artifact identity appropriate to the declared change classification.
+- If the objective is not directly implementable in this role, produce the required role artifact and hand it to the exact next lane rather than absorbing another role.
 
 Company context:
 {company.as_prompt()}
@@ -475,13 +505,19 @@ class ExecutiveService:
 
     async def delegate(self, request: DelegateRequest) -> dict[str, Any]:
         agent = _agent(request.agent_id)
+        execution_role_contract = execution_role(request.execution_role_id)
+        if request.execution_role_id and execution_role_contract is None:
+            raise HTTPException(status_code=422, detail=f"Unknown execution role: {request.execution_role_id}")
+        if execution_role_contract is None:
+            execution_role_contract = route_execution_role(request.task, agent.id)
         company = self.store.company()
         project = self.host._project(request.project_id)
         sandbox = request.sandbox or project.sandbox
         approval_policy = request.approval_policy or project.approval_policy
         model = request.model or project.model
 
-        thread_id = None if request.new_thread else self.store.thread_for(project.id, agent.id)
+        thread_role_key = f"{agent.id}:{execution_role_contract.id}"
+        thread_id = None if request.new_thread else self.store.thread_for(project.id, thread_role_key)
         created_new_thread = False
         if not thread_id:
             created_new_thread = True
@@ -499,7 +535,7 @@ class ExecutiveService:
             set_thread_name = getattr(self.host, "_set_thread_name", None)
             if set_thread_name:
                 try:
-                    await set_thread_name(thread_id, f"Executive · {agent.title}")
+                    await set_thread_name(thread_id, f"Executive · {agent.title} → {execution_role_contract.name}")
                 except Exception:
                     pass
 
@@ -511,15 +547,23 @@ class ExecutiveService:
                 approval_policy=approval_policy,
                 model=model,
                 reasoning_effort=request.reasoning_effort,
-                developer_instructions=_codex_execution_instructions(agent, company),
+                developer_instructions=_codex_execution_instructions(
+                    agent,
+                    company,
+                    execution_role_contract,
+                    request.change_classification,
+                ),
             )
 
         recommendation = request.executive_reply.strip()
+        classification = request.change_classification or "agent must classify before substantive work"
         message = (
-            f"Executive delegation from {agent.title}.\n\n"
+            f"Executive delegation from {agent.title}.\n"
+            f"Execution role: {execution_role_contract.name} ({execution_role_contract.lane}).\n"
+            f"Change classification: {classification}.\n\n"
             f"Objective:\n{request.task.strip()}\n"
             + (f"\nExecutive recommendation/context:\n{recommendation}\n" if recommendation else "")
-            + "\nInspect the current project state, propose the smallest safe implementation path, then execute within the configured Codex sandbox and approval policy. Validate your work before reporting completion."
+            + "\nApply the installed execution-role contract. Inspect canonical project/work-item state first. If this objective falls outside your lane, refuse the wrong-lane action and create or identify the exact handoff/reroute instead. Otherwise execute within the configured Codex sandbox and approval policy and validate the exact artifact appropriate to the lane before reporting completion."
         )
         payload = self.host.TurnCreate(
             message=message,
@@ -533,11 +577,13 @@ class ExecutiveService:
         effective_thread_id = thread_id
         if isinstance(result, dict):
             effective_thread_id = result.get("newThreadId") or result.get("threadId") or thread_id
-        self.store.remember_thread(project.id, agent.id, effective_thread_id)
+        self.store.remember_thread(project.id, thread_role_key, effective_thread_id)
         return {
             "ok": True,
             "agentId": agent.id,
             "agentTitle": agent.title,
+            "executionRole": execution_role_contract.public(),
+            "changeClassification": request.change_classification,
             "projectId": project.id,
             "threadId": effective_thread_id,
             "createdNewThread": created_new_thread or effective_thread_id != thread_id,
@@ -568,6 +614,7 @@ def install_executive(app: FastAPI, host: Any) -> ExecutiveService:
                 }
                 for agent in AGENTS.values()
             ],
+            "executionRoles": [role.public() for role in ROLE_CONTRACTS.values()],
             "model": service.model,
         }
 
