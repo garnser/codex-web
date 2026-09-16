@@ -1,0 +1,127 @@
+name: Prune repository-owned persistence helpers
+
+on:
+  push:
+    branches:
+      - refactor/prune-persistence-core
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/prune-persistence-core
+          fetch-depth: 0
+
+      - name: Remove rebound persistence helpers
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import re
+          from pathlib import Path
+
+          core_path = Path('codex_web/runtime/core.py')
+          source = core_path.read_text()
+          tree = ast.parse(source)
+
+          remove_names = {
+              '_load_projects', '_save_projects',
+              '_load_thread_index', '_save_thread_index',
+              '_load_bot_reply_targets', '_save_bot_reply_targets',
+              '_load_bot_delivery_targets', '_save_bot_delivery_targets',
+              '_load_slack_thread_icons', '_save_slack_thread_icons',
+              '_load_bot_details', '_save_bot_details',
+              '_load_approval_messages', '_save_approval_messages',
+              '_load_thread_settings', '_save_thread_settings',
+              '_load_active_turns', '_save_active_turns',
+              '_load_turn_queues', '_save_turn_queues',
+              '_load_bot_connections', '_save_bot_connections',
+              '_load_bot_bindings', '_save_bot_bindings',
+              '_load_work_item_states', '_save_work_item_states',
+              '_load_gitlab_routing_settings', '_save_gitlab_routing_settings',
+              '_load_agent_channel_presence_settings', '_save_agent_channel_presence_settings',
+              '_load_support_servicedesk_state', '_save_support_servicedesk_state',
+              '_load_gitlab_semantic_events', '_save_gitlab_semantic_events',
+          }
+
+          definitions = {
+              node.name: node
+              for node in tree.body
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+              and node.name in remove_names
+          }
+          missing = sorted(remove_names - definitions.keys())
+          if missing:
+              raise SystemExit(f'Expected repository-owned definitions missing from core.py: {missing}')
+
+          # These helpers must only be resolved dynamically from functions/routes
+          # after application composition has rebound them to repositories. Abort
+          # rather than deleting anything still required during module import.
+          import_time_refs = []
+          for node in tree.body:
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                  continue
+              for child in ast.walk(node):
+                  if isinstance(child, ast.Name) and child.id in remove_names:
+                      import_time_refs.append((child.id, getattr(child, 'lineno', None)))
+          if import_time_refs:
+              raise SystemExit(f'Persistence helper still referenced at import time: {import_time_refs}')
+
+          lines = source.splitlines(keepends=True)
+          ranges = sorted(
+              ((node.lineno - 1, node.end_lineno) for node in definitions.values()),
+              reverse=True,
+          )
+          for start, end in ranges:
+              while end < len(lines) and not lines[end].strip():
+                  end += 1
+              del lines[start:end]
+          core_path.write_text(''.join(lines))
+
+          size = core_path.stat().st_size
+          budget = ((size + 4095) // 4096) * 4096
+          budget_path = Path('tests/test_core_budget.py')
+          budget_source = budget_path.read_text()
+          budget_source, count = re.subn(
+              r'MAX_CORE_BYTES = \d+',
+              f'MAX_CORE_BYTES = {budget}',
+              budget_source,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('Could not update MAX_CORE_BYTES in test_core_budget.py')
+          match = re.search(r'^REMOVED_RUNTIME_DEFINITIONS = (.+)$', budget_source, re.MULTILINE)
+          if not match:
+              raise SystemExit('Could not find REMOVED_RUNTIME_DEFINITIONS in test_core_budget.py')
+          existing = set(ast.literal_eval(match.group(1)))
+          combined = sorted(existing | remove_names)
+          budget_source = (
+              budget_source[:match.start(1)]
+              + repr(combined)
+              + budget_source[match.end(1):]
+          )
+          budget_path.write_text(budget_source)
+
+          ast.parse(core_path.read_text())
+          print(f'Pruned persistence helpers; core.py={size} bytes; new budget={budget} bytes')
+          PY
+
+          rm .github/workflows/prune-persistence-core.yml
+
+      - name: Commit pruning result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --stat
+          git commit -m 'Delete repository-owned persistence helpers from core'
+          git push origin HEAD:refactor/prune-persistence-core
