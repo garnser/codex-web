@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        CODEX_VERSION: ${CODEX_VERSION:-latest}
+        CODEX_VERSION: ${CODEX_VERSION:-0.154.0}
         CODEX_UID: ${CODEX_UID:-1000}
         CODEX_GID: ${CODEX_GID:-1000}
     image: ${CODEX_WEB_IMAGE:-codex-web:local}
