@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
 from fastapi import FastAPI
 
 from codex_web.models import ApprovalSlackMessage, BotThreadDetail
-from codex_web.services.approvals import install_approval_service
+from codex_web.services.approvals import ApprovalService
 from codex_web.services.bot_details import BotDetailService, install_bot_detail_service
 
 
@@ -33,10 +32,9 @@ class _StateHost:
 
 
 class ApprovalMessageStateTests(unittest.TestCase):
-    def test_message_bookkeeping_deduplicates_and_forgets(self) -> None:
-        app = FastAPI()
+    def test_message_bookkeeping_deduplicates_forgets_and_rebinds_existing_service(self) -> None:
         host = _StateHost()
-        service = install_approval_service(app, host)
+        service = ApprovalService(host)
 
         for _ in range(2):
             service.remember_message(
