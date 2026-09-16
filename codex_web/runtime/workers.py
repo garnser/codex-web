@@ -227,11 +227,13 @@ def _same_handler(left: Any, right: Any) -> bool:
 
 
 def install_worker_supervisor(app: Any, host: Any) -> WorkerSupervisor:
-    """Replace the legacy FastAPI lifecycle handlers with WorkerSupervisor."""
+    """Replace any legacy FastAPI lifecycle handlers with WorkerSupervisor."""
 
     previous = getattr(app.state, "worker_supervisor", None)
     startup_handlers = list(app.router.on_startup)
     shutdown_handlers = list(app.router.on_shutdown)
+    legacy_startup = getattr(host, "startup", None)
+    legacy_shutdown = getattr(host, "shutdown", None)
 
     def owned_by_previous(handler: Any) -> bool:
         return previous is not None and getattr(handler, "__self__", None) is previous
@@ -239,12 +241,14 @@ def install_worker_supervisor(app: Any, host: Any) -> WorkerSupervisor:
     app.router.on_startup[:] = [
         handler
         for handler in startup_handlers
-        if not _same_handler(handler, host.startup) and not owned_by_previous(handler)
+        if not (legacy_startup is not None and _same_handler(handler, legacy_startup))
+        and not owned_by_previous(handler)
     ]
     app.router.on_shutdown[:] = [
         handler
         for handler in shutdown_handlers
-        if not _same_handler(handler, host.shutdown) and not owned_by_previous(handler)
+        if not (legacy_shutdown is not None and _same_handler(handler, legacy_shutdown))
+        and not owned_by_previous(handler)
     ]
 
     supervisor = WorkerSupervisor(host)
