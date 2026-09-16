@@ -20,6 +20,11 @@ class WorkItemService:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.state_machine = state_machine or WorkItemStateMachine(host, self.gitlab)
+        # Preserve the historical direct-call entrypoints without retaining
+        # duplicate implementations in the legacy runtime.
+        host.create_work_item_handoff = self.handoff
+        host.ack_work_item_handoff = self.acknowledge
+        host.update_work_item_progress = self.progress
 
     async def list(
         self,
