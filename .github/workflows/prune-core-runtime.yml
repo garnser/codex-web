@@ -110,30 +110,28 @@ jobs:
 
           size = core_path.stat().st_size
           budget = ((size + 4095) // 4096) * 4096
-          Path('tests/test_core_budget.py').write_text(f'''from __future__ import annotations
-
-import ast
-import unittest
-from pathlib import Path
-
-CORE_PATH = Path(__file__).resolve().parents[1] / "codex_web" / "runtime" / "core.py"
-MAX_CORE_BYTES = {budget}
-REMOVED_RUNTIME_DEFINITIONS = {sorted(remove_names)!r}
-
-class CoreBudgetTests(unittest.TestCase):
-    def test_core_stays_below_ratchet_budget(self) -> None:
-        size = CORE_PATH.stat().st_size
-        self.assertLessEqual(size, MAX_CORE_BYTES, f"core.py grew to {{size}} bytes; budget is {{MAX_CORE_BYTES}}. Extract new behavior instead of adding it back to core.py.")
-
-    def test_extracted_runtime_definitions_do_not_return(self) -> None:
-        tree = ast.parse(CORE_PATH.read_text())
-        top_level = {{node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}}
-        returned = sorted(set(REMOVED_RUNTIME_DEFINITIONS) & top_level)
-        self.assertEqual(returned, [], f"Extracted runtime definitions returned to core.py: {{returned}}")
-
-if __name__ == "__main__":
-    unittest.main()
-''')
+          removed = repr(sorted(remove_names))
+          test_content = (
+              'from __future__ import annotations\n\n'
+              'import ast\n'
+              'import unittest\n'
+              'from pathlib import Path\n\n'
+              'CORE_PATH = Path(__file__).resolve().parents[1] / "codex_web" / "runtime" / "core.py"\n'
+              f'MAX_CORE_BYTES = {budget}\n'
+              f'REMOVED_RUNTIME_DEFINITIONS = {removed}\n\n'
+              'class CoreBudgetTests(unittest.TestCase):\n'
+              '    def test_core_stays_below_ratchet_budget(self) -> None:\n'
+              '        size = CORE_PATH.stat().st_size\n'
+              '        self.assertLessEqual(size, MAX_CORE_BYTES, f"core.py grew to {size} bytes; budget is {MAX_CORE_BYTES}. Extract new behavior instead of adding it back to core.py.")\n\n'
+              '    def test_extracted_runtime_definitions_do_not_return(self) -> None:\n'
+              '        tree = ast.parse(CORE_PATH.read_text())\n'
+              '        top_level = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}\n'
+              '        returned = sorted(set(REMOVED_RUNTIME_DEFINITIONS) & top_level)\n'
+              '        self.assertEqual(returned, [], f"Extracted runtime definitions returned to core.py: {returned}")\n\n'
+              'if __name__ == "__main__":\n'
+              '    unittest.main()\n'
+          )
+          Path('tests/test_core_budget.py').write_text(test_content)
           print(f'Pruned core.py to {size} bytes; ratchet budget={budget} bytes')
           PY
 
