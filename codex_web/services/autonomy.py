@@ -223,27 +223,32 @@ class AutonomyService:
                 continue
 
             if state.handoff and state.handoff.status == "pending":
-                pending_age = now - state.handoff.requested_at
-                recipient = h._coerce_owner(state.handoff.to_agent)
+                handoff = state.handoff
+                pending_age = now - handoff.requested_at
+                recipient = h._coerce_owner(handoff.to_agent)
                 if pending_age >= h._work_item_handoff_timeout_seconds():
-                    # Preserve the legacy persisted-state behavior. A later model
-                    # migration can formalize `expired` as a stored history-only
-                    # status without coupling that schema change to this extraction.
-                    state.handoff.status = "expired"
-                    state.current_owner = h._coerce_owner(state.handoff.from_agent)
+                    sender = h._coerce_owner(handoff.from_agent)
+                    state = h._archive_active_handoff(
+                        state,
+                        now=now,
+                        status="superseded",
+                        reason_code="handoff_expired",
+                    )
+                    state.current_owner = sender
                     state.current_stage = "implementation_active"
-                    state.next_owner = h._coerce_owner(state.handoff.from_agent)
+                    state.next_owner = sender
                     state.next_action = state.next_action or "Resume ownership or escalate one exact blocker."
                     state.blocker = "Structured handoff expired without acknowledgement."
                     state.updated_at = now
                     state.last_meaningful_update_at = now
+                    states[ref] = state
                     h._append_work_item_event(
                         h._work_item_event(
                             ref,
                             "handoff_expired",
                             payload={
-                                "from_agent": state.handoff.from_agent,
-                                "to_agent": state.handoff.to_agent,
+                                "from_agent": handoff.from_agent,
+                                "to_agent": handoff.to_agent,
                             },
                         )
                     )
