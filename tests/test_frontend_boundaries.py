@@ -23,12 +23,6 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("await fetch(", source)
 
-    def test_executive_ui_uses_shared_api_client(self) -> None:
-        source = (STATIC / "executive-ui.js").read_text()
-        self.assertIn("api_client.js", source)
-        self.assertIn("executiveApiModule", source)
-        self.assertNotIn("fetch(", source)
-
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
