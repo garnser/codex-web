@@ -68,6 +68,11 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertIs(getattr(core._save_projects, "__self__", None), application.project_repository)
         self.assertEqual(core._atomic_write_text.__module__, "codex_web.storage.json_files")
 
+    def test_thread_turn_compatibility_aliases_use_extracted_services(self) -> None:
+        self.assertIs(getattr(core.read_thread, "__self__", None), application.thread_service)
+        self.assertIs(getattr(core.resume_thread, "__self__", None), application.turn_service)
+        self.assertIs(getattr(core.start_turn, "__self__", None), application.turn_service)
+
     def test_context_service_observes_shared_event_hub(self) -> None:
         self.assertIs(application.app.state.context_compaction_service, application.context_service)
         self.assertIn(application.context_service.observe, core.hub._listeners)
