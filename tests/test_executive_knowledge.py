@@ -110,6 +110,13 @@ class ExecutiveKnowledgeStoreTests(unittest.TestCase):
                 )
             )
 
+    def test_fallback_store_stays_inside_host_data_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            store = ExecutiveKnowledgeStore(SimpleNamespace(DATA_DIR=data_dir))
+
+            self.assertEqual(store.store.path, data_dir / "codex-web.db")
+
 
 class ExecutiveKnowledgeInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_company_knowledge_is_injected_into_executive_reasoning(self) -> None:
