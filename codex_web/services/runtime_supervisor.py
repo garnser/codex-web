@@ -256,6 +256,6 @@ def install_runtime_supervisor(app: Any, host: Any) -> RuntimeSupervisor:
 
     service = RuntimeSupervisor(app, host)
     app.state.runtime_supervisor = service
-    _replace_lifecycle_handler(app.router.on_startup, host.startup, service.start)
-    _replace_lifecycle_handler(app.router.on_shutdown, host.shutdown, service.stop)
+    _replace_lifecycle_handler(app.router.on_startup, getattr(host, "startup", None), service.start)
+    _replace_lifecycle_handler(app.router.on_shutdown, getattr(host, "shutdown", None), service.stop)
     return service
