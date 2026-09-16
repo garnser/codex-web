@@ -9,26 +9,12 @@
   const threadMeta = new Map();
   const locallyPruned = new Set();
   let pendingScrollRestore = null;
-  let renderTimer = null;
-  let restoringScroll = false;
-
-  const originalFetch = window.fetch.bind(window);
-
-  function threadReadRequest(input, init = {}) {
-    const method = String(init.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
-    if (method !== "GET") return null;
-
-    const rawUrl = input instanceof Request ? input.url : input;
-    const url = new URL(rawUrl, window.location.href);
-    const base = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-    const prefix = `${base}/api/threads/`;
-    if (!url.pathname.startsWith(prefix)) return null;
-
-    const suffix = url.pathname.slice(prefix.length);
-    if (!suffix || suffix.includes("/")) return null;
-
-    return { threadId: decodeURIComponent(suffix), url };
-  }
+  let messagesElement = null;
+  let mutationObserver = null;
+  let scrollFrame = null;
+  let maintenanceFrame = null;
+  let stickToBottom = true;
+  let reloadThread = null;
 
   function currentThreadId() {
     const value = document.getElementById("thread-meta")?.textContent || "";
@@ -40,65 +26,36 @@
     return requestedLimits.get(threadId) || INITIAL_LIMIT;
   }
 
-  function scrollTopDescriptor(element) {
-    let prototype = Object.getPrototypeOf(element);
-    while (prototype) {
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, "scrollTop");
-      if (descriptor?.get && descriptor?.set) return descriptor;
-      prototype = Object.getPrototypeOf(prototype);
-    }
-    return null;
+  function nearBottom(messages = messagesElement) {
+    if (!messages) return true;
+    return messages.scrollHeight - messages.clientHeight - messages.scrollTop <= STICKY_BOTTOM_THRESHOLD;
   }
 
-  function installCoalescedMessageScrolling(messages) {
-    const descriptor = scrollTopDescriptor(messages);
-    if (!descriptor) return;
+  function attachMessages(messages) {
+    if (!messages || messages === messagesElement) return;
 
-    const nativeGet = () => descriptor.get.call(messages);
-    const nativeSet = (value) => descriptor.set.call(messages, value);
-    const nearBottom = () => (
-      messages.scrollHeight - messages.clientHeight - nativeGet() <= STICKY_BOTTOM_THRESHOLD
-    );
-
-    let stickToBottom = nearBottom();
-    let scrollFrame = null;
+    if (mutationObserver) mutationObserver.disconnect();
+    messagesElement = messages;
+    stickToBottom = nearBottom(messages);
 
     messages.addEventListener("scroll", () => {
-      stickToBottom = nearBottom();
+      stickToBottom = nearBottom(messages);
     }, { passive: true });
 
-    try {
-      Object.defineProperty(messages, "scrollTop", {
-        configurable: true,
-        get: nativeGet,
-        set(value) {
-          const target = Number(value);
-          if (!Number.isFinite(target)) {
-            nativeSet(value);
-            return;
-          }
+    mutationObserver = new MutationObserver(() => scheduleMaintenance());
+    mutationObserver.observe(messages, { childList: true });
+  }
 
-          const requestsBottom = target >= messages.scrollHeight - 2;
-          if (restoringScroll || !requestsBottom) {
-            nativeSet(target);
-            return;
-          }
+  function requestBottomScroll(messages = messagesElement) {
+    if (!messages) return;
+    attachMessages(messages);
+    if (pendingScrollRestore || !stickToBottom || scrollFrame !== null) return;
 
-          // app.js requests a bottom scroll after every append and every token
-          // delta. Ignore those requests while the user is reading above the
-          // live tail, and collapse the rest to at most one layout write/frame.
-          if (pendingScrollRestore || !stickToBottom || scrollFrame !== null) return;
-          scrollFrame = requestAnimationFrame(() => {
-            scrollFrame = null;
-            if (pendingScrollRestore || !stickToBottom) return;
-            nativeSet(messages.scrollHeight);
-          });
-        },
-      });
-    } catch {
-      // If a browser does not allow shadowing the native accessor, retain the
-      // existing scrolling behavior instead of breaking the message pane.
-    }
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = null;
+      if (pendingScrollRestore || !stickToBottom) return;
+      messages.scrollTo({ top: messages.scrollHeight, behavior: "auto" });
+    });
   }
 
   function updateControl() {
@@ -131,11 +88,11 @@
       button.textContent = "Earlier history limit reached";
     }
 
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const nextLimit = Math.min(MAX_LIMIT, limit + PAGE_SIZE);
       if (nextLimit <= limit) return;
 
-      const messages = document.getElementById("messages");
+      const messages = messagesElement || document.getElementById("messages");
       if (messages) {
         pendingScrollRestore = {
           threadId,
@@ -148,18 +105,22 @@
       button.disabled = true;
       button.textContent = "Loading earlier activity…";
 
-      const activeThread = document.querySelector("#threads .item.active .item-main");
-      if (activeThread instanceof HTMLElement) {
-        activeThread.click();
+      if (typeof reloadThread === "function") {
+        try {
+          await reloadThread(threadId);
+        } catch (error) {
+          pendingScrollRestore = null;
+          button.disabled = false;
+          button.textContent = "Load earlier activity";
+          throw error;
+        }
       }
     });
 
     control.appendChild(button);
   }
 
-  function pruneLiveDom() {
-    const messages = document.getElementById("messages");
-    const threadId = currentThreadId();
+  function pruneLiveDom(threadId = currentThreadId(), messages = messagesElement) {
     if (!messages || !threadId) return;
 
     const cap = Math.max(LIVE_DOM_CAP, effectiveLimit(threadId));
@@ -171,69 +132,66 @@
     locallyPruned.add(threadId);
   }
 
-  function restoreScrollIfNeeded() {
-    if (!pendingScrollRestore) return;
-    const messages = document.getElementById("messages");
-    const threadId = currentThreadId();
-    if (!messages || threadId !== pendingScrollRestore.threadId) return;
+  function restoreScrollIfNeeded(threadId = currentThreadId(), messages = messagesElement) {
+    if (!pendingScrollRestore || !messages || threadId !== pendingScrollRestore.threadId) return false;
 
     const addedHeight = Math.max(0, messages.scrollHeight - pendingScrollRestore.scrollHeight);
-    restoringScroll = true;
-    try {
-      messages.scrollTop = pendingScrollRestore.scrollTop + addedHeight;
-    } finally {
-      restoringScroll = false;
-      pendingScrollRestore = null;
-    }
+    const target = pendingScrollRestore.scrollTop + addedHeight;
+    pendingScrollRestore = null;
+    messages.scrollTo({ top: target, behavior: "auto" });
+    stickToBottom = nearBottom(messages);
+    return true;
   }
 
-  function afterMessageRender() {
-    if (renderTimer) clearTimeout(renderTimer);
-    renderTimer = setTimeout(() => {
-      renderTimer = null;
-      pruneLiveDom();
-      restoreScrollIfNeeded();
+  function scheduleMaintenance() {
+    if (maintenanceFrame !== null) return;
+    maintenanceFrame = requestAnimationFrame(() => {
+      maintenanceFrame = null;
+      const threadId = currentThreadId();
+      const messages = messagesElement || document.getElementById("messages");
+      if (messages) attachMessages(messages);
+      pruneLiveDom(threadId, messages);
+      restoreScrollIfNeeded(threadId, messages);
       updateControl();
-    }, 0);
+    });
   }
 
-  window.fetch = async function pagedThreadFetch(input, init = {}) {
-    const match = threadReadRequest(input, init);
-    if (!match) return originalFetch(input, init);
+  function recordThread(threadId, thread = {}) {
+    if (!threadId) return;
+    threadMeta.set(threadId, {
+      truncated: Boolean(thread.messagesTruncated),
+      omitted: Number(thread.messagesOmitted || 0),
+      limit: Number(thread.messageLimit || effectiveLimit(threadId)),
+    });
+    if (!thread.messagesTruncated) locallyPruned.delete(threadId);
+  }
 
-    const { threadId, url } = match;
-    if (!url.searchParams.has("message_limit")) {
-      url.searchParams.set("message_limit", String(effectiveLimit(threadId)));
-    }
+  function afterThreadRendered(threadId, messages = document.getElementById("messages")) {
+    if (messages) attachMessages(messages);
+    pruneLiveDom(threadId, messages);
+    const restored = restoreScrollIfNeeded(threadId, messages);
+    updateControl();
+    if (!restored) requestBottomScroll(messages);
+  }
 
-    const requestInput = input instanceof Request
-      ? new Request(url.toString(), input)
-      : url.toString();
-    const response = await originalFetch(requestInput, init);
+  function configure(options = {}) {
+    if (typeof options.reloadThread === "function") reloadThread = options.reloadThread;
+    const messages = document.getElementById("messages");
+    if (messages) attachMessages(messages);
+    updateControl();
+  }
 
-    if (response.ok) {
-      response.clone().json().then((payload) => {
-        const thread = payload?.thread || payload || {};
-        threadMeta.set(threadId, {
-          truncated: Boolean(thread.messagesTruncated),
-          omitted: Number(thread.messagesOmitted || 0),
-          limit: Number(thread.messageLimit || effectiveLimit(threadId)),
-        });
-        if (!thread.messagesTruncated) locallyPruned.delete(threadId);
-        afterMessageRender();
-      }).catch(() => {});
-    }
-
-    return response;
-  };
+  window.codexThreadHistory = Object.freeze({
+    configure,
+    messageLimit: effectiveLimit,
+    recordThread,
+    afterThreadRendered,
+    requestBottomScroll,
+  });
 
   window.addEventListener("DOMContentLoaded", () => {
     const messages = document.getElementById("messages");
-    if (messages) {
-      installCoalescedMessageScrolling(messages);
-      const observer = new MutationObserver(afterMessageRender);
-      observer.observe(messages, { childList: true });
-    }
+    if (messages) attachMessages(messages);
     updateControl();
   });
 })();
