@@ -1,5 +1,6 @@
-(() => {
+(async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let refreshTimer = null;
   let lastThreadId = null;
 
@@ -19,11 +20,7 @@
   }
 
   async function getStatus(threadId) {
-    const response = await fetch(`${BASE}/api/threads/${encodeURIComponent(threadId)}/context`, {
-      headers: { "Content-Type": "application/json" },
-    });
-    if (!response.ok) throw new Error(await response.text() || response.statusText);
-    return response.json();
+    return apiRequest(`/api/threads/${encodeURIComponent(threadId)}/context`);
   }
 
   function statusText(status) {
@@ -66,16 +63,7 @@
     button.disabled = true;
     setStatus("Requesting native Codex compaction…");
     try {
-      const response = await fetch(`${BASE}/api/threads/${encodeURIComponent(threadId)}/compact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = payload?.detail;
-        const reason = typeof detail === "object" ? detail.reason || detail.code : detail;
-        throw new Error(reason || response.statusText);
-      }
+      await apiRequest(`/api/threads/${encodeURIComponent(threadId)}/compact`, { method: "POST" });
       setStatus("Compaction accepted by Codex; refreshing usage…");
       window.setTimeout(() => document.getElementById("refresh-token-usage")?.click(), 1000);
       window.setTimeout(refresh, 1500);
