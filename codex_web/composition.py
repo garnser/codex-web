@@ -29,12 +29,16 @@ def replace_routes(
     paths: Iterable[str],
     key: str,
 ) -> int:
-    """Replace legacy route handlers with one domain router, idempotently.
+    """Install one domain router after removing any legacy handlers.
 
     The existing FastAPI instance is intentionally preserved because runtime
     lifecycle hooks and long-lived Codex state are still being migrated out of
-    the legacy runtime. Extracted domains, however, are removed from that
-    route table and re-registered from their owning modules.
+    the legacy runtime. A domain may already have no legacy handlers left; in
+    that case the router is still installed normally.
+
+    The return value is the number of routes owned by the installed domain
+    router, not the number of legacy routes removed. This keeps composition
+    diagnostics stable as obsolete handlers are physically deleted.
     """
 
     marker = f"domain_router_{key}_installed"
@@ -47,4 +51,5 @@ def replace_routes(
     app.include_router(router)
     app.openapi_schema = None
     setattr(app.state, marker, True)
-    return removed
+    setattr(app.state, f"domain_router_{key}_legacy_removed", removed)
+    return len(router.routes)
