@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 
@@ -200,6 +201,19 @@ class WorkerSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app.router.on_shutdown), 1)
         self.assertIs(getattr(app.router.on_startup[0], "__self__", None), second)
         self.assertIs(getattr(app.router.on_shutdown[0], "__self__", None), second)
+
+    async def test_install_works_without_legacy_lifecycle_handlers(self) -> None:
+        legacy_host = _Host()
+        host = SimpleNamespace(**legacy_host.__dict__)
+        app = FastAPI()
+
+        supervisor = install_worker_supervisor(app, host)
+
+        self.assertIs(app.state.worker_supervisor, supervisor)
+        self.assertEqual(len(app.router.on_startup), 1)
+        self.assertEqual(len(app.router.on_shutdown), 1)
+        self.assertIs(getattr(app.router.on_startup[0], "__self__", None), supervisor)
+        self.assertIs(getattr(app.router.on_shutdown[0], "__self__", None), supervisor)
 
     async def test_periodic_cycle_failures_are_isolated_and_reported(self) -> None:
         host = _Host()

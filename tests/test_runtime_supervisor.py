@@ -32,6 +32,23 @@ class RuntimeSupervisorInstallTests(unittest.TestCase):
         self.assertIs(app.router.on_shutdown[0].__self__, service)
         self.assertEqual(app.router.on_shutdown[0].__func__, RuntimeSupervisor.stop)
 
+    def test_installer_adds_handlers_when_legacy_runtime_has_none(self) -> None:
+        host = SimpleNamespace()
+        app = SimpleNamespace(
+            state=SimpleNamespace(),
+            router=SimpleNamespace(on_startup=[], on_shutdown=[]),
+        )
+
+        service = install_runtime_supervisor(app, host)
+
+        self.assertIs(app.state.runtime_supervisor, service)
+        self.assertEqual(len(app.router.on_startup), 1)
+        self.assertIs(app.router.on_startup[0].__self__, service)
+        self.assertEqual(app.router.on_startup[0].__func__, RuntimeSupervisor.start)
+        self.assertEqual(len(app.router.on_shutdown), 1)
+        self.assertIs(app.router.on_shutdown[0].__self__, service)
+        self.assertEqual(app.router.on_shutdown[0].__func__, RuntimeSupervisor.stop)
+
     def test_installer_is_idempotent_for_same_host(self) -> None:
         async def legacy_startup() -> None:
             return None
