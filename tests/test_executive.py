@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 
 from codex_web.executive import AGENTS, ExecutiveStore, rank_agents, route_agent
 from codex_web.executive_integration import MultiProviderExecutiveService, install_executive_integrated
+from codex_web.storage.executive_state import ExecutiveStateStore
 
 
 class _Host:
@@ -50,6 +53,59 @@ class ExecutiveStoreTests(unittest.TestCase):
         self.assertEqual(history[0]["content"], "message-2")
         self.assertEqual(history[-1]["content"], "message-5")
 
+    def test_runtime_store_imports_legacy_json_into_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "executive_company.json").write_text(json.dumps({"company_name": "Legacy Co"}))
+            store = ExecutiveStateStore(_Host(root))
+
+            company = store.company()
+
+            self.assertEqual(company.company_name, "Legacy Co")
+            self.assertEqual(store.store.get("executive_company")["company_name"], "Legacy Co")
+
+    def test_runtime_history_reads_are_token_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "CODEX_WEB_EXECUTIVE_MAX_CONTEXT_TOKENS": "1000",
+                "CODEX_WEB_EXECUTIVE_COMPACT_TARGET_TOKENS": "500",
+            },
+            clear=False,
+        ):
+            store = ExecutiveStateStore(_Host(Path(temp_dir)))
+            for index in range(5):
+                store.append_history("session", "user", f"{index}:" + ("x" * 1800))
+
+            history = store.history("session")
+            persisted = store.store.get("executive_sessions")["session"]
+
+            self.assertLessEqual(store.history_tokens(history), store.max_context_tokens)
+            self.assertGreater(len(persisted), len(history))
+            self.assertIsNotNone(store.compaction_plan("session"))
+
+    def test_compaction_replaces_old_history_with_summary_and_recent_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "CODEX_WEB_EXECUTIVE_PROVIDER": "ollama",
+                "CODEX_WEB_EXECUTIVE_MAX_CONTEXT_TOKENS": "1000",
+                "CODEX_WEB_EXECUTIVE_COMPACT_TARGET_TOKENS": "500",
+            },
+            clear=False,
+        ):
+            service = MultiProviderExecutiveService(_Host(Path(temp_dir)))
+            for index in range(5):
+                service.store.append_history("session", "user", f"{index}:" + ("x" * 1800))
+            service._respond = AsyncMock(return_value="Decisions and constraints preserved.")
+
+            asyncio.run(service._compact_session_if_needed("session"))
+            rows = service.store.store.get("executive_sessions")["session"]
+
+            self.assertTrue(rows[0]["content"].startswith("Compacted earlier executive context:"))
+            self.assertIn("Decisions and constraints preserved", rows[0]["content"])
+            self.assertLess(len(rows), 5)
+
 
 class ExecutiveIntegrationTests(unittest.TestCase):
     def test_install_registers_routes_once(self) -> None:
@@ -68,6 +124,7 @@ class ExecutiveIntegrationTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual(len(executive_paths), 5)
         self.assertEqual(len(executive_paths), len(set(executive_paths)))
+        self.assertEqual(first.provider_status()["stateBackend"], "sqlite")
 
     def test_ollama_defaults_are_local_and_do_not_require_key_at_construction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
