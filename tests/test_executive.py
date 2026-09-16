@@ -120,6 +120,7 @@ class ExecutiveIntegrationTests(unittest.TestCase):
                 for path in app.openapi().get("paths", {})
                 if path.startswith("/api/executive/")
             }
+            provider_status = first.provider_status()
 
         self.assertIs(first, second)
         self.assertEqual(
@@ -134,8 +135,8 @@ class ExecutiveIntegrationTests(unittest.TestCase):
                 "/api/executive/delegate",
             },
         )
-        self.assertEqual(first.provider_status()["stateBackend"], "sqlite")
-        self.assertEqual(first.provider_status()["knowledgeBackend"], "sqlite")
+        self.assertEqual(provider_status["stateBackend"], "sqlite")
+        self.assertEqual(provider_status["knowledgeBackend"], "sqlite")
 
     def test_ollama_defaults_are_local_and_do_not_require_key_at_construction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
