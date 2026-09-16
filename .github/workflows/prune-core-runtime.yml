@@ -1,4 +1,4 @@
-name: prune extracted runtime implementations
+name: Prune extracted runtime implementations
 
 on:
   push:
@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   prune:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +31,6 @@ jobs:
           tree = ast.parse(source)
 
           remove_names = {
-              # Bot routing/delivery and approval projection.
               '_send_bot_outbound',
               '_send_bot_details',
               '_record_bot_outbound',
@@ -42,7 +40,6 @@ jobs:
               '_handle_slack_interaction',
               '_handle_bot_inbound',
               'BotRuntime',
-              # Turn/queue execution and terminal recovery.
               '_enqueue_turn',
               '_find_duplicate_queued_turn',
               '_pop_next_queued_turn',
@@ -79,8 +76,6 @@ jobs:
               reverse=True,
           )
           for start, end in ranges:
-              # Consume adjacent blank lines after each top-level definition so
-              # extraction does not leave giant whitespace gaps behind.
               while end < len(lines) and not lines[end].strip():
                   end += 1
               del lines[start:end]
@@ -88,8 +83,7 @@ jobs:
           old = 'bot_runtime = BotRuntime()'
           if old not in pruned:
               raise SystemExit('Legacy bot_runtime constructor not found')
-          pruned = pruned.replace(old, 'bot_runtime: Any = None', 1)
-          core_path.write_text(pruned)
+          core_path.write_text(pruned.replace(old, 'bot_runtime: Any = None', 1))
 
           app_path = Path('codex_web/application.py')
           app = app_path.read_text()
@@ -115,8 +109,6 @@ jobs:
           app_path.write_text(app)
 
           size = core_path.stat().st_size
-          # Ratchet to the next 4 KiB boundary. This allows tiny compatibility
-          # edits while preventing meaningful monolith growth.
           budget = ((size + 4095) // 4096) * 4096
           Path('tests/test_core_budget.py').write_text(f'''from __future__ import annotations
 
@@ -124,31 +116,20 @@ import ast
 import unittest
 from pathlib import Path
 
-
 CORE_PATH = Path(__file__).resolve().parents[1] / "codex_web" / "runtime" / "core.py"
 MAX_CORE_BYTES = {budget}
 REMOVED_RUNTIME_DEFINITIONS = {sorted(remove_names)!r}
 
-
 class CoreBudgetTests(unittest.TestCase):
     def test_core_stays_below_ratchet_budget(self) -> None:
         size = CORE_PATH.stat().st_size
-        self.assertLessEqual(
-            size,
-            MAX_CORE_BYTES,
-            f"core.py grew to {{size}} bytes; budget is {{MAX_CORE_BYTES}}. Extract new behavior instead of adding it back to core.py.",
-        )
+        self.assertLessEqual(size, MAX_CORE_BYTES, f"core.py grew to {{size}} bytes; budget is {{MAX_CORE_BYTES}}. Extract new behavior instead of adding it back to core.py.")
 
     def test_extracted_runtime_definitions_do_not_return(self) -> None:
         tree = ast.parse(CORE_PATH.read_text())
-        top_level = {{
-            node.name
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }}
+        top_level = {{node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}}
         returned = sorted(set(REMOVED_RUNTIME_DEFINITIONS) & top_level)
         self.assertEqual(returned, [], f"Extracted runtime definitions returned to core.py: {{returned}}")
-
 
 if __name__ == "__main__":
     unittest.main()
