@@ -24,9 +24,11 @@ class BotService:
         self.host = host
         self.slack_client = slack_client or SlackClient()
         self.routing_service = routing_service
-        # BotService is composed after auxiliary persistence, making it the
-        # natural owner for the remaining per-thread bot detail mutation seam.
-        self.detail_service = install_bot_detail_service(host.app, host)
+        # The real compatibility host exposes its FastAPI app and is composed
+        # after auxiliary persistence. Lightweight service test hosts need not
+        # emulate the whole application just to exercise channel discovery.
+        app = getattr(host, "app", None)
+        self.detail_service = install_bot_detail_service(app, host) if getattr(app, "state", None) is not None else None
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
