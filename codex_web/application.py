@@ -108,6 +108,13 @@ turn_execution_service = install_turn_execution_service(app, core)
 autonomy_service = install_autonomy_service(app, core)
 turn_service = TurnService(core)
 
+# Preserve the small historical function surface still used by direct
+# `import server` callers while the actual implementations live in services.
+# These are aliases to extracted owners, not duplicate legacy implementations.
+core.read_thread = thread_service.read
+core.resume_thread = turn_service.resume
+core.start_turn = turn_service.start
+
 # Bot routing/delivery share the same async provider clients used by management
 # and long-lived runtime paths. Rebind the historical host entrypoints before
 # routers or provider workers can receive traffic.
