@@ -2,7 +2,7 @@
 
 FROM python:3.14-slim-bookworm AS runtime
 
-ARG CODEX_VERSION=latest
+ARG CODEX_VERSION=0.154.0
 ARG CODEX_UID=1000
 ARG CODEX_GID=1000
 
@@ -42,9 +42,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt ./requirements.txt
+COPY requirements.txt requirements.lock ./
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt
+    && python -m pip install -r requirements.lock
 
 COPY . .
 
