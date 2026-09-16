@@ -20,6 +20,21 @@ class WorkItemService:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.state_machine = state_machine or WorkItemStateMachine(host, self.gitlab)
+        # Preserve the historical direct-call entrypoints without retaining
+        # duplicate implementations in the legacy runtime.
+        host.create_work_item_handoff = self.handoff
+        host.ack_work_item_handoff = self.acknowledge
+        host.update_work_item_progress = self.progress
+
+    def _compat(self, name: str, fallback: Any) -> Any:
+        """Resolve a composed host seam while supporting lightweight hosts.
+
+        Application composition publishes state-machine methods on the legacy
+        compatibility host. Tests and extensions historically monkeypatch those
+        names directly, so prefer the host seam when present; standalone service
+        hosts can fall back to the canonical state-machine method.
+        """
+        return getattr(self.host, name, fallback)
 
     async def list(
         self,
@@ -104,32 +119,46 @@ class WorkItemService:
         return self.state_machine._work_item_state_public(self.state_machine._work_item_state(ref))
 
     async def handoff(self, ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
-        state = self.state_machine._structured_handoff(ref, payload)
+        structured_handoff = self._compat("_structured_handoff", self.state_machine._structured_handoff)
+        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+        state = structured_handoff(ref, payload)
         state = await self.state_machine.sync_gitlab_issue_labels(state)
-        public = self.state_machine._work_item_state_public(state)
+        public = public_state(state)
         await self.host.hub.publish({"type": "work-item.handoff", "ref": ref, "state": public})
         self.host._schedule_structured_handoff_dispatch(state, source="work-item-handoff")
         self.host._schedule_handoff_continuity_check(state, source="work-item-handoff-continuity")
         return {"ok": True, "item": public}
 
     async def acknowledge(self, ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
-        state = self.state_machine._structured_ack(ref, payload)
+        structured_ack = self._compat("_structured_ack", self.state_machine._structured_ack)
+        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+        split_brain_findings = self._compat(
+            "_work_item_split_brain_findings",
+            self.state_machine._work_item_split_brain_findings,
+        )
+        state = structured_ack(ref, payload)
         state = await self.state_machine.sync_gitlab_issue_labels(state)
-        public = self.state_machine._work_item_state_public(state)
+        public = public_state(state)
         await self.host.hub.publish({"type": "work-item.ack", "ref": ref, "state": public})
         self.host._schedule_actionable_owner_dispatch(state, source="work-item-ack", actor=payload.actor)
         self.host._schedule_actionable_owner_continuity_check(
             state,
             source="work-item-ack-continuity",
         )
-        if self.state_machine._work_item_split_brain_findings(state):
+        if split_brain_findings(state):
             self.host._schedule_native_recovery_cycles(reason="work-item-ack-routing-drift")
         return {"ok": True, "item": public}
 
     async def progress(self, ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
-        state = self.state_machine._structured_progress(ref, payload)
+        structured_progress = self._compat("_structured_progress", self.state_machine._structured_progress)
+        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+        split_brain_findings = self._compat(
+            "_work_item_split_brain_findings",
+            self.state_machine._work_item_split_brain_findings,
+        )
+        state = structured_progress(ref, payload)
         state = await self.state_machine.sync_gitlab_issue_labels(state)
-        public = self.state_machine._work_item_state_public(state)
+        public = public_state(state)
         await self.host.hub.publish({"type": "work-item.progress", "ref": ref, "state": public})
         self.host._schedule_actionable_owner_dispatch(
             state,
@@ -140,6 +169,6 @@ class WorkItemService:
             state,
             source="work-item-progress-continuity",
         )
-        if self.state_machine._work_item_split_brain_findings(state):
+        if split_brain_findings(state):
             self.host._schedule_native_recovery_cycles(reason="work-item-progress-routing-drift")
         return {"ok": True, "item": public}

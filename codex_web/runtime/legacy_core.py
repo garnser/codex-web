@@ -4904,90 +4904,16 @@ async def sweep_support_servicedesk() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.get("/api/work-items")
-async def list_work_items(
-    project_id: str | None = None,
-    owner: str | None = None,
-    stage: str | None = None,
-    release_gate: bool | None = None,
-) -> dict[str, Any]:
-    states = list(_load_work_item_states().values())
-    if project_id:
-        states = [state for state in states if state.project_id == project_id]
-    if owner:
-        normalized_owner = _coerce_owner(owner)
-        states = [state for state in states if _coerce_owner(state.current_owner or state.next_owner) == normalized_owner]
-    if stage:
-        normalized_stage = _normalize_work_item_stage(stage, fallback="")
-        states = [state for state in states if state.current_stage == normalized_stage]
-    if release_gate is not None:
-        states = [state for state in states if state.release_gate is release_gate]
-    states.sort(key=lambda item: item.updated_at, reverse=True)
-    return {
-        "items": [_work_item_state_public(state) for state in states],
-        "count": len(states),
-    }
 
 
-@app.post("/api/work-items/sync-from-gitlab")
-async def sync_work_items_from_gitlab() -> dict[str, Any]:
-    global GITLAB_SYNC_CONSECUTIVE_FAILURES, GITLAB_SYNC_LAST_ERROR
-    global GITLAB_SYNC_LAST_ERROR_AT, GITLAB_SYNC_LAST_SUCCESS_AT
-    try:
-        result = _sync_work_item_states_from_gitlab()
-    except Exception as exc:
-        GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
-        GITLAB_SYNC_LAST_ERROR = _truncate_text(str(exc), 500)
-        GITLAB_SYNC_LAST_ERROR_AT = time.time()
-        _append_bot_event(
-            {
-                "type": "gitlab_work_item_sync_failed",
-                "failure_count": GITLAB_SYNC_CONSECUTIVE_FAILURES,
-                "error": GITLAB_SYNC_LAST_ERROR,
-            }
-        )
-        raise
-    GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
-    GITLAB_SYNC_LAST_ERROR = None
-    GITLAB_SYNC_LAST_SUCCESS_AT = time.time()
-    await hub.publish({"type": "work-item.sync", **result})
-    return {"ok": True, **result}
 
 
-@app.get("/api/work-items/{ref:path}")
-async def get_work_item(ref: str) -> dict[str, Any]:
-    return _work_item_state_public(_work_item_state(ref))
 
 
-@app.post("/api/work-items/{ref:path}/handoff")
-async def create_work_item_handoff(ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
-    state = _structured_handoff(ref, payload)
-    await hub.publish({"type": "work-item.handoff", "ref": ref, "state": _work_item_state_public(state)})
-    _schedule_structured_handoff_dispatch(state, source="work-item-handoff")
-    _schedule_handoff_continuity_check(state, source="work-item-handoff-continuity")
-    return {"ok": True, "item": _work_item_state_public(state)}
 
 
-@app.post("/api/work-items/{ref:path}/ack")
-async def ack_work_item_handoff(ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
-    state = _structured_ack(ref, payload)
-    await hub.publish({"type": "work-item.ack", "ref": ref, "state": _work_item_state_public(state)})
-    _schedule_actionable_owner_dispatch(state, source="work-item-ack", actor=payload.actor)
-    _schedule_actionable_owner_continuity_check(state, source="work-item-ack-continuity")
-    if _work_item_split_brain_findings(state):
-        _schedule_native_recovery_cycles(reason="work-item-ack-routing-drift")
-    return {"ok": True, "item": _work_item_state_public(state)}
 
 
-@app.post("/api/work-items/{ref:path}/progress")
-async def update_work_item_progress(ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
-    state = _structured_progress(ref, payload)
-    await hub.publish({"type": "work-item.progress", "ref": ref, "state": _work_item_state_public(state)})
-    _schedule_actionable_owner_dispatch(state, source="work-item-progress", actor=payload.actor)
-    _schedule_actionable_owner_continuity_check(state, source="work-item-progress-continuity")
-    if _work_item_split_brain_findings(state):
-        _schedule_native_recovery_cycles(reason="work-item-progress-routing-drift")
-    return {"ok": True, "item": _work_item_state_public(state)}
 
 
 @app.post("/api/recovery/resume")
