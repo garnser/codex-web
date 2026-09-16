@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -16,7 +18,12 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ModelListRepository(Generic[T]):
-    """SQLite-primary list storage with rollback-safe JSON mirroring."""
+    """SQLite-primary list storage with rollback-safe JSON mirroring.
+
+    Lists of models with stable `id` fields are delta-merged against the latest
+    SQLite value so concurrent connection/binding updates do not overwrite
+    unrelated objects.
+    """
 
     def __init__(
         self,
@@ -32,6 +39,10 @@ class ModelListRepository(Generic[T]):
         self.legacy_path = legacy_path
         self.model = model
         self.private = private
+        self._snapshot: ContextVar[list[Any] | None] = ContextVar(
+            f"codex_web_{namespace}_snapshot",
+            default=None,
+        )
 
     def _legacy_payload(self) -> list[Any]:
         if not self.legacy_path.exists():
@@ -49,15 +60,67 @@ class ModelListRepository(Generic[T]):
             self.store.put(self.namespace, payload)
         return payload if isinstance(payload, list) else []
 
+    @staticmethod
+    def _index(values: list[Any]) -> dict[str, dict[str, Any]] | None:
+        result: dict[str, dict[str, Any]] = {}
+        for item in values:
+            if not isinstance(item, dict):
+                return None
+            item_id = str(item.get("id") or "").strip()
+            if not item_id or item_id in result:
+                return None
+            result[item_id] = item
+        return result
+
     def load(self) -> list[T]:
-        return [self.model.model_validate(item) for item in self._raw()]
+        raw = self._raw()
+        self._snapshot.set(copy.deepcopy(raw))
+        return [self.model.model_validate(item) for item in raw]
 
     def save(self, values: list[T]) -> None:
         payload = [value.model_dump() for value in values]
-        self.store.put(self.namespace, payload)
+        base = self._snapshot.get()
+        base_index = self._index(base) if base is not None else None
+        payload_index = self._index(payload)
+
+        if base is None or base_index is None or payload_index is None:
+            self.store.put(self.namespace, payload)
+            merged = payload
+        else:
+            changed = {
+                item_id: item
+                for item_id, item in payload_index.items()
+                if item_id not in base_index or base_index[item_id] != item
+            }
+            deleted = set(base_index) - set(payload_index)
+            payload_order = [str(item["id"]) for item in payload]
+
+            def merge(current: Any) -> list[Any]:
+                latest = list(current) if isinstance(current, list) else []
+                latest_index = self._index(latest)
+                if latest_index is None:
+                    return payload
+
+                result: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                for item in latest:
+                    item_id = str(item["id"])
+                    if item_id in deleted:
+                        continue
+                    result.append(changed.get(item_id, item))
+                    seen.add(item_id)
+                for item_id in payload_order:
+                    if item_id in changed and item_id not in seen:
+                        result.append(changed[item_id])
+                        seen.add(item_id)
+                return result
+
+            merged = self.store.update(self.namespace, merge, default=[])
+
+        self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(
             self.legacy_path,
-            json.dumps(payload, indent=2) + "\n",
+            json.dumps(merged, indent=2) + "\n",
             private=self.private,
         )
 
@@ -69,6 +132,10 @@ class QueuedTurnRepository:
         self.store = store
         self.legacy_path = legacy_path
         self.namespace = "turn_queues"
+        self._snapshot: ContextVar[dict[str, Any] | None] = ContextVar(
+            "codex_web_turn_queues_snapshot",
+            default=None,
+        )
 
     def _legacy_payload(self) -> dict[str, Any]:
         if not self.legacy_path.exists():
@@ -87,8 +154,10 @@ class QueuedTurnRepository:
         return payload if isinstance(payload, dict) else {}
 
     def load(self) -> dict[str, list[QueuedTurn]]:
+        raw = self._raw()
+        self._snapshot.set(copy.deepcopy(raw))
         result: dict[str, list[QueuedTurn]] = {}
-        for thread_id, values in self._raw().items():
+        for thread_id, values in raw.items():
             if not isinstance(thread_id, str) or not isinstance(values, list):
                 continue
             result[thread_id] = [QueuedTurn.model_validate(item) for item in values]
@@ -99,10 +168,31 @@ class QueuedTurnRepository:
             thread_id: [queued.model_dump() for queued in values]
             for thread_id, values in sorted(queues.items())
         }
-        self.store.put(self.namespace, payload)
+        base = self._snapshot.get()
+        if base is None:
+            self.store.put(self.namespace, payload)
+            merged = payload
+        else:
+            changed = {
+                key: value
+                for key, value in payload.items()
+                if key not in base or base.get(key) != value
+            }
+            deleted = set(base) - set(payload)
+
+            def merge(current: Any) -> dict[str, Any]:
+                latest = dict(current) if isinstance(current, dict) else {}
+                for key in deleted:
+                    latest.pop(key, None)
+                latest.update(changed)
+                return latest
+
+            merged = self.store.update(self.namespace, merge, default={})
+
+        self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(
             self.legacy_path,
-            json.dumps(payload, indent=2) + "\n",
+            json.dumps(merged, indent=2) + "\n",
             private=True,
         )
 
