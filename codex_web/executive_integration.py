@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException
@@ -13,6 +14,7 @@ from codex_web.executive import (
     ExecutiveChatRequest,
     ExecutiveService,
 )
+from codex_web.storage.executive_state import ExecutiveStateStore
 
 
 class MultiProviderExecutiveService(ExecutiveService):
@@ -20,6 +22,10 @@ class MultiProviderExecutiveService(ExecutiveService):
 
     def __init__(self, host: Any):
         super().__init__(host)
+        # Executive runtime state uses the same SQLite document store as the
+        # rest of codex-web, importing legacy JSON on first access and keeping
+        # compatibility mirrors for rollback.
+        self.store = ExecutiveStateStore(host)
         self.provider = (os.environ.get("CODEX_WEB_EXECUTIVE_PROVIDER") or "openai").strip().lower()
         if self.provider not in {"openai", "ollama", "openai-compatible"}:
             self.provider = "openai-compatible"
@@ -91,6 +97,41 @@ class MultiProviderExecutiveService(ExecutiveService):
             return "\n".join(str(item.get("text") or "") for item in content if isinstance(item, dict)).strip()
         return str(content or "").strip()
 
+    async def _compact_session_if_needed(self, session_id: str) -> None:
+        plan = self.store.compaction_plan(session_id)
+        if plan is None:
+            return
+        old, recent = plan
+        transcript = "\n\n".join(
+            f"{str(row.get('role') or 'unknown').upper()}: {str(row.get('content') or '')}"
+            for row in old
+        )
+        instructions = (
+            "Compact this earlier executive conversation into durable context. "
+            "Preserve decisions, constraints, numeric assumptions, commitments, "
+            "unresolved questions, owners and important rationale. Do not add new "
+            "facts. Return concise plain text that can replace the earlier turns."
+        )
+        try:
+            summary = await self._respond(instructions, [{"role": "user", "content": transcript}])
+        except Exception:
+            # Context safety is more important than allowing failed compaction to
+            # make every future request oversized. The recent half-budget tail is
+            # still retained verbatim; a later turn can compact successfully.
+            self.store.replace_history(session_id, recent)
+            return
+        compacted = {
+            "role": "assistant",
+            "content": f"Compacted earlier executive context:\n{summary}",
+            "at": time.time(),
+        }
+        self.store.replace_history(session_id, [compacted, *recent])
+
+    async def chat(self, request: ExecutiveChatRequest):
+        result = await super().chat(request)
+        await self._compact_session_if_needed(request.session_id)
+        return result
+
     def provider_status(self) -> dict[str, Any]:
         return {
             "provider": self.provider,
@@ -99,6 +140,9 @@ class MultiProviderExecutiveService(ExecutiveService):
             "reasoningEffort": self.reasoning_effort,
             "textVerbosity": self.text_verbosity,
             "runtimeContextDefault": False,
+            "maxContextTokens": self.store.max_context_tokens,
+            "compactTargetTokens": self.store.compact_target_tokens,
+            "stateBackend": "sqlite",
         }
 
 
