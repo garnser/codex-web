@@ -1,20 +1,20 @@
 name: legacy-shrink-once
 
 on:
-  push:
+  pull_request:
     branches:
-      - refactor/shrink-legacy-core-recovery-state
+      - main
 
 permissions:
   contents: write
 
 jobs:
   rewrite:
-    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[legacy-shrink]')
+    if: github.event.pull_request.head.ref == 'refactor/shrink-legacy-core-recovery-state'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check out branch
+      - name: Check out cleanup branch
         uses: actions/checkout@v7
         with:
           ref: refactor/shrink-legacy-core-recovery-state
