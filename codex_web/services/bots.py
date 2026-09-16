@@ -7,14 +7,22 @@ from typing import Any
 
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
+from codex_web.services.bot_routing import BotRoutingService
 
 
 class BotService:
     """Bot management operations separated from the legacy runtime routes."""
 
-    def __init__(self, host: Any, *, slack_client: SlackClient | None = None) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        slack_client: SlackClient | None = None,
+        routing_service: BotRoutingService | None = None,
+    ) -> None:
         self.host = host
         self.slack_client = slack_client or SlackClient()
+        self.routing_service = routing_service
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
@@ -124,4 +132,6 @@ class BotService:
         return binding.model_dump()
 
     async def inbound(self, payload: BotInboundMessage) -> dict[str, Any]:
+        if self.routing_service is not None:
+            return await self.routing_service.handle_inbound(payload)
         return await self.host._handle_bot_inbound(payload)
