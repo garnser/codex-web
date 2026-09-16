@@ -23,7 +23,9 @@ from codex_web.paths import (
     WORK_ITEM_STATES_FILE,
 )
 from codex_web.runtime import core
+from codex_web.runtime.codex import install_codex_runtime
 from codex_web.services.approvals import ApprovalService
+from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.bots import BotService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import GitLabService
@@ -82,6 +84,13 @@ core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
+
+# Compose extracted runtime ownership here rather than in server.py so direct
+# application imports and tests observe the same implementation as the CLI
+# entrypoint. The installers are idempotent and preserve the compatibility
+# attributes expected by services that have not moved out of core.py yet.
+codex_runtime = install_codex_runtime(app, core)
+autonomy_service = install_autonomy_service(app, core)
 
 # Preserve the legacy ServiceDesk hook used by both the route and the worker,
 # but route it through the extracted async GitLab service.
