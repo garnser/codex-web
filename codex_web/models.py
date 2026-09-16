@@ -7,8 +7,25 @@ from pydantic import BaseModel, Field
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
 ApprovalPolicy: TypeAlias = Literal["on-request", "untrusted", "never"]
+ApprovalDecisionValue: TypeAlias = Literal[
+    "accept",
+    "acceptForSession",
+    "approved",
+    "approved_for_session",
+    "decline",
+]
 ReasoningEffort: TypeAlias = Literal["", "none", "minimal", "low", "medium", "high", "xhigh"]
 BotProvider: TypeAlias = Literal["slack", "telegram"]
+WorkItemStage: TypeAlias = Literal[
+    "implementation_active",
+    "ready_for_validation",
+    "validation_running",
+    "failed_with_action_owner",
+    "ready_to_close",
+    "closed",
+]
+ArtifactState: TypeAlias = Literal["branch", "merge_request", "merged_main", "tag_pipeline"]
+HandoffStatus: TypeAlias = Literal["pending", "accepted", "rejected", "superseded"]
 
 
 class Project(BaseModel):
@@ -38,7 +55,7 @@ class TurnCreate(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    decision: str
+    decision: ApprovalDecisionValue
 
 
 class ThreadPrimaryUpdate(BaseModel):
@@ -67,10 +84,10 @@ class WorkItemHandoff(BaseModel):
     expected_action: str | None = None
     requested_at: float
     acknowledged_at: float | None = None
-    status: str = "pending"
+    status: HandoffStatus = "pending"
     reason_code: str | None = None
-    artifact_state: str | None = None
-    stage: str | None = None
+    artifact_state: ArtifactState | None = None
+    stage: WorkItemStage | None = None
 
 
 class WorkItemState(BaseModel):
@@ -82,11 +99,11 @@ class WorkItemState(BaseModel):
     kind: str | None = None
     priority: str | None = None
     current_owner: str | None = None
-    current_stage: str = "implementation_active"
+    current_stage: WorkItemStage = "implementation_active"
     implementation_owner: str | None = None
     validation_owner: str | None = None
     release_owner: str | None = None
-    artifact_state: str = "branch"
+    artifact_state: ArtifactState = "branch"
     handoff: WorkItemHandoff | None = None
     handoff_history: list[WorkItemHandoff] = Field(default_factory=list)
     last_meaningful_update_at: float
@@ -120,29 +137,29 @@ class WorkItemHandoffCreate(BaseModel):
     reason: str | None = None
     expected_action: str | None = None
     current_owner: str | None = None
-    current_stage: str | None = None
+    current_stage: WorkItemStage | None = None
     next_action: str | None = None
     next_owner: str | None = None
     blocker: str | None = None
     blocking_findings: list[str] | None = None
-    artifact_state: str | None = None
+    artifact_state: ArtifactState | None = None
 
 
 class WorkItemAckCreate(BaseModel):
     actor: str = Field(min_length=1)
     accepted: bool = True
     next_action: str | None = None
-    current_stage: str | None = None
+    current_stage: WorkItemStage | None = None
     blocker: str | None = None
     blocking_findings: list[str] | None = None
     next_owner: str | None = None
-    artifact_state: str | None = None
+    artifact_state: ArtifactState | None = None
 
 
 class WorkItemProgressUpdate(BaseModel):
     actor: str | None = None
     current_owner: str | None = None
-    current_stage: str | None = None
+    current_stage: WorkItemStage | None = None
     next_action: str | None = None
     next_owner: str | None = None
     blocker: str | None = None
@@ -150,7 +167,7 @@ class WorkItemProgressUpdate(BaseModel):
     release_gate: bool | None = None
     note: str | None = None
     status_label: str | None = None
-    artifact_state: str | None = None
+    artifact_state: ArtifactState | None = None
 
 
 class BotReplyTarget(BaseModel):
