@@ -207,6 +207,10 @@ class BotThreadReplacementTests(unittest.TestCase):
             message_id="known-msg",
             updated_at=15.0,
         )
+        post_message = AsyncMock(
+            return_value={"sent": True, "providerResponse": {"ok": True, "ts": "1"}}
+        )
+        delivery_service = server.app.state.bot_delivery_service
 
         with (
             patch.object(
@@ -217,15 +221,11 @@ class BotThreadReplacementTests(unittest.TestCase):
             patch.object(server, "_thread_target_for_outbound", return_value=(target, True)),
             patch.object(server, "_slack_reply_username", return_value="Codex · Release Manager"),
             patch.object(server, "_slack_reply_icon", return_value=":large_orange_diamond:"),
-            patch.object(
-                server,
-                "_post_slack_message",
-                return_value={"sent": True, "providerResponse": {"ok": True, "ts": "1"}},
-            ) as post_message,
+            patch.object(delivery_service.slack, "post_message", post_message),
         ):
             asyncio.run(server._send_bot_outbound(binding, "status"))
 
-        self.assertEqual(post_message.call_args.kwargs["thread_ts"], "known-thread")
+        self.assertEqual(post_message.await_args.kwargs["thread_ts"], "known-thread")
 
 
 if __name__ == "__main__":
