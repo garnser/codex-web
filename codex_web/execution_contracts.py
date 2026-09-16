@@ -409,3 +409,68 @@ def execution_contract_prompt(role: ExecutionRoleContract, change_classification
             section("ROLE FAILURE CONDITIONS", role.failure_conditions),
         ]
     )
+
+
+OWNER_TO_EXECUTION_ROLE = {
+    "orchestrator": "orchestrator",
+    "release manager": "release-manager",
+    "james": "james",
+    "dana": "dana",
+    "quinn": "quinn",
+    "carl": "carl",
+    "larry": "larry",
+    "white hacker": "white-hacker",
+    "maya": "maya",
+    "nora": "nora",
+    "compliance manager": "compliance-manager",
+    "riley": "riley",
+    "tom": "tom",
+    "janice": "janice",
+    "sally": "sally",
+}
+
+
+def _normalized_owner(owner: str | None) -> str:
+    return re.sub(r"\s+", " ", (owner or "").strip().lower().replace("_", " ").replace("-", " "))
+
+
+def execution_role_for_agent(agent: str | None) -> ExecutionRoleContract | None:
+    role_id = OWNER_TO_EXECUTION_ROLE.get(_normalized_owner(agent))
+    return ROLE_CONTRACTS.get(role_id) if role_id else None
+
+
+def execution_agent_key(role: ExecutionRoleContract | str) -> str:
+    role_id = role.id if isinstance(role, ExecutionRoleContract) else role
+    for owner, mapped_role_id in OWNER_TO_EXECUTION_ROLE.items():
+        if mapped_role_id == role_id:
+            return owner
+    return str(role_id).replace("-", " ")
+
+
+def execution_role_for_work_item(state: Any, *, split_brain: bool = False) -> ExecutionRoleContract:
+    if split_brain:
+        return ROLE_CONTRACTS["orchestrator"]
+
+    handoff = getattr(state, "handoff", None)
+    if handoff is not None and getattr(handoff, "status", None) == "pending":
+        recipient_role = execution_role_for_agent(getattr(handoff, "to_agent", None))
+        if recipient_role is not None:
+            return recipient_role
+
+    owner = getattr(state, "current_owner", None) or getattr(state, "next_owner", None)
+    owner_role = execution_role_for_agent(owner)
+    if owner_role is not None:
+        return owner_role
+
+    stage = str(getattr(state, "current_stage", "") or "").strip().lower()
+    if stage in {"ready_for_validation", "validation_running"}:
+        validation_role = execution_role_for_agent(getattr(state, "validation_owner", None))
+        return validation_role or ROLE_CONTRACTS["quinn"]
+    if stage == "ready_to_close" and bool(getattr(state, "release_gate", False)):
+        release_role = execution_role_for_agent(getattr(state, "release_owner", None))
+        return release_role or ROLE_CONTRACTS["release-manager"]
+    if stage == "failed_with_action_owner":
+        action_role = execution_role_for_agent(getattr(state, "next_owner", None))
+        if action_role is not None:
+            return action_role
+    return ROLE_CONTRACTS["orchestrator"]

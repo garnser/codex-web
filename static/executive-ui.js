@@ -136,6 +136,7 @@ async function delegateToCodex(drawer) {
   const sandbox = document.getElementById('sandbox')?.value || null;
   const approvalPolicy = document.getElementById('approval-policy')?.value || null;
   const executionRoleId = drawer.querySelector('#executive-execution-role')?.value || null;
+  const workItemRef = drawer.querySelector('#executive-work-item')?.value || null;
   const changeClassification = drawer.querySelector('#executive-change-classification')?.value || null;
   setExecutiveStatus(drawer, 'Delegating to Codex…');
   try {
@@ -146,6 +147,7 @@ async function delegateToCodex(drawer) {
         executive_reply: executiveState.lastReply,
         agent_id: executiveState.lastAgent,
         execution_role_id: executionRoleId,
+        work_item_ref: workItemRef,
         change_classification: changeClassification,
         project_id: projectId,
         sandbox,
@@ -160,10 +162,11 @@ async function delegateToCodex(drawer) {
 }
 
 async function loadExecutiveData(drawer) {
-  const [agentData, contextData, projects] = await Promise.all([
+  const [agentData, contextData, projects, workItemData] = await Promise.all([
     execApi('/api/executive/agents'),
     execApi('/api/executive/context'),
     execApi('/api/projects'),
+    execApi('/api/work-items'),
   ]);
   executiveState.agents = agentData.agents || [];
   executiveState.executionRoles = agentData.executionRoles || [];
@@ -198,6 +201,17 @@ async function loadExecutiveData(drawer) {
     option.textContent = project.name;
     if (project.id === selectedProject) option.selected = true;
     projectSelect.appendChild(option);
+  });
+
+  const workItemSelect = drawer.querySelector('#executive-work-item');
+  workItemSelect.innerHTML = '<option value="">No canonical work item</option>';
+  (workItemData.items || []).filter((item) => !item.closed_at).forEach((item) => {
+    const option = document.createElement('option');
+    option.value = item.ref;
+    option.dataset.projectId = item.project_id || '';
+    const owner = item.handoff?.status === 'pending' ? item.handoff.to_agent : (item.current_owner || item.next_owner || 'unowned');
+    option.textContent = `${item.ref} · ${item.current_stage} · ${owner}${item.title ? ` · ${item.title}` : ''}`;
+    workItemSelect.appendChild(option);
   });
 
   Object.entries(contextData.company || {}).forEach(([key, value]) => {
@@ -235,6 +249,7 @@ function buildExecutiveDrawer() {
       <label>Mode<select id="executive-mode"><option value="advisor">Executive advisor</option><option value="board">Board review</option></select></label>
       <label>Executive<select id="executive-agent"></select></label>
       <label>Codex project<select id="executive-project"></select></label>
+      <label>Canonical work item<select id="executive-work-item"><option value="">No canonical work item</option></select></label>
       <label>Execution role<select id="executive-execution-role"><option value="">Auto-route from objective</option></select></label>
       <label>Change class<select id="executive-change-classification"><option value="">Agent classifies before work</option><option value="cosmetic-only">Cosmetic only</option><option value="localized functional">Localized functional</option><option value="shared-surface">Shared surface</option><option value="release/security-sensitive">Release / security sensitive</option></select></label>
       <label class="wide"><input type="checkbox" id="executive-runtime-context"> Include Codex operational context in LLM request</label>
@@ -277,6 +292,19 @@ function buildExecutiveDrawer() {
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && drawer.classList.contains('open')) close(); });
 
   drawer.querySelector('#executive-agent').addEventListener('change', (event) => { executiveState.activeAgent = event.target.value; });
+  drawer.querySelector('#executive-work-item').addEventListener('change', (event) => {
+    const roleSelect = drawer.querySelector('#executive-execution-role');
+    const projectSelect = drawer.querySelector('#executive-project');
+    const selected = event.target.selectedOptions[0];
+    if (event.target.value) {
+      roleSelect.value = '';
+      roleSelect.disabled = true;
+      if (selected?.dataset.projectId) projectSelect.value = selected.dataset.projectId;
+      setExecutiveStatus(drawer, 'Execution role will follow canonical work-item owner/stage.');
+    } else {
+      roleSelect.disabled = false;
+    }
+  });
   drawer.querySelector('#executive-mode').addEventListener('change', (event) => {
     drawer.querySelector('#executive-agent').disabled = event.target.value === 'board';
   });
