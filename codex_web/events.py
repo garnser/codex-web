@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket
 
+from codex_web.observability import RuntimeMetrics, log_event
+
 
 EventListener = Callable[[dict[str, Any]], None]
+logger = logging.getLogger(__name__)
 
 
 class EventHub:
@@ -17,13 +21,22 @@ class EventHub:
         self._queues: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
         self._listeners: set[EventListener] = set()
+        self._metrics: RuntimeMetrics | None = None
+
+    def configure_observability(self, metrics: RuntimeMetrics) -> None:
+        self._metrics = metrics
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self._clients.add(websocket)
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._queue_size)
         self._queues[websocket] = queue
-        self._senders[websocket] = asyncio.create_task(self._sender(websocket, queue))
+        self._senders[websocket] = asyncio.create_task(
+            self._sender(websocket, queue),
+            name="eventhub-websocket-sender",
+        )
+        if self._metrics:
+            self._metrics.increment("websocket.connections")
 
     def disconnect(self, websocket: WebSocket) -> None:
         self._clients.discard(websocket)
@@ -48,21 +61,42 @@ class EventHub:
                     queue.task_done()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            if self._metrics:
+                self._metrics.increment("websocket.send_failures")
+            log_event(
+                logger,
+                logging.WARNING,
+                "websocket.send_failed",
+                "WebSocket event sender failed",
+                error=str(exc),
+            )
         finally:
             self._clients.discard(websocket)
             self._queues.pop(websocket, None)
             self._senders.pop(websocket, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
+        if self._metrics:
+            self._metrics.increment("eventhub.events_published")
+
         # Runtime observers must never be able to break browser fan-out. They are
         # intentionally synchronous and should only update state/schedule work.
         for listener in list(self._listeners):
             try:
                 listener(event)
-            except Exception:
-                continue
+            except Exception as exc:
+                if self._metrics:
+                    self._metrics.increment("eventhub.listener_failures")
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "eventhub.listener_failed",
+                    "EventHub listener failed",
+                    event_type=event.get("type"),
+                    listener=getattr(listener, "__qualname__", repr(listener)),
+                    error=str(exc),
+                )
 
         dead: list[WebSocket] = []
         for websocket in list(self._clients):
@@ -73,6 +107,16 @@ class EventHub:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
+                if self._metrics:
+                    self._metrics.increment("websocket.queue_overflows")
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "websocket.queue_overflow",
+                    "Dropping slow WebSocket client after event queue overflow",
+                    event_type=event.get("type"),
+                    queue_size=self._queue_size,
+                )
                 dead.append(websocket)
         for websocket in dead:
             self.disconnect(websocket)

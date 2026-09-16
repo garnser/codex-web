@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from codex_web import application as _application
+from codex_web.observability import install_observability
 from codex_web.runtime import core as _runtime
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
@@ -28,6 +29,10 @@ install_deployment_configuration(_application.app, _runtime)
 # runtime. Install it before any worker or provider runtime can start making
 # requests so every service observes the extracted client from first startup.
 install_codex_runtime(_application.app, _runtime)
+
+# Structured logs and local diagnostics attach to the active EventHub/Codex
+# runtime before long-lived provider and worker tasks begin.
+install_observability(_application.app, _runtime)
 
 # Active provider connection lifecycle is extracted from the compatibility
 # runtime. Install it before worker supervision so startup synchronizes the
