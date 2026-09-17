@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from codex_web.models import TaskSourceIdentity
+from codex_web.models import TaskSourceIdentity, WorkItemStage
+
+if TYPE_CHECKING:
+    from codex_web.services.task_source_reconciliation import TaskSourceCanonicalProjection
 
 
 class TaskSourceCapability(StrEnum):
@@ -90,6 +93,20 @@ class TaskSource(Protocol):
 
     async def normalize_event(self, payload: object) -> TaskSourceEvent | None:
         """Normalize one provider webhook/event payload without mutating state."""
+        ...
+
+    def project(
+        self,
+        snapshot: TaskSourceSnapshot,
+        *,
+        current_stage: WorkItemStage | None = None,
+    ) -> TaskSourceCanonicalProjection:
+        """Map provider-native normalized facts into canonical work-item facts.
+
+        This mapping is deterministic adapter logic. ``current_stage`` may be
+        used when a provider state is less specific than codex-web's lifecycle,
+        but an adapter must not mutate canonical state while projecting.
+        """
         ...
 
     async def write_owner(self, identity: TaskSourceIdentity, owner: str | None) -> TaskSourceSnapshot:
