@@ -6,6 +6,7 @@ from typing import Any
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.work_item_state import WorkItemStateMachine
+from codex_web.services.work_item_transitions import WorkItemTransitionPolicy
 
 
 class WorkItemService:
@@ -20,6 +21,7 @@ class WorkItemService:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.state_machine = state_machine or WorkItemStateMachine(host, self.gitlab)
+        self.transition_policy = WorkItemTransitionPolicy()
         # Preserve the historical direct-call entrypoints without retaining
         # duplicate implementations in the legacy runtime.
         host.create_work_item_handoff = self.handoff
@@ -35,6 +37,28 @@ class WorkItemService:
         hosts can fall back to the canonical state-machine method.
         """
         return getattr(self.host, name, fallback)
+
+    def _validate_requested_stage_transition(self, ref: str, payload: Any, *, source: str) -> None:
+        """Reject explicit illegal manual stage changes before mutation starts.
+
+        Lightweight service-test doubles may not expose canonical state lookup;
+        those callers retain the historical compatibility behavior. Production
+        composition always uses WorkItemStateMachine and therefore validates the
+        requested transition here before entering the mutation path.
+        """
+
+        target_stage = getattr(payload, "current_stage", None)
+        if target_stage is None:
+            return
+        state_lookup = getattr(self.state_machine, "_work_item_state", None)
+        if not callable(state_lookup):
+            return
+        state = state_lookup(ref)
+        self.transition_policy.validate(
+            state.current_stage,
+            target_stage,
+            source=source,
+        )
 
     async def list(
         self,
@@ -119,6 +143,7 @@ class WorkItemService:
         return self.state_machine._work_item_state_public(self.state_machine._work_item_state(ref))
 
     async def handoff(self, ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
+        self._validate_requested_stage_transition(ref, payload, source="work-item-handoff")
         structured_handoff = self._compat("_structured_handoff", self.state_machine._structured_handoff)
         public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
         state = structured_handoff(ref, payload)
@@ -130,6 +155,7 @@ class WorkItemService:
         return {"ok": True, "item": public}
 
     async def acknowledge(self, ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
+        self._validate_requested_stage_transition(ref, payload, source="work-item-ack")
         structured_ack = self._compat("_structured_ack", self.state_machine._structured_ack)
         public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
         split_brain_findings = self._compat(
@@ -150,6 +176,7 @@ class WorkItemService:
         return {"ok": True, "item": public}
 
     async def progress(self, ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
+        self._validate_requested_stage_transition(ref, payload, source="work-item-progress")
         structured_progress = self._compat("_structured_progress", self.state_machine._structured_progress)
         public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
         split_brain_findings = self._compat(
