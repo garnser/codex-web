@@ -15,13 +15,17 @@ from codex_web.services.task_source_events import (
     TaskSourceEventReconciliationResult,
     TaskSourceWorkItemEventReconciler,
 )
+from codex_web.services.task_source_runtime import (
+    TaskSourceRegistry,
+    TaskSourceWritebackService,
+)
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
 from codex_web.services.task_sources import TaskSource, TaskSourceEvent
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
 class WorkItemService:
-    """Work-item API behavior backed by the canonical extracted state machine."""
+    """Work-item API behavior backed by canonical state and TaskSource services."""
 
     def __init__(
         self,
@@ -30,6 +34,8 @@ class WorkItemService:
         state_machine: WorkItemStateMachine | None = None,
         task_source_projector: TaskSourceWorkItemProjector | None = None,
         task_source_event_reconciler: TaskSourceWorkItemEventReconciler | None = None,
+        task_source_registry: TaskSourceRegistry | None = None,
+        task_source_writeback: TaskSourceWritebackService | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
@@ -42,6 +48,15 @@ class WorkItemService:
             task_source_event_reconciler
             or TaskSourceWorkItemEventReconciler(host, self.task_source_projector)
         )
+        if task_source_writeback is None:
+            registry = task_source_registry or TaskSourceRegistry()
+            registry.register("gitlab", self._gitlab_source_for_state)
+            self.task_source_writeback = TaskSourceWritebackService(host, registry)
+            self.task_source_registry = registry
+        else:
+            self.task_source_writeback = task_source_writeback
+            self.task_source_registry = task_source_registry or task_source_writeback.registry
+
         self._legacy_gitlab_event_projector = getattr(
             host,
             "_upsert_work_item_state_from_gitlab_event",
@@ -67,6 +82,19 @@ class WorkItemService:
     def _compat(self, name: str, fallback: Any) -> Any:
         """Resolve a composed host seam while supporting lightweight hosts."""
         return getattr(self.host, name, fallback)
+
+    def _gitlab_source_for_state(self, state: Any) -> TaskSource | None:
+        project_id = getattr(state, "project_id", None)
+        if not project_id:
+            return None
+        token = self.host._gitlab_token_for_project(project_id)
+        if not token:
+            return None
+        return GitLabTaskSource(
+            self.host.GITLAB_API_BASE,
+            token,
+            client=self.gitlab,
+        )
 
     async def list(
         self,
@@ -234,11 +262,16 @@ class WorkItemService:
     async def get(self, ref: str) -> dict[str, Any]:
         return self.state_machine._work_item_state_public(self.state_machine._work_item_state(ref))
 
+    async def comment(self, ref: str, body: str) -> dict[str, Any]:
+        state = self.state_machine._work_item_state(ref)
+        await self.task_source_writeback.add_comment(state, body)
+        return {"ok": True, "ref": ref}
+
     async def handoff(self, ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
         structured_handoff = self._compat("_structured_handoff", self.state_machine._structured_handoff)
         public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
         state = structured_handoff(ref, payload)
-        state = await self.state_machine.sync_gitlab_issue_labels(state)
+        state = await self.task_source_writeback.sync(state)
         public = public_state(state)
         await self.host.hub.publish({"type": "work-item.handoff", "ref": ref, "state": public})
         self.host._schedule_structured_handoff_dispatch(state, source="work-item-handoff")
@@ -253,7 +286,7 @@ class WorkItemService:
             self.state_machine._work_item_split_brain_findings,
         )
         state = structured_ack(ref, payload)
-        state = await self.state_machine.sync_gitlab_issue_labels(state)
+        state = await self.task_source_writeback.sync(state)
         public = public_state(state)
         await self.host.hub.publish({"type": "work-item.ack", "ref": ref, "state": public})
         self.host._schedule_actionable_owner_dispatch(state, source="work-item-ack", actor=payload.actor)
@@ -273,7 +306,7 @@ class WorkItemService:
             self.state_machine._work_item_split_brain_findings,
         )
         state = structured_progress(ref, payload)
-        state = await self.state_machine.sync_gitlab_issue_labels(state)
+        state = await self.task_source_writeback.sync(state)
         public = public_state(state)
         await self.host.hub.publish({"type": "work-item.progress", "ref": ref, "state": public})
         self.host._schedule_actionable_owner_dispatch(
