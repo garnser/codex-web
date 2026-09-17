@@ -31,7 +31,7 @@ The policy defines deterministic-first execution, event-driven activation, minim
 
 ## Delivery tracking
 
-Actionable autonomous-company work is tracked in GitHub Issues. The current roadmap/foundation set spans issues `#97`–`#142`. Tracking bootstrap issue `#126` defines the target GitHub Project and Milestones M1–M12.
+Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#169`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M12.
 
 Milestone dependency order is:
 
@@ -48,7 +48,9 @@ Milestone dependency order is:
 11. M11 — Controlled Production Autonomy
 12. M12 — Product Documentation + Adoption
 
-M3 is intentionally foundational. Its tracked work covers human identity/tenancy, credential brokering, canonical resources, provider-neutral external actions, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
+M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
+
+M7 adds deterministic time/scheduling, autonomous replay/evaluation, and a canonical human-attention queue on top of the event-driven orchestration boundary. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew, audit integrity, and distributed failover where enabled.
 
 Use GitHub tracking as follows:
 
@@ -69,7 +71,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
-Additional M3 architecture contracts should be added as their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
+Additional M3/M7/M11 architecture contracts should be added as their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
 
 ## Design review expectation
 
@@ -84,8 +86,10 @@ Any design or PR that adds or materially increases LLM activity should explicitl
 7. How usage is attributed to a Goal, Work Item, or Decision and measured against an outcome.
 8. How repeated successful reasoning can become reusable knowledge or deterministic handling.
 
-Any design or PR that adds external side effects should additionally identify the acting identity/tenant, target canonical resource, provider/action capability, credential reference, idempotency/reconciliation behavior, required authority, trust-boundary treatment, and resulting evidence/verification.
+Any design or PR that adds external side effects should additionally identify the acting identity/tenant, target canonical resource, provider/action capability, credential reference, idempotency/reconciliation behavior, required authority, trust-boundary treatment, execution-worker boundary where applicable, and resulting evidence/verification.
+
+Any design or PR that adds executable worker behavior, durable sensitive data, an extension point, or production upgrade behavior should additionally identify the applicable worker trust/fencing model (#166), encryption/key policy (#167), extension lifecycle/compatibility model (#169), and upgrade/version-skew contract (#168) instead of introducing a local substitute.
 
 The target architecture is:
 
-> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Actions produce evidence. Results become reusable knowledge.**
+> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
