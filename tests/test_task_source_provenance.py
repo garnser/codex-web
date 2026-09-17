@@ -23,25 +23,31 @@ class _GitLab:
 
 
 class _StateMachine:
+    pass
+
+
+class _Projector:
     def __init__(self) -> None:
         self.saved: WorkItemState | None = None
+        self.source = None
+        self.snapshot = None
 
-    def _upsert_work_item_state_from_gitlab_issue(self, issue, *, project_id):
-        return WorkItemState(
+    async def upsert(self, source, snapshot, *, project_id):
+        self.source = source
+        self.snapshot = snapshot
+        self.saved = WorkItemState(
             ref="canonical-work-123",
             project_id=project_id,
             project_path="group/project",
-            title=issue["title"],
-            url=issue["web_url"],
+            source_identity=snapshot.identity,
+            title=snapshot.title,
+            url=snapshot.identity.external_url,
             kind="issue",
             last_meaningful_update_at=1.0,
             updated_at=1.0,
             created_at=1.0,
         )
-
-    def _save_work_item_state(self, state):
-        self.saved = state.model_copy(deep=True)
-        return state
+        return self.saved
 
 
 class _Host:
@@ -80,16 +86,21 @@ class TaskSourceProvenanceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(state.source_identity)
 
-    async def test_gitlab_discovery_persists_external_identity_without_rewriting_canonical_ref(self) -> None:
+    async def test_gitlab_discovery_uses_normalized_source_identity_without_rewriting_canonical_ref(self) -> None:
         host = _Host()
-        machine = _StateMachine()
-        service = WorkItemService(host, gitlab=_GitLab(), state_machine=machine)
+        projector = _Projector()
+        service = WorkItemService(
+            host,
+            gitlab=_GitLab(),
+            state_machine=_StateMachine(),
+            task_source_projector=projector,
+        )
 
         result = await service._sync_from_gitlab_async()
 
         self.assertEqual(result, {"synced": 1, "refs": 1})
-        self.assertIsNotNone(machine.saved)
-        saved = machine.saved
+        self.assertIsNotNone(projector.saved)
+        saved = projector.saved
         self.assertEqual(saved.ref, "canonical-work-123")
         self.assertIsNotNone(saved.source_identity)
         self.assertEqual(saved.source_identity.source_type, "gitlab")
@@ -100,18 +111,24 @@ class TaskSourceProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "https://gitlab.example/group/project/-/issues/42",
         )
         self.assertEqual(saved.source_identity.revision, "2026-09-17T19:00:00Z")
+        self.assertEqual(projector.snapshot.identity, saved.source_identity)
 
     async def test_source_identity_round_trips_with_persisted_work_item(self) -> None:
         host = _Host()
-        machine = _StateMachine()
-        service = WorkItemService(host, gitlab=_GitLab(), state_machine=machine)
+        projector = _Projector()
+        service = WorkItemService(
+            host,
+            gitlab=_GitLab(),
+            state_machine=_StateMachine(),
+            task_source_projector=projector,
+        )
         await service._sync_from_gitlab_async()
 
-        payload = machine.saved.model_dump(mode="json")
+        payload = projector.saved.model_dump(mode="json")
         restored = WorkItemState.model_validate(payload)
 
-        self.assertEqual(restored.source_identity, machine.saved.source_identity)
-        self.assertEqual(restored.ref, machine.saved.ref)
+        self.assertEqual(restored.source_identity, projector.saved.source_identity)
+        self.assertEqual(restored.ref, projector.saved.ref)
 
 
 if __name__ == "__main__":

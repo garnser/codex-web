@@ -5,12 +5,12 @@ from typing import Any
 
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.models import (
-    TaskSourceIdentity,
     WorkItemAckCreate,
     WorkItemHandoffCreate,
     WorkItemProgressUpdate,
-    WorkItemState,
 )
+from codex_web.services.gitlab_task_source import GitLabTaskSource
+from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
@@ -22,10 +22,15 @@ class WorkItemService:
         host: Any,
         gitlab: GitLabClient | None = None,
         state_machine: WorkItemStateMachine | None = None,
+        task_source_projector: TaskSourceWorkItemProjector | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.state_machine = state_machine or WorkItemStateMachine(host, self.gitlab)
+        self.task_source_projector = task_source_projector or TaskSourceWorkItemProjector(
+            host,
+            self.state_machine,
+        )
         # Preserve the historical direct-call entrypoints without retaining
         # duplicate implementations in the legacy runtime.
         host.create_work_item_handoff = self.handoff
@@ -41,46 +46,6 @@ class WorkItemService:
         hosts can fall back to the canonical state-machine method.
         """
         return getattr(self.host, name, fallback)
-
-    def _persist_gitlab_source_identity(
-        self,
-        state: Any,
-        issue: dict[str, Any],
-    ) -> Any:
-        """Backfill provider-neutral source provenance without changing ref.
-
-        This is the discovery-path migration seam while GitLab is incrementally
-        moved behind ``TaskSource``. Lightweight compatibility doubles are left
-        untouched; production projections return ``WorkItemState``.
-        """
-
-        if not isinstance(state, WorkItemState):
-            return state
-
-        references = issue.get("references") or {}
-        full_reference = str(references.get("full") or "").strip()
-        iid = issue.get("iid")
-        project_iid = (
-            f"{state.project_path}#{iid}"
-            if state.project_path and iid is not None
-            else ""
-        )
-        external_id = full_reference or project_iid or str(issue.get("id") or state.ref).strip()
-        revision_raw = issue.get("updated_at")
-        revision = str(revision_raw).strip() if revision_raw is not None else None
-        external_url_raw = issue.get("web_url") or state.url
-        external_url = str(external_url_raw).strip() if external_url_raw else None
-
-        state.source_identity = TaskSourceIdentity(
-            source_type="gitlab",
-            source_instance=str(self.host.GITLAB_API_BASE).rstrip("/"),
-            external_id=external_id,
-            external_url=external_url,
-            revision=revision or None,
-        )
-
-        save = getattr(self.state_machine, "_save_work_item_state", None)
-        return save(state) if callable(save) else state
 
     async def list(
         self,
@@ -112,6 +77,8 @@ class WorkItemService:
         }
 
     async def _sync_from_gitlab_async(self) -> dict[str, int]:
+        """Compatibility entrypoint backed by the provider-neutral TaskSource path."""
+
         synced = 0
         seen_refs: set[str] = set()
         settings = self.host._load_gitlab_routing_settings()
@@ -122,20 +89,19 @@ class WorkItemService:
             group = self.host._gitlab_group_path(project_settings)
             if not token or not group:
                 continue
-            issues = await self.gitlab.group_issues(
+
+            source = GitLabTaskSource(
                 self.host.GITLAB_API_BASE,
-                group,
-                token=token,
-                state="opened",
+                token,
+                client=self.gitlab,
             )
-            for issue in issues:
-                state = self.state_machine._upsert_work_item_state_from_gitlab_issue(
-                    issue,
+            snapshots = await source.discover(scope=group)
+            for snapshot in snapshots:
+                state = await self.task_source_projector.upsert(
+                    source,
+                    snapshot,
                     project_id=project_id,
                 )
-                if not state:
-                    continue
-                state = self._persist_gitlab_source_identity(state, issue)
                 synced += 1
                 seen_refs.add(state.ref)
         return {"synced": synced, "refs": len(seen_refs)}

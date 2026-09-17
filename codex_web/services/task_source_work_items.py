@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import contextlib
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from codex_web.models import WorkItemState
+from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
+from codex_web.services.task_source_reconciliation import same_task_source_identity
+from codex_web.services.task_sources import TaskSource, TaskSourceSnapshot
+from codex_web.services.work_item_state import WorkItemStateMachine
+
+
+class TaskSourceWorkItemProjector:
+    """Project normalized authoritative task snapshots into canonical work state.
+
+    Provider adapters own transport and native-to-canonical mapping. This class
+    owns the shared persistence/update semantics so canonical WorkItemState code
+    never needs provider payload objects.
+    """
+
+    def __init__(self, host: Any, state_machine: WorkItemStateMachine) -> None:
+        self.host = host
+        self.state_machine = state_machine
+        self.conformance = TaskSourceConformanceSuite()
+
+    @staticmethod
+    def _revision_timestamp(snapshot: TaskSourceSnapshot) -> float | None:
+        value = snapshot.identity.revision
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        with contextlib.suppress(ValueError):
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        return None
+
+    @staticmethod
+    def _first_prefixed(labels: tuple[str, ...], prefix: str) -> str | None:
+        prefix_cf = prefix.casefold()
+        for label in labels:
+            value = str(label).strip()
+            if value.casefold().startswith(prefix_cf):
+                return value
+        return None
+
+    @staticmethod
+    def _find_existing_state(
+        states: dict[str, WorkItemState],
+        snapshot: TaskSourceSnapshot,
+    ) -> WorkItemState | None:
+        direct = states.get(snapshot.identity.external_id.strip())
+        if direct is not None:
+            return direct
+        for candidate in states.values():
+            if candidate.source_identity is None:
+                continue
+            if same_task_source_identity(candidate.source_identity, snapshot.identity):
+                return candidate
+        return None
+
+    async def upsert(
+        self,
+        source: TaskSource,
+        snapshot: TaskSourceSnapshot,
+        *,
+        project_id: str,
+    ) -> WorkItemState:
+        self.conformance.validate_snapshot(source, snapshot)
+        external_ref = snapshot.identity.external_id.strip()
+        if not external_ref:
+            raise ValueError("Task-source snapshot external identity must not be empty")
+
+        states = self.host._load_work_item_states()
+        state = self._find_existing_state(states, snapshot)
+        ref = state.ref if state is not None else external_ref
+        projection = source.project(
+            snapshot,
+            current_stage=state.current_stage if state is not None else None,
+        )
+        self.conformance.validate_projection(source, snapshot, projection)
+
+        now = time.time()
+        source_timestamp = self._revision_timestamp(snapshot)
+        labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
+        status_label = self._first_prefixed(tuple(labels), "status::")
+        priority = self._first_prefixed(tuple(labels), "priority::")
+        project_path = external_ref.split("#", 1)[0] if "#" in external_ref else None
+        projected_stage = projection.stage or (state.current_stage if state is not None else "implementation_active")
+        projected_owner = None if projected_stage == "closed" else projection.owner
+        projected_status_label = None if projected_stage == "closed" else status_label
+
+        if state is None:
+            state = WorkItemState(
+                ref=ref,
+                project_id=project_id,
+                project_path=project_path,
+                source_identity=snapshot.identity,
+                title=snapshot.title,
+                url=snapshot.identity.external_url,
+                kind="issue",
+                priority=priority,
+                current_owner=projected_owner,
+                current_stage=projected_stage,
+                implementation_owner=(
+                    projected_owner
+                    if projected_owner and projected_owner not in self.host.NON_IMPLEMENTATION_OWNERS
+                    else None
+                ),
+                validation_owner=self.host.DEFAULT_VALIDATION_OWNER,
+                release_owner=self.host.DEFAULT_RELEASE_OWNER,
+                artifact_state="branch",
+                last_meaningful_update_at=now,
+                last_owner_activity_at=now,
+                # Transitional persisted field retained until lifecycle metadata
+                # migration replaces the provider-specific name.
+                last_gitlab_event_at=source_timestamp or now,
+                blocker=None,
+                next_action=None,
+                next_owner=None,
+                release_gate=priority == "priority::P1",
+                status_label=projected_status_label,
+                labels=labels,
+                mr_refs=[],
+                created_at=now,
+                updated_at=now,
+                closed_at=(source_timestamp or now) if projected_stage == "closed" else None,
+            )
+            self.state_machine._append_work_item_event(
+                self.state_machine._work_item_event(
+                    ref,
+                    "task_source_snapshot_backfilled",
+                    payload={
+                        "project_id": project_id,
+                        "source_type": snapshot.identity.source_type,
+                        "current_owner": state.current_owner,
+                        "current_stage": state.current_stage,
+                        "priority": state.priority,
+                    },
+                )
+            )
+            if state.current_stage == "failed_with_action_owner":
+                state = self.state_machine._reconcile_blocked_work_item_state(
+                    state,
+                    projected_owner=projected_owner,
+                    previous_owner=None,
+                    now=now,
+                )
+        else:
+            previous_stage = state.current_stage
+            previous_owner = state.current_owner
+            previous_status_label = state.status_label
+            previous_priority = state.priority
+            was_closed = bool(state.closed_at)
+
+            if (
+                source_timestamp is not None
+                and state.last_gitlab_event_at is not None
+                and source_timestamp < state.last_gitlab_event_at
+            ):
+                self.state_machine._append_work_item_event(
+                    self.state_machine._work_item_event(
+                        ref,
+                        "task_source_snapshot_stale_ignored",
+                        payload={
+                            "source_type": snapshot.identity.source_type,
+                            "projected_owner": projected_owner,
+                            "projected_stage": projected_stage,
+                            "source_timestamp": source_timestamp,
+                        },
+                    )
+                )
+                return state
+
+            if self.state_machine._preserve_accepted_handoff_recipient(
+                state,
+                incoming_owner=projected_owner,
+                incoming_stage=projected_stage,
+                incoming_status_label=projected_status_label,
+            ):
+                self.state_machine._append_work_item_event(
+                    self.state_machine._work_item_event(
+                        ref,
+                        "task_source_snapshot_handoff_projection_ignored",
+                        payload={
+                            "source_type": snapshot.identity.source_type,
+                            "projected_owner": projected_owner,
+                            "projected_stage": projected_stage,
+                        },
+                    )
+                )
+                return state
+
+            state.project_id = project_id
+            state.project_path = project_path or state.project_path
+            state.source_identity = snapshot.identity
+            state.title = snapshot.title or state.title
+            state.url = snapshot.identity.external_url or state.url
+            state.priority = priority or state.priority
+            state.labels = labels
+            state.status_label = projected_status_label
+            state.release_gate = priority == "priority::P1" or state.release_gate
+            state = self.state_machine._transition_work_item_stage(
+                state,
+                projected_stage,
+                source="task-source-snapshot-projection",
+                external_projection=True,
+            )
+            if projection.owner_known and projected_owner and not (state.handoff and state.handoff.status == "pending"):
+                state.current_owner = projected_owner
+            state.updated_at = now
+            state.last_gitlab_event_at = source_timestamp or now
+
+            if projected_stage == "closed":
+                state = self.state_machine._normalize_closed_work_item_state(
+                    state,
+                    now=now,
+                    reason_code="task_source_closed",
+                    closed_at=source_timestamp or now,
+                )
+            else:
+                state.closed_at = None
+                if projected_stage == "implementation_active" and not (
+                    state.handoff and state.handoff.status == "pending"
+                ):
+                    state.blocker = None
+                    if self.state_machine._coerce_owner(state.next_owner) != self.state_machine._coerce_owner(state.current_owner):
+                        state.next_owner = None
+
+            if (
+                previous_stage != state.current_stage
+                or previous_owner != state.current_owner
+                or previous_status_label != state.status_label
+                or previous_priority != state.priority
+                or was_closed != bool(state.closed_at)
+            ):
+                state.last_meaningful_update_at = now
+                state.last_owner_activity_at = now
+
+            if state.current_stage == "failed_with_action_owner":
+                state = self.state_machine._reconcile_blocked_work_item_state(
+                    state,
+                    projected_owner=projected_owner,
+                    previous_owner=previous_owner,
+                    now=now,
+                )
+
+        state = self.state_machine._ensure_work_item_lane_defaults(state)
+        state.artifact_state = self.state_machine._infer_artifact_state_from_state(state)
+        states[ref] = state
+        self.host._save_work_item_states(states)
+        return state
