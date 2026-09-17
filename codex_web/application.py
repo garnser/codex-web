@@ -52,6 +52,7 @@ from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_timing import install_work_item_timing_policy
+from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -124,6 +125,7 @@ turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 autonomy_service = install_autonomy_service(app, core)
 turn_queue_policy = install_turn_queue_policy(app, core)
+work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 turn_service = TurnService(core)
 
 # Preserve the small historical function surface still used by direct
