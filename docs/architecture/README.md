@@ -54,6 +54,7 @@ Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
 - [Canonical execution contract schema](execution-contract-schema.md) — versioned Milestone 2 machine-readable contract derived from canonical work-item state.
 - [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, and adapter boundary for GitLab and future authoritative task systems.
+- [Cross-milestone UI adaptation requirements](ui-adaptation-requirements.md) — product information architecture, operator explainability, provenance, navigation, and milestone-specific UI requirements for Milestones 2–11.
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
