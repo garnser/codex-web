@@ -35,27 +35,30 @@ class _Reconciler:
         )
 
 
+class _ArtifactProjector:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def project(self, payload, *, project_id):
+        self.calls.append((payload.get("object_kind"), project_id))
+        return SimpleNamespace(ref="artifact")
+
+
 class _Host:
     GITLAB_API_BASE = "https://gitlab.example/api/v4"
-
-    def __init__(self) -> None:
-        self.legacy_calls = 0
-        self._upsert_work_item_state_from_gitlab_event = self.legacy
-
-    def legacy(self, payload, *, project_id):
-        self.legacy_calls += 1
-        return SimpleNamespace(ref="legacy")
 
 
 class GitLabEventAdapterRoutingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.host = _Host()
         self.reconciler = _Reconciler()
+        self.artifacts = _ArtifactProjector()
         self.service = WorkItemService(
             self.host,
             state_machine=_StateMachine(),
             task_source_projector=_Projector(),
             task_source_event_reconciler=self.reconciler,
+            gitlab_artifact_events=self.artifacts,
         )
 
     def test_issue_event_uses_provider_neutral_reconciler(self) -> None:
@@ -76,16 +79,16 @@ class GitLabEventAdapterRoutingTests(unittest.TestCase):
 
         self.assertEqual(state.ref, "group/project#7")
         self.assertEqual(self.reconciler.calls, [("gitlab", "issue.update", "home")])
-        self.assertEqual(self.host.legacy_calls, 0)
+        self.assertEqual(self.artifacts.calls, [])
 
-    def test_non_issue_event_temporarily_uses_captured_legacy_projector(self) -> None:
+    def test_non_issue_event_uses_integration_artifact_projector(self) -> None:
         state = self.service.project_gitlab_event_compat(
             {"object_kind": "pipeline"},
             project_id="home",
         )
 
-        self.assertEqual(state.ref, "legacy")
-        self.assertEqual(self.host.legacy_calls, 1)
+        self.assertEqual(state.ref, "artifact")
+        self.assertEqual(self.artifacts.calls, [("pipeline", "home")])
         self.assertEqual(self.reconciler.calls, [])
 
 
