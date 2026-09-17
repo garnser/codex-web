@@ -9,10 +9,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  unit:
+    name: unit-static
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -29,16 +34,9 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
 
       - name: Install locked Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.lock
-
-      - name: Install locked browser test dependencies
-        run: npm ci
+        run: python -m pip install -r requirements.lock
 
       - name: Run Python tests
         run: python -m unittest discover -s tests -p 'test_*.py'
@@ -51,14 +49,39 @@ jobs:
             node --check "$script"
           done
 
-      - name: Install Chromium browser runtime
-        run: npx playwright install --with-deps chromium
+  browser:
+    name: chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked browser test dependencies
+        run: npm ci
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Ensure Chromium browser runtime is installed
+        run: npx playwright install chromium
 
       - name: Run frontend browser tests
         shell: bash
         run: |
           set -euo pipefail
-          python -m http.server 18766 --bind 127.0.0.1 > /tmp/codex-web-static.log 2>&1 &
+          python3 -m http.server 18766 --bind 127.0.0.1 > /tmp/codex-web-static.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" >/dev/null 2>&1 || true; cat /tmp/codex-web-static.log || true' EXIT
 
@@ -72,9 +95,9 @@ jobs:
           npx playwright test tests/browser --workers=1 --reporter=line
 
   docker:
+    name: docker-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: test
 
     steps:
       - name: Check out repository
@@ -83,8 +106,17 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose config
 
-      - name: Build container image
-        run: docker build --tag codex-web:test .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image with reusable cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: codex-web:test
+          cache-from: type=gha,scope=codex-web-test
+          cache-to: type=gha,mode=max,scope=codex-web-test
 
       - name: Verify pinned Codex version
         run: |
