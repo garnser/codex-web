@@ -57,7 +57,15 @@ class WorkItemService:
         if not isinstance(state, WorkItemState):
             return state
 
-        external_id = str(issue.get("id") or issue.get("iid") or state.ref).strip()
+        references = issue.get("references") or {}
+        full_reference = str(references.get("full") or "").strip()
+        iid = issue.get("iid")
+        project_iid = (
+            f"{state.project_path}#{iid}"
+            if state.project_path and iid is not None
+            else ""
+        )
+        external_id = full_reference or project_iid or str(issue.get("id") or state.ref).strip()
         revision_raw = issue.get("updated_at")
         revision = str(revision_raw).strip() if revision_raw is not None else None
         external_url_raw = issue.get("web_url") or state.url
