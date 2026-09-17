@@ -23,7 +23,7 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 ```text
 1. Executive Contract
         ↓
-2. Work Item Lifecycle
+2. Work Item Lifecycle + Task Sources
         ↓
 3. Work Graph
         ↓
@@ -83,9 +83,9 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 
 ## Milestone 2 — Formalize the Work Item State Machine and Execution Contract
 
-**Objective:** make every unit of work have a deterministic lifecycle, contract, owner, audit trail, and completion path.
+**Objective:** make every unit of work have a deterministic lifecycle, contract, owner, audit trail, completion path, and provider-neutral authoritative task source.
 
-**Status:** 🚧 In progress. The versioned canonical execution-contract schema and the canonical manual/API work-item transition policy are merged on `main`; state-mutation centralization, richer terminal states, audit/event history, checkpoints, cost hooks, migration, and UI work remain open.
+**Status:** 🚧 In progress. The versioned canonical execution-contract schema and the canonical manual/API work-item transition policy are merged on `main`; state-mutation centralization, provider-neutral task-source abstraction, richer terminal states, audit/event history, checkpoints, cost hooks, migration, and UI work remain open.
 
 ### Subtasks
 
@@ -116,12 +116,34 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 - [ ] Add migration support for existing work items.
 - [ ] Add UI indicators for state, owner, blockers, and execution status.
 
+### Authoritative task-source abstraction
+
+GitLab is the current authoritative external task source, but canonical codex-web work-item behavior must not depend on GitLab being the provider. GitLab should become one adapter implementing a provider-neutral task-source contract so other authoritative systems can be selected without creating a second execution model.
+
+- [ ] Define a provider-neutral `WorkItemSource` / `TaskSource` contract for authoritative task systems.
+- [ ] Separate canonical work-item identity from external source identity and persist source type, source instance, external ID/URL, and source revision/event cursor as provenance.
+- [ ] Move GitLab issue discovery, labels, assignees, status, comments, and reconciliation behind a GitLab task-source adapter.
+- [ ] Define explicit adapter capabilities for discovery/read, event/webhook ingestion, owner/state write-back, comments, and artifact links; unsupported capabilities must be declared rather than assumed.
+- [ ] Define deterministic mappings between provider-specific state/owners/labels and canonical codex-web work-item fields.
+- [ ] Make stale-event handling, idempotency, conflict detection, and split-brain handling provider-neutral at the reconciliation boundary.
+- [ ] Allow the authoritative task source to be configured per project/workspace without changing core work-item, Executive, queue, or execution logic.
+- [ ] Ensure exactly one authoritative external source owns mutable task state for a work item unless an explicit future federation policy is configured.
+- [ ] Keep provider-specific API objects and terminology out of the canonical execution contract and core state-transition interfaces.
+- [ ] Add shared adapter contract/conformance tests that every authoritative task-source implementation must pass.
+- [ ] Add at least one non-GitLab adapter or complete provider-neutral reference adapter to prove GitLab is not a special case.
+- [ ] Preserve backward compatibility and migration for existing GitLab-backed work-item references and persisted state.
+- [ ] Add source provenance, authority, synchronization status, and conflict diagnostics to relevant APIs/UI.
+
 ### Completion criteria
 
 - Work state can only change through one authoritative mechanism.
 - Every executable work item has a validated, versioned contract.
 - State history and execution provenance are inspectable.
 - Long-running work can resume from a checkpoint instead of replaying full history.
+- Core work-item, routing, contract, and execution logic does not depend on GitLab-specific schemas, labels, or API semantics.
+- GitLab operates through the same provider-neutral authoritative task-source contract available to alternative providers.
+- Source provenance and conflict rules make it deterministic which external system is authoritative for each work item.
+- At least one additional adapter or provider-neutral reference implementation passes the shared task-source conformance suite.
 
 ---
 
@@ -485,7 +507,7 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 
 Milestones 1–3.
 
-**Goal:** make codex-web a deterministic and reliable execution engine with canonical contracts, state, and dependency-aware work.
+**Goal:** make codex-web a deterministic and reliable execution engine with canonical contracts, provider-neutral task authority, state, and dependency-aware work.
 
 ## Epic 2 — Autonomy Foundation
 
@@ -522,3 +544,4 @@ Every milestone must preserve the following invariants:
 5. **Bound reasoning:** cap calls, rounds, retries, handoffs, context, tokens, and cost.
 6. **Canonical state:** goals, work, decisions, authority, approvals, and budgets live in structured application state.
 7. **Canonical execution path:** Executive/autonomous features must use existing/canonical work, queue, sandbox, approval, and execution mechanisms rather than bypassing them.
+8. **Provider-neutral task authority:** GitLab, GitHub, Jira, Linear, or any future authoritative task system must integrate through a provider adapter; provider-specific concepts must not leak into canonical work-item or execution semantics.
