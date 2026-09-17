@@ -646,76 +646,6 @@ def _append_bot_event(event: dict[str, Any]) -> None:
 
 
 
-def _parse_agent_channel_overrides() -> dict[str, list[str]]:
-    raw = os.environ.get("CODEX_WEB_AGENT_CHANNELS", "").strip()
-    if not raw:
-        return {}
-    with contextlib.suppress(Exception):
-        payload = json.loads(raw)
-        if isinstance(payload, dict):
-            result: dict[str, list[str]] = {}
-            for key, value in payload.items():
-                normalized_key = str(key).lower()
-                if isinstance(value, str) and value.strip():
-                    result[normalized_key] = [value.strip()]
-                elif isinstance(value, list):
-                    channels = [str(channel).strip() for channel in value if str(channel).strip()]
-                    if channels:
-                        result[normalized_key] = channels
-            return result
-    result: dict[str, list[str]] = {}
-    for part in raw.split(","):
-        if ":" not in part:
-            continue
-        key, value = part.split(":", 1)
-        key = key.strip().lower()
-        value = value.strip()
-        if key and value:
-            result[key] = [value]
-    return result
-
-
-def _preferred_agent_conversation(agent: str, project_id: str) -> str | None:
-    normalized = agent.lower()
-    channels = _preferred_agent_conversations(normalized, project_id)
-    return channels[0] if channels else None
-
-
-def _preferred_agent_conversations(agent: str, project_id: str, allowed_channels: list[str] | None = None) -> list[str]:
-    normalized = agent.lower()
-    settings = _load_agent_channel_presence_settings()
-    project_settings = settings.projects.get(project_id)
-    allowed = set(_normalize_string_list(allowed_channels)) if allowed_channels else None
-    if project_settings and normalized in project_settings.agent_channels:
-        channels = _normalize_string_list(project_settings.agent_channels[normalized])
-        if allowed is not None:
-            channels = [channel for channel in channels if channel in allowed]
-        if channels:
-            return channels
-    overrides = _parse_agent_channel_overrides()
-    if normalized in overrides:
-        channels = _normalize_string_list(overrides[normalized])
-        if allowed is not None:
-            channels = [channel for channel in channels if channel in allowed]
-        if channels:
-            return channels
-    return []
-
-
-def _clone_binding_to_known_channel(source: BotBinding, channel_id: str) -> BotBinding:
-    channel = next(
-        (
-            item
-            for item in _bot_channels(source.project_id)
-            if item.get("provider") == source.provider and item.get("id") == channel_id
-        ),
-        None,
-    )
-    return _clone_binding_to_conversation(
-        source,
-        channel_id,
-        external_name=(channel or {}).get("name") or (channel or {}).get("label") or channel_id,
-    )
 
 
 
@@ -724,83 +654,18 @@ def _clone_binding_to_known_channel(source: BotBinding, channel_id: str) -> BotB
 
 
 
-def _binding_for_agent(
-    agent: str,
-    project_id: str,
-    *,
-    preferred_conversation_id: str | None = None,
-) -> BotBinding | None:
-    normalized = agent.strip().lower()
-    if not normalized:
-        return None
-    candidates = sorted(
-        [
-            binding
-            for binding in _load_bot_bindings()
-            if binding.project_id == project_id
-            and not binding.is_master
-            and (_binding_prefix(binding) or "").strip().lower() == normalized
-        ],
-        key=lambda binding: binding.updated_at,
-        reverse=True,
-    )
-    if not candidates:
-        candidates = sorted(
-            [
-                binding
-                for binding in _load_bot_bindings()
-                if binding.project_id == project_id
-                and not binding.is_master
-                and normalized in {
-                    (_binding_prefix(binding) or "").strip().lower().split(" ", 1)[0],
-                    (binding.thread_name or "").strip().lower().split(" ", 1)[0],
-                }
-            ],
-            key=lambda binding: binding.updated_at,
-            reverse=True,
-        )
-    if not candidates:
-        return None
-    if preferred_conversation_id:
-        preferred = [
-            binding for binding in candidates if binding.external_conversation_id == preferred_conversation_id
-        ]
-        if preferred:
-            return preferred[0]
-        source = candidates[0]
-        allowed_channels = [binding.external_conversation_id for binding in candidates]
-        if preferred_conversation_id in _preferred_agent_conversations(
-            normalized,
-            project_id,
-            allowed_channels=allowed_channels,
-        ):
-            return _clone_binding_to_conversation(source, preferred_conversation_id)
-    preferred_conversation = _preferred_agent_conversation(normalized, project_id)
-    if preferred_conversation:
-        preferred = [
-            binding for binding in candidates if binding.external_conversation_id == preferred_conversation
-        ]
-        if preferred:
-            return preferred[0]
-        source = candidates[0]
-        return _clone_binding_to_conversation(source, preferred_conversation)
-    return candidates[0]
 
 
 
 
 
 
-def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
-    return sorted(
-        [
-            binding
-            for binding in _load_bot_bindings()
-            if binding.thread_id == source.thread_id or _same_logical_binding(binding, source)
-        ],
-        key=lambda binding: binding.updated_at,
-        reverse=True,
-    )
+
+
+
+
+
+
 
 
 
