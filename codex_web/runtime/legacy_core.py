@@ -85,7 +85,6 @@ from codex_web.paths import (
     SUPPORT_SERVICEDESK_STATE_FILE,
     SLACK_THREAD_ICONS_FILE,
     STATIC_DIR,
-    THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
     WORK_ITEM_EVENTS_FILE,
@@ -156,7 +155,6 @@ NON_IMPLEMENTATION_OWNERS = {
     "larry",
 }
 HANDOFF_COORDINATION_CHANNEL = "C0B9M89AHCY"
-DEFAULT_THREAD_MESSAGE_LIMIT = 100
 
 
 hub = EventHub()
@@ -204,8 +202,6 @@ hub = EventHub()
 
 
 
-def _save_json_private(path: Path, payload: Any) -> None:
-    _atomic_write_text(path, json.dumps(payload, indent=2) + "\n", private=True)
 
 
 def _work_item_handoff_timeout_seconds() -> float:
