@@ -4,7 +4,7 @@
 
 **Milestone 2 architecture contract.** This document defines the canonical work-item stages already used by codex-web and the legal manual/API transition policy layered on top of them.
 
-The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed` as illustrative lifecycle concepts. Codex-web already has a richer canonical model, so Milestone 2 must strengthen that model rather than introduce a parallel set of states.
+The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed` as illustrative lifecycle concepts. Codex-web already has a richer canonical model, so Milestone 2 strengthens that model rather than introducing a parallel set of states.
 
 ## Canonical stages
 
@@ -58,17 +58,27 @@ closed
 
 This prevents manual callers from skipping directly from implementation to validation-running/close states or silently resurrecting a closed lane.
 
+## Authoritative transition mechanism
+
+`WorkItemTransitionService` is the single stage-mutation primitive for existing work items. `WorkItemStateMachine` owns one instance and routes canonical stage changes through `_transition_work_item_stage`.
+
+The following paths use that primitive:
+
+- manual/API progress updates;
+- handoff-driven stage changes;
+- acknowledgement/rejection-driven stage changes;
+- GitLab issue reconciliation;
+- GitLab event reconciliation.
+
+New work-item construction may set its initial stage directly because initialization is not a transition from an existing canonical stage. After creation, stage mutation belongs to the transition service.
+
+`WorkItemService` no longer duplicates lifecycle validation at the API boundary. This keeps lifecycle policy and mutation inside the canonical state machine, including callers that invoke the state machine without passing through the HTTP service layer.
+
 ## External GitLab projection
 
-GitLab reconciliation is deliberately separate from the manual/API transition policy. An upstream GitLab issue can close or reopen and codex-web must reconcile that authoritative external event, subject to existing stale-event and handoff-preservation checks.
+GitLab reconciliation is deliberately distinct from the manual/API transition policy. An upstream GitLab issue can close or reopen and codex-web must reconcile that authoritative external event, subject to existing stale-event and handoff-preservation checks.
 
-Therefore a GitLab projection may cause a state change that a manual progress call would not be allowed to request. This is an explicit source distinction, not a bypass hidden in the transition table.
-
-## Enforcement boundary
-
-The first transition-policy increment validates explicit stage requests at `WorkItemService`, before the canonical mutation method is invoked. This covers the normal handoff, acknowledgement, and progress API path while retaining compatibility with lightweight test/extension doubles that do not expose state lookup.
-
-This increment does **not** yet claim that all state mutation is centralized. GitLab projection and several internal state-machine paths still assign canonical stage as part of reconciliation. A later Milestone 2 slice must route internal manual mutations through one authoritative transition mechanism and remove scattered direct assignments where they are not external projections.
+GitLab therefore calls the same `WorkItemTransitionService` mutation primitive with `external_projection=True`. This permits upstream close/reopen reconciliation without weakening the manual transition matrix or creating a second mutation implementation.
 
 ## Failure contract
 
@@ -79,7 +89,7 @@ An illegal manual transition fails closed with HTTP `409` and structured detail:
   "code": "invalid_stage_transition",
   "from_stage": "implementation_active",
   "to_stage": "closed",
-  "source": "work-item-progress",
+  "source": "progress_updated",
   "allowed_targets": [
     "failed_with_action_owner",
     "implementation_active",
@@ -92,4 +102,4 @@ This is deterministic and requires no model reasoning.
 
 ## Tests
 
-The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Service-level tests additionally prove that an explicit illegal transition is rejected before mutation, while historical lightweight service doubles without canonical state lookup continue to work.
+The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Transition-service tests prove legal mutation, fail-closed illegal mutation, and the explicit external-projection exception. State-machine tests prove that direct canonical callers cannot bypass the transition policy by avoiding `WorkItemService`.
