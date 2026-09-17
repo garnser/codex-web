@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import Counter
 from typing import Any
@@ -10,9 +11,10 @@ from fastapi import HTTPException
 class RuntimeService:
     def __init__(self, host: Any) -> None:
         self.host = host
-        # Preserve the historical direct-call healthz entrypoint without
-        # retaining a second implementation in the legacy runtime.
+        # Preserve the historical direct-call health/recovery entrypoints without
+        # retaining duplicate implementations in the legacy runtime.
         host.healthz = self.healthz
+        host.recovery_resume = self.recovery_resume
 
     async def status(self) -> dict[str, Any]:
         try:
@@ -37,6 +39,29 @@ class RuntimeService:
         if not health["ok"]:
             raise HTTPException(status_code=503, detail=health)
         return health
+
+    async def recovery_resume(self) -> dict[str, Any]:
+        h = self.host
+        try:
+            await h.codex.ensure_started()
+        except Exception:
+            pass
+        now = time.time()
+        stale_thread_ids = {
+            thread_id
+            for thread_id, active in h._load_active_turns().items()
+            if now - active.updated_at > h._active_turn_stale_seconds()
+        }
+        if stale_thread_ids:
+            asyncio.create_task(h._resume_active_threads_after_startup(stale_thread_ids))
+        for thread_id in h._load_turn_queues():
+            h._schedule_queue_drain(thread_id)
+        return {
+            "ok": True,
+            "resumingStaleThreads": sorted(stale_thread_ids),
+            "activeTurns": len(h._load_active_turns()),
+            "queuedTurns": sum(len(items) for items in h._load_turn_queues().values()),
+        }
 
     def operations(self, *, window_seconds: float = 900.0) -> dict[str, Any]:
         h = self.host
