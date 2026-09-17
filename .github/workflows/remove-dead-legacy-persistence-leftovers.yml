@@ -1,0 +1,33 @@
+name: remove-dead-legacy-persistence-leftovers
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.head_ref == 'refactor/remove-dead-legacy-persistence-leftovers'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Generate cleanup
+        run: python tools/remove_dead_legacy_persistence_leftovers.py
+      - name: Run focused core ratchet tests
+        run: python -m unittest tests.test_core_budget
+      - name: Commit generated cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Remove dead legacy persistence leftovers"
+          git push
