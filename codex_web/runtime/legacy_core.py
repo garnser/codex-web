@@ -200,22 +200,8 @@ hub = EventHub()
 
 
 
-def _upsert_indexed_thread(thread: IndexedThread) -> None:
-    threads = _load_thread_index()
-    for index, existing in enumerate(threads):
-        if existing.id == thread.id:
-            threads[index] = thread
-            _save_thread_index(threads)
-            return
-    threads.append(thread)
-    _save_thread_index(threads)
 
 
-def _remove_indexed_thread(thread_id: str) -> None:
-    threads = _load_thread_index()
-    kept = [thread for thread in threads if thread.id != thread_id]
-    if len(kept) != len(threads):
-        _save_thread_index(kept)
 
 
 def _save_json_private(path: Path, payload: Any) -> None:

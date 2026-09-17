@@ -23,6 +23,7 @@ from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     PROJECTS_FILE,
     STATE_DB_FILE,
+    THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     WORK_ITEM_STATES_FILE,
 )
@@ -56,6 +57,7 @@ from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.thread_index import install_thread_index_repository
 
 
 # Keep one FastAPI application and one runtime lifecycle while domains are
@@ -76,6 +78,12 @@ runtime_state = RuntimeStateRepositories(
     thread_settings_file=THREAD_SETTINGS_FILE,
     active_turns_file=ACTIVE_TURNS_FILE,
     work_item_states_file=WORK_ITEM_STATES_FILE,
+)
+thread_index_repository = install_thread_index_repository(
+    app,
+    core,
+    store=state_store,
+    legacy_path=THREAD_INDEX_FILE,
 )
 project_service = ProjectService(project_repository)
 runtime_service = RuntimeService(core)
