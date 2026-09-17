@@ -43,6 +43,7 @@ from codex_web.services.runtime import RuntimeService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.thread_recovery import install_thread_recovery_service
+from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
@@ -106,6 +107,7 @@ auxiliary_state = install_auxiliary_state(app, core)
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
+thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(app, core)
 autonomy_service = install_autonomy_service(app, core)
 turn_service = TurnService(core)
