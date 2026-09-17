@@ -18,13 +18,11 @@ class _Host:
     DEFAULT_RELEASE_OWNER = "release manager"
     NON_IMPLEMENTATION_OWNERS = {"quinn", "release manager", "orchestrator"}
     OWNER_QUEUE_AGENTS = ("dana", "quinn")
-    GITLAB_API_BASE = "https://gitlab.example/api/v4"
 
     def __init__(self, root: Path) -> None:
         self.DATA_DIR = root
         self.WORK_ITEM_EVENTS_FILE = root / "work_item_events.jsonl"
         self.states: dict[str, WorkItemState] = {}
-        self.semantic_updates: list[dict] = []
 
     def _load_work_item_states(self):
         return {ref: state.model_copy(deep=True) for ref, state in self.states.items()}
@@ -32,64 +30,19 @@ class _Host:
     def _save_work_item_states(self, states):
         self.states = {ref: state.model_copy(deep=True) for ref, state in states.items()}
 
-    def _gitlab_token_for_project(self, project_id: str):
-        return "token" if project_id == "home" else None
-
-    def _remember_gitlab_semantic_issue_state(self, ref, **payload):
-        self.semantic_updates.append({"ref": ref, **payload})
-
     def _leading_owner_cue_in_action(self, value):
         return None
 
-    def _gitlab_label_names(self, payload):
-        return list(payload.get("labels") or [])
 
-    def _gitlab_owner_agents(self, labels):
-        return [label.split("::", 1)[1] for label in labels if label.startswith("owner::")]
-
-    def _gitlab_url(self, payload):
-        return None
-
-    def _mr_refs_from_payload(self, payload):
-        return []
-
-    def _project_issue_ref(self, payload):
-        return None
-
-    def _append_bot_event(self, event):
-        pass
-
-
-class _GitLab:
-    def __init__(self) -> None:
-        self.updated_payload: dict | None = None
-
-    async def project_issue(self, api_base, project, iid, *, token):
-        return {
-            "state": "opened",
-            "labels": ["keep", "owner::james", "status::blocked"],
-        }
-
-    async def update_project_issue(self, api_base, project, iid, *, token, payload):
-        self.updated_payload = payload
-        return {
-            "state": "opened",
-            "labels": ["keep", "owner::dana", "status::in progress"],
-        }
-
-
-class WorkItemStateMachineTests(unittest.IsolatedAsyncioTestCase):
+class WorkItemStateMachineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.host = _Host(self.root)
-        self.gitlab = _GitLab()
-        self.machine = WorkItemStateMachine(self.host, self.gitlab)
+        self.machine = WorkItemStateMachine(self.host)
         self.state = WorkItemState(
-            ref="group/project#1",
+            ref="canonical-1",
             project_id="home",
-            project_path="group/project",
-            kind="issue",
             current_owner="dana",
             current_stage="implementation_active",
             implementation_owner="dana",
@@ -133,24 +86,37 @@ class WorkItemStateMachineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(finding["code"], "branch_only_artifact")
 
-    async def test_label_projection_uses_async_gitlab_client_and_persists_result(self) -> None:
-        state = await self.machine.sync_gitlab_issue_labels(self.state.model_copy(deep=True))
-
-        self.assertEqual(
-            self.gitlab.updated_payload,
-            {"labels": "keep,owner::dana,status::in progress"},
+    def test_state_machine_has_no_provider_transport_or_projection_methods(self) -> None:
+        provider_methods = (
+            "sync_gitlab_issue_labels",
+            "schedule_gitlab_issue_label_sync",
+            "_upsert_work_item_state_from_gitlab_issue",
+            "_upsert_work_item_state_from_gitlab_event",
+            "_parse_gitlab_timestamp",
+            "_gitlab_projection_is_stale",
+            "_infer_artifact_state_from_gitlab_payload",
         )
-        self.assertEqual(state.labels, ["keep", "owner::dana", "status::in progress"])
-        self.assertEqual(self.host.states[state.ref].labels, state.labels)
-        self.assertEqual(self.host.semantic_updates[-1]["reason"], "codex-web-label-sync")
+        for name in provider_methods:
+            self.assertFalse(hasattr(self.machine, name), name)
+        self.assertFalse(hasattr(self.machine, "gitlab"))
 
-    def test_installer_rebinds_legacy_entrypoints_to_one_engine(self) -> None:
+    def test_split_brain_checks_do_not_infer_owner_from_provider_labels(self) -> None:
+        state = self.state.model_copy(deep=True)
+        state.labels = ["owner::someone-else"]
+        state.status_label = "status::in progress"
+        findings = self.machine._work_item_split_brain_findings(state)
+        self.assertFalse(any("owner drift" in finding for finding in findings))
+
+    def test_installer_rebinds_only_canonical_entrypoints(self) -> None:
         app = SimpleNamespace(state=SimpleNamespace())
-        machine = install_work_item_state_machine(app, self.host, self.gitlab)
+        machine = install_work_item_state_machine(app, self.host)
 
         self.assertIs(app.state.work_item_state_machine, machine)
         self.assertEqual(self.host._structured_handoff.__self__, machine)
         self.assertEqual(self.host._work_item_state_public.__self__, machine)
+        self.assertFalse(hasattr(self.host, "_upsert_work_item_state_from_gitlab_issue"))
+        self.assertFalse(hasattr(self.host, "_upsert_work_item_state_from_gitlab_event"))
+        self.assertFalse(hasattr(self.host, "_sync_gitlab_issue_labels_from_work_item"))
 
 
 class GitLabClientIssueUpdateTests(unittest.IsolatedAsyncioTestCase):
