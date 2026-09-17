@@ -4,10 +4,23 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from codex_web.models import GitLabRoutingSettings, IndexedThread
+from codex_web.models import (
+    AgentChannelPresenceSettings,
+    GitLabProjectRoutingSettings,
+    GitLabRoutingSettings,
+    IndexedThread,
+)
 from codex_web.runtime import core
-from codex_web.storage.configuration_state import ConfigurationStateRepositories
+from codex_web.storage.configuration_state import (
+    ConfigurationStateRepositories,
+    install_configuration_state,
+    migrate_agent_channel_presence_settings,
+    migrate_gitlab_routing_settings,
+    normalize_agent_channel_presence_settings,
+    normalize_gitlab_routing_settings,
+)
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -65,6 +78,43 @@ class ConfigurationStateTests(unittest.TestCase):
             self.assertEqual(repositories.slack_thread_icons.load()["thread-1"], ":rocket:")
             self.assertEqual(json.loads((root / "thread_index.json").read_text())[0]["id"], "thread-1")
             self.assertEqual(json.loads((root / "slack_thread_icons.json").read_text())["thread-1"], ":rocket:")
+
+    def test_normalizers_are_storage_owned_and_preserve_legacy_shapes(self) -> None:
+        migrated = migrate_gitlab_routing_settings(
+            {
+                "enabled": True,
+                "channel_id": "C1",
+                "project_mappings": [
+                    {"project_id": "home", "namespace": "Group/Project"},
+                ],
+                "fallback_agents_by_kind": {"issue": ["Dana"]},
+            }
+        )
+        normalized = normalize_gitlab_routing_settings(migrated)
+        self.assertEqual(normalized.projects["home"].channel_ids, ["C1"])
+        self.assertEqual(normalized.projects["home"].project_paths, ["group/project"])
+        self.assertEqual(normalized.projects["home"].fallback_agents_by_kind, {"issue": ["dana"]})
+
+        presence = migrate_agent_channel_presence_settings(
+            {"default_project_id": "home", "agent_channels": {"Dana": ["C2", "C1", "C2"]}}
+        )
+        normalized_presence = normalize_agent_channel_presence_settings(presence)
+        self.assertEqual(normalized_presence.projects["home"].agent_channels, {"dana": ["C1", "C2"]})
+
+    def test_installer_rebinds_historical_normalizer_entrypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host = SimpleNamespace()
+            app = SimpleNamespace(state=SimpleNamespace(sqlite_state_store=SQLiteStateStore(root / "codex-web.db")))
+
+            # The installer imports canonical production paths; only verify the
+            # compatibility functions are rebound after repository composition.
+            install_configuration_state(app, host)
+
+            self.assertIs(host._normalize_gitlab_routing_settings, normalize_gitlab_routing_settings)
+            self.assertIs(host._migrate_gitlab_routing_settings, migrate_gitlab_routing_settings)
+            self.assertIs(host._normalize_agent_channel_presence_settings, normalize_agent_channel_presence_settings)
+            self.assertIs(host._migrate_agent_channel_presence_settings, migrate_agent_channel_presence_settings)
 
 
 if __name__ == "__main__":
