@@ -30,6 +30,10 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from codex_web.events import EventHub
+from codex_web.storage.json_files import (
+    atomic_write_text as _atomic_write_text,
+    state_file_lock as _state_file_lock,
+)
 from codex_web.devhealth import build_context as build_devhealth_context, render_html as render_devhealth_html
 from codex_web.devstatus import build_context as build_devstatus_context, render_html as render_devstatus_html
 from codex_web.models import (
@@ -116,7 +120,6 @@ THREAD_TERMINAL_FAILURES: dict[str, deque[tuple[float, str]]] = {}
 THREAD_LAST_INPUTS: dict[str, dict[str, Any]] = {}
 THREAD_REPLACEMENTS: dict[str, str] = {}
 THREAD_STEER_TIMES: dict[str, deque[float]] = {}
-STATE_FILE_LOCKS: dict[str, threading.RLock] = {}
 GITLAB_EVENT_IDS: dict[str, float] = {}
 WATCHDOG_DISPATCH_TIMES: dict[str, float] = {}
 NATIVE_RECOVERY_LAST_SCHEDULED_AT = 0.0
@@ -159,35 +162,8 @@ DEFAULT_THREAD_MESSAGE_LIMIT = 100
 hub = EventHub()
 
 
-def _state_file_lock(path: Path) -> threading.RLock:
-    key = str(path.resolve())
-    lock = STATE_FILE_LOCKS.get(key)
-    if lock is None:
-        lock = threading.RLock()
-        STATE_FILE_LOCKS[key] = lock
-    return lock
 
 
-def _atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = _state_file_lock(path)
-    with lock:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        temporary_path = Path(temporary_name)
-        try:
-            mode = 0o600 if private else 0o644
-            os.fchmod(descriptor, mode)
-            with os.fdopen(descriptor, "w") as handle:
-                descriptor = -1
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, path)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            with contextlib.suppress(FileNotFoundError):
-                temporary_path.unlink()
 
 
 
