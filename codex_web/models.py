@@ -24,6 +24,7 @@ WorkItemStage: TypeAlias = Literal[
     "ready_to_close",
     "closed",
 ]
+WorkItemTerminalOutcome: TypeAlias = Literal["completed", "cancelled", "failed"]
 ArtifactState: TypeAlias = Literal["branch", "merge_request", "merged_main", "tag_pipeline"]
 HandoffStatus: TypeAlias = Literal["pending", "accepted", "rejected", "superseded"]
 
@@ -100,6 +101,7 @@ class WorkItemState(BaseModel):
     priority: str | None = None
     current_owner: str | None = None
     current_stage: WorkItemStage = "implementation_active"
+    terminal_outcome: WorkItemTerminalOutcome | None = None
     implementation_owner: str | None = None
     validation_owner: str | None = None
     release_owner: str | None = None
