@@ -33,6 +33,7 @@ class GitLabTaskSource:
                 TaskSourceCapability.EVENTS,
                 TaskSourceCapability.OWNER_WRITE,
                 TaskSourceCapability.STATE_WRITE,
+                TaskSourceCapability.COMMENTS,
             }
         )
     )
@@ -404,6 +405,18 @@ class GitLabTaskSource:
 
     async def add_comment(self, identity: TaskSourceIdentity, body: str) -> None:
         self.capabilities.require(TaskSourceCapability.COMMENTS)
+        self._validate_identity(identity)
+        text = str(body or "").strip()
+        if not text:
+            raise ValueError("comment body must not be empty")
+        project_path, iid = self._split_external_id(identity.external_id)
+        await self.client.create_project_issue_note(
+            self.api_base,
+            project_path,
+            iid,
+            token=self.token,
+            body=text,
+        )
 
     async def attach_artifact(self, identity: TaskSourceIdentity, url: str) -> None:
         self.capabilities.require(TaskSourceCapability.ARTIFACT_LINKS)
