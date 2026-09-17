@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 from codex_web.models import Project, ProjectCreate
 from codex_web.storage.projects import ProjectRepository
+from codex_web.workspaces import WorkspacePathError
 
 
 class ProjectNotFoundError(LookupError):
@@ -38,7 +38,10 @@ class ProjectService:
         raise ProjectNotFoundError("Project not found")
 
     def create(self, payload: ProjectCreate) -> Project:
-        path = Path(payload.path).expanduser().resolve()
+        try:
+            path = self.repository.resolve_path(payload.path)
+        except WorkspacePathError as exc:
+            raise InvalidProjectPathError(str(exc)) from exc
         if not path.exists() or not path.is_dir():
             raise InvalidProjectPathError("Project path must be an existing directory")
         projects = self.repository.load()
