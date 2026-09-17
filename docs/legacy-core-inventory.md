@@ -42,24 +42,33 @@ Moved out of legacy ownership into `codex_web/services/thread_execution_settings
 
 `ThreadExecutionSettingsService` now owns thread run-setting updates/fallbacks and the legacy GitLab work-item developer-instruction contract composition. The existing runtime-state repository still owns persistence, while historical `core._...` names remain compatibility aliases.
 
-## Extraction candidates
+### Bot binding lookup and primary/master selection
 
-### Bot binding/routing and dispatch
-
-Representative definitions:
-- `_binding_for_agent`
-- `_logical_bindings_for_binding`
-- `_master_binding`
-- `_orchestrator_binding`
-- `_dispatch_event_to_binding`
+Moved out of legacy ownership into `codex_web/services/bot_binding_selection.py`:
 - `_find_bot_binding`
 - `_first_binding_for_connection`
 - `_bindings_for_connection`
 - `_bindings_for_thread`
 - `_bindings_for_project`
+- `_master_binding`
+- `_orchestrator_binding`
 - `_primary_binding_for_project`
 
-Likely owner: extracted bot-routing service. This is now the next cleanup block, but lookup/selection helpers should be separated from dispatch behavior where practical so each PR stays reviewable.
+`BotBindingSelectionService` now owns deterministic lookup and primary/master selection while leaving agent-channel preference, cloning, cross-channel routing and dispatch behavior untouched.
+
+## Extraction candidates
+
+### Remaining bot binding/routing and dispatch behavior
+
+Representative definitions:
+- `_binding_for_agent`
+- `_logical_bindings_for_binding`
+- `_binding_for_external_target`
+- `_clone_binding_for_conversation`
+- `_clone_binding_to_known_channel`
+- `_dispatch_event_to_binding`
+
+Likely owner: extracted bot-routing service. The next routing cleanup should keep agent/channel preference and cloning separate from actual dispatch/queue/recovery behavior where practical.
 
 ### Work-item policy and projection helpers
 
@@ -103,10 +112,11 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 1. ~~Remove duplicated JSON/state-file primitives.~~ Completed.
 2. ~~Move bot connection management helpers.~~ Completed.
 3. ~~Consolidate thread run settings / execution-contract composition.~~ Completed.
-4. Move binding lookup/routing helpers into the bot-routing owner.
-5. Move work-item policy/projection helpers into the work-item owner.
-6. Consolidate queue/recovery helpers under runtime execution/supervisors.
-7. Move diagnostics aggregation to observability/devhealth.
-8. Re-inventory remaining globals and compatibility shims.
+4. ~~Move deterministic binding lookup/primary selection.~~ Completed.
+5. Move remaining agent/channel preference and binding-cloning helpers.
+6. Move work-item policy/projection helpers into the work-item owner.
+7. Consolidate queue/recovery helpers under runtime execution/supervisors.
+8. Move diagnostics aggregation to observability/devhealth.
+9. Re-inventory remaining globals and compatibility shims.
 
 Each extraction should include focused compatibility tests and tighten the legacy-core no-return/size ratchet after duplicate definitions are physically removed.
