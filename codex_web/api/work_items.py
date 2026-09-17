@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
+from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_items import WorkItemService
 from codex_web.work_item_execution_models import (
     WorkItemCheckpointCreate,
@@ -19,9 +20,15 @@ class WorkItemCommentCreate(BaseModel):
     body: str = Field(min_length=1)
 
 
+class WorkItemOperatorAction(BaseModel):
+    actor: str | None = None
+    reason: str | None = None
+
+
 def build_work_items_router(service: WorkItemService) -> APIRouter:
     router = APIRouter(tags=["work-items"])
     execution = WorkItemExecutionLifecycleService(service.host, service.state_machine)
+    operator = WorkItemOperatorService(service)
 
     @router.get("/api/work-items")
     async def list_work_items(
@@ -37,9 +44,24 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
             release_gate=release_gate,
         )
 
+    @router.get("/api/task-sources")
+    async def list_task_sources() -> dict[str, Any]:
+        return operator.task_source_catalog()
+
     @router.post("/api/work-items/sync-from-gitlab")
     async def sync_from_gitlab() -> dict[str, Any]:
         return await service.sync_from_gitlab()
+
+    @router.post("/api/work-items/sync/{project_id}")
+    async def sync_authoritative_task_source(
+        project_id: str,
+        payload: WorkItemOperatorAction,
+    ) -> dict[str, Any]:
+        return await operator.sync_project(
+            project_id,
+            actor=payload.actor,
+            reason=payload.reason,
+        )
 
     # Static-suffix work-item routes must be registered before the catch-all
     # {ref:path} route so refs containing slashes remain unambiguous.
@@ -71,6 +93,24 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
         payload: WorkItemUsageRecord,
     ) -> dict[str, Any]:
         return execution.record_usage(ref, payload)
+
+    @router.get("/api/work-items/{ref:path}/operator")
+    async def get_work_item_operator_detail(ref: str) -> dict[str, Any]:
+        return operator.detail(ref)
+
+    @router.post("/api/work-items/{ref:path}/retry")
+    async def retry_work_item(
+        ref: str,
+        payload: WorkItemOperatorAction,
+    ) -> dict[str, Any]:
+        return await operator.retry(ref, actor=payload.actor, reason=payload.reason)
+
+    @router.post("/api/work-items/{ref:path}/reconcile")
+    async def reconcile_work_item(
+        ref: str,
+        payload: WorkItemOperatorAction,
+    ) -> dict[str, Any]:
+        return await operator.reconcile(ref, actor=payload.actor, reason=payload.reason)
 
     @router.get("/api/work-items/{ref:path}")
     async def get_work_item(ref: str) -> dict[str, Any]:
