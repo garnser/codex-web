@@ -9,7 +9,6 @@ from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
     TaskSourceSnapshot,
-    UnsupportedTaskSourceCapability,
 )
 
 
@@ -33,7 +32,7 @@ class TaskSourceRegistry:
         self._factories[key] = factory
 
     def resolve(self, state: WorkItemState, *, required: bool = False) -> TaskSource | None:
-        identity = state.source_identity
+        identity = getattr(state, "source_identity", None)
         if identity is None:
             if required:
                 raise TaskSourceResolutionError("Work item has no authoritative task-source identity")
@@ -84,11 +83,11 @@ class TaskSourceWritebackService:
         """
 
         source = self.registry.resolve(state, required=False)
-        if source is None or state.source_identity is None:
+        identity = getattr(state, "source_identity", None)
+        if source is None or identity is None:
             return state
 
         snapshot: TaskSourceSnapshot | None = None
-        identity = state.source_identity
         if source.capabilities.supports(TaskSourceCapability.OWNER_WRITE):
             snapshot = await source.write_owner(identity, state.current_owner)
             identity = snapshot.identity
@@ -98,15 +97,17 @@ class TaskSourceWritebackService:
 
     async def add_comment(self, state: WorkItemState, body: str) -> None:
         source = self.registry.resolve(state, required=True)
-        assert source is not None and state.source_identity is not None
+        identity = getattr(state, "source_identity", None)
+        assert source is not None and identity is not None
         source.capabilities.require(TaskSourceCapability.COMMENTS)
-        await source.add_comment(state.source_identity, body)
+        await source.add_comment(identity, body)
 
     async def attach_artifact(self, state: WorkItemState, url: str) -> None:
         source = self.registry.resolve(state, required=True)
-        assert source is not None and state.source_identity is not None
+        identity = getattr(state, "source_identity", None)
+        assert source is not None and identity is not None
         source.capabilities.require(TaskSourceCapability.ARTIFACT_LINKS)
-        await source.attach_artifact(state.source_identity, url)
+        await source.attach_artifact(identity, url)
 
     def supports(self, state: WorkItemState, capability: TaskSourceCapability) -> bool:
         source = self.registry.resolve(state, required=False)
