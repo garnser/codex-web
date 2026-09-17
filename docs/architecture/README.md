@@ -1,6 +1,6 @@
 # Codex-Web Architecture
 
-This directory contains architecture decisions, constraints, and cross-cutting policies for codex-web.
+This directory contains architecture decisions, constraints, cross-cutting policies, and the canonical development roadmap for codex-web.
 
 ## Required reading for LLM, Executive, and autonomous features
 
@@ -27,6 +27,25 @@ The central rule is:
 
 The policy defines deterministic-first execution, event-driven activation, minimum-sufficient context, retrieval-before-prompt, bounded multi-agent reasoning, checkpointing, token/cost accounting, loop protection, progressive retrieval, and outcome-efficiency requirements.
 
+### [Autonomous Company Roadmap](autonomy-roadmap.md)
+
+**Status: Canonical development roadmap.**
+
+The roadmap defines the intended progression and checkable subtasks for:
+
+1. Executive-contract foundation.
+2. Work-item lifecycle and execution contracts.
+3. Dependency-aware work graphs.
+4. First-class goals.
+5. Role authority and permission contracts.
+6. Event-driven autonomous orchestration.
+7. First-class decision objects.
+8. Executive management through goals, decisions, and work graphs.
+9. Durable organizational/company memory.
+10. Controlled production autonomy, budgets, approvals, auditability, and progressive rollout.
+
+Developers and agents should identify the milestone/subtask their work advances and respect the dependency order. Roadmap checkboxes should only be marked complete after the implementation is merged, required tests are green, and documentation is current.
+
 Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
 
 ## Other architecture documents
@@ -36,15 +55,16 @@ Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
 
 ## Design review expectation
 
-Any design or PR that adds or materially increases LLM activity should explicitly verify compliance with the Token Efficiency Ruleset. In particular, reviewers should be able to identify:
+Any design or PR that adds or materially increases LLM activity should explicitly verify compliance with the Token Efficiency Ruleset and identify the relevant roadmap milestone. In particular, reviewers should be able to identify:
 
-1. Why reasoning is needed instead of deterministic application logic.
-2. What event/request activates the reasoning path.
-3. What context is retrieved and how it is bounded.
-4. Which roles/models participate and why.
-5. Maximum calls, rounds, retries, handoffs, token usage, and cost.
-6. How usage is attributed to a goal/work item/decision and measured against an outcome.
-7. How repeated successful reasoning can become reusable knowledge or deterministic handling.
+1. Which roadmap milestone/subtask the change advances.
+2. Why reasoning is needed instead of deterministic application logic.
+3. What event/request activates the reasoning path.
+4. What context is retrieved and how it is bounded.
+5. Which roles/models participate and why.
+6. Maximum calls, rounds, retries, handoffs, token usage, and cost.
+7. How usage is attributed to a goal/work item/decision and measured against an outcome.
+8. How repeated successful reasoning can become reusable knowledge or deterministic handling.
 
 The target architecture is:
 
