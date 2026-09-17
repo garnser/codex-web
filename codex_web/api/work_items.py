@@ -3,9 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
 from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.work_items import WorkItemService
+
+
+class WorkItemCommentCreate(BaseModel):
+    body: str = Field(min_length=1)
 
 
 def build_work_items_router(service: WorkItemService) -> APIRouter:
@@ -32,6 +37,10 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
     @router.get("/api/work-items/{ref:path}")
     async def get_work_item(ref: str) -> dict[str, Any]:
         return await service.get(ref)
+
+    @router.post("/api/work-items/{ref:path}/comment")
+    async def add_work_item_comment(ref: str, payload: WorkItemCommentCreate) -> dict[str, Any]:
+        return await service.comment(ref, payload.body)
 
     @router.post("/api/work-items/{ref:path}/handoff")
     async def create_handoff(ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
