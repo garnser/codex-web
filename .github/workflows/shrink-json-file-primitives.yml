@@ -18,7 +18,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
       - name: Generate shrink
         run: python tools/shrink_json_file_primitives.py
       - name: Validate focused tests
