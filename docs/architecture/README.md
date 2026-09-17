@@ -47,7 +47,8 @@ If architecture changes materially while implementing an issue, update the relev
 
 - [Canonical execution contract schema](execution-contract-schema.md) — versioned machine-readable contract derived from canonical work-item state.
 - [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
-- [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, and adapter boundary for GitLab and future authoritative task systems.
+- [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
+- [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
