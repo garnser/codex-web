@@ -35,7 +35,7 @@ class _Host:
         return None
 
 
-class TaskSourceWorkItemProjectionTests(unittest.IsolatedAsyncioTestCase):
+class TaskSourceWorkItemProjectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
@@ -62,8 +62,8 @@ class TaskSourceWorkItemProjectionTests(unittest.IsolatedAsyncioTestCase):
             labels=("owner::carl", "status::in progress", "priority::P1"),
         )
 
-    async def test_new_snapshot_creates_canonical_state_without_provider_payload(self) -> None:
-        state = await self.projector.upsert(self.source, self.snapshot(), project_id="home")
+    def test_new_snapshot_creates_canonical_state_without_provider_payload(self) -> None:
+        state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
 
         self.assertEqual(state.ref, "group/project#42")
         self.assertEqual(state.source_identity.external_id, "group/project#42")
@@ -73,7 +73,7 @@ class TaskSourceWorkItemProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
 
-    async def test_existing_canonical_ref_is_preserved_by_source_identity(self) -> None:
+    def test_existing_canonical_ref_is_preserved_by_source_identity(self) -> None:
         identity = self.snapshot().identity
         existing = WorkItemState(
             ref="canonical-work-123",
@@ -89,16 +89,16 @@ class TaskSourceWorkItemProjectionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.host.states[existing.ref] = existing
 
-        state = await self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
 
         self.assertEqual(state.ref, "canonical-work-123")
         self.assertIn("canonical-work-123", self.host.states)
         self.assertNotIn("group/project#42", self.host.states)
         self.assertEqual(state.source_identity.external_id, "group/project#42")
 
-    async def test_older_snapshot_cannot_overwrite_newer_canonical_projection(self) -> None:
+    def test_older_snapshot_cannot_overwrite_newer_canonical_projection(self) -> None:
         newer = self.snapshot(revision="2026-09-17T20:00:00Z")
-        state = await self.projector.upsert(self.source, newer, project_id="home")
+        state = self.projector.upsert(self.source, newer, project_id="home")
         newer_timestamp = state.last_gitlab_event_at
 
         older = TaskSourceSnapshot(
@@ -107,7 +107,7 @@ class TaskSourceWorkItemProjectionTests(unittest.IsolatedAsyncioTestCase):
             source_state="opened",
             labels=("owner::someone-else", "status::blocked"),
         )
-        result = await self.projector.upsert(self.source, older, project_id="home")
+        result = self.projector.upsert(self.source, older, project_id="home")
 
         self.assertEqual(result.current_owner, "carl")
         self.assertEqual(result.current_stage, "implementation_active")

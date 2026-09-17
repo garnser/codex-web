@@ -10,7 +10,13 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_task_source import GitLabTaskSource
+from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
+from codex_web.services.task_source_events import (
+    TaskSourceEventReconciliationResult,
+    TaskSourceWorkItemEventReconciler,
+)
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
+from codex_web.services.task_sources import TaskSource, TaskSourceEvent
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
@@ -23,6 +29,7 @@ class WorkItemService:
         gitlab: GitLabClient | None = None,
         state_machine: WorkItemStateMachine | None = None,
         task_source_projector: TaskSourceWorkItemProjector | None = None,
+        task_source_event_reconciler: TaskSourceWorkItemEventReconciler | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
@@ -31,20 +38,34 @@ class WorkItemService:
             host,
             self.state_machine,
         )
-        # Preserve the historical direct-call entrypoints without retaining
-        # duplicate implementations in the legacy runtime.
+        self.task_source_event_reconciler = (
+            task_source_event_reconciler
+            or TaskSourceWorkItemEventReconciler(host, self.task_source_projector)
+        )
+        self._legacy_gitlab_event_projector = getattr(
+            host,
+            "_upsert_work_item_state_from_gitlab_event",
+            None,
+        ) or getattr(
+            self.state_machine,
+            "_upsert_work_item_state_from_gitlab_event",
+            None,
+        )
+
+        # Preserve historical entrypoints while publishing canonical service
+        # behavior to remaining legacy composition seams.
         host.create_work_item_handoff = self.handoff
         host.ack_work_item_handoff = self.acknowledge
         host.update_work_item_progress = self.progress
+        host._reconcile_task_source_event = self.reconcile_task_source_event
+        # GitLabService still invokes this historical synchronous hook. Issue
+        # events now terminate at the provider-neutral TaskSource boundary;
+        # non-issue events temporarily retain the legacy projector until their
+        # artifact semantics are migrated in the next #101 slice.
+        host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
 
     def _compat(self, name: str, fallback: Any) -> Any:
-        """Resolve a composed host seam while supporting lightweight hosts.
-
-        Application composition publishes state-machine methods on the legacy
-        compatibility host. Tests and extensions historically monkeypatch those
-        names directly, so prefer the host seam when present; standalone service
-        hosts can fall back to the canonical state-machine method.
-        """
+        """Resolve a composed host seam while supporting lightweight hosts."""
         return getattr(self.host, name, fallback)
 
     async def list(
@@ -97,7 +118,7 @@ class WorkItemService:
             )
             snapshots = await source.discover(scope=group)
             for snapshot in snapshots:
-                state = await self.task_source_projector.upsert(
+                state = self.task_source_projector.upsert(
                     source,
                     snapshot,
                     project_id=project_id,
@@ -105,6 +126,88 @@ class WorkItemService:
                 synced += 1
                 seen_refs.add(state.ref)
         return {"synced": synced, "refs": len(seen_refs)}
+
+    def reconcile_task_source_event(
+        self,
+        source: TaskSource,
+        event: TaskSourceEvent,
+        *,
+        project_id: str,
+        event_cursor: str | None = None,
+    ) -> TaskSourceEventReconciliationResult:
+        """Reconcile one normalized authoritative-source event locally."""
+
+        return self.task_source_event_reconciler.reconcile(
+            source,
+            event,
+            project_id=project_id,
+            event_cursor=event_cursor,
+        )
+
+    def _append_legacy_gitlab_stale_event(self, state: Any, *, payload: dict[str, Any]) -> None:
+        append = getattr(self.state_machine, "_append_work_item_event", None)
+        make_event = getattr(self.state_machine, "_work_item_event", None)
+        if state is None or not callable(append) or not callable(make_event):
+            return
+        attrs = payload.get("object_attributes") or {}
+        append(
+            make_event(
+                state.ref,
+                "gitlab_event_stale_ignored",
+                payload={
+                    "projected_owner": None,
+                    "projected_stage": state.current_stage,
+                    "projected_status_label": state.status_label,
+                    "event_timestamp": attrs.get("updated_at") or attrs.get("closed_at"),
+                },
+            )
+        )
+
+    def _preserve_gitlab_closed_label_cleanup(self, state: Any) -> Any:
+        if state is None or getattr(state, "current_stage", None) != "closed":
+            return state
+        labels = list(getattr(state, "labels", None) or [])
+        if not any(str(label).startswith(("owner::", "status::")) for label in labels):
+            return state
+        sync = getattr(self.host, "_sync_gitlab_issue_labels_from_work_item", None)
+        if not callable(sync):
+            return state
+        projected = sync(state)
+        if projected is not None:
+            state = projected
+        save = getattr(self.state_machine, "_save_work_item_state", None)
+        if callable(save):
+            state = save(state)
+        return state
+
+    def project_gitlab_event_compat(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        """Compatibility hook used by GitLabService during incremental migration."""
+
+        source = GitLabWebhookTaskSource(
+            self.host.GITLAB_API_BASE,
+            client=self.gitlab,
+        )
+        event = source.normalize_event_sync(payload)
+        if event is None:
+            if self._legacy_gitlab_event_projector is None:
+                return None
+            return self._legacy_gitlab_event_projector(payload, project_id=project_id)
+
+        result = self.reconcile_task_source_event(
+            source,
+            event,
+            project_id=project_id,
+        )
+        state = result.state
+        if result.decision.outcome.value == "stale":
+            self._append_legacy_gitlab_stale_event(state, payload=payload)
+        state = self._preserve_gitlab_closed_label_cleanup(state)
+        return state
 
     async def sync_from_gitlab(self) -> dict[str, Any]:
         try:

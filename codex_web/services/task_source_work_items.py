@@ -17,7 +17,8 @@ class TaskSourceWorkItemProjector:
 
     Provider adapters own transport and native-to-canonical mapping. This class
     owns the shared persistence/update semantics so canonical WorkItemState code
-    never needs provider payload objects.
+    never needs provider payload objects. Projection is deliberately synchronous:
+    it performs only deterministic in-process state transformation/persistence.
     """
 
     def __init__(self, host: Any, state_machine: WorkItemStateMachine) -> None:
@@ -66,7 +67,7 @@ class TaskSourceWorkItemProjector:
                 return candidate
         return None
 
-    async def upsert(
+    def upsert(
         self,
         source: TaskSource,
         snapshot: TaskSourceSnapshot,
