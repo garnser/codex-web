@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from codex_web.models import ProjectCreate
+from codex_web.models import ProjectCreate, TaskSourceConfiguration
 from codex_web.services.projects import (
     InvalidProjectPathError,
     LastProjectDeletionError,
@@ -26,6 +26,23 @@ def build_projects_router(service: ProjectService) -> APIRouter:
             return service.create(payload).model_dump()
         except InvalidProjectPathError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.put("/api/projects/{project_id}/task-source")
+    async def set_project_task_source(
+        project_id: str,
+        payload: TaskSourceConfiguration,
+    ) -> dict[str, Any]:
+        try:
+            return service.set_authoritative_task_source(project_id, payload).model_dump()
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.delete("/api/projects/{project_id}/task-source")
+    async def clear_project_task_source(project_id: str) -> dict[str, Any]:
+        try:
+            return service.set_authoritative_task_source(project_id, None).model_dump()
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.delete("/api/projects/{project_id}")
     async def delete_project(project_id: str) -> dict[str, bool]:
