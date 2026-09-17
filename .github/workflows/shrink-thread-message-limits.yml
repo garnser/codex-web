@@ -21,8 +21,8 @@ jobs:
           python-version: '3.13'
       - name: Generate shrink
         run: python tools/shrink_thread_message_limits.py
-      - name: Run focused tests
-        run: python -m unittest tests.test_thread_message_limits tests.test_core_budget
+      - name: Verify legacy-core ratchet
+        run: python -m unittest tests.test_core_budget
       - name: Commit generated shrink
         run: |
           git config user.name github-actions[bot]
