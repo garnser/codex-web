@@ -195,7 +195,9 @@ test('source configuration writes the canonical project task-source endpoint', a
   await page.locator('#work-items-button').click();
 
   const dialog = page.locator('#work-items-dialog');
-  await dialog.locator('.work-source-scope').fill('team/new-scope');
+  const scope = dialog.locator('.work-source-scope');
+  await expect(scope).toHaveValue('team/project-a');
+  await scope.fill('team/new-scope');
   await dialog.locator('.work-source-save').click();
 
   await expect.poll(() => saved).not.toBeNull();
