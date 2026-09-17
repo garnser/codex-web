@@ -7,6 +7,23 @@ This feature integrates the SaaS-oriented Executive layer derived from OpenExecu
 - **One frontend**: an **Executive** button is added to the existing codex-web top bar. It opens a drawer inside the same UI; there is no separate executive application or route.
 - **One server entrypoint**: continue to start codex-web with `server.py`. The root module is now a thin composition/compatibility layer; the existing backend implementation lives in `codex_web/application.py` and the Executive feature is attached as a router/service module.
 
+## Architecture and token-efficiency policy
+
+Executive and Board development must comply with the repository-level [`AGENTS.md`](AGENTS.md) instructions and the [`Token Efficiency Ruleset`](docs/architecture/token-efficiency-rules.md).
+
+In particular:
+
+- Deterministic application logic must handle facts, state, permissions, routing, budgets, approvals, and known transitions before any model is invoked.
+- Executive agents must be event- or request-driven; idle Executive functionality must not generate background LLM traffic.
+- Only materially relevant executive/specialist roles should be invoked.
+- Multi-role work should default to bounded parallel analysis plus a single synthesis rather than open-ended agent conversation.
+- Executive prompts should use minimum sufficient retrieved context rather than full project/company history.
+- Model calls must eventually be attributable to goals/work items/decisions and bounded by token, cost, call, retry, and handoff policies as those primitives are implemented.
+
+The core rule is:
+
+> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Results become reusable knowledge.**
+
 ## Run
 
 Install the updated requirements and start the normal server entrypoint:
