@@ -4,7 +4,13 @@ import time
 from typing import Any
 
 from codex_web.integrations.gitlab_client import GitLabClient
-from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
+from codex_web.models import (
+    TaskSourceIdentity,
+    WorkItemAckCreate,
+    WorkItemHandoffCreate,
+    WorkItemProgressUpdate,
+    WorkItemState,
+)
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
@@ -35,6 +41,38 @@ class WorkItemService:
         hosts can fall back to the canonical state-machine method.
         """
         return getattr(self.host, name, fallback)
+
+    def _persist_gitlab_source_identity(
+        self,
+        state: Any,
+        issue: dict[str, Any],
+    ) -> Any:
+        """Backfill provider-neutral source provenance without changing ref.
+
+        This is the discovery-path migration seam while GitLab is incrementally
+        moved behind ``TaskSource``. Lightweight compatibility doubles are left
+        untouched; production projections return ``WorkItemState``.
+        """
+
+        if not isinstance(state, WorkItemState):
+            return state
+
+        external_id = str(issue.get("id") or issue.get("iid") or state.ref).strip()
+        revision_raw = issue.get("updated_at")
+        revision = str(revision_raw).strip() if revision_raw is not None else None
+        external_url_raw = issue.get("web_url") or state.url
+        external_url = str(external_url_raw).strip() if external_url_raw else None
+
+        state.source_identity = TaskSourceIdentity(
+            source_type="gitlab",
+            source_instance=str(self.host.GITLAB_API_BASE).rstrip("/"),
+            external_id=external_id,
+            external_url=external_url,
+            revision=revision or None,
+        )
+
+        save = getattr(self.state_machine, "_save_work_item_state", None)
+        return save(state) if callable(save) else state
 
     async def list(
         self,
@@ -89,6 +127,7 @@ class WorkItemService:
                 )
                 if not state:
                     continue
+                state = self._persist_gitlab_source_identity(state, issue)
                 synced += 1
                 seen_refs.add(state.ref)
         return {"synced": synced, "refs": len(seen_refs)}
