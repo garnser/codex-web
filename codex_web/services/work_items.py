@@ -45,7 +45,11 @@ class WorkItemService:
         self._legacy_gitlab_event_projector = getattr(
             host,
             "_upsert_work_item_state_from_gitlab_event",
-            self.state_machine._upsert_work_item_state_from_gitlab_event,
+            None,
+        ) or getattr(
+            self.state_machine,
+            "_upsert_work_item_state_from_gitlab_event",
+            None,
         )
 
         # Preserve historical entrypoints while publishing canonical service
@@ -154,6 +158,8 @@ class WorkItemService:
         )
         event = source.normalize_event_sync(payload)
         if event is None:
+            if self._legacy_gitlab_event_projector is None:
+                return None
             return self._legacy_gitlab_event_projector(payload, project_id=project_id)
         return self.reconcile_task_source_event(
             source,
