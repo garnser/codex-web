@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 from codex_web.models import BotBinding, ThreadRunSettings
 
@@ -13,6 +13,10 @@ class ThreadExecutionSettingsService:
 
     def __init__(self, host: Any) -> None:
         self.host = host
+
+    def _override(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
+        candidate = getattr(self.host, name, None)
+        return candidate if callable(candidate) else fallback
 
     def remember(
         self,
@@ -35,13 +39,13 @@ class ThreadExecutionSettingsService:
         if reasoning_effort is not None:
             current.reasoning_effort = reasoning_effort or None
         if developer_instructions is not None:
-            current.developer_instructions = self.host._base_developer_instructions(
-                thread_id,
-                developer_instructions,
-            )
+            current.developer_instructions = self._override(
+                "_base_developer_instructions",
+                self.base_developer_instructions,
+            )(thread_id, developer_instructions)
         all_settings[thread_id] = current
         self.host._save_thread_settings(all_settings)
-        self.host._sync_bot_binding_settings(thread_id, current)
+        self._override("_sync_bot_binding_settings", self.sync_bot_binding_settings)(thread_id, current)
         return current
 
     def get(self, thread_id: str | None) -> ThreadRunSettings:
@@ -73,12 +77,15 @@ class ThreadExecutionSettingsService:
         return max(bindings, key=lambda item: item.updated_at) if bindings else None
 
     def work_item_contract_instructions(self, thread_id: str | None) -> str | None:
-        binding = self.host._work_item_contract_binding(thread_id)
+        binding = self._override(
+            "_work_item_contract_binding",
+            self.work_item_contract_binding,
+        )(thread_id)
         if not binding or not self.host._gitlab_routing_enabled_for_project(binding.project_id):
             return None
         role = (self.host._binding_report_name(binding) or self.host._binding_prefix(binding) or "Agent").strip()
         role_key = role.lower()
-        base_url = self.host._codex_web_internal_base_url()
+        base_url = self._override("_codex_web_internal_base_url", self.internal_base_url)()
         lines = [
             "codex-web structured work-item contract. These rules are mandatory for GitLab-driven work.",
             f"Use `{base_url}/api/work-items` as the system of record for ownership, handoff, and progress.",
@@ -121,11 +128,11 @@ class ThreadExecutionSettingsService:
         return "\n".join(lines)
 
     def effective_developer_instructions(self, thread_id: str | None, instructions: str | None) -> str | None:
-        parts = [
-            part.strip()
-            for part in (instructions, self.host._work_item_contract_instructions(thread_id))
-            if part and part.strip()
-        ]
+        contract = self._override(
+            "_work_item_contract_instructions",
+            self.work_item_contract_instructions,
+        )(thread_id)
+        parts = [part.strip() for part in (instructions, contract) if part and part.strip()]
         if not parts:
             return None
         return "\n\n".join(parts)
@@ -134,7 +141,10 @@ class ThreadExecutionSettingsService:
         if not instructions or not instructions.strip():
             return None
         normalized = instructions.strip()
-        contract = self.host._work_item_contract_instructions(thread_id)
+        contract = self._override(
+            "_work_item_contract_instructions",
+            self.work_item_contract_instructions,
+        )(thread_id)
         if contract:
             while contract in normalized:
                 normalized = normalized.replace(contract, "").strip()
