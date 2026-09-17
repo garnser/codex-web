@@ -230,57 +230,10 @@ def _work_item_handoff_timeout_seconds() -> float:
     return max(60.0, seconds)
 
 
-def _default_thread_message_limit() -> int:
-    try:
-        limit = int(
-            os.environ.get("CODEX_WEB_THREAD_MESSAGE_LIMIT")
-            or os.environ.get("CODEX_WEB_THREAD_TURN_LIMIT")
-            or DEFAULT_THREAD_MESSAGE_LIMIT
-        )
-    except ValueError:
-        return DEFAULT_THREAD_MESSAGE_LIMIT
-    return max(1, min(limit, 1000))
 
 
-def _coerce_thread_message_limit(limit: int | None) -> int:
-    if limit is None:
-        return _default_thread_message_limit()
-    return max(1, min(int(limit), 1000))
 
 
-def _trim_thread_messages(response: dict[str, Any], limit: int) -> dict[str, Any]:
-    if limit <= 0:
-        return response
-    thread = response.get("thread") if isinstance(response.get("thread"), dict) else response
-    turns = thread.get("turns") if isinstance(thread, dict) else None
-    if not isinstance(turns, list):
-        return response
-    total_items = sum(len(turn.get("items") or []) for turn in turns if isinstance(turn, dict))
-    if total_items <= limit:
-        thread["messageLimit"] = limit
-        return response
-    remaining = limit
-    kept_turns: list[dict[str, Any]] = []
-    for turn in reversed(turns):
-        if not isinstance(turn, dict):
-            continue
-        items = turn.get("items") or []
-        if not isinstance(items, list):
-            items = []
-        if remaining <= 0:
-            break
-        if len(items) <= remaining:
-            kept_turns.append(turn)
-            remaining -= len(items)
-            continue
-        kept_turn = {**turn, "items": items[-remaining:]}
-        kept_turns.append(kept_turn)
-        remaining = 0
-    thread["turns"] = list(reversed(kept_turns))
-    thread["messagesTruncated"] = True
-    thread["messagesOmitted"] = total_items - limit
-    thread["messageLimit"] = limit
-    return response
 
 
 def _work_item_progress_sla_seconds() -> float:
