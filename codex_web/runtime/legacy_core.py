@@ -926,190 +926,22 @@ def _append_bot_event(event: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
-def _normalize_agent_channel_mapping(raw_channels: dict[str, Any]) -> dict[str, list[str]]:
-    channels: dict[str, list[str]] = {}
-    for agent, values in raw_channels.items():
-        normalized_agent = str(agent).strip().lower()
-        if not normalized_agent:
-            continue
-        if isinstance(values, str):
-            candidate_channels = [values]
-        else:
-            candidate_channels = list(values or [])
-        normalized_channels = sorted(
-            {
-                str(channel).strip()
-                for channel in candidate_channels
-                if str(channel).strip()
-            }
-        )
-        if normalized_channels:
-            channels[normalized_agent] = normalized_channels
-    return channels
 
 
-def _normalize_agent_channel_presence_project_settings(
-    settings: AgentChannelPresenceProjectSettings,
-) -> AgentChannelPresenceProjectSettings:
-    return AgentChannelPresenceProjectSettings(
-        agent_channels=_normalize_agent_channel_mapping(settings.agent_channels),
-    )
 
 
-def _normalize_agent_channel_presence_settings(
-    settings: AgentChannelPresenceSettings,
-) -> AgentChannelPresenceSettings:
-    projects: dict[str, AgentChannelPresenceProjectSettings] = {}
-    for project_id, project_settings in settings.projects.items():
-        normalized_project_id = str(project_id).strip()
-        if not normalized_project_id:
-            continue
-        projects[normalized_project_id] = _normalize_agent_channel_presence_project_settings(project_settings)
-    return AgentChannelPresenceSettings(projects=projects)
 
 
-def _migrate_agent_channel_presence_settings(raw: Any) -> AgentChannelPresenceSettings:
-    if not isinstance(raw, dict):
-        return AgentChannelPresenceSettings()
-    raw_projects = raw.get("projects")
-    projects: dict[str, AgentChannelPresenceProjectSettings] = {}
-    if isinstance(raw_projects, dict):
-        for project_id, project_settings in raw_projects.items():
-            if not isinstance(project_settings, dict):
-                continue
-            channels = project_settings.get("agent_channels")
-            if not isinstance(channels, dict):
-                continue
-            normalized_project_id = str(project_id).strip()
-            if not normalized_project_id:
-                continue
-            projects[normalized_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
-    else:
-        legacy_project_id = str(raw.get("default_project_id") or "home").strip() or "home"
-        channels = raw.get("agent_channels")
-        if isinstance(channels, dict):
-            projects[legacy_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
-    return AgentChannelPresenceSettings(projects=projects)
 
 
-def _legacy_agent_channel_presence_from_gitlab_file() -> AgentChannelPresenceSettings:
-    if not GITLAB_ROUTING_FILE.exists():
-        return AgentChannelPresenceSettings()
-    with contextlib.suppress(Exception):
-        raw = json.loads(GITLAB_ROUTING_FILE.read_text())
-        if isinstance(raw, dict) and "projects" in raw:
-            projects: dict[str, AgentChannelPresenceProjectSettings] = {}
-            for project_id, project_settings in (raw.get("projects") or {}).items():
-                if not isinstance(project_settings, dict):
-                    continue
-                channels = project_settings.get("agent_channels")
-                if not isinstance(channels, dict):
-                    continue
-                normalized_project_id = str(project_id).strip()
-                if not normalized_project_id:
-                    continue
-                projects[normalized_project_id] = AgentChannelPresenceProjectSettings(agent_channels=channels)
-            if projects:
-                return AgentChannelPresenceSettings(projects=projects)
-        return _migrate_agent_channel_presence_settings(raw)
-    return AgentChannelPresenceSettings()
 
 
-def _normalize_string_list(values: list[Any] | tuple[Any, ...] | set[Any] | None) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values or []:
-        normalized = str(value).strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        result.append(normalized)
-    return result
 
 
-def _normalize_gitlab_project_settings(settings: GitLabProjectRoutingSettings) -> GitLabProjectRoutingSettings:
-    channel_ids = _normalize_string_list(settings.channel_ids)
-    project_paths = sorted({path.strip().lower() for path in settings.project_paths if path and path.strip()})
-    route_agents = sorted({str(agent).strip().lower() for agent in settings.route_agents if str(agent).strip()})
-    fallbacks: dict[str, list[str]] = {}
-    for kind, agents in settings.fallback_agents_by_kind.items():
-        normalized_kind = str(kind).strip().lower()
-        normalized_agents = sorted({str(agent).strip().lower() for agent in agents if str(agent).strip()})
-        if normalized_kind and normalized_agents:
-            fallbacks[normalized_kind] = normalized_agents
-    return GitLabProjectRoutingSettings(
-        enabled=settings.enabled,
-        channel_ids=channel_ids,
-        route_agents=route_agents,
-        project_paths=project_paths,
-        fallback_agents_by_kind=fallbacks,
-    )
 
 
-def _normalize_gitlab_routing_settings(settings: GitLabRoutingSettings) -> GitLabRoutingSettings:
-    ignored = sorted({kind.strip().lower() for kind in settings.ignored_event_kinds if kind and kind.strip()})
-    projects: dict[str, GitLabProjectRoutingSettings] = {}
-    for project_id, project_settings in settings.projects.items():
-        normalized_project_id = str(project_id).strip()
-        if not normalized_project_id:
-            continue
-        projects[normalized_project_id] = _normalize_gitlab_project_settings(project_settings)
-    return GitLabRoutingSettings(
-        enabled=settings.enabled,
-        ignored_event_kinds=ignored or ["note", "wiki_page"],
-        projects=projects,
-    )
 
 
-def _migrate_gitlab_routing_settings(raw: Any) -> GitLabRoutingSettings:
-    if not isinstance(raw, dict):
-        return GitLabRoutingSettings()
-    if "projects" in raw:
-        projects: dict[str, GitLabProjectRoutingSettings] = {}
-        for project_id, project_settings in (raw.get("projects") or {}).items():
-            if not isinstance(project_settings, dict):
-                continue
-            normalized_project_id = str(project_id).strip()
-            if not normalized_project_id:
-                continue
-            migrated = dict(project_settings)
-            legacy_channel_id = str(migrated.get("channel_id") or "").strip()
-            if legacy_channel_id and not migrated.get("channel_ids"):
-                migrated["channel_ids"] = [legacy_channel_id]
-            projects[normalized_project_id] = GitLabProjectRoutingSettings.model_validate(migrated)
-        return GitLabRoutingSettings(
-            enabled=bool(raw.get("enabled", True)),
-            ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
-            projects=projects or GitLabRoutingSettings().projects,
-        )
-    project_settings_by_id: dict[str, GitLabProjectRoutingSettings] = {}
-    for mapping in raw.get("project_mappings") or []:
-        if not isinstance(mapping, dict):
-            continue
-        project_id = str(mapping.get("project_id") or "").strip()
-        namespace = str(mapping.get("namespace") or "").strip().lower()
-        if not project_id:
-            continue
-        project_settings = project_settings_by_id.setdefault(project_id, GitLabProjectRoutingSettings())
-        if namespace:
-            project_settings.project_paths.append(namespace)
-    if not project_settings_by_id:
-        legacy_project_id = str(raw.get("default_project_id") or "home").strip() or "home"
-        project_settings_by_id[legacy_project_id] = GitLabProjectRoutingSettings()
-    fallback_agents = raw.get("fallback_agents_by_kind")
-    enabled = bool(raw.get("enabled", True))
-    for project_settings in project_settings_by_id.values():
-        project_settings.enabled = enabled
-        channel_id = str(raw.get("channel_id") or "").strip()
-        if channel_id:
-            project_settings.channel_ids = [channel_id]
-        if isinstance(fallback_agents, dict):
-            project_settings.fallback_agents_by_kind = fallback_agents
-    return GitLabRoutingSettings(
-        enabled=enabled,
-        ignored_event_kinds=raw.get("ignored_event_kinds") or ["note", "wiki_page"],
-        projects=project_settings_by_id,
-    )
 
 
 def _parse_agent_channel_overrides() -> dict[str, list[str]]:
