@@ -35,6 +35,28 @@ class GitLabClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].url.params["labels"], "owner::dana")
         self.assertIn("/groups/group%2Fsubgroup/issues", str(seen[0].url))
 
+    async def test_issue_note_uses_encoded_project_and_json_body(self) -> None:
+        seen: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json={"id": 9, "body": "Canonical update"})
+
+        client = GitLabClient(transport=httpx.MockTransport(handler))
+        note = await client.create_project_issue_note(
+            "https://gitlab.example/api/v4",
+            "group/project",
+            42,
+            token="secret",
+            body="Canonical update",
+        )
+
+        self.assertEqual(note["id"], 9)
+        self.assertEqual(seen[0].method, "POST")
+        self.assertIn("/projects/group%2Fproject/issues/42/notes", str(seen[0].url))
+        self.assertEqual(seen[0].headers["PRIVATE-TOKEN"], "secret")
+        self.assertEqual(seen[0].read(), b'{"body":"Canonical update"}')
+
     async def test_http_error_becomes_contextual_runtime_error(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(503, json={"message": "unavailable"})

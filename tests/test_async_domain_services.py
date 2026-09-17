@@ -71,18 +71,25 @@ class _TaskSourceProjector:
         return SimpleNamespace(ref=snapshot.identity.external_id)
 
 
+class _TaskSourceWriteback:
+    def __init__(self) -> None:
+        self.registry = SimpleNamespace()
+        self.syncs = 0
+        self.sync_thread_id: int | None = None
+
+    async def sync(self, state):
+        self.syncs += 1
+        self.sync_thread_id = threading.get_ident()
+        return state
+
+
 class _StateMachine:
     def __init__(self) -> None:
         self.progress_thread_id: int | None = None
-        self.label_syncs = 0
 
     def _structured_progress(self, ref, payload):
         self.progress_thread_id = threading.get_ident()
         return SimpleNamespace(ref=ref)
-
-    async def sync_gitlab_issue_labels(self, state):
-        self.label_syncs += 1
-        return state
 
     def _work_item_state_public(self, state):
         return {"ref": state.ref}
@@ -159,10 +166,16 @@ class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projector.projection_thread_id, event_loop_thread)
         self.assertEqual(host.hub.events[-1]["type"], "work-item.sync")
 
-    async def test_progress_uses_extracted_state_machine_and_async_label_projection(self) -> None:
+    async def test_progress_uses_extracted_state_machine_and_async_task_source_writeback(self) -> None:
         host = _WorkItemHost()
         state_machine = _StateMachine()
-        service = WorkItemService(host, _GitLabClient(), state_machine)
+        writeback = _TaskSourceWriteback()
+        service = WorkItemService(
+            host,
+            _GitLabClient(),
+            state_machine,
+            task_source_writeback=writeback,
+        )
         event_loop_thread = threading.get_ident()
         payload = SimpleNamespace(actor="dana")
 
@@ -170,7 +183,8 @@ class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["item"]["ref"], "group/project#1")
         self.assertEqual(state_machine.progress_thread_id, event_loop_thread)
-        self.assertEqual(state_machine.label_syncs, 1)
+        self.assertEqual(writeback.syncs, 1)
+        self.assertEqual(writeback.sync_thread_id, event_loop_thread)
         self.assertIn("work-item-progress", host.scheduled)
         self.assertEqual(host.hub.events[-1]["type"], "work-item.progress")
 

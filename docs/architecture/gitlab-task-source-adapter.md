@@ -25,11 +25,20 @@ The API-backed adapter declares:
 - read;
 - event normalization;
 - owner write-back;
-- state write-back.
+- state write-back;
+- issue comments.
 
-Comments and artifact-link mutation are not declared until the GitLab transport provides explicit implementations. Calls to unsupported capabilities fail closed through `UnsupportedTaskSourceCapability`.
+Artifact-link mutation is not declared until GitLab has an explicit transport contract for that operation. Calls to unsupported capabilities fail closed through `UnsupportedTaskSourceCapability`.
 
 `GitLabWebhookTaskSource` is a deliberately narrower adapter instance that declares only event normalization. Signed webhook payload normalization does not require a GitLab API token. This keeps credential availability separate from adapter semantics instead of requiring a fake credential for webhook-only operation.
+
+## Runtime resolution and write-back
+
+Canonical work-item mutation no longer needs to call a GitLab label-sync method. `TaskSourceRegistry` resolves the authoritative adapter from persisted `TaskSourceIdentity`, and `TaskSourceWritebackService` applies only capabilities declared by that adapter.
+
+Normal owner/stage synchronization is best-effort so temporary provider credential or availability problems do not prevent canonical progress. Explicit provider operations such as adding a comment are strict: the source must resolve and declare the requested capability.
+
+The runtime also contains `ReferenceTaskSource`, a transport-free in-memory adapter implementing the complete `TaskSource` surface. Shared conformance and write-back tests run against it so provider portability is executable architecture rather than a GitLab-shaped test double.
 
 ## Discovery and read
 
@@ -67,6 +76,10 @@ State write-back projects the inverse operational labels:
 
 Writing a nonterminal state to a closed GitLab issue issues an explicit reopen event.
 
+## Comments
+
+`TaskSource.add_comment(...)` is the canonical comment boundary. The GitLab adapter maps it to an issue-note POST through `GitLabClient`; canonical work-item services do not construct GitLab note endpoints or provider payloads.
+
 ## Event normalization and reconciliation
 
 Issue webhook payloads normalize into `TaskSourceEvent` plus a provider-neutral snapshot. Event normalization itself does not mutate work-item state.
@@ -79,6 +92,6 @@ Non-issue GitLab events remain outside the issue-task adapter boundary until the
 
 ## Conformance
 
-Representative discovery, read, event, and projection outputs must pass the shared `TaskSourceConformanceSuite`. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate.
+Representative discovery, read, event, projection, and mutation behavior must pass the shared `TaskSourceConformanceSuite` and provider-neutral runtime tests. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate; `ReferenceTaskSource` separately proves that the runtime is not dependent on GitLab semantics.
 
 Runtime migration must preserve stale-event handling, accepted-handoff protection, canonical transition authority, and existing GitLab-backed work references while callers are switched from special-case GitLab helpers to this adapter.
