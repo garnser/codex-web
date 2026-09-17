@@ -16,7 +16,7 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 - A partially implemented feature remains unchecked. Use an issue/PR reference next to the item when useful.
 - Do not mark an entire milestone complete until its completion criteria are satisfied.
 - If implementation reveals that a milestone needs to change, update this document in the same PR that changes the architectural direction.
-- Token efficiency, authority boundaries, auditability, and deterministic-first behavior are cross-cutting requirements for every milestone.
+- Token efficiency, authority boundaries, auditability, deterministic-first behavior, and user/operator documentation are cross-cutting requirements for every milestone.
 
 ## Dependency order
 
@@ -40,6 +40,8 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 9. Company Memory
         ↓
 10. Controlled Autonomy
+        ↓
+11. Product Documentation + Adoption
 ```
 
 ---
@@ -524,6 +526,122 @@ The canonical role/authority system should be operable through codex-web rather 
 
 ---
 
+## Milestone 11 — Build End-to-End Product Documentation and Adoption Guidance
+
+**Objective:** make codex-web understandable and adoptable from the first installation through advanced autonomous operation, with task-oriented documentation, realistic worked examples, expected outcomes, screenshots, and operator guidance that stays synchronized with the product.
+
+Documentation is a product surface, not an afterthought. This milestone consolidates the full learning journey, while every earlier milestone must document new user-visible concepts as they are introduced.
+
+### Documentation foundation
+
+- [ ] Define a documentation information architecture for `Getting Started`, `Core Concepts`, `Tutorials`, `How-to Guides`, `Administration`, `Operations`, `Reference`, `Troubleshooting`, and `Advanced Adoption`.
+- [ ] Create a documentation landing page that routes readers by persona and maturity level: evaluator, individual developer, team lead, administrator, platform/operator, and autonomous-operations owner.
+- [ ] Define a consistent documentation template covering objective, prerequisites, steps, expected result, verification, common failure modes, rollback/recovery, and related concepts.
+- [ ] Establish versioned documentation so users can identify which codex-web release a guide or screenshot applies to.
+- [ ] Add documentation ownership/review rules so user-visible changes cannot be considered complete while their affected documentation is stale.
+- [ ] Add link/reference validation and documentation quality checks to CI where practical.
+
+### Getting started and first success
+
+- [ ] Document prerequisites, supported deployment modes, installation, configuration, startup, health verification, upgrading, and clean rollback/uninstall paths.
+- [ ] Create a guided first-run path from a fresh install to a working codex-web instance.
+- [ ] Document how to connect/configure the first repository/project/workspace.
+- [ ] Document how to configure the first authoritative task source, beginning with GitLab and expanding as task-source adapters are added.
+- [ ] Create a `first successful task` tutorial showing task discovery, ownership, execution, validation/handoff, completion, and where the resulting state is visible.
+- [ ] Explain exactly what the user should expect at every step, including which state changes, messages, artifacts, approvals, and UI indicators should appear.
+- [ ] Provide a minimal safe starter configuration that demonstrates the product without granting unnecessary authority.
+
+### Core product mental model
+
+- [ ] Explain the relationship between projects/workspaces, authoritative task sources, canonical work items, queues, threads, agents, execution roles, and execution contracts.
+- [ ] Explain lifecycle stages, ownership, handoffs, validation, blockers, reconciliation, and split-brain behavior with concrete examples.
+- [ ] Explain Goals, work graphs/dependencies, Decisions, Executive roles, company memory, authority contracts, approvals, budgets, and autonomy levels as those features become available.
+- [ ] Explain the difference between advisory Executive reasoning and operational execution authority.
+- [ ] Explain canonical state versus external-provider state and how synchronization/reconciliation is expected to behave.
+- [ ] Include diagrams showing the normal flow from `goal/request -> authoritative task -> canonical work item -> execution -> validation -> result`.
+
+### Progressive adoption paths
+
+- [ ] Create an `Adoption Level 1` guide for supervised/manual execution with minimal automation.
+- [ ] Create an `Adoption Level 2` guide for structured roles, contracts, handoffs, and validation.
+- [ ] Create an `Adoption Level 3` guide for goals, work graphs, task-source integration, and cross-agent coordination.
+- [ ] Create an `Adoption Level 4` guide for Executive functions, decisions, company memory, and policy-managed delegation.
+- [ ] Create an `Adoption Level 5` guide for bounded autonomous operation with budgets, approvals, monitoring, rollback, and incident response.
+- [ ] For each adoption level, document prerequisites, recommended configuration, new capabilities, risks, expected behavior, observable success signals, and criteria for moving to the next level.
+- [ ] Include guidance for adopting codex-web incrementally in an existing engineering organization without requiring an all-at-once workflow migration.
+
+### Worked examples and recipes
+
+- [ ] Add a complete small-feature implementation example from incoming task through merged/closed result.
+- [ ] Add a bug-fix example including reproduction, implementation, validation failure, handback, correction, and completion.
+- [ ] Add a blocked-work example showing exact blocker ownership and recovery.
+- [ ] Add a multi-agent handoff example showing implementation, validation, CI/runtime intervention, and release lanes.
+- [ ] Add a Goal-to-work decomposition example showing generated work, dependencies, progress, and completion criteria.
+- [ ] Add an Executive/Decision example showing advisory analysis, approval, canonical work creation, and execution traceability.
+- [ ] Add a policy-management example showing how to change a role's permissions/constraints safely through the UI, preview impact, publish, verify effective policy, and roll back.
+- [ ] Add an authoritative-task-source example showing GitLab configuration and, once available, how the same workflow maps to a second provider.
+- [ ] Add autonomy examples showing observe/recommend/prepare/execute-style modes and what changes between them.
+- [ ] Include examples of both successful runs and intentionally failing scenarios so operators know what healthy refusal, blocking, escalation, and approval behavior look like.
+
+### Screenshot and visual documentation
+
+- [ ] Capture annotated screenshots for installation/onboarding UI, project setup, task-source setup, work-item state, queues/threads, Executive UI, role/policy management, goals, decisions, approvals, autonomy controls, audit/history, and troubleshooting views as those surfaces become available.
+- [ ] Keep screenshots close to the instructions they illustrate rather than collecting them in a separate gallery.
+- [ ] Add callouts/arrows/captions only where they materially clarify what the user should click or inspect.
+- [ ] Ensure screenshots use sanitized demo data with no secrets, real credentials, customer data, or private repository content.
+- [ ] Define a repeatable screenshot-refresh workflow so UI changes can update documentation imagery efficiently.
+- [ ] Prefer reproducible demo fixtures/sample projects so screenshots and examples can be regenerated consistently.
+- [ ] Treat materially stale screenshots as documentation defects.
+
+### Administration and product management
+
+- [ ] Document how to create, inspect, change, version, publish, supersede, and roll back roles, contracts, rulesets, permissions, constraints, scopes, budgets, and approvals.
+- [ ] Document inheritance and override precedence with examples showing the effective resolved policy for global, project, role, agent, and work-item contexts.
+- [ ] Document how to create and manage Goals, success criteria, budgets, role/project bindings, and goal revisions.
+- [ ] Document task-source configuration, provider capabilities, synchronization status, authority conflicts, and migration between supported providers where applicable.
+- [ ] Document how to manage autonomy levels, pauses, kill switches, approval queues, budgets, maintenance windows, and reliability thresholds.
+- [ ] Document audit and explainability views, including how to answer `why did this agent act?`, `which policy allowed it?`, `what changed?`, and `what did it cost?`.
+- [ ] Provide recommended baseline configurations for individual development, small teams, larger engineering organizations, and production autonomous operation.
+
+### Operations, troubleshooting, and recovery
+
+- [ ] Create an operator runbook for startup, shutdown, upgrades, backups, restore, migrations, log collection, health checks, and dependency verification.
+- [ ] Document common failure modes for task sources, agent bindings, queues, model providers, sandboxes, approval flows, CI/runtime integrations, and state reconciliation.
+- [ ] Provide symptom-to-diagnosis troubleshooting guides with exact commands/UI checks and expected healthy output where appropriate.
+- [ ] Document how to recover from stale state, failed handoffs, split brain, duplicate events, stuck work, failed validation, unavailable task providers, and model/provider outages.
+- [ ] Document safe pause, rollback, and incident-containment procedures for autonomous operation.
+- [ ] Document backup/restore and disaster-recovery expectations for canonical state and policy/configuration data.
+
+### Reference and deep technical adoption
+
+- [ ] Maintain configuration/environment-variable reference documentation with defaults, valid values, security implications, and examples.
+- [ ] Maintain API documentation for supported public/administrative APIs with example requests and responses.
+- [ ] Document canonical schemas for work items, execution contracts, roles/authority, goals, decisions, task-source adapters, events, and audit records.
+- [ ] Document extension points and adapter contracts for task sources, model providers, external events, and future integrations.
+- [ ] Provide architecture/developer documentation explaining major services, state boundaries, data ownership, execution flow, and invariants.
+- [ ] Cross-link user-facing concepts to deeper architecture documentation without requiring normal users to understand implementation details.
+
+### Documentation verification and product integration
+
+- [ ] Add a maintained demo/sample environment or fixture set used by tutorials and screenshots.
+- [ ] Test critical getting-started/tutorial flows against supported releases so documented steps produce the documented outcomes.
+- [ ] Add documentation checks to release readiness for changed user-visible workflows, configuration, policy semantics, or APIs.
+- [ ] Add contextual `Help`/documentation links from complex UI surfaces where practical.
+- [ ] Collect documentation gaps discovered during support, onboarding, incidents, and product adoption as trackable work.
+- [ ] Define a process for deprecating or redirecting obsolete documentation when product behavior changes.
+
+### Completion criteria
+
+- A new user can go from zero installation knowledge to a verified first successful codex-web task by following the documentation without undocumented setup steps.
+- A team can progress from supervised operation to advanced bounded autonomy through explicit adoption guides with prerequisites and expected outcomes.
+- Every major UI workflow has task-oriented documentation and current screenshots where visual guidance materially improves understanding.
+- Worked examples cover normal success, handoffs, validation failures, blocking, approvals, policy changes, and autonomous-operation scenarios.
+- Administrators can operate roles, goals, task sources, permissions, constraints, budgets, approvals, and autonomy controls using documented procedures rather than source-code knowledge.
+- Operators have documented troubleshooting, recovery, backup/restore, upgrade, and incident-containment procedures.
+- Documentation is version-aware, release-reviewed, testable where practical, and treated as part of product quality rather than optional prose.
+
+---
+
 # Epic grouping
 
 ## Epic 1 — Reliable Execution Foundation
@@ -556,6 +674,12 @@ Milestone 10.
 
 **Goal:** progressively enable autonomous execution with budgets, approvals, auditability, explainability, rollback, and measurable reliability.
 
+## Epic 6 — Product Adoption and Operability
+
+Milestone 11.
+
+**Goal:** make codex-web approachable from first installation through deep production adoption with progressive learning paths, worked examples, current screenshots, administration guidance, and reliable operator documentation.
+
 # Cross-cutting requirements
 
 Every milestone must preserve the following invariants:
@@ -569,3 +693,4 @@ Every milestone must preserve the following invariants:
 7. **Canonical execution path:** Executive/autonomous features must use existing/canonical work, queue, sandbox, approval, and execution mechanisms rather than bypassing them.
 8. **Provider-neutral task authority:** GitLab, GitHub, Jira, Linear, or any future authoritative task system must integrate through a provider adapter; provider-specific concepts must not leak into canonical work-item or execution semantics.
 9. **Single policy truth:** UI, API, agents, and runtime enforcement must consume the same versioned contract/policy objects; UI configuration must never become a shadow policy path.
+10. **Documentation is part of done:** user-visible behavior, configuration, policy semantics, APIs, and operator workflows must be documented alongside implementation, with screenshots/examples updated when they materially affect understanding.
