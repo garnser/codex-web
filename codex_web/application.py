@@ -117,6 +117,9 @@ turn_service = TurnService(core)
 # Preserve the small historical function surface still used by direct
 # `import server` callers while the actual implementations live in services.
 # These are aliases to extracted owners, not duplicate legacy implementations.
+core._default_thread_message_limit = thread_service.default_message_limit
+core._coerce_thread_message_limit = thread_service.coerce_message_limit
+core._trim_thread_messages = thread_service.trim_messages
 core.read_thread = thread_service.read
 core.resume_thread = turn_service.resume
 core.start_turn = turn_service.start
