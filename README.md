@@ -12,18 +12,17 @@ It supports:
 - Scaffolded Slack and Telegram inbound bot webhooks that map external
   conversations to Codex threads.
 
-## Architecture policy and roadmap
+## Architecture policy and delivery tracking
 
-Developers and agents working on LLM, Executive, autonomous, orchestration, memory, routing, or agent-execution features must read:
+Developers and agents working on LLM, Executive, autonomous, orchestration, memory, routing, integration, or agent-execution features must read:
 
 - [Agent and Developer Instructions](AGENTS.md)
 - [Architecture documentation](docs/architecture/README.md)
-- [Autonomous Company Roadmap](docs/architecture/autonomy-roadmap.md)
 - [Token Efficiency Ruleset](docs/architecture/token-efficiency-rules.md)
 
-The roadmap is the canonical milestone sequence for improving codex-web toward bounded autonomous company operation. The token-efficiency rules are architecture policy, not optional optimization advice. The core principle is:
+Roadmap status and completion are tracked in GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests rather than a repository markdown checklist. Tracking bootstrap issue `#126` defines the M1–M12 structure, including the M3 Platform, Identity & Safe Execution Foundation. The token-efficiency rules are architecture policy, not optional optimization advice. The core principle is:
 
-> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Results become reusable knowledge.**
+> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Actions produce evidence. Results become reusable knowledge.**
 
 Run it locally:
 
