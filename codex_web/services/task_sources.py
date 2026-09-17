@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from codex_web.models import TaskSourceIdentity
+
 
 class TaskSourceCapability(StrEnum):
     """Capabilities an authoritative task-source adapter may expose."""
@@ -35,26 +37,6 @@ class UnsupportedTaskSourceCapability(RuntimeError):
     def __init__(self, capability: TaskSourceCapability) -> None:
         self.capability = capability
         super().__init__(f"Task source does not support capability: {capability.value}")
-
-
-@dataclass(frozen=True, slots=True)
-class TaskSourceIdentity:
-    """Provider-neutral external identity/provenance for one authoritative item."""
-
-    source_type: str
-    source_instance: str
-    external_id: str
-    external_url: str | None = None
-    revision: str | None = None
-    event_cursor: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.source_type.strip():
-            raise ValueError("source_type must not be empty")
-        if not self.source_instance.strip():
-            raise ValueError("source_instance must not be empty")
-        if not self.external_id.strip():
-            raise ValueError("external_id must not be empty")
 
 
 @dataclass(frozen=True, slots=True)
