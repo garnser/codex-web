@@ -4,7 +4,7 @@ from typing import Final
 
 from fastapi import HTTPException
 
-from codex_web.models import WorkItemStage
+from codex_web.models import WorkItemStage, WorkItemState
 
 
 WORK_ITEM_STAGES: Final[tuple[WorkItemStage, ...]] = (
@@ -100,3 +100,30 @@ class WorkItemTransitionPolicy:
                 "allowed_targets": sorted(self.allowed_targets(current_stage)),
             },
         )
+
+
+class WorkItemTransitionService:
+    """Single authority for mutating the canonical work-item stage.
+
+    Manual/API transitions must satisfy ``WorkItemTransitionPolicy``. External
+    projections such as GitLab close/reopen reconciliation intentionally use the
+    same mutation primitive while bypassing the manual transition matrix. This
+    keeps the mutation point singular without pretending upstream state changes
+    are operator/API requests.
+    """
+
+    def __init__(self, policy: WorkItemTransitionPolicy | None = None) -> None:
+        self.policy = policy or WorkItemTransitionPolicy()
+
+    def transition(
+        self,
+        state: WorkItemState,
+        target_stage: WorkItemStage,
+        *,
+        source: str,
+        external_projection: bool = False,
+    ) -> WorkItemState:
+        if not external_projection:
+            self.policy.validate(state.current_stage, target_stage, source=source)
+        state.current_stage = target_stage
+        return state

@@ -20,6 +20,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
     WorkItemState,
 )
+from codex_web.services.work_item_transitions import WorkItemTransitionService
 
 
 class WorkItemStateMachine:
@@ -28,6 +29,7 @@ class WorkItemStateMachine:
     def __init__(self, host: Any, gitlab: GitLabClient | None = None) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
+        self.transitions = WorkItemTransitionService()
 
     def _append_work_item_event(self, event: WorkItemEvent) -> None:
         self.host.DATA_DIR.mkdir(exist_ok=True)
@@ -52,6 +54,15 @@ class WorkItemStateMachine:
         normalized = (stage or '').strip().lower()
         allowed = {'implementation_active', 'ready_for_validation', 'validation_running', 'failed_with_action_owner', 'ready_to_close', 'closed'}
         return normalized if normalized in allowed else fallback
+
+    def _transition_work_item_stage(self, state: WorkItemState, target_stage: str, *, source: str, external_projection: bool=False) -> WorkItemState:
+        normalized = self._normalize_work_item_stage(target_stage, fallback=state.current_stage)
+        return self.transitions.transition(
+            state,
+            normalized,
+            source=source,
+            external_projection=external_projection,
+        )
 
     def _normalize_artifact_state(self, artifact_state: str | None, *, fallback: str='branch') -> str:
         normalized = (artifact_state or '').strip().lower()
@@ -371,10 +382,10 @@ class WorkItemStateMachine:
         incoming_stage = self._normalize_work_item_stage(current_stage, fallback=state.current_stage) if current_stage is not None else None
         preserve_accepted_recipient = self._preserve_accepted_handoff_recipient(state, incoming_owner=current_owner, incoming_stage=incoming_stage, incoming_status_label=status_label)
         accepted_recipient = self._coerce_owner(state.handoff.to_agent) if state.handoff and state.handoff.status == 'accepted' else None
+        if current_stage is not None:
+            state = self._transition_work_item_stage(state, incoming_stage, source=event_type)
         if current_owner is not None and (not preserve_accepted_recipient):
             state.current_owner = self._coerce_owner(current_owner)
-        if current_stage is not None:
-            state.current_stage = incoming_stage
         if next_action is not None:
             state.next_action = next_action or None
         if next_owner_present:
@@ -476,7 +487,7 @@ class WorkItemStateMachine:
             state.labels = labels
             state.status_label = projected_status_label
             state.release_gate = priority == 'priority::P1' or state.release_gate
-            state.current_stage = projected_stage
+            state = self._transition_work_item_stage(state, projected_stage, source='gitlab-issue-projection', external_projection=True)
             if projected_owner and (not state.handoff or state.handoff.status != 'pending'):
                 state.current_owner = projected_owner
             state.updated_at = now
@@ -554,7 +565,7 @@ class WorkItemStateMachine:
             state.labels = labels
             state.status_label = projected_status_label
             state.release_gate = priority == 'priority::P1' or state.release_gate
-            state.current_stage = projected_stage
+            state = self._transition_work_item_stage(state, projected_stage, source='gitlab-event-projection', external_projection=True)
             if projected_owner:
                 if not state.handoff or state.handoff.status != 'pending':
                     state.current_owner = projected_owner
@@ -608,12 +619,14 @@ class WorkItemStateMachine:
         handoff_error = self._validate_handoff_edge(state, from_agent=from_agent, to_agent=to_agent, artifact_state=artifact_state)
         if handoff_error:
             raise HTTPException(status_code=409, detail=handoff_error)
+        previous_stage = state.current_stage
+        target_stage = self._normalize_work_item_stage(payload.current_stage, fallback='ready_for_validation' if self._coerce_owner(payload.to_agent) == self._coerce_owner(state.validation_owner) else state.current_stage)
+        state = self._transition_work_item_stage(state, target_stage, source='work-item-handoff')
         if state.handoff:
             archive_status = 'superseded' if state.handoff.status == 'pending' else state.handoff.status
             state = self._archive_active_handoff(state, now=now, status=archive_status, reason_code='new_canonical_handoff')
-        state.handoff = WorkItemHandoff(from_agent=from_agent, to_agent=to_agent, reason=payload.reason, expected_action=payload.expected_action, requested_at=now, status='pending', artifact_state=artifact_state, stage=state.current_stage)
+        state.handoff = WorkItemHandoff(from_agent=from_agent, to_agent=to_agent, reason=payload.reason, expected_action=payload.expected_action, requested_at=now, status='pending', artifact_state=artifact_state, stage=previous_stage)
         state.current_owner = self._coerce_owner(payload.current_owner) or self._coerce_owner(payload.from_agent)
-        state.current_stage = self._normalize_work_item_stage(payload.current_stage, fallback='ready_for_validation' if self._coerce_owner(payload.to_agent) == self._coerce_owner(state.validation_owner) else state.current_stage)
         state.next_owner = self._coerce_owner(payload.to_agent)
         state.next_action = payload.next_action or payload.expected_action or state.next_action
         state.blocker = payload.blocker or None
@@ -635,20 +648,31 @@ class WorkItemStateMachine:
         state = self._ensure_work_item_lane_defaults(state)
         actor = self._coerce_owner(payload.actor) or payload.actor
         now = time.time()
-        if not state.handoff:
+        handoff = state.handoff
+        if not handoff:
             current_owner = self._coerce_owner(state.current_owner)
             next_owner = self._coerce_owner(state.next_owner)
             if payload.accepted and current_owner and (current_owner != actor) and (next_owner == actor) and (state.current_stage in {'ready_for_validation', 'validation_running', 'ready_to_close'}):
-                state.handoff = WorkItemHandoff(from_agent=current_owner, to_agent=actor, reason='Inferred from canonical validation/release lane state.', expected_action=state.next_action, requested_at=state.last_meaningful_update_at or now, acknowledged_at=now, status='accepted', artifact_state=state.artifact_state, stage=state.current_stage)
+                handoff = WorkItemHandoff(from_agent=current_owner, to_agent=actor, reason='Inferred from canonical validation/release lane state.', expected_action=state.next_action, requested_at=state.last_meaningful_update_at or now, acknowledged_at=now, status='accepted', artifact_state=state.artifact_state, stage=state.current_stage)
             else:
                 raise HTTPException(status_code=409, detail='No pending handoff for work item')
-        if actor != state.handoff.to_agent:
+        if actor != handoff.to_agent:
             raise HTTPException(status_code=409, detail='Ack actor does not match handoff recipient')
-        artifact_state = self._normalize_artifact_state(payload.artifact_state or state.handoff.artifact_state or state.artifact_state, fallback=self._infer_artifact_state_from_state(state))
+        artifact_state = self._normalize_artifact_state(payload.artifact_state or handoff.artifact_state or state.artifact_state, fallback=self._infer_artifact_state_from_state(state))
         if payload.accepted:
-            handoff_error = self._validate_handoff_edge(state, from_agent=state.handoff.from_agent, to_agent=actor, artifact_state=artifact_state)
+            handoff_error = self._validate_handoff_edge(state, from_agent=handoff.from_agent, to_agent=actor, artifact_state=artifact_state)
             if handoff_error:
                 raise HTTPException(status_code=409, detail=handoff_error)
+        target_stage = self._normalize_work_item_stage(
+            payload.current_stage,
+            fallback=(
+                'validation_running'
+                if payload.accepted and state.current_stage == 'ready_for_validation'
+                else ('failed_with_action_owner' if (not payload.accepted and payload.blocker) else ('implementation_active' if not payload.accepted else state.current_stage))
+            ),
+        )
+        state = self._transition_work_item_stage(state, target_stage, source='work-item-ack')
+        state.handoff = handoff
         state.handoff.acknowledged_at = now
         state.handoff.status = 'accepted' if payload.accepted else 'rejected'
         state.handoff.artifact_state = artifact_state
@@ -663,12 +687,10 @@ class WorkItemStateMachine:
             state.current_owner = actor
             state.next_owner = actor
             state.next_action = payload.next_action or state.handoff.expected_action or state.next_action
-            state.current_stage = self._normalize_work_item_stage(payload.current_stage, fallback='validation_running' if state.current_stage == 'ready_for_validation' else state.current_stage)
         else:
             state.current_owner = state.handoff.from_agent
             state.next_owner = state.handoff.from_agent
             state.next_action = payload.next_action or state.next_action
-            state.current_stage = self._normalize_work_item_stage(payload.current_stage, fallback='failed_with_action_owner' if state.blocker else 'implementation_active')
         if payload.next_owner is not None:
             state.next_owner = self._coerce_owner(payload.next_owner)
         state = self._record_handoff_history(state, state.handoff, status=state.handoff.status, acknowledged_at=now)
@@ -769,6 +791,7 @@ def install_work_item_state_machine(
     host._work_item_event = machine._work_item_event
     host._work_item_state_public = machine._work_item_state_public
     host._normalize_work_item_stage = machine._normalize_work_item_stage
+    host._transition_work_item_stage = machine._transition_work_item_stage
     host._normalize_artifact_state = machine._normalize_artifact_state
     host._normalize_blocking_findings = machine._normalize_blocking_findings
     host._ensure_work_item_lane_defaults = machine._ensure_work_item_lane_defaults
