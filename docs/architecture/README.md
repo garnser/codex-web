@@ -31,7 +31,7 @@ The policy defines deterministic-first execution, event-driven activation, minim
 
 ## Delivery tracking
 
-Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#169`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M12.
+Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#170`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M12.
 
 Milestone dependency order is:
 
@@ -48,9 +48,28 @@ Milestone dependency order is:
 11. M11 — Controlled Production Autonomy
 12. M12 — Product Documentation + Adoption
 
-M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
+M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, **versioned database-backed operational definitions**, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
 
-M7 adds deterministic time/scheduling, autonomous replay/evaluation, and a canonical human-attention queue on top of the event-driven orchestration boundary. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew, audit integrity, and distributed failover where enabled.
+### Definitions are data; engines remain code
+
+Mutable operational/domain definitions that need to be shared by runtime, APIs, UI, workers, audit, and replay should be represented as canonical versioned data rather than hard-coded Python catalogs. Issue `#170` owns this Definition Registry foundation and starts with the role/execution-contract catalog currently encoded in `codex_web/execution_contracts.py`.
+
+Examples of data-oriented definitions include role contracts, expected work, refusal rules, required artifacts, handoff targets, failure conditions, role-selection metadata, workflow/ruleset templates, model-class catalogs, and other operational catalogs intended to evolve without a source edit/deploy.
+
+This does **not** mean moving arbitrary program logic into the database. Schemas, Pydantic/domain validators, parsers/interpreters, protocol/schema versions, migration code, cryptographic verification, hard fail-closed constraints, and structural security invariants remain code-owned. Stored definitions must validate against those code-owned contracts and cannot weaken them.
+
+Keep the following concepts distinct even when their administration surfaces are adjacent:
+
+- **Definition** — reusable versioned domain/runtime description, resolved by stable ID/revision.
+- **Configuration** — effective runtime/deployment values and feature rollout state.
+- **Policy** — authorization, constraints, approvals, and permitted behavior.
+- **Secret/key reference** — protected credential or cryptographic material boundary.
+- **Entitlement/quota** — hosted/service capability and consumption limits.
+- **Canonical state** — current operational/domain facts.
+
+Executions, decisions, evaluations, and audits should retain the exact definition IDs/revisions that influenced them so historical behavior remains reproducible after definitions change.
+
+M7 adds deterministic time/scheduling, autonomous replay/evaluation, and a canonical human-attention queue on top of the event-driven orchestration boundary. Replay/evaluation must pin the exact Definition Registry revisions used historically. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew (including definition/engine compatibility), audit integrity, and distributed failover where enabled.
 
 Use GitHub tracking as follows:
 
@@ -88,8 +107,10 @@ Any design or PR that adds or materially increases LLM activity should explicitl
 
 Any design or PR that adds external side effects should additionally identify the acting identity/tenant, target canonical resource, provider/action capability, credential reference, idempotency/reconciliation behavior, required authority, trust-boundary treatment, execution-worker boundary where applicable, and resulting evidence/verification.
 
+Any design or PR that adds or materially changes mutable operational definitions should identify whether the content belongs in the Definition Registry (#170), the definition schema/version used, migration/bootstrap behavior, exact revision attribution, UI/admin impact, and why any remaining hard-coded value must stay code-owned.
+
 Any design or PR that adds executable worker behavior, durable sensitive data, an extension point, or production upgrade behavior should additionally identify the applicable worker trust/fencing model (#166), encryption/key policy (#167), extension lifecycle/compatibility model (#169), and upgrade/version-skew contract (#168) instead of introducing a local substitute.
 
 The target architecture is:
 
-> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
+> **Code implements engines and invariants. Definitions describe reusable behavior. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
