@@ -3253,14 +3253,6 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
 
 
 
-def _watchdog_dispatch_cooldown_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_WATCHDOG_DISPATCH_COOLDOWN_SECONDS") or "120")
-    except ValueError:
-        return 120.0
-    return max(5.0, seconds)
-
-
 def _watchdog_recent_activity_grace_seconds() -> float:
     try:
         seconds = float(os.environ.get("CODEX_WEB_WATCHDOG_RECENT_ACTIVITY_GRACE_SECONDS") or "300")
@@ -3299,18 +3291,6 @@ def _native_recovery_schedule_cooldown_seconds() -> float:
     except ValueError:
         return 30.0
     return max(1.0, seconds)
-
-
-def _watchdog_dispatch_allowed(key: str, *, now: float | None = None) -> bool:
-    ts = now or time.time()
-    last = WATCHDOG_DISPATCH_TIMES.get(key)
-    if last is None:
-        return True
-    return (ts - last) >= _watchdog_dispatch_cooldown_seconds()
-
-
-def _record_watchdog_dispatch(key: str, *, now: float | None = None) -> None:
-    WATCHDOG_DISPATCH_TIMES[key] = now or time.time()
 
 
 def _thread_recently_active(thread_id: str | None) -> bool:
