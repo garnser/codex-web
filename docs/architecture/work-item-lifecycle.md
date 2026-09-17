@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 2 architecture contract.** This document defines the canonical work-item stages already used by codex-web, the legal manual/API transition policy, and semantic terminal outcomes.
+**Milestone 2 architecture contract.** This document defines the canonical work-item stages already used by codex-web, the legal manual/API transition policy, semantic terminal outcomes, and the structured execution lifecycle carried by each work item.
 
 The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed` as illustrative lifecycle concepts. Codex-web already has a richer canonical model, so Milestone 2 strengthens that model rather than introducing a parallel set of states.
 
@@ -17,7 +17,7 @@ The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`
 | `ready_to_close` | Validation is complete and the lane is ready for successful closure. |
 | `closed` | Persisted terminal lifecycle lane. The semantic result is carried by `terminal_outcome`. |
 
-`failed_with_action_owner` is intentionally resumable because the current state model does not yet persist a `previous_stage`; after resolving the blocker it may return to the appropriate non-terminal lane.
+`failed_with_action_owner` is intentionally resumable because the canonical stage describes ownership/lane state, while execution retry/failure metadata is persisted separately inside the same `WorkItemState`.
 
 ## Terminal outcomes
 
@@ -29,9 +29,51 @@ The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`
 
 This keeps terminal failure distinct from a recoverable blocker while preserving `closed` for persisted-state and API compatibility.
 
-An external task source may close an item without exposing enough provider-neutral information to classify the reason. Such external closure leaves `terminal_outcome` unset rather than guessing. A future task-source adapter may classify the provider-specific close reason when its contract exposes that information.
+An external task source may close an item without exposing enough provider-neutral information to classify the reason. Such external closure leaves `terminal_outcome` unset rather than guessing. A task-source adapter may classify the provider-specific close reason only when its contract exposes that information.
 
 If an authoritative external source reopens a closed work item, the stale terminal outcome is cleared as the item returns to an active lifecycle.
+
+## Execution lifecycle metadata
+
+`WorkItemState.execution` is the canonical structured execution record for retry, deadline, failure, checkpoint, and model-usage state. It is embedded in the work item rather than persisted as a parallel task record.
+
+The lifecycle contains:
+
+- retry attempt, maximum-attempt policy, backoff, and last-retry timestamp;
+- optional timeout and absolute deadline;
+- structured failure category/code/message/retryability and recording time;
+- latest compact checkpoint plus a bounded checkpoint history;
+- cumulative model-call, token, estimated-cost, goal, and decision attribution.
+
+All fields have safe defaults. Loading an older persisted `WorkItemState` with no `execution` member therefore produces the default lifecycle in memory and preserves the old item without a destructive migration.
+
+Failure categories and codes are validated as non-empty data rather than a closed enum. Engines can add deterministic classifications without changing the persisted schema, while consumers still avoid inferring failure semantics from prose.
+
+## Checkpoints and resume
+
+A checkpoint is intentionally compact. It records the objective, current state, important decisions, blockers, changed files, next actions, and an audit actor/source/reason. Only the latest checkpoint is required for dispatch/resume; bounded history remains available for inspection.
+
+The execution-contract builder copies only the latest checkpoint id and summary into the dispatch contract. Long-running work can therefore resume from canonical state without replaying the full event or conversation history.
+
+Checkpoint history is capped at 20 entries per work item. The append-only work-item event log remains the audit trail and is queryable through the work-item history API.
+
+## Audit and accounting
+
+Execution lifecycle changes append attributed `WorkItemEvent` entries with top-level `actor`, `source`, and `reason` metadata. Existing events remain valid because these audit fields are optional.
+
+Usage records are additive and accumulate calls, input/output/reasoning tokens, and estimated cost on the canonical work item. Optional `goal_id` and `decision_id` fields are attribution hooks for later strategy/decision milestones; they do not create those entities in Milestone 2.
+
+The API surfaces:
+
+```text
+GET   /api/work-items/{ref}/history
+GET   /api/work-items/{ref}/execution
+PATCH /api/work-items/{ref}/execution
+POST  /api/work-items/{ref}/checkpoints
+POST  /api/work-items/{ref}/usage
+```
+
+Static-suffix routes are registered before the catch-all work-item route so provider refs containing slashes remain addressable.
 
 ## Manual/API transition matrix
 
@@ -74,7 +116,7 @@ closed
   -> closed
 ```
 
-Manual callers still cannot skip implementation directly into validation-running or ready-to-close, and cannot resurrect a closed lane. Closure is permitted from active lanes because completion, cancellation, and terminal failure are now distinct deterministic outcomes.
+Manual callers still cannot skip implementation directly into validation-running or ready-to-close, and cannot resurrect a closed lane. Closure is permitted from active lanes because completion, cancellation, and terminal failure are distinct deterministic outcomes.
 
 ## Authoritative transition mechanism
 
@@ -90,13 +132,13 @@ The following paths use that primitive:
 
 New work-item construction may set its initial stage directly because initialization is not a transition from an existing canonical stage. After creation, stage mutation belongs to the transition service.
 
-`WorkItemService` does not duplicate lifecycle validation at the API boundary. This keeps lifecycle policy and mutation inside the canonical state machine, including callers that invoke the state machine without passing through the HTTP service layer.
+`WorkItemExecutionLifecycleService` does not mutate canonical stage or ownership. It only updates the `execution` member of the same canonical `WorkItemState`, persists through the state machine's existing save seam, and appends attributed execution events.
 
 ## External task-source projection
 
 External authoritative task-source reconciliation is deliberately distinct from the manual/API transition policy. An upstream item can close or reopen and codex-web must reconcile that authoritative event, subject to stale-event and handoff-preservation checks.
 
-The current GitLab integration calls the same `WorkItemTransitionService` mutation primitive with `external_projection=True`. This permits upstream close/reopen reconciliation without weakening the manual transition matrix or creating a second mutation implementation. Milestone 2 will move this projection behind the provider-neutral task-source contract.
+Provider adapters normalize into the provider-neutral TaskSource contract and use the same `WorkItemTransitionService` mutation primitive with `external_projection=True`. This permits upstream close/reopen reconciliation without weakening the manual transition matrix or creating a second mutation implementation.
 
 ## Failure contract
 
@@ -117,8 +159,8 @@ An illegal manual transition fails closed with HTTP `409` and structured detail.
 }
 ```
 
-This is deterministic and requires no model reasoning.
+Execution lifecycle validation also fails deterministically. A retry attempt above `max_attempts`, lowering a retry policy below the current attempt, conflicting failure-clear/update requests, or an incomplete failure classification returns a structured `409`/`422` instead of relying on model interpretation.
 
 ## Tests
 
-The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Transition-service tests cover completed, cancelled, failed, unclassified external closure, and external reopen behavior. State-machine tests prove terminal outcomes persist through canonical progress updates and that direct callers cannot bypass transition policy by avoiding `WorkItemService`.
+The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Transition-service tests cover completed, cancelled, failed, unclassified external closure, and external reopen behavior. Execution-lifecycle tests cover safe migration defaults, retry-policy enforcement, structured failure/deadline state, compact checkpoints, attributed history, and additive usage accounting.
