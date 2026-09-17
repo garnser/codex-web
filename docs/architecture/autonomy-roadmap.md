@@ -228,7 +228,7 @@ GitLab is the current authoritative external task source, but canonical codex-we
 
 ## Milestone 5 — Implement Role Authority and Permission Contracts
 
-**Objective:** make autonomy bounded by explicit, testable authority rather than implicit trust in agent prompts.
+**Objective:** make autonomy bounded by explicit, testable, UI-manageable authority and agentic contracts rather than implicit trust in prompts or hard-coded role behavior.
 
 ### Subtasks
 
@@ -252,17 +252,40 @@ GitLab is the current authoritative external task source, but canonical codex-we
 - [ ] Validate authority before every external or state-changing action.
 - [ ] Add explicit denial reasons.
 - [ ] Record policy decisions in the audit trail.
-- [ ] Build an admin UI for role/authority configuration.
 - [ ] Add tests proving agents cannot exceed repository scope.
 - [ ] Add tests proving agents cannot exceed environment scope.
 - [ ] Add tests proving agents cannot exceed financial/token limits.
 - [ ] Add tests proving approval requirements cannot be bypassed.
+
+### Contract, policy, goal, and role management UI
+
+The canonical role/authority system should be operable through codex-web rather than requiring source-code edits for normal policy changes. The UI must edit the same structured configuration consumed by runtime enforcement; it must not create a second UI-only policy model.
+
+- [ ] Treat role definitions, agentic contract rulesets, constraints, permissions, scopes, budgets, approval requirements, and role bindings as versioned structured configuration.
+- [ ] Build an administration UI to create, edit, clone, disable/deprecate, and inspect roles and agentic contracts.
+- [ ] Allow role rulesets/instructions, expected work, prohibited actions, required artifacts, failure conditions, and handoff policies to be managed through the UI.
+- [ ] Allow permissions, repository/resource/environment scopes, autonomy/risk limits, approval policies, token/model limits, and monetary limits to be managed through the UI.
+- [ ] Allow canonical Goals and their constraints, success criteria, budgets, approvals, and role/project bindings to be created and managed through the UI without duplicating the Milestone 4 Goal model.
+- [ ] Support configuration inheritance and overrides across global, workspace/project, role, and agent scopes with a deterministic precedence model.
+- [ ] Show the effective resolved contract/policy for a selected role, agent, project, or work item, including where each inherited rule originated.
+- [ ] Add validation that rejects contradictory permissions, invalid scopes, impossible handoff rules, missing required fields, or authority combinations that would fail closed at runtime.
+- [ ] Add a pre-publish impact view showing which agents, projects, active work items, and autonomous behaviors would be affected by a policy change.
+- [ ] Support draft, validate, publish, supersede, and rollback lifecycle for contract/policy versions.
+- [ ] Require configured approvals for sensitive authority expansions, production scopes, budget increases, or autonomy-level increases before publication.
+- [ ] Record immutable/auditable before-and-after diffs, actor, timestamp, approval evidence, and change reason for every published policy revision.
+- [ ] Allow safe import/export of versioned contract/ruleset configuration for review, backup, and environment promotion.
+- [ ] Add tests proving UI/API edits compile to the same canonical runtime contract and enforcement behavior.
+- [ ] Add tests for inheritance/override precedence, invalid policy rejection, approval-gated publication, rollback, and effective-policy rendering.
 
 ### Completion criteria
 
 - No agent action relies solely on prompt instructions for authorization.
 - Every privileged action can explain which authority contract allowed or denied it.
 - Sensitive actions fail closed when authority is missing or ambiguous.
+- Normal role, ruleset, permission, goal, constraint, scope, and budget changes can be managed through the UI without code changes or deployment.
+- UI/API configuration and runtime enforcement use one canonical versioned policy/contract model with no shadow configuration path.
+- Administrators can inspect the effective policy for any agent/work item and trace each rule to its source scope/version.
+- Policy changes are validated, impact-visible, auditable, approval-gated where required, and reversible.
 
 ---
 
@@ -513,7 +536,7 @@ Milestones 1–3.
 
 Milestones 4–5.
 
-**Goal:** give codex-web first-class goals plus explicit authority and policy boundaries.
+**Goal:** give codex-web first-class goals plus explicit authority and policy boundaries that are safely manageable through canonical APIs/UI.
 
 ## Epic 3 — Autonomous Organization
 
@@ -545,3 +568,4 @@ Every milestone must preserve the following invariants:
 6. **Canonical state:** goals, work, decisions, authority, approvals, and budgets live in structured application state.
 7. **Canonical execution path:** Executive/autonomous features must use existing/canonical work, queue, sandbox, approval, and execution mechanisms rather than bypassing them.
 8. **Provider-neutral task authority:** GitLab, GitHub, Jira, Linear, or any future authoritative task system must integrate through a provider adapter; provider-specific concepts must not leak into canonical work-item or execution semantics.
+9. **Single policy truth:** UI, API, agents, and runtime enforcement must consume the same versioned contract/policy objects; UI configuration must never become a shadow policy path.
