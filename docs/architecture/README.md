@@ -31,13 +31,30 @@ The policy defines deterministic-first execution, event-driven activation, minim
 
 ## Delivery tracking
 
-Actionable autonomous-company work has been migrated to GitHub Issues. Issues `#97`–`#125` represent the initial migration of the former roadmap and cross-milestone UI scope. Tracking bootstrap issue `#126` defines the target GitHub Project and Milestones M1–M11.
+Actionable autonomous-company work is tracked in GitHub Issues. The current roadmap/foundation set spans issues `#97`–`#142`. Tracking bootstrap issue `#126` defines the target GitHub Project and Milestones M1–M12.
+
+Milestone dependency order is:
+
+1. M1 — Executive Contract Foundation
+2. M2 — Work Item Lifecycle + Task Sources
+3. M3 — Platform, Identity & Safe Execution Foundation
+4. M4 — Dependency-Aware Work Graphs
+5. M5 — First-Class Goals
+6. M6 — Role Authority + Permission Contracts
+7. M7 — Event-Driven Autonomous Orchestration
+8. M8 — First-Class Decisions
+9. M9 — Executive Management
+10. M10 — Organizational Memory
+11. M11 — Controlled Production Autonomy
+12. M12 — Product Documentation + Adoption
+
+M3 is intentionally foundational. Its tracked work covers human identity/tenancy, credential brokering, canonical resources, provider-neutral external actions, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
 
 Use GitHub tracking as follows:
 
 - **Milestones** define the delivery phases and dependency order.
 - **Issues** define independently completable work packages and acceptance criteria.
-- **GitHub Project** provides status, priority, risk, area, and cross-milestone views.
+- **GitHub Project** provides status, priority, risk, area, dependency, and cross-milestone views.
 - **Pull Requests** provide implementation and validation evidence linked to issues.
 - **Architecture documents** define durable technical truth and should not contain completion checklists that duplicate GitHub state.
 
@@ -52,6 +69,8 @@ If architecture changes materially while implementing an issue, update the relev
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
+Additional M3 architecture contracts should be added as their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
+
 ## Design review expectation
 
 Any design or PR that adds or materially increases LLM activity should explicitly verify compliance with the Token Efficiency Ruleset and link the GitHub issue(s) whose acceptance criteria it advances. Reviewers should be able to identify:
@@ -65,6 +84,8 @@ Any design or PR that adds or materially increases LLM activity should explicitl
 7. How usage is attributed to a Goal, Work Item, or Decision and measured against an outcome.
 8. How repeated successful reasoning can become reusable knowledge or deterministic handling.
 
+Any design or PR that adds external side effects should additionally identify the acting identity/tenant, target canonical resource, provider/action capability, credential reference, idempotency/reconciliation behavior, required authority, trust-boundary treatment, and resulting evidence/verification.
+
 The target architecture is:
 
-> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Results become reusable knowledge.**
+> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Actions produce evidence. Results become reusable knowledge.**
