@@ -48,26 +48,28 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 
 **Objective:** make Executive-to-Codex delegation deterministic, role-safe, reusable, and fully tested before building broader autonomy on top of it.
 
+**Status:** ✅ Complete. The canonical Executive-contract integration was merged in PR #47 and the required Python, frontend/Chromium, Docker, and smoke validation was green before merge. Subsequent schema/lifecycle work on `main` further hardens the same canonical path.
+
 ### Subtasks
 
-- [ ] Complete canonical-role derivation.
-- [ ] Reject conflicting or incompatible role assignments.
-- [ ] Reuse existing agent/thread bindings when appropriate.
-- [ ] Finalize pending-handoff routing.
-- [ ] Complete GitLab-driven execution-contract injection.
-- [ ] Add focused tests for canonical-role derivation.
-- [ ] Add focused tests for conflicting-role rejection.
-- [ ] Add focused tests for existing-binding reuse.
-- [ ] Add focused tests for pending-handoff routing.
-- [ ] Add focused tests for GitLab-driven contract injection.
-- [ ] Add negative-path tests for invalid role/contract combinations.
-- [ ] Run the full Python test suite.
-- [ ] Run the full JavaScript/Chromium test suite.
-- [ ] Run Docker/integration tests.
-- [ ] Fix regressions discovered by the full suite.
-- [ ] Document the Executive execution contract and lifecycle.
-- [ ] Verify backward compatibility with existing thread/queue/sandbox/approval behavior.
-- [ ] Merge the Executive-contract changes only after the required suites are green.
+- [x] Complete canonical-role derivation.
+- [x] Reject conflicting or incompatible role assignments.
+- [x] Reuse existing agent/thread bindings when appropriate.
+- [x] Finalize pending-handoff routing.
+- [x] Complete GitLab-driven execution-contract injection.
+- [x] Add focused tests for canonical-role derivation.
+- [x] Add focused tests for conflicting-role rejection.
+- [x] Add focused tests for existing-binding reuse.
+- [x] Add focused tests for pending-handoff routing.
+- [x] Add focused tests for GitLab-driven contract injection.
+- [x] Add negative-path tests for invalid role/contract combinations.
+- [x] Run the full Python test suite.
+- [x] Run the full JavaScript/Chromium test suite.
+- [x] Run Docker/integration tests.
+- [x] Fix regressions discovered by the full suite.
+- [x] Document the Executive execution contract and lifecycle.
+- [x] Verify backward compatibility with existing thread/queue/sandbox/approval behavior.
+- [x] Merge the Executive-contract changes only after the required suites are green.
 
 ### Completion criteria
 
@@ -83,24 +85,26 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 
 **Objective:** make every unit of work have a deterministic lifecycle, contract, owner, audit trail, and completion path.
 
+**Status:** 🚧 In progress. The versioned canonical execution-contract schema and the canonical manual/API work-item transition policy are merged on `main`; state-mutation centralization, richer terminal states, audit/event history, checkpoints, cost hooks, migration, and UI work remain open.
+
 ### Subtasks
 
-- [ ] Define canonical work-item states such as `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed`.
+- [x] Define canonical work-item states such as `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed`.
 - [ ] Define terminal states including `completed`, `cancelled`, and `failed`.
-- [ ] Define allowed state transitions.
-- [ ] Reject illegal state transitions.
+- [x] Define allowed state transitions.
+- [x] Reject illegal state transitions.
 - [ ] Create a single authoritative state-transition service.
 - [ ] Remove direct state mutations scattered through the codebase.
-- [ ] Define the canonical execution-contract schema.
-- [ ] Include role in the execution contract.
-- [ ] Include agent identity/binding in the execution contract.
-- [ ] Include repository and branch scope.
-- [ ] Include environment/sandbox scope.
-- [ ] Include permissions and approval requirements.
-- [ ] Include inputs and expected outputs.
-- [ ] Include explicit success criteria.
-- [ ] Version the execution-contract schema.
-- [ ] Validate execution contracts before work starts.
+- [x] Define the canonical execution-contract schema.
+- [x] Include role in the execution contract.
+- [x] Include agent identity/binding in the execution contract.
+- [x] Include repository and branch scope.
+- [x] Include environment/sandbox scope.
+- [x] Include permissions and approval requirements.
+- [x] Include inputs and expected outputs.
+- [x] Include explicit success criteria.
+- [x] Version the execution-contract schema.
+- [x] Validate execution contracts before work starts.
 - [ ] Add retry metadata and retry policy fields.
 - [ ] Add timeout/deadline support.
 - [ ] Add failure-reason classification.
@@ -108,7 +112,7 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 - [ ] Add audit metadata showing who or what changed state.
 - [ ] Add execution summaries/checkpoints for long-running work.
 - [ ] Add token/cost accounting hooks to the execution contract.
-- [ ] Add tests for every valid and invalid state transition.
+- [x] Add tests for every valid and invalid state transition.
 - [ ] Add migration support for existing work items.
 - [ ] Add UI indicators for state, owner, blockers, and execution status.
 
@@ -518,23 +522,3 @@ Every milestone must preserve the following invariants:
 5. **Bound reasoning:** cap calls, rounds, retries, handoffs, context, tokens, and cost.
 6. **Canonical state:** goals, work, decisions, authority, approvals, and budgets live in structured application state.
 7. **Canonical execution path:** Executive/autonomous features must use existing/canonical work, queue, sandbox, approval, and execution mechanisms rather than bypassing them.
-8. **Traceability:** autonomous work should be traceable from goal/request through decision/work/execution/result.
-9. **Auditability:** state-changing actions must explain who/what acted, why, and under which authority.
-10. **Learning toward determinism:** verified recurring solutions should become reusable knowledge or deterministic handlers.
-
-# Developer/Agent continuation protocol
-
-When continuing improvement work:
-
-1. Read `AGENTS.md`.
-2. Read `docs/architecture/token-efficiency-rules.md` for any LLM/agent/autonomy work.
-3. Read this roadmap and identify the earliest incomplete prerequisite relevant to the requested change.
-4. Inspect current code/tests before assuming a roadmap checkbox is incomplete or complete.
-5. Prefer completing a small coherent subtask over partially implementing several later milestones.
-6. Do not introduce a second state, work, permission, or execution system when an existing canonical primitive can be extended.
-7. Add tests with each behavioral subtask.
-8. Update documentation when contracts or architecture change.
-9. Mark a roadmap checkbox complete only after the implementation is merged and verified.
-10. When a requested change belongs to a later milestone, ensure required earlier primitives exist; otherwise implement or explicitly surface the prerequisite first.
-
-The intended end state is not an unconstrained AI company. It is a **bounded autonomous software-company operating system** in which humans define objectives and authority, deterministic software manages known state and policy, and models provide judgment only where judgment is actually required.
