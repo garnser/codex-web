@@ -106,17 +106,8 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose config
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build container image with reusable cache
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: codex-web:test
-          cache-from: type=gha,scope=codex-web-test
-          cache-to: type=gha,mode=max,scope=codex-web-test
+      - name: Build container image
+        run: docker build --tag codex-web:test .
 
       - name: Verify pinned Codex version
         run: |
