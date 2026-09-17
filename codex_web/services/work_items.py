@@ -42,7 +42,7 @@ class WorkItemService:
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
-        self.state_machine = state_machine or WorkItemStateMachine(host, self.gitlab)
+        self.state_machine = state_machine or WorkItemStateMachine(host)
         self.task_source_projector = task_source_projector or TaskSourceWorkItemProjector(
             host,
             self.state_machine,
@@ -64,14 +64,14 @@ class WorkItemService:
             self.state_machine,
         )
 
-        # Preserve historical entrypoints while publishing canonical service
-        # behavior to remaining legacy composition seams. These aliases now end
-        # at TaskSource/integration services rather than provider code in the
-        # canonical state machine.
+        # Preserve historical entrypoints at the integration edge. These aliases
+        # terminate at TaskSource/integration services, never provider code in
+        # the canonical state machine.
         host.create_work_item_handoff = self.handoff
         host.ack_work_item_handoff = self.acknowledge
         host.update_work_item_progress = self.progress
         host._reconcile_task_source_event = self.reconcile_task_source_event
+        host._upsert_work_item_state_from_gitlab_issue = self.project_gitlab_issue_compat
         host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
         host._sync_gitlab_issue_labels_from_work_item = self.schedule_task_source_writeback
 
@@ -133,10 +133,14 @@ class WorkItemService:
             states = [
                 state
                 for state in states
-                if self.state_machine._coerce_owner(state.current_owner or state.next_owner) == normalized_owner
+                if self.state_machine._coerce_owner(state.current_owner or state.next_owner)
+                == normalized_owner
             ]
         if stage:
-            normalized_stage = self.state_machine._normalize_work_item_stage(stage, fallback="")
+            normalized_stage = self.state_machine._normalize_work_item_stage(
+                stage,
+                fallback="",
+            )
             states = [state for state in states if state.current_stage == normalized_stage]
         if release_gate is not None:
             states = [state for state in states if state.release_gate is release_gate]
@@ -193,7 +197,34 @@ class WorkItemService:
             event_cursor=event_cursor,
         )
 
-    def _append_legacy_gitlab_stale_event(self, state: Any, *, payload: dict[str, Any]) -> None:
+    def project_gitlab_issue_compat(
+        self,
+        issue: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        """Legacy issue-projection name backed by normalized TaskSource state."""
+
+        source = GitLabWebhookTaskSource(
+            self.host.GITLAB_API_BASE,
+            client=self.gitlab,
+        )
+        try:
+            snapshot = source._snapshot_from_issue(issue)
+        except ValueError:
+            return None
+        return self.task_source_projector.upsert(
+            source,
+            snapshot,
+            project_id=project_id,
+        )
+
+    def _append_legacy_gitlab_stale_event(
+        self,
+        state: Any,
+        *,
+        payload: dict[str, Any],
+    ) -> None:
         append = getattr(self.state_machine, "_append_work_item_event", None)
         make_event = getattr(self.state_machine, "_work_item_event", None)
         if state is None or not callable(append) or not callable(make_event):
@@ -216,9 +247,16 @@ class WorkItemService:
         if state is None or getattr(state, "current_stage", None) != "closed":
             return state
         labels = list(getattr(state, "labels", None) or [])
-        if not any(str(label).startswith(("owner::", "status::")) for label in labels):
+        if not any(
+            str(label).startswith(("owner::", "status::")) for label in labels
+        ):
             return state
-        projected = self.schedule_task_source_writeback(state)
+        sync = getattr(
+            self.host,
+            "_sync_gitlab_issue_labels_from_work_item",
+            self.schedule_task_source_writeback,
+        )
+        projected = sync(state) if callable(sync) else state
         if projected is not None:
             state = projected
         save = getattr(self.state_machine, "_save_work_item_state", None)
@@ -276,27 +314,57 @@ class WorkItemService:
         return {"ok": True, **result}
 
     async def get(self, ref: str) -> dict[str, Any]:
-        return self.state_machine._work_item_state_public(self.state_machine._work_item_state(ref))
+        return self.state_machine._work_item_state_public(
+            self.state_machine._work_item_state(ref)
+        )
 
     async def comment(self, ref: str, body: str) -> dict[str, Any]:
         state = self.state_machine._work_item_state(ref)
         await self.task_source_writeback.add_comment(state, body)
         return {"ok": True, "ref": ref}
 
-    async def handoff(self, ref: str, payload: WorkItemHandoffCreate) -> dict[str, Any]:
-        structured_handoff = self._compat("_structured_handoff", self.state_machine._structured_handoff)
-        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+    async def handoff(
+        self,
+        ref: str,
+        payload: WorkItemHandoffCreate,
+    ) -> dict[str, Any]:
+        structured_handoff = self._compat(
+            "_structured_handoff",
+            self.state_machine._structured_handoff,
+        )
+        public_state = self._compat(
+            "_work_item_state_public",
+            self.state_machine._work_item_state_public,
+        )
         state = structured_handoff(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish({"type": "work-item.handoff", "ref": ref, "state": public})
-        self.host._schedule_structured_handoff_dispatch(state, source="work-item-handoff")
-        self.host._schedule_handoff_continuity_check(state, source="work-item-handoff-continuity")
+        await self.host.hub.publish(
+            {"type": "work-item.handoff", "ref": ref, "state": public}
+        )
+        self.host._schedule_structured_handoff_dispatch(
+            state,
+            source="work-item-handoff",
+        )
+        self.host._schedule_handoff_continuity_check(
+            state,
+            source="work-item-handoff-continuity",
+        )
         return {"ok": True, "item": public}
 
-    async def acknowledge(self, ref: str, payload: WorkItemAckCreate) -> dict[str, Any]:
-        structured_ack = self._compat("_structured_ack", self.state_machine._structured_ack)
-        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+    async def acknowledge(
+        self,
+        ref: str,
+        payload: WorkItemAckCreate,
+    ) -> dict[str, Any]:
+        structured_ack = self._compat(
+            "_structured_ack",
+            self.state_machine._structured_ack,
+        )
+        public_state = self._compat(
+            "_work_item_state_public",
+            self.state_machine._work_item_state_public,
+        )
         split_brain_findings = self._compat(
             "_work_item_split_brain_findings",
             self.state_machine._work_item_split_brain_findings,
@@ -304,19 +372,37 @@ class WorkItemService:
         state = structured_ack(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish({"type": "work-item.ack", "ref": ref, "state": public})
-        self.host._schedule_actionable_owner_dispatch(state, source="work-item-ack", actor=payload.actor)
+        await self.host.hub.publish(
+            {"type": "work-item.ack", "ref": ref, "state": public}
+        )
+        self.host._schedule_actionable_owner_dispatch(
+            state,
+            source="work-item-ack",
+            actor=payload.actor,
+        )
         self.host._schedule_actionable_owner_continuity_check(
             state,
             source="work-item-ack-continuity",
         )
         if split_brain_findings(state):
-            self.host._schedule_native_recovery_cycles(reason="work-item-ack-routing-drift")
+            self.host._schedule_native_recovery_cycles(
+                reason="work-item-ack-routing-drift"
+            )
         return {"ok": True, "item": public}
 
-    async def progress(self, ref: str, payload: WorkItemProgressUpdate) -> dict[str, Any]:
-        structured_progress = self._compat("_structured_progress", self.state_machine._structured_progress)
-        public_state = self._compat("_work_item_state_public", self.state_machine._work_item_state_public)
+    async def progress(
+        self,
+        ref: str,
+        payload: WorkItemProgressUpdate,
+    ) -> dict[str, Any]:
+        structured_progress = self._compat(
+            "_structured_progress",
+            self.state_machine._structured_progress,
+        )
+        public_state = self._compat(
+            "_work_item_state_public",
+            self.state_machine._work_item_state_public,
+        )
         split_brain_findings = self._compat(
             "_work_item_split_brain_findings",
             self.state_machine._work_item_split_brain_findings,
@@ -324,7 +410,9 @@ class WorkItemService:
         state = structured_progress(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish({"type": "work-item.progress", "ref": ref, "state": public})
+        await self.host.hub.publish(
+            {"type": "work-item.progress", "ref": ref, "state": public}
+        )
         self.host._schedule_actionable_owner_dispatch(
             state,
             source="work-item-progress",
@@ -335,5 +423,7 @@ class WorkItemService:
             source="work-item-progress-continuity",
         )
         if split_brain_findings(state):
-            self.host._schedule_native_recovery_cycles(reason="work-item-progress-routing-drift")
+            self.host._schedule_native_recovery_cycles(
+                reason="work-item-progress-routing-drift"
+            )
         return {"ok": True, "item": public}
