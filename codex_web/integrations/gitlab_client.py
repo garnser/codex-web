@@ -138,3 +138,21 @@ class GitLabClient:
             json_body=payload,
         )
         return response if isinstance(response, dict) else {}
+
+    async def create_project_issue_note(
+        self,
+        api_base: str,
+        project: str,
+        iid: int,
+        *,
+        token: str,
+        body: str,
+    ) -> dict[str, Any]:
+        response = await self.request_json(
+            "POST",
+            api_base,
+            f"projects/{quote(project, safe='')}/issues/{iid}/notes",
+            token=token,
+            json_body={"body": body},
+        )
+        return response if isinstance(response, dict) else {}
