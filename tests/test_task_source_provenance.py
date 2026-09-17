@@ -94,7 +94,7 @@ class TaskSourceProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(saved.source_identity)
         self.assertEqual(saved.source_identity.source_type, "gitlab")
         self.assertEqual(saved.source_identity.source_instance, "https://gitlab.example/api/v4")
-        self.assertEqual(saved.source_identity.external_id, "987654")
+        self.assertEqual(saved.source_identity.external_id, "group/project#42")
         self.assertEqual(
             saved.source_identity.external_url,
             "https://gitlab.example/group/project/-/issues/42",
