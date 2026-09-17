@@ -8,9 +8,10 @@ Before designing or modifying any LLM-driven, Executive, autonomous, orchestrati
 
 - [`docs/architecture/token-efficiency-rules.md`](docs/architecture/token-efficiency-rules.md)
 - [`docs/architecture/autonomy-roadmap.md`](docs/architecture/autonomy-roadmap.md)
+- [`docs/architecture/ui-adaptation-requirements.md`](docs/architecture/ui-adaptation-requirements.md) for roadmap-related user/operator UI and first-class product workspaces
 - [`EXECUTIVE.md`](EXECUTIVE.md) for the current Executive control-plane integration
 
-The token-efficiency rules are **architecture policy**, not optional optimization advice. The autonomy roadmap is the **canonical development sequence** for evolving codex-web toward bounded autonomous company operation.
+The token-efficiency rules are **architecture policy**, not optional optimization advice. The autonomy roadmap is the **canonical development sequence** for evolving codex-web toward bounded autonomous company operation. Roadmap-related UI must expose the same canonical state and enforcement paths defined by the backend architecture rather than introducing UI-only state, permissions, policy, or execution semantics.
 
 ## Roadmap-Driven Development
 
