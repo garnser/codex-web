@@ -10,7 +10,12 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_task_source import GitLabTaskSource
+from codex_web.services.task_source_events import (
+    TaskSourceEventReconciliationResult,
+    TaskSourceWorkItemEventReconciler,
+)
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
+from codex_web.services.task_sources import TaskSource, TaskSourceEvent
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
@@ -23,6 +28,7 @@ class WorkItemService:
         gitlab: GitLabClient | None = None,
         state_machine: WorkItemStateMachine | None = None,
         task_source_projector: TaskSourceWorkItemProjector | None = None,
+        task_source_event_reconciler: TaskSourceWorkItemEventReconciler | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
@@ -31,11 +37,16 @@ class WorkItemService:
             host,
             self.state_machine,
         )
-        # Preserve the historical direct-call entrypoints without retaining
-        # duplicate implementations in the legacy runtime.
+        self.task_source_event_reconciler = (
+            task_source_event_reconciler
+            or TaskSourceWorkItemEventReconciler(host, self.task_source_projector)
+        )
+        # Preserve historical entrypoints while publishing only canonical service
+        # behavior to remaining legacy composition seams.
         host.create_work_item_handoff = self.handoff
         host.ack_work_item_handoff = self.acknowledge
         host.update_work_item_progress = self.progress
+        host._reconcile_task_source_event = self.reconcile_task_source_event
 
     def _compat(self, name: str, fallback: Any) -> Any:
         """Resolve a composed host seam while supporting lightweight hosts.
@@ -105,6 +116,23 @@ class WorkItemService:
                 synced += 1
                 seen_refs.add(state.ref)
         return {"synced": synced, "refs": len(seen_refs)}
+
+    async def reconcile_task_source_event(
+        self,
+        source: TaskSource,
+        event: TaskSourceEvent,
+        *,
+        project_id: str,
+        event_cursor: str | None = None,
+    ) -> TaskSourceEventReconciliationResult:
+        """Reconcile one normalized authoritative-source event."""
+
+        return await self.task_source_event_reconciler.reconcile(
+            source,
+            event,
+            project_id=project_id,
+            event_cursor=event_cursor,
+        )
 
     async def sync_from_gitlab(self) -> dict[str, Any]:
         try:
