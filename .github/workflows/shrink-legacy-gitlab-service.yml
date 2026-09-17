@@ -1,0 +1,29 @@
+name: shrink-legacy-gitlab-service
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  shrink:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Generate GitLab service shrink
+        run: python scripts/shrink_legacy_gitlab_service.py
+      - name: Commit generated shrink
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Delete GitLabService-owned legacy implementations'
+          git push
