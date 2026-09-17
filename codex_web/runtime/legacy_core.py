@@ -4860,28 +4860,6 @@ def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, An
 
 
 
-@app.post("/api/recovery/resume")
-async def recovery_resume() -> dict[str, Any]:
-    try:
-        await codex.ensure_started()
-    except Exception:
-        pass
-    now = time.time()
-    stale_thread_ids = {
-        thread_id
-        for thread_id, active in _load_active_turns().items()
-        if now - active.updated_at > _active_turn_stale_seconds()
-    }
-    if stale_thread_ids:
-        asyncio.create_task(_resume_active_threads_after_startup(stale_thread_ids))
-    for thread_id in _load_turn_queues():
-        _schedule_queue_drain(thread_id)
-    return {
-        "ok": True,
-        "resumingStaleThreads": sorted(stale_thread_ids),
-        "activeTurns": len(_load_active_turns()),
-        "queuedTurns": sum(len(items) for items in _load_turn_queues().values()),
-    }
 
 
 
@@ -4902,33 +4880,6 @@ async def recovery_resume() -> dict[str, Any]:
 
 
 
-@app.post("/bots/telegram/webhook")
-async def telegram_webhook(request: Request) -> dict[str, Any]:
-    _verify_telegram_secret(request)
-    payload = await request.json()
-    message_payload = payload.get("message") or payload.get("edited_message") or {}
-    text = (message_payload.get("text") or "").strip()
-    chat = message_payload.get("chat") or {}
-    chat_id = chat.get("id")
-    if not text or chat_id is None:
-        return {"ok": True, "ignored": True}
-
-    sender = message_payload.get("from") or {}
-    message = BotInboundMessage(
-        provider="telegram",
-        external_conversation_id=str(chat_id),
-        external_name=chat.get("title") or chat.get("username") or str(chat_id),
-        sender_id=str(sender.get("id")) if sender.get("id") is not None else None,
-        sender_name=sender.get("username") or sender.get("first_name"),
-        text=text,
-        message_id=str(message_payload.get("message_id")) if message_payload.get("message_id") is not None else None,
-    )
-    result = await _handle_bot_inbound(message)
-    if result.get("ambiguous"):
-        return {"ok": True, "accepted": False, "ambiguous": True, "availablePrefixes": result["availablePrefixes"]}
-    if result.get("timedOut"):
-        return {"ok": True, "accepted": False, "timedOut": True, "threadId": result.get("threadId")}
-    return {"ok": True, "accepted": True, "threadId": result["threadId"]}
 
 
 
