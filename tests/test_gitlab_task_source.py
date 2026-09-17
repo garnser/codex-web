@@ -29,6 +29,7 @@ class _FakeGitLabClient:
         self.group_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[tuple[str, int]] = []
         self.update_payloads: list[dict[str, object]] = []
+        self.notes: list[tuple[str, int, str]] = []
 
     async def group_issues(self, api_base, group, *, token, labels=None, state="opened"):
         self.group_calls.append((api_base, group, state))
@@ -49,6 +50,10 @@ class _FakeGitLabClient:
         elif payload.get("state_event") == "reopen":
             self.issue["state"] = "opened"
         return deepcopy(self.issue)
+
+    async def create_project_issue_note(self, api_base, project, iid, *, token, body):
+        self.notes.append((project, iid, body))
+        return {"id": 1, "body": body}
 
 
 class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
@@ -71,7 +76,7 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.EVENTS))
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.OWNER_WRITE))
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.STATE_WRITE))
-        self.assertFalse(self.source.capabilities.supports(TaskSourceCapability.COMMENTS))
+        self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.COMMENTS))
         self.assertFalse(self.source.capabilities.supports(TaskSourceCapability.ARTIFACT_LINKS))
 
     def test_constructor_requires_instance_and_credential(self) -> None:
@@ -195,14 +200,23 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.source.write_state(identity, "provider_done")
 
-    async def test_unsupported_optional_operations_fail_closed(self) -> None:
+    async def test_comment_write_uses_issue_notes_capability(self) -> None:
         identity = TaskSourceIdentity(
             source_type="gitlab",
             source_instance="https://gitlab.example/api/v4",
             external_id="group/project#42",
         )
-        with self.assertRaises(UnsupportedTaskSourceCapability):
-            await self.source.add_comment(identity, "comment")
+        await self.source.add_comment(identity, "Canonical update")
+        self.assertEqual(self.client.notes, [("group/project", 42, "Canonical update")])
+        with self.assertRaises(ValueError):
+            await self.source.add_comment(identity, "   ")
+
+    async def test_unsupported_artifact_operation_fails_closed(self) -> None:
+        identity = TaskSourceIdentity(
+            source_type="gitlab",
+            source_instance="https://gitlab.example/api/v4",
+            external_id="group/project#42",
+        )
         with self.assertRaises(UnsupportedTaskSourceCapability):
             await self.source.attach_artifact(identity, "https://artifact.example/build")
 
