@@ -42,6 +42,16 @@ class TaskSourceIdentity(BaseModel):
     event_cursor: str | None = None
 
 
+class TaskSourceConfiguration(BaseModel):
+    """Exactly one provider-neutral authoritative source binding for a project."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    source_type: str = Field(min_length=1)
+    source_instance: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+
+
 class Project(BaseModel):
     id: str
     name: str
@@ -49,6 +59,7 @@ class Project(BaseModel):
     model: str | None = None
     sandbox: SandboxMode = "workspace-write"
     approval_policy: ApprovalPolicy = "on-request"
+    authoritative_task_source: TaskSourceConfiguration | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -57,6 +68,7 @@ class ProjectCreate(BaseModel):
     model: str | None = None
     sandbox: SandboxMode = "workspace-write"
     approval_policy: ApprovalPolicy = "on-request"
+    authoritative_task_source: TaskSourceConfiguration | None = None
 
 
 class TurnCreate(BaseModel):

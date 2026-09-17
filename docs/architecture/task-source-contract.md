@@ -92,6 +92,27 @@ Exactly one external task source should be authoritative for mutable external ta
 
 Source identity matching uses provider family, source instance, and external item ID. A different authoritative identity is a conflict rather than an implicit source switch. Source changes must happen through explicit project/workspace configuration and migration policy.
 
+## Project/workspace authoritative-source configuration
+
+The existing canonical `Project` object carries one optional `authoritative_task_source` binding. The binding is represented by `TaskSourceConfiguration` and contains only provider-neutral routing identity:
+
+- `source_type` — the adapter/provider family;
+- `source_instance` — the configured external system instance or workspace identifier;
+- `scope` — the provider-native discovery/read scope interpreted by that adapter.
+
+Because the field is singular, a project can represent exactly one authoritative mutable external task source or none. A list of simultaneous mutable authorities is deliberately not part of the model; federation would require an explicit future policy rather than emerging accidentally from configuration.
+
+Provider credentials, tokens, webhook secrets, provider-specific routing options, and transport configuration do not belong in `TaskSourceConfiguration`. Those remain integration concerns. The project binding says **which configured task source is authoritative**, not how to authenticate to it.
+
+The canonical project API exposes:
+
+- `PUT /api/projects/{project_id}/task-source` — set or replace the authoritative binding;
+- `DELETE /api/projects/{project_id}/task-source` — clear the binding.
+
+Project creation may also include the same optional binding. Existing stored projects remain valid because the field is optional.
+
+Replacing or clearing a project binding does not silently rewrite `WorkItemState.source_identity`. Existing work retains its provenance. If that provenance does not match the configured authority, reconciliation must surface the mismatch/conflict until an explicit migration or reassignment path resolves it. This prevents a configuration edit from silently transferring authority over existing work.
+
 ## Migration architecture
 
 The provider-neutral migration is intentionally incremental:
