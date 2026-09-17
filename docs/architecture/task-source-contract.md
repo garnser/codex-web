@@ -19,6 +19,7 @@ Adapters expose:
 - immutable declared `capabilities`;
 - provider-neutral discovery/read results as `TaskSourceSnapshot`;
 - normalized external events as `TaskSourceEvent`;
+- a mandatory deterministic `project(...)` mapping from normalized provider facts to `TaskSourceCanonicalProjection`;
 - optional owner/state/comment/artifact write-back operations.
 
 Provider-specific API response objects must not cross this boundary into canonical work-item reconciliation.
@@ -71,7 +72,9 @@ Provider-specific mapping into canonical work-item semantics is explicit. Keepin
 
 ## Canonical projection and reconciliation
 
-Provider adapters map native task facts into `TaskSourceCanonicalProjection` before core reconciliation compares those facts with canonical work-item state. The projection contains only canonical fields needed at the boundary, currently stage and owner, plus the native source-state value for diagnostics.
+Every adapter implements `TaskSource.project(snapshot, current_stage=...)` and returns `TaskSourceCanonicalProjection`. The mapping is synchronous and deterministic because translating already-normalized provider facts is application logic, not model reasoning. `current_stage` may be used when a provider state is less specific than codex-web's lifecycle, but projection itself must not mutate canonical state.
+
+The projection contains only canonical fields needed at the boundary, currently stage and owner, plus the native source-state value for diagnostics. The projection type lives with the `TaskSource` contract so adapters do not depend on the reconciliation engine merely to describe their canonical mapping output.
 
 `TaskSourceReconciliationPolicy` evaluates a normalized event without mutating state and returns exactly one deterministic outcome:
 
@@ -85,6 +88,19 @@ Event idempotency prefers a provider event cursor when one is available. Otherwi
 Provider revisions and event cursors are intentionally treated as opaque strings unless an adapter provides deterministic ordering semantics. Core reconciliation must not guess ordering from provider-specific revision formats. When an event has no usable provider timestamp, the core does not invent staleness; adapters or later conflict policy may provide stronger evidence.
 
 `task_source_projection_drift` reports provider-neutral stage/owner differences as structured findings. Reporting drift is separate from deciding whether to apply it because canonical state can legitimately preserve a handoff or another internal invariant. Reconciliation policy therefore remains deterministic without treating every difference as an automatic overwrite.
+
+## Shared adapter conformance gate
+
+`TaskSourceConformanceSuite` is the provider-neutral validation gate reused by adapter tests. It validates:
+
+- that an adapter implements the complete `TaskSource` protocol, including deterministic projection;
+- non-empty source type and source instance plus a valid capability declaration;
+- that normalized identities belong to the adapter's source type and instance;
+- that discovery/read outputs are `TaskSourceSnapshot` objects;
+- that event outputs are `TaskSourceEvent` objects and event/snapshot identities identify the same item;
+- that canonical mapping outputs are `TaskSourceCanonicalProjection` objects, retain source identity, and use a canonical work-item stage.
+
+Each concrete provider adapter must run representative discovery/read/event/projection outputs through the same suite. Provider-specific tests may add stronger assertions, but they must not replace the shared conformance gate. This makes portability testable instead of relying on convention.
 
 ## Authority invariant
 
@@ -121,9 +137,9 @@ The provider-neutral migration is intentionally incremental:
 2. persist source provenance independently from canonical work-item identity;
 3. establish provider-neutral idempotency, stale-event, conflict, and drift diagnostics;
 4. define per-project/workspace authoritative-source configuration and exactly-one-source enforcement;
-5. implement provider adapters and deterministic native-to-canonical mappings;
-6. move discovery/read/event normalization and supported write-back behind adapter capabilities;
-7. run shared adapter conformance tests against each provider and a non-provider-specific reference adapter;
+5. require deterministic provider-to-canonical projection through the shared adapter contract;
+6. implement concrete provider adapters and move discovery/read/event normalization and supported write-back behind declared capabilities;
+7. run the shared conformance suite against every concrete provider and the provider-neutral reference adapter;
 8. expose provenance, synchronization/conflict diagnostics, and permitted reconciliation actions through canonical APIs/UI.
 
 Each step must preserve the existing canonical work-item, Executive, queue, sandbox, approval, and execution paths.
