@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from fastapi import HTTPException
+
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.work_item_state import WorkItemStateMachine
@@ -41,10 +43,15 @@ class WorkItemService:
     def _validate_requested_stage_transition(self, ref: str, payload: Any, *, source: str) -> None:
         """Reject explicit illegal manual stage changes before mutation starts.
 
-        Lightweight service-test doubles may not expose canonical state lookup;
-        those callers retain the historical compatibility behavior. Production
-        composition always uses WorkItemStateMachine and therefore validates the
-        requested transition here before entering the mutation path.
+        Production requests normally resolve canonical state here and are
+        validated before entering the mutation path. Historical compatibility
+        seams can override the mutation method while keeping a state-machine
+        instance whose backing store does not contain the test/extension item.
+        In that case a lookup-only 404 is not treated as the authoritative
+        mutation result: validation is deferred to the selected compatibility
+        mutation path, which preserves its historical behavior. A production
+        missing-item request still reaches the canonical mutation and returns
+        the same 404 there.
         """
 
         target_stage = getattr(payload, "current_stage", None)
@@ -53,7 +60,12 @@ class WorkItemService:
         state_lookup = getattr(self.state_machine, "_work_item_state", None)
         if not callable(state_lookup):
             return
-        state = state_lookup(ref)
+        try:
+            state = state_lookup(ref)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return
+            raise
         self.transition_policy.validate(
             state.current_stage,
             target_stage,
