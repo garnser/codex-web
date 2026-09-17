@@ -10,6 +10,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_task_source import GitLabTaskSource
+from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.task_source_events import (
     TaskSourceEventReconciliationResult,
     TaskSourceWorkItemEventReconciler,
@@ -41,21 +42,26 @@ class WorkItemService:
             task_source_event_reconciler
             or TaskSourceWorkItemEventReconciler(host, self.task_source_projector)
         )
-        # Preserve historical entrypoints while publishing only canonical service
+        self._legacy_gitlab_event_projector = getattr(
+            host,
+            "_upsert_work_item_state_from_gitlab_event",
+            self.state_machine._upsert_work_item_state_from_gitlab_event,
+        )
+
+        # Preserve historical entrypoints while publishing canonical service
         # behavior to remaining legacy composition seams.
         host.create_work_item_handoff = self.handoff
         host.ack_work_item_handoff = self.acknowledge
         host.update_work_item_progress = self.progress
         host._reconcile_task_source_event = self.reconcile_task_source_event
+        # GitLabService still invokes this historical synchronous hook. Issue
+        # events now terminate at the provider-neutral TaskSource boundary;
+        # non-issue events temporarily retain the legacy projector until their
+        # artifact semantics are migrated in the next #101 slice.
+        host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
 
     def _compat(self, name: str, fallback: Any) -> Any:
-        """Resolve a composed host seam while supporting lightweight hosts.
-
-        Application composition publishes state-machine methods on the legacy
-        compatibility host. Tests and extensions historically monkeypatch those
-        names directly, so prefer the host seam when present; standalone service
-        hosts can fall back to the canonical state-machine method.
-        """
+        """Resolve a composed host seam while supporting lightweight hosts."""
         return getattr(self.host, name, fallback)
 
     async def list(
@@ -108,7 +114,7 @@ class WorkItemService:
             )
             snapshots = await source.discover(scope=group)
             for snapshot in snapshots:
-                state = await self.task_source_projector.upsert(
+                state = self.task_source_projector.upsert(
                     source,
                     snapshot,
                     project_id=project_id,
@@ -117,7 +123,7 @@ class WorkItemService:
                 seen_refs.add(state.ref)
         return {"synced": synced, "refs": len(seen_refs)}
 
-    async def reconcile_task_source_event(
+    def reconcile_task_source_event(
         self,
         source: TaskSource,
         event: TaskSourceEvent,
@@ -125,14 +131,35 @@ class WorkItemService:
         project_id: str,
         event_cursor: str | None = None,
     ) -> TaskSourceEventReconciliationResult:
-        """Reconcile one normalized authoritative-source event."""
+        """Reconcile one normalized authoritative-source event locally."""
 
-        return await self.task_source_event_reconciler.reconcile(
+        return self.task_source_event_reconciler.reconcile(
             source,
             event,
             project_id=project_id,
             event_cursor=event_cursor,
         )
+
+    def project_gitlab_event_compat(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        """Compatibility hook used by GitLabService during incremental migration."""
+
+        source = GitLabWebhookTaskSource(
+            self.host.GITLAB_API_BASE,
+            client=self.gitlab,
+        )
+        event = source.normalize_event_sync(payload)
+        if event is None:
+            return self._legacy_gitlab_event_projector(payload, project_id=project_id)
+        return self.reconcile_task_source_event(
+            source,
+            event,
+            project_id=project_id,
+        ).state
 
     async def sync_from_gitlab(self) -> dict[str, Any]:
         try:
