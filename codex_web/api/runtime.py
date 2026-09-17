@@ -22,6 +22,10 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
     async def operations(window_seconds: float = 900.0) -> dict[str, Any]:
         return service.operations(window_seconds=window_seconds)
 
+    @router.post("/api/recovery/resume")
+    async def recovery_resume() -> dict[str, Any]:
+        return await service.recovery_resume()
+
     @router.get("/api/account/rate-limits")
     async def account_rate_limits() -> dict[str, Any]:
         return await service.rate_limits()

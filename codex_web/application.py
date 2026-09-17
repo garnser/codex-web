@@ -8,6 +8,7 @@ from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
+from codex_web.api.telegram import build_telegram_router
 from codex_web.api.threads import build_threads_router
 from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
@@ -212,6 +213,8 @@ EXTRACTED_ROUTE_COUNTS = {
         paths={
             "/api/status",
             "/api/healthz",
+            "/api/operations",
+            "/api/recovery/resume",
             "/api/account/rate-limits",
             "/api/models",
         },
@@ -240,6 +243,12 @@ EXTRACTED_ROUTE_COUNTS = {
         build_slack_router(slack_provider_service),
         paths={"/bots/slack/events"},
         key="slack",
+    ),
+    "telegram": replace_routes(
+        app,
+        build_telegram_router(core, bot_routing_service),
+        paths={"/bots/telegram/webhook"},
+        key="telegram",
     ),
     "work-items": replace_routes(
         app,
