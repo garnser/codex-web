@@ -12,15 +12,16 @@ It supports:
 - Scaffolded Slack and Telegram inbound bot webhooks that map external
   conversations to Codex threads.
 
-## Architecture policy
+## Architecture policy and roadmap
 
 Developers and agents working on LLM, Executive, autonomous, orchestration, memory, routing, or agent-execution features must read:
 
 - [Agent and Developer Instructions](AGENTS.md)
 - [Architecture documentation](docs/architecture/README.md)
+- [Autonomous Company Roadmap](docs/architecture/autonomy-roadmap.md)
 - [Token Efficiency Ruleset](docs/architecture/token-efficiency-rules.md)
 
-The token-efficiency rules are architecture policy, not optional optimization advice. The core principle is:
+The roadmap is the canonical milestone sequence for improving codex-web toward bounded autonomous company operation. The token-efficiency rules are architecture policy, not optional optimization advice. The core principle is:
 
 > **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Results become reusable knowledge.**
 
