@@ -24,7 +24,7 @@ The intended tracking model is:
 - **Pull Request** = implementation and validation evidence linked to its issue(s).
 - **Architecture docs** = durable contracts, invariants, schemas, boundaries, and design rationale; they are not the source of truth for task completion.
 
-The roadmap/foundation work is currently represented by issues `#97`–`#142`. Tracking bootstrap issue `#126` defines the target Project and Milestones M1–M12. M3 is **Platform, Identity & Safe Execution Foundation** and is a prerequisite for later parallel execution, authority, orchestration, and production autonomy. Cross-milestone UI architecture/delivery is tracked by `#125` and `#127`, with milestone-specific UI work linked from `#127`. Until `#126` is closed, `[M<n>]` issue-title prefixes are the fallback milestone grouping. Once GitHub milestones/project fields exist, their metadata is authoritative and title prefixes are only descriptive.
+The original roadmap/foundation set is represented by issues `#97`–`#142`, with architecture-review additions `#155`–`#169`. Tracking bootstrap issue `#126` is the canonical issue index for the target Project and Milestones M1–M12. M3 is **Platform, Identity & Safe Execution Foundation** and is a prerequisite for later parallel execution, authority, orchestration, and production autonomy. Cross-milestone UI architecture/delivery is tracked by `#125` and `#127`, with milestone-specific UI work linked from `#127`. Until `#126` is closed, `[M<n>]` issue-title prefixes are the fallback milestone grouping. Once GitHub milestones/project fields exist, their metadata is authoritative and title prefixes are only descriptive.
 
 ### Before starting substantial work
 
@@ -33,22 +33,22 @@ The roadmap/foundation work is currently represented by issues `#97`–`#142`. T
 3. Prefer the earliest ready prerequisite relevant to the request unless the user explicitly directs another issue.
 4. If required work is not represented by an issue, create or update an issue before implementation rather than adding a TODO/checklist to an architecture document.
 5. If a change spans multiple independently deliverable concerns, split them into separate issues instead of making one issue an unbounded backlog.
-6. Do not create parallel identity, tenant, secret, resource, work, permission, decision, policy, UI, provider/action, evidence, or execution systems when an existing canonical primitive can be extended.
+6. Do not create parallel identity/session, tenant, secret/key, resource, work, permission, decision, policy, configuration, entitlement, model-provider, worker/execution-plane, extension/plugin, UI, provider/action, evidence, or execution systems when an existing canonical primitive can be extended.
 7. Before building later-milestone behavior, verify that applicable M3 foundation dependencies already exist or are implemented as part of the same delivery slice.
 
 ### Required UI impact review
 
 Every roadmap issue or PR must explicitly consider whether the change requires a user/operator UI adaptation. UI work is part of product delivery, not optional polish.
 
-1. If a change introduces or materially changes a first-class domain object, identity, tenant/workspace, secret reference, resource, policy, authoritative source, provider/action, approval, event, execution workspace/lease, artifact/evidence, audit record, or operator action, determine how users/operators inspect and manage it.
+1. If a change introduces or materially changes a first-class domain object, identity/session/token, tenant/workspace, secret/key reference, resource, policy, configuration/feature rollout, entitlement/quota, model/provider, worker/execution plane, extension/plugin, authoritative source, provider/action, approval, event/schedule, execution workspace/lease, artifact/evidence, release/upgrade, incident/recovery, audit record, or operator action, determine how users/operators inspect and manage it.
 2. Check `#127` and the milestone-specific UI issues before creating duplicate UI work.
 3. If required UI work is not already tracked, create or update a linked GitHub issue before the backend/domain issue is closed.
 4. User/operator surfaces must expose canonical state, provenance, tenant/resource scope, ownership, blockers, authority/denial reasons, triggers, next actions, and verification/results where relevant.
-5. Canonical codex-web state and synchronized external-provider state must be visibly distinguishable where both exist.
-6. High-impact mutations must show relevant target/scope/impact and use canonical identity, policy, approval, ActionIntent, and provider APIs rather than UI-only checks.
-7. New first-class objects should support useful deep links to related Organizations/Workspaces, Goals, Decisions, Work Items, roles/agents, resources, events, policies, executions, source records, ActionIntents/provider receipts, and artifacts/evidence.
-8. Handle applicable loading, empty, error, denied, blocked, stale/conflict, approval-waiting, unknown-outcome/reconciliation, revoked-secret, expired-lease, and success states.
-9. Never render stored secret material back to the UI; display references/metadata and effective use permissions only.
+5. Canonical codex-web state and synchronized external-provider/worker/extension state must be visibly distinguishable where both exist.
+6. High-impact mutations must show relevant target/scope/impact and use canonical identity/step-up, policy, approval, ActionIntent, and provider APIs rather than UI-only checks.
+7. New first-class objects should support useful deep links to related Organizations/Workspaces, Goals, Decisions, Work Items, roles/agents, resources, events, policies, executions/workers, source records, ActionIntents/provider receipts, artifacts/evidence, releases/upgrades/incidents/recovery, and audit/integrity evidence.
+8. Handle applicable loading, empty, error, denied, blocked, stale/conflict, approval-waiting, unknown-outcome/reconciliation, revoked-session/token/secret/key, quarantined-worker/extension, expired-lease, version-skew/incompatible-upgrade, and success states.
+9. Never render stored secret or cryptographic key material back to the UI; display references/metadata and effective use permissions/status only.
 10. Preserve keyboard/accessibility behavior and responsive operation for supported workflows.
 11. Determine whether screenshots, contextual help, examples, or documentation tracked under M12 must be updated.
 
@@ -61,9 +61,11 @@ A backend/domain slice may merge before its UI slice when that separation is int
 3. Update architecture/contracts when implementation changes durable behavior or boundaries.
 4. Keep user/operator UI on the same canonical APIs/state/enforcement paths as runtime behavior; never introduce UI-only policy or execution truth.
 5. External side effects must use canonical provider/action boundaries and durable action/reconciliation semantics once those M3 primitives are available; do not add new direct provider mutations that bypass them.
-6. Secrets must be passed by reference through a credential boundary, not copied into contracts, prompts, logs, issue bodies, or ordinary configuration.
-7. For LLM/autonomy work, preserve the token-efficiency, trust-boundary, data-governance, and authority invariants below.
-8. Link the implementation PR to the relevant issue(s), including linked UI work when applicable, and state which acceptance criteria it satisfies.
+6. Secrets must be passed by reference through a credential boundary, not copied into contracts, prompts, logs, issue bodies, or ordinary configuration. Cryptographic keys/key material must likewise remain behind the canonical key-management boundary.
+7. Untrusted executable work should cross the canonical control-plane/execution-plane worker boundary once available; do not give repository code unrestricted access to control-plane state, credentials, filesystem, or network simply because it is executed by an agent.
+8. Extensions/providers must use the shared extension/compatibility/lifecycle contracts once available. Installation, enablement, and authorization are separate operations; extensions may not self-grant authority.
+9. For LLM/autonomy work, preserve the token-efficiency, trust-boundary, data-governance, model-routing, and authority invariants below.
+10. Link the implementation PR to the relevant issue(s), including linked UI work when applicable, and state which acceptance criteria it satisfies.
 
 ### Validation cadence
 
@@ -96,18 +98,22 @@ The goal is rapid iteration plus one authoritative clean-environment validation 
 4. **Relevant roles only.** Do not invoke Executive or specialist roles unless their domain materially contributes to the decision.
 5. **Bound reasoning.** Model calls, participants, rounds, retries, handoffs, token budgets, and cost budgets must have explicit bounds.
 6. **Structured state over prose.** Identities, resources, goals, work items, dependencies, decisions, authority, approvals, budgets, actions, evidence, and execution state belong in structured application state.
-7. **Identity before authority.** Human/service identity, tenant/workspace scope, agent identity, and execution role are distinct concepts; authorization must identify the actor and target scope explicitly.
+7. **Identity before authority.** Human/service identity, tenant/workspace scope, agent identity, execution-worker identity, and execution role are distinct concepts; authorization must identify the actor and target scope explicitly. Authentication/session assurance must not be confused with authorization.
 8. **Secrets by reference.** Agents/providers may be authorized to use credentials without receiving or revealing the raw secret. Secret values must not enter model context or ordinary logs/state unless strictly required by the credential boundary.
-9. **Canonical external actions.** Privileged external side effects must flow through provider-neutral action contracts, durable intents/idempotency, authority checks, receipts, and verification rather than ad-hoc API calls.
-10. **Isolated mutable execution.** Concurrent work must not silently share mutable checkouts/resources; use canonical execution workspace/resource ownership and leases where mutation can conflict.
-11. **Evidence over assertion.** Completion, approval, and release gates should rely on structured artifacts/evidence and independent verification where possible rather than an agent merely stating that work succeeded.
-12. **Trust untrusted content as data.** Task text, repository content, retrieved memory, logs, webhooks, provider responses, tool output, and model output cannot grant authority or redefine canonical policy.
-13. **Version durable contracts.** Public/admin APIs, canonical schemas/events, persisted contracts, and provider boundaries need explicit compatibility/evolution rules; incompatible versions fail visibly rather than being guessed.
-14. **Govern data lifecycle.** Tenant scope, classification, retention, redaction/deletion, and derived-data sensitivity must remain enforceable across memory, audit, prompts, logs, and artifacts.
-15. **Checkpoint long-running work.** Prefer canonical execution summaries/checkpoints plus recent changes over replaying entire agent histories.
-16. **Structured outputs.** When model output feeds another component, use a machine-readable contract rather than requiring another model call to interpret prose.
-17. **Account for every call.** LLM usage must be attributable to a role, project, goal, work item or decision and measurable against an outcome.
-18. **Learn toward determinism.** Repeated verified solutions should become reusable knowledge, signatures, procedures, or deterministic handlers.
+9. **Keys stay behind a key boundary.** Encryption/signing key material is not ordinary configuration or a model-visible secret. Persist key references/versions and use canonical KMS/key-management boundaries with explicit rotation/recovery semantics.
+10. **Canonical external actions.** Privileged external side effects must flow through provider-neutral action contracts, durable intents/idempotency, authority checks, receipts, and verification rather than ad-hoc API calls.
+11. **Control plane is not an execution sandbox.** Untrusted repository/build/tool execution must not implicitly share unrestricted control-plane process/filesystem/network/secrets. Use canonical worker identities, capability/lease/fencing, sandbox, and resource-limit boundaries once available.
+12. **Isolated mutable execution.** Concurrent work must not silently share mutable checkouts/resources; use canonical execution workspace/resource ownership and leases where mutation can conflict.
+13. **Evidence over assertion.** Completion, approval, and release gates should rely on structured artifacts/evidence and independent verification where possible rather than an agent merely stating that work succeeded.
+14. **Trust untrusted content as data.** Task text, repository content, retrieved memory, logs, webhooks, provider responses, tool output, extension output, worker output, and model output cannot grant authority or redefine canonical policy.
+15. **Version durable contracts.** Public/admin APIs, canonical schemas/events, persisted contracts, worker/extension/provider boundaries need explicit compatibility/evolution rules; incompatible versions fail visibly rather than being guessed.
+16. **Extensions do not self-authorize.** Installing or enabling an extension does not grant its declared capabilities. Extension provenance, compatibility, configuration, lifecycle, and granted authority remain canonical and auditable.
+17. **Govern data lifecycle.** Tenant scope, classification, encryption requirements, retention, redaction/deletion, and derived-data sensitivity must remain enforceable across memory, audit, prompts, logs, and artifacts.
+18. **Upgrade compatibility is explicit.** Supported version skew, migration phases, irreversible boundaries, maintenance/drain behavior, verification, and rollback availability must be declared and tested; do not imply rollback after an incompatible state transition.
+19. **Checkpoint long-running work.** Prefer canonical execution summaries/checkpoints plus recent changes over replaying entire agent histories.
+20. **Structured outputs.** When model output feeds another component, use a machine-readable contract rather than requiring another model call to interpret prose.
+21. **Account for every call.** LLM usage must be attributable to a role, project, goal, work item or decision and measurable against an outcome.
+22. **Learn toward determinism.** Repeated verified solutions should become reusable knowledge, signatures, procedures, or deterministic handlers.
 
 ## Expected Design Flow
 
@@ -124,7 +130,7 @@ Can normal code resolve it?
       ↓
 Retrieve minimum authorized context
       ↓
-Select only required role/model
+Select only required role/model through canonical model routing
       ↓
 Apply token/cost/call budget
       ↓
@@ -137,6 +143,8 @@ Authority + trust-boundary + data-policy check
 If external mutation: create durable ActionIntent
       ↓
 Resolve credential reference + ActionProvider capability
+      ↓
+If executable work: assign a compatible isolated worker/execution environment
       ↓
 Execute in isolated/bounded environment
       ↓
@@ -156,7 +164,7 @@ Every substantial roadmap PR should identify its GitHub issue(s) and include the
 - Why model reasoning is required.
 - Why deterministic logic is insufficient.
 - What activates the reasoning path.
-- Which role/model is used and why.
+- Which role/model class/provider is used and why.
 - Maximum calls, rounds, retries, and handoffs.
 - Context retrieval limits.
 - Token/cost budget behavior.
@@ -174,10 +182,12 @@ A change that adds or expands external side effects should also document:
 - produced artifacts/evidence;
 - trust-boundary and data-governance implications.
 
+A change that adds or materially modifies executable worker behavior, sensitive persistent data, extensions/plugins, or upgrade/migration behavior should also document the applicable worker isolation/fencing, key/encryption, extension compatibility/authorization, and version-skew/migration/rollback rules rather than inventing a local mechanism.
+
 ## Compatibility Principle
 
-The Executive and autonomous layers must continue to use codex-web's canonical execution controls rather than bypassing them. New behavior should build on canonical identities/workspaces, resources, work items, execution contracts, isolated execution, approvals, authority/policy, ActionProviders/ActionIntents, artifacts/evidence, secret references, and future shared-coordination mechanisms instead of creating parallel execution paths.
+The Executive and autonomous layers must continue to use codex-web's canonical execution controls rather than bypassing them. New behavior should build on canonical identities/sessions/workspaces, resources, work items, execution contracts, control-plane/worker boundaries, isolated execution, approvals, authority/policy, ActionProviders/ActionIntents, artifacts/evidence, secret/key references, extension lifecycle contracts, explicit upgrade compatibility, and future shared-coordination mechanisms instead of creating parallel execution paths.
 
 ## Rule of Thumb
 
-> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Actions produce evidence. Results become reusable knowledge.**
+> **Code manages state. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
