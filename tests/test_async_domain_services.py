@@ -66,7 +66,7 @@ class _TaskSourceProjector:
     def __init__(self) -> None:
         self.projection_thread_id: int | None = None
 
-    async def upsert(self, source, snapshot, *, project_id):
+    def upsert(self, source, snapshot, *, project_id):
         self.projection_thread_id = threading.get_ident()
         return SimpleNamespace(ref=snapshot.identity.external_id)
 
