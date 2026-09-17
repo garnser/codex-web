@@ -48,7 +48,6 @@ from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
-from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -58,12 +57,6 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 # extracted. The legacy runtime is now a compatibility host for the portions
 # that have not moved yet, rather than the place new API behavior is added.
 app = core.app
-
-# Shared persistence primitives are owned outside the legacy runtime. Existing
-# unextracted state helpers resolve these globals at call time, so they use the
-# same atomic implementation without maintaining a second persistence path.
-core._state_file_lock = state_file_lock
-core._atomic_write_text = atomic_write_text
 
 project_repository = ProjectRepository(PROJECTS_FILE)
 state_store = SQLiteStateStore(STATE_DB_FILE)

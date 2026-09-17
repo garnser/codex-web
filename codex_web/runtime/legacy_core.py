@@ -10,8 +10,6 @@ import os
 import re
 import socket
 import subprocess
-import tempfile
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -94,6 +92,10 @@ from codex_web.providers import (
     slack_socket_url as _slack_socket_url,
     update_slack_message as _update_slack_message,
 )
+from codex_web.storage.json_files import (
+    atomic_write_text as _atomic_write_text,
+    state_file_lock as _state_file_lock,
+)
 
 
 BOT_RUNTIME_STATUS: dict[str, dict[str, Any]] = {}
@@ -116,7 +118,6 @@ THREAD_TERMINAL_FAILURES: dict[str, deque[tuple[float, str]]] = {}
 THREAD_LAST_INPUTS: dict[str, dict[str, Any]] = {}
 THREAD_REPLACEMENTS: dict[str, str] = {}
 THREAD_STEER_TIMES: dict[str, deque[float]] = {}
-STATE_FILE_LOCKS: dict[str, threading.RLock] = {}
 GITLAB_EVENT_IDS: dict[str, float] = {}
 WATCHDOG_DISPATCH_TIMES: dict[str, float] = {}
 NATIVE_RECOVERY_LAST_SCHEDULED_AT = 0.0
@@ -157,71 +158,6 @@ DEFAULT_THREAD_MESSAGE_LIMIT = 100
 
 
 hub = EventHub()
-
-
-def _state_file_lock(path: Path) -> threading.RLock:
-    key = str(path.resolve())
-    lock = STATE_FILE_LOCKS.get(key)
-    if lock is None:
-        lock = threading.RLock()
-        STATE_FILE_LOCKS[key] = lock
-    return lock
-
-
-def _atomic_write_text(path: Path, text: str, *, private: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = _state_file_lock(path)
-    with lock:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        temporary_path = Path(temporary_name)
-        try:
-            mode = 0o600 if private else 0o644
-            os.fchmod(descriptor, mode)
-            with os.fdopen(descriptor, "w") as handle:
-                descriptor = -1
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, path)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            with contextlib.suppress(FileNotFoundError):
-                temporary_path.unlink()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _upsert_indexed_thread(thread: IndexedThread) -> None:
@@ -358,8 +294,6 @@ def _leading_owner_cue_in_action(next_action: str | None) -> str | None:
         if action.startswith(f"{owner} "):
             return owner
     return None
-
-
 
 
 def _maybe_infer_pending_handoff_from_gitlab_projection(
@@ -652,8 +586,6 @@ def _work_item_contract_binding(thread_id: str | None) -> BotBinding | None:
     return max(bindings, key=lambda item: item.updated_at) if bindings else None
 
 
-
-
 def _work_item_contract_instructions(thread_id: str | None) -> str | None:
     binding = _work_item_contract_binding(thread_id)
     if not binding or not _gitlab_routing_enabled_for_project(binding.project_id):
@@ -926,24 +858,6 @@ def _append_bot_event(event: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _parse_agent_channel_overrides() -> dict[str, list[str]]:
     raw = os.environ.get("CODEX_WEB_AGENT_CHANNELS", "").strip()
     if not raw:
@@ -1016,12 +930,6 @@ def _clone_binding_to_known_channel(source: BotBinding, channel_id: str) -> BotB
     )
 
 
-
-
-
-
-
-
 def _binding_for_agent(
     agent: str,
     project_id: str,
@@ -1085,10 +993,6 @@ def _binding_for_agent(
     return candidates[0]
 
 
-
-
-
-
 def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
     return sorted(
         [
@@ -1099,34 +1003,6 @@ def _logical_bindings_for_binding(source: BotBinding) -> list[BotBinding]:
         key=lambda binding: binding.updated_at,
         reverse=True,
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _active_turn_stale_seconds() -> float:
@@ -1746,8 +1622,6 @@ async def _set_thread_primary_channel(
     if changed:
         _save_bot_bindings(bindings)
     return [binding for binding in bindings if binding.thread_id == thread_id and binding.project_id == project.id]
-
-
 
 
 def _project(project_id: str | None) -> Project:
@@ -2696,10 +2570,6 @@ def _verify_telegram_secret(request: Request) -> None:
     raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
 
 
-
-
-
-
 codex: Any = None
 bot_runtime: Any = None
 app = FastAPI(title="Codex Web Local")
@@ -3139,38 +3009,6 @@ def _verify_gitlab_webhook(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid GitLab webhook token")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _gitlab_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
     token = _gitlab_api_token()
     if not token:
@@ -3187,8 +3025,6 @@ def _gitlab_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
         raise RuntimeError(f"GitLab API returned HTTP {exc.code} for {path}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"GitLab API request failed for {path}: {exc.reason}") from exc
-
-
 
 
 def _support_servicedesk_sweep_payloads() -> list[dict[str, Any]]:
@@ -3214,30 +3050,6 @@ def _support_servicedesk_sweep_payloads() -> list[dict[str, Any]]:
     if not isinstance(issues, list):
         return []
     return [_issue_to_support_servicedesk_payload(issue, project_path, project_id) for issue in issues if isinstance(issue, dict)]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _gitlab_group_issues(
@@ -3277,12 +3089,6 @@ def _sync_work_item_states_from_gitlab() -> dict[str, int]:
             synced += 1
             seen_refs.add(state.ref)
     return {"synced": synced, "refs": len(seen_refs)}
-
-
-
-
-
-
 
 
 def _work_item_stage_from_gitlab_payload(payload: dict[str, Any]) -> str:
@@ -3681,10 +3487,6 @@ async def _send_gitlab_event_notice(
     return delivery
 
 
-
-
-
-
 def _work_item_dispatch_text(state: WorkItemState) -> str:
     findings_suffix = ""
     if state.blocking_findings:
@@ -3883,18 +3685,6 @@ def _format_split_brain_watchdog_prompt(project_id: str, items: list[tuple[WorkI
     return "\n".join(lines)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
     bindings = _load_bot_bindings()
     if project_id:
@@ -3979,8 +3769,6 @@ def _diagnostic_snapshot(project_id: str | None = None) -> dict[str, Any]:
         ],
         "recentBotEvents": _recent_bot_events(),
     }
-
-
 
 
 def _watchdog_dispatch_cooldown_seconds() -> float:
@@ -4098,16 +3886,6 @@ def _schedule_native_recovery_cycles(*, reason: str = "manual") -> None:
     asyncio.create_task(_run_orchestrator_watchdog_cycle())
 
 
-
-
-
-
-
-
-
-
-
-
 @app.get("/")
 async def index() -> HTMLResponse:
     version = _static_version()
@@ -4152,10 +3930,6 @@ async def websocket_events(websocket: WebSocket) -> None:
         hub.disconnect(websocket)
 
 
-
-
-
-
 def _codex_verifier_credentials() -> tuple[str, str] | None:
     user = os.environ.get("CODEX_WEB_VERIFIER_USER", "").strip()
     password = os.environ.get("CODEX_WEB_VERIFIER_PASSWORD", "")
@@ -4180,20 +3954,8 @@ def _basic_auth_credentials(header_value: str | None) -> tuple[str, str] | None:
     return username, password
 
 
-
-
-
-
-
-
-
-
 def _agent_channel_presence_payload(settings: AgentChannelPresenceSettings) -> dict[str, Any]:
     return settings.model_dump()
-
-
-
-
 
 
 def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, Any]:
@@ -4205,92 +3967,6 @@ def _gitlab_integration_payload(settings: GitLabRoutingSettings) -> dict[str, An
             or os.environ.get("GITLAB_WEBHOOK_SECRET")
         ),
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _sandbox_policy(mode: str, cwd: str) -> dict[str, Any]:
