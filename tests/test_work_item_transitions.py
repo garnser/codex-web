@@ -160,6 +160,55 @@ class WorkItemServiceTransitionGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(machine.mutation_called)
         self.assertEqual(result["item"]["ref"], "group/project#1")
 
+    async def test_lookup_only_404_defers_to_compatibility_mutation_path(self) -> None:
+        class StateMachine:
+            mutation_called = False
+
+            def _work_item_state(self, ref):
+                raise HTTPException(status_code=404, detail="Work item state not found")
+
+            def _structured_progress(self, ref, payload):
+                self.mutation_called = True
+                return SimpleNamespace(ref=ref)
+
+            async def sync_gitlab_issue_labels(self, state):
+                return state
+
+            def _work_item_state_public(self, state):
+                return {"ref": state.ref}
+
+            def _work_item_split_brain_findings(self, state):
+                return []
+
+        class Hub:
+            events = []
+
+            async def publish(self, event):
+                self.events.append(event)
+
+        class Host:
+            hub = Hub()
+
+            def _schedule_actionable_owner_dispatch(self, state, *, source, actor):
+                pass
+
+            def _schedule_actionable_owner_continuity_check(self, state, *, source):
+                pass
+
+            def _schedule_native_recovery_cycles(self, *, reason):
+                pass
+
+        machine = StateMachine()
+        service = WorkItemService(Host(), state_machine=machine)
+
+        result = await service.progress(
+            "group/project#1",
+            WorkItemProgressUpdate(actor="dana", current_stage="closed"),
+        )
+
+        self.assertTrue(machine.mutation_called)
+        self.assertEqual(result["item"]["ref"], "group/project#1")
+
 
 if __name__ == "__main__":
     unittest.main()
