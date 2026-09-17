@@ -1,0 +1,35 @@
+name: shrink-json-persistence-primitives
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  shrink:
+    if: github.head_ref == 'refactor/canonical-json-persistence-primitives'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Generate canonical persistence shrink
+        run: python tools/shrink_json_persistence_primitives.py
+      - name: Validate focused regression tests
+        run: |
+          python -m unittest discover -s tests -p 'test_core_budget.py'
+          python -m unittest discover -s tests -p 'test_json_persistence_ownership.py'
+      - name: Commit generated shrink
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Use canonical JSON persistence primitives in legacy core"
+          git push
