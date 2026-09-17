@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.14-slim-bookworm AS runtime
+ARG BASE_IMAGE=garnser/codex-web:base
+FROM ${BASE_IMAGE} AS runtime
 
 ARG CODEX_VERSION=0.154.0
 ARG CODEX_UID=1000
@@ -13,38 +14,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CODEX_WEB_PORT=8765 \
     HOME=/home/codex
 
-# Install the runtime toolchain directly into the image. Codex is installed
-# from the official npm package during docker build; no host Codex binary or
-# host Node installation is copied into the image or required to build it.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        git \
-        gnupg \
-        openssh-client \
-        ripgrep \
-        tini \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" \
-    && codex --version \
-    && node --version \
-    && npm --version \
-    && rm -rf /var/lib/apt/lists/* /root/.npm \
+# The expensive OS/Node/Codex/Python runtime is supplied by Dockerfile.base and
+# published from trusted main builds. Keep user creation here so local UID/GID
+# overrides continue to work for mounted workspaces. Fail explicitly if the
+# requested Codex version does not match the selected base image.
+RUN actual="$(codex --version)" \
+    && printf '%s' "$actual" | grep -F "${CODEX_VERSION}" \
     && groupadd --gid "${CODEX_GID}" codex \
     && useradd --uid "${CODEX_UID}" --gid "${CODEX_GID}" --create-home --shell /bin/bash codex
 
 WORKDIR /app
-
-COPY requirements.txt requirements.lock ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.lock
 
 COPY . .
 
