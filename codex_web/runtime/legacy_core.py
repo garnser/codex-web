@@ -355,57 +355,16 @@ def _project_issue_ref(payload: dict[str, Any]) -> str | None:
 
 
 
-def _thread_queue(thread_id: str | None) -> list[QueuedTurn]:
-    if not thread_id:
-        return []
-    return _load_turn_queues().get(thread_id, [])
 
 
-def _thread_queue_depth(thread_id: str | None) -> int:
-    return len(_thread_queue(thread_id))
 
 
-def _max_thread_queue_depth() -> int:
-    try:
-        value = int(os.environ.get("CODEX_WEB_MAX_THREAD_QUEUE_DEPTH") or "12")
-    except ValueError:
-        return 12
-    return max(1, min(value, 100))
 
 
-def _steer_window_seconds() -> float:
-    try:
-        value = float(os.environ.get("CODEX_WEB_STEER_WINDOW_SECONDS") or "60")
-    except ValueError:
-        return 60.0
-    return max(1.0, value)
 
 
-def _max_steers_per_window() -> int:
-    try:
-        value = int(os.environ.get("CODEX_WEB_MAX_STEERS_PER_WINDOW") or "4")
-    except ValueError:
-        return 4
-    return max(1, min(value, 50))
 
 
-def _record_thread_steer(thread_id: str, *, now: float | None = None) -> None:
-    timestamp = time.time() if now is None else now
-    window = _steer_window_seconds()
-    recent = THREAD_STEER_TIMES.setdefault(thread_id, deque())
-    while recent and timestamp - recent[0] >= window:
-        recent.popleft()
-    if len(recent) >= _max_steers_per_window():
-        retry_after = max(1, int(window - (timestamp - recent[0])))
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "code": "thread_steer_rate_limited",
-                "threadId": thread_id,
-                "retryAfterSeconds": retry_after,
-            },
-        )
-    recent.append(timestamp)
 
 
 WORK_ITEM_WAKEUP_BATCH_HEADER = (

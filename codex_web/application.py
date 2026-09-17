@@ -48,6 +48,7 @@ from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.threads import ThreadService
+from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_timing import install_work_item_timing_policy
@@ -122,6 +123,7 @@ thread_execution_settings_service = install_thread_execution_settings_service(ap
 turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 autonomy_service = install_autonomy_service(app, core)
+turn_queue_policy = install_turn_queue_policy(app, core)
 turn_service = TurnService(core)
 
 # Preserve the small historical function surface still used by direct
