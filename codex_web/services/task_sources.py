@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from codex_web.models import TaskSourceIdentity, WorkItemStage
-
-if TYPE_CHECKING:
-    from codex_web.services.task_source_reconciliation import TaskSourceCanonicalProjection
 
 
 class TaskSourceCapability(StrEnum):
@@ -66,6 +63,17 @@ class TaskSourceEvent:
     def __post_init__(self) -> None:
         if not self.event_type.strip():
             raise ValueError("event_type must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSourceCanonicalProjection:
+    """Provider-neutral canonical facts produced by deterministic adapter mapping."""
+
+    identity: TaskSourceIdentity
+    stage: WorkItemStage | None = None
+    owner: str | None = None
+    owner_known: bool = True
+    source_state: str | None = None
 
 
 @runtime_checkable
