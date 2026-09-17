@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 
+from codex_web.models import WorkItemStage
 from codex_web.services.task_source_conformance import (
     TaskSourceConformanceError,
     TaskSourceConformanceSuite,
 )
-from codex_web.services.task_source_reconciliation import TaskSourceCanonicalProjection
 from codex_web.services.task_sources import (
     TaskSource,
+    TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
     TaskSourceEvent,
@@ -69,7 +70,7 @@ class _ReferenceTaskSource:
         self,
         snapshot: TaskSourceSnapshot,
         *,
-        current_stage: str | None = None,
+        current_stage: WorkItemStage | None = None,
     ) -> TaskSourceCanonicalProjection:
         return TaskSourceCanonicalProjection(
             identity=snapshot.identity,
@@ -101,6 +102,16 @@ class TaskSourceContractTests(unittest.IsolatedAsyncioTestCase):
         source = _ReferenceTaskSource()
         self.assertIsInstance(source, TaskSource)
         self.assertIs(self.conformance.validate_adapter(source), source)
+
+    def test_conformance_rejects_incomplete_adapter_protocol(self) -> None:
+        class IncompleteSource:
+            source_type = "reference"
+            source_instance = "local-test"
+            capabilities = TaskSourceCapabilities()
+
+        with self.assertRaises(TaskSourceConformanceError) as raised:
+            self.conformance.validate_adapter(IncompleteSource())
+        self.assertEqual(raised.exception.code, "protocol_mismatch")
 
     def test_identity_requires_provider_provenance(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_type"):
@@ -178,6 +189,17 @@ class TaskSourceContractTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskSourceConformanceError) as raised:
             self.conformance.validate_projection(source, source.snapshot, projection)
         self.assertEqual(raised.exception.code, "projection_identity_mismatch")
+
+    def test_conformance_rejects_noncanonical_projected_stage(self) -> None:
+        source = _ReferenceTaskSource()
+        projection = TaskSourceCanonicalProjection(
+            identity=source.identity,
+            stage="provider_done",  # type: ignore[arg-type]
+        )
+
+        with self.assertRaises(TaskSourceConformanceError) as raised:
+            self.conformance.validate_projection(source, source.snapshot, projection)
+        self.assertEqual(raised.exception.code, "invalid_canonical_stage")
 
     async def test_unsupported_write_operation_fails_before_provider_call(self) -> None:
         source = _ReferenceTaskSource()
