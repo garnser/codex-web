@@ -12,6 +12,11 @@ from codex_web.execution_contract_schema import (
 from codex_web.execution_contracts import ROLE_CONTRACTS
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.work_item_contracts import WorkItemContractService
+from codex_web.work_item_execution_models import (
+    WorkItemExecutionCheckpoint,
+    WorkItemExecutionLifecycle,
+    WorkItemUsageAttribution,
+)
 
 
 class ExecutionContractSchemaTests(unittest.TestCase):
@@ -38,17 +43,56 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(contract.schema_version, EXECUTION_CONTRACT_SCHEMA_VERSION)
+        self.assertEqual(contract.schema_version, "1.1")
         self.assertEqual(contract.work_item_ref, "group/app#42")
         self.assertEqual(contract.role_id, "james")
         self.assertEqual(contract.agent_id, "james")
         self.assertEqual(contract.target.repository, "group/app")
         self.assertEqual(contract.inputs.current_stage, "implementation_active")
         self.assertEqual(contract.inputs.artifact_state, "branch")
+        self.assertEqual(contract.inputs.retry_attempt, 0)
+        self.assertEqual(contract.inputs.retry_max_attempts, 3)
+        self.assertEqual(contract.accounting.work_item_ref, "group/app#42")
+        self.assertTrue(contract.accounting.usage_recording_required)
         self.assertEqual(contract.permissions.sandbox, "inherit")
         self.assertEqual(contract.permissions.approval_policy, "inherit")
         self.assertFalse(contract.permissions.can_weaken_controls)
         self.assertEqual(contract.expected_outputs, ROLE_CONTRACTS["james"].required_artifacts)
         self.assertEqual(contract.failure_conditions, ROLE_CONTRACTS["james"].failure_conditions)
+
+    def test_checkpoint_and_attribution_are_carried_without_replaying_history(self) -> None:
+        checkpoint = WorkItemExecutionCheckpoint(
+            id="checkpoint-4",
+            sequence=4,
+            created_at=4.0,
+            summary="Tests are green; prepare validation handoff.",
+            next_actions=["Open validation handoff."],
+        )
+        lifecycle = WorkItemExecutionLifecycle(
+            deadline_at=20.0,
+            latest_checkpoint=checkpoint,
+            checkpoint_history=[checkpoint],
+            usage=WorkItemUsageAttribution(goal_id="goal-7", decision_id="decision-2"),
+        )
+        lifecycle.retry.attempt = 2
+        lifecycle.retry.policy.max_attempts = 5
+
+        contract = execution_contract_for_work_item(
+            self._state(execution=lifecycle),
+            ROLE_CONTRACTS["james"],
+        )
+
+        self.assertEqual(contract.inputs.retry_attempt, 2)
+        self.assertEqual(contract.inputs.retry_max_attempts, 5)
+        self.assertEqual(contract.inputs.deadline_at, 20.0)
+        self.assertEqual(contract.inputs.checkpoint_id, "checkpoint-4")
+        self.assertEqual(
+            contract.inputs.checkpoint_summary,
+            "Tests are green; prepare validation handoff.",
+        )
+        self.assertEqual(contract.accounting.checkpoint_id, "checkpoint-4")
+        self.assertEqual(contract.accounting.goal_id, "goal-7")
+        self.assertEqual(contract.accounting.decision_id, "decision-2")
 
     def test_pending_handoff_makes_recipient_the_contract_agent(self) -> None:
         handoff = WorkItemHandoff(
@@ -99,7 +143,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
 
         public = contract.compact_public()
 
-        self.assertEqual(public["schema_version"], "1.0")
+        self.assertEqual(public["schema_version"], "1.1")
         self.assertEqual(public["target"], {})
         self.assertNotIn("branch", public["target"])
         self.assertNotIn("environment", public["target"])
@@ -117,7 +161,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         text = service.dispatch_text(state)
 
         self.assertEqual(contract.role_id, "james")
-        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.0)", text)
+        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.1)", text)
         self.assertIn("WORK ITEM group/app#42", text)
         self.assertNotIn('"expected_outputs"', text)
 
