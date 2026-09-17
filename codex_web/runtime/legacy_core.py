@@ -204,12 +204,6 @@ hub = EventHub()
 
 
 
-def _work_item_handoff_timeout_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS") or "900")
-    except ValueError:
-        return 900.0
-    return max(60.0, seconds)
 
 
 
@@ -218,28 +212,10 @@ def _work_item_handoff_timeout_seconds() -> float:
 
 
 
-def _work_item_progress_sla_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_PROGRESS_SLA_SECONDS") or "3600")
-    except ValueError:
-        return 3600.0
-    return max(300.0, seconds)
 
 
-def _release_validation_sla_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_RELEASE_VALIDATION_SLA_SECONDS") or "1800")
-    except ValueError:
-        return 1800.0
-    return max(300.0, seconds)
 
 
-def _accepted_handoff_owner_idle_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_ACCEPTED_HANDOFF_OWNER_IDLE_SECONDS") or "300")
-    except ValueError:
-        return 300.0
-    return max(60.0, seconds)
 
 
 def _devhealth_work_item_stats() -> dict[str, int]:
@@ -3153,18 +3129,6 @@ def _work_item_dispatch_text(state: WorkItemState) -> str:
     )
 
 
-def _work_item_sla_threshold_seconds(state: WorkItemState) -> float:
-    if (
-        state.handoff
-        and state.handoff.status == "accepted"
-        and _coerce_owner(state.current_owner) == _coerce_owner(state.handoff.to_agent)
-    ):
-        if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
-            return min(_release_validation_sla_seconds(), _accepted_handoff_owner_idle_seconds())
-        return min(_work_item_progress_sla_seconds(), _accepted_handoff_owner_idle_seconds())
-    if state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}:
-        return _release_validation_sla_seconds()
-    return _work_item_progress_sla_seconds()
 
 
 def _owner_activity_timestamp(state: WorkItemState) -> float:

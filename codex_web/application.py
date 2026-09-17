@@ -50,6 +50,7 @@ from codex_web.services.thread_execution_settings import install_thread_executio
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
+from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -119,6 +120,7 @@ auxiliary_state = install_auxiliary_state(app, core)
 codex_runtime = install_codex_runtime(app, core)
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(app, core)
+work_item_timing_policy = install_work_item_timing_policy(app, core)
 autonomy_service = install_autonomy_service(app, core)
 turn_service = TurnService(core)
 
