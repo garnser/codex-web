@@ -65,6 +65,19 @@ A backend/domain slice may merge before its UI slice when that separation is int
 7. For LLM/autonomy work, preserve the token-efficiency, trust-boundary, data-governance, and authority invariants below.
 8. Link the implementation PR to the relevant issue(s), including linked UI work when applicable, and state which acceptance criteria it satisfies.
 
+### Validation cadence
+
+Validation is intentionally tiered so development feedback stays fast without weakening the merge gate.
+
+1. **While iterating:** run the smallest focused tests that exercise the behavior being changed. Add or run the relevant Python test module(s), JavaScript syntax checks, and focused browser spec(s) as applicable. Do not rebuild Docker or run the complete browser suite after every intermediate commit unless the change directly requires it or you are debugging a failure.
+2. **Before pushing a meaningful PR update:** run the full Python unit suite locally when practical; it is expected to remain a fast deterministic gate. Run relevant browser specs for frontend behavior. Let CI provide the clean-environment Chromium and Docker validation.
+3. **Run Docker locally when relevant:** Dockerfile/Compose changes, dependency/runtime packaging, startup/liveness behavior, container path/permission changes, Codex pinning, or investigation of a failing `docker-smoke` CI job. A normal service/model/test edit does not require a local image rebuild after every commit.
+4. **CI is the full gate:** PR CI runs independent `unit-static`, `chromium`, and `docker-smoke` jobs. They may execute in parallel and superseded runs may be cancelled when a newer commit exists; only the current head matters.
+5. **Before merge and issue closure:** all applicable CI jobs for the current PR head must be green. Never interpret a focused development test as a replacement for the final clean-environment gate.
+6. **CI/test-infrastructure changes:** observe a green workflow on the changed pipeline itself before treating the optimization as complete.
+
+The goal is rapid iteration plus one authoritative clean-environment validation at the delivery boundary, not repeated expensive validation after every edit.
+
 ### Completion and status rules
 
 1. Do **not** close an issue merely because code exists on a branch.
