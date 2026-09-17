@@ -14,6 +14,8 @@ services:
     environment:
       CODEX_WEB_HOST: 0.0.0.0
       CODEX_WEB_PORT: 8765
+      CODEX_WEB_WORKSPACE_ROOT: /workspace
+      CODEX_WEB_WORKSPACE_SOURCE_ROOT: ${CODEX_WORKSPACE:-}
     ports:
       - "${CODEX_WEB_BIND:-127.0.0.1}:${CODEX_WEB_PORT:-8765}:8765"
     volumes:
