@@ -1,0 +1,83 @@
+name: publish-base-image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Dockerfile.base
+      - requirements.txt
+      - requirements.lock
+      - .env.example
+      - .github/workflows/publish-base-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-base-image-main
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: dockerhub-base
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Resolve runtime version
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          codex_version="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"
+          test -n "$codex_version"
+          echo "codex_version=$codex_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build base image
+        shell: bash
+        env:
+          IMAGE: garnser/codex-web
+          CODEX_VERSION: ${{ steps.runtime.outputs.codex_version }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --file Dockerfile.base \
+            --build-arg "CODEX_VERSION=${CODEX_VERSION}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:base" \
+            --tag "${IMAGE}:base-${GITHUB_SHA}" \
+            .
+
+      - name: Verify base image
+        shell: bash
+        env:
+          IMAGE: garnser/codex-web
+          CODEX_VERSION: ${{ steps.runtime.outputs.codex_version }}
+        run: |
+          set -euo pipefail
+          actual="$(docker run --rm --entrypoint codex "${IMAGE}:base" --version)"
+          echo "Expected Codex ${CODEX_VERSION}; base image reports: ${actual}"
+          printf '%s' "$actual" | grep -F "$CODEX_VERSION"
+          docker run --rm --entrypoint python "${IMAGE}:base" -c 'import fastapi, pydantic, uvicorn; print("Python runtime dependencies OK")'
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish trusted base tags
+        shell: bash
+        env:
+          IMAGE: garnser/codex-web
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE}:base"
+          docker push "${IMAGE}:base-${GITHUB_SHA}"
+          docker buildx imagetools inspect "${IMAGE}:base"
