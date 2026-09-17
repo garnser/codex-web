@@ -162,7 +162,6 @@ class WorkItemProgressUpdate(BaseModel):
     actor: str | None = None
     current_owner: str | None = None
     current_stage: WorkItemStage | None = None
-    terminal_outcome: WorkItemTerminalOutcome | None = None
     next_action: str | None = None
     next_owner: str | None = None
     blocker: str | None = None
