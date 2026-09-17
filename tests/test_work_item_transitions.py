@@ -61,8 +61,8 @@ class WorkItemTransitionPolicyTests(unittest.TestCase):
                     self.policy.validate("closed", target_stage, source="manual-progress")
                 self.assertEqual(raised.exception.detail["allowed_targets"], ["closed"])
 
-    def test_implementation_cannot_skip_directly_to_validation_running_or_close(self) -> None:
-        for target_stage in ("validation_running", "ready_to_close", "closed"):
+    def test_implementation_cannot_skip_directly_to_validation_running_or_ready_to_close(self) -> None:
+        for target_stage in ("validation_running", "ready_to_close"):
             with self.subTest(target=target_stage):
                 with self.assertRaises(HTTPException):
                     self.policy.validate(
@@ -71,12 +71,13 @@ class WorkItemTransitionPolicyTests(unittest.TestCase):
                         source="manual-progress",
                     )
 
-    def test_blocked_lane_can_resume_any_non_terminal_lane(self) -> None:
-        expected = set(WORK_ITEM_STAGES) - {"closed"}
-        self.assertEqual(
-            set(self.policy.allowed_targets("failed_with_action_owner")),
-            expected,
-        )
+    def test_all_active_lanes_can_close_but_only_external_projection_can_reopen(self) -> None:
+        for current_stage in WORK_ITEM_STAGES:
+            if current_stage == "closed":
+                continue
+            with self.subTest(current=current_stage):
+                self.assertIn("closed", self.policy.allowed_targets(current_stage))
+        self.assertEqual(self.policy.allowed_targets("closed"), frozenset({"closed"}))
 
 
 class WorkItemTransitionServiceTests(unittest.TestCase):
@@ -98,22 +99,47 @@ class WorkItemTransitionServiceTests(unittest.TestCase):
         )
         self.assertIs(result, self.state)
         self.assertEqual(self.state.current_stage, "ready_for_validation")
+        self.assertIsNone(self.state.terminal_outcome)
 
-    def test_invalid_manual_transition_rejects_without_mutating_stage(self) -> None:
-        with self.assertRaises(HTTPException):
-            self.service.transition(self.state, "closed", source="test")
-        self.assertEqual(self.state.current_stage, "implementation_active")
+    def test_ready_to_close_becomes_completed(self) -> None:
+        self.state.current_stage = "ready_to_close"
+        self.service.transition(self.state, "closed", source="test")
+        self.assertEqual(self.state.current_stage, "closed")
+        self.assertEqual(self.state.terminal_outcome, "completed")
 
-    def test_external_projection_uses_same_mutator_but_can_reopen_closed_lane(self) -> None:
+    def test_blocked_lane_becomes_terminal_failed_when_closed(self) -> None:
+        self.state.current_stage = "failed_with_action_owner"
+        self.service.transition(self.state, "closed", source="test")
+        self.assertEqual(self.state.current_stage, "closed")
+        self.assertEqual(self.state.terminal_outcome, "failed")
+
+    def test_other_active_lane_becomes_cancelled_when_closed(self) -> None:
+        self.service.transition(self.state, "closed", source="test")
+        self.assertEqual(self.state.current_stage, "closed")
+        self.assertEqual(self.state.terminal_outcome, "cancelled")
+
+    def test_external_projection_does_not_guess_terminal_outcome(self) -> None:
+        self.service.transition(
+            self.state,
+            "closed",
+            source="external-test",
+            external_projection=True,
+        )
+        self.assertEqual(self.state.current_stage, "closed")
+        self.assertIsNone(self.state.terminal_outcome)
+
+    def test_external_reopen_clears_previous_terminal_outcome(self) -> None:
         self.state.current_stage = "closed"
+        self.state.terminal_outcome = "completed"
         result = self.service.transition(
             self.state,
             "implementation_active",
-            source="gitlab-test",
+            source="external-test",
             external_projection=True,
         )
         self.assertIs(result, self.state)
         self.assertEqual(self.state.current_stage, "implementation_active")
+        self.assertIsNone(self.state.terminal_outcome)
 
 
 class _StateHost:
@@ -159,7 +185,7 @@ class WorkItemStateMachineTransitionTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             self.machine._structured_progress(
                 self.state.ref,
-                WorkItemProgressUpdate(actor="dana", current_stage="closed"),
+                WorkItemProgressUpdate(actor="dana", current_stage="validation_running"),
             )
 
         self.assertEqual(raised.exception.status_code, 409)
@@ -173,6 +199,17 @@ class WorkItemStateMachineTransitionTests(unittest.TestCase):
         )
         self.assertEqual(result.current_stage, "ready_for_validation")
         self.assertEqual(self.host.states[self.state.ref].current_stage, "ready_for_validation")
+
+    def test_direct_state_machine_close_persists_cancelled_outcome(self) -> None:
+        result = self.machine._structured_progress(
+            self.state.ref,
+            WorkItemProgressUpdate(actor="dana", current_stage="closed"),
+        )
+        self.assertEqual(result.current_stage, "closed")
+        self.assertEqual(result.terminal_outcome, "cancelled")
+        persisted = self.host.states[self.state.ref]
+        self.assertEqual(persisted.terminal_outcome, "cancelled")
+        self.assertIsNotNone(persisted.closed_at)
 
 
 class WorkItemServiceCompatibilityTests(unittest.IsolatedAsyncioTestCase):
