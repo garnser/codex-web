@@ -33,6 +33,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
 from codex_web.services.bot_connections import install_bot_connection_service
@@ -123,6 +124,7 @@ codex_runtime = install_codex_runtime(app, core)
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
+watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
 autonomy_service = install_autonomy_service(app, core)
 turn_queue_policy = install_turn_queue_policy(app, core)
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
