@@ -866,23 +866,8 @@ def _release_stale_active_turn(thread_id: str | None, reason: str) -> None:
     _clear_thread_active(thread_id)
 
 
-def _master_binding(project_id: str) -> BotBinding | None:
-    masters = [binding for binding in _load_bot_bindings() if binding.project_id == project_id and binding.is_master]
-    if not masters:
-        return None
-    return max(masters, key=lambda binding: binding.updated_at)
 
 
-def _orchestrator_binding(project_id: str) -> BotBinding | None:
-    masters = sorted(
-        [binding for binding in _load_bot_bindings() if binding.project_id == project_id and binding.is_master],
-        key=lambda binding: binding.updated_at,
-        reverse=True,
-    )
-    for binding in masters:
-        if (_binding_report_name(binding) or "").strip().lower() in {"orchestrator", "codex"}:
-            return binding
-    return masters[0] if masters else None
 
 
 async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str) -> dict[str, Any]:
@@ -1002,75 +987,16 @@ async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str
     return {"ok": True, "queued": False, "threadId": binding.thread_id, "turn": turn}
 
 
-def _find_bot_binding(provider: str, external_conversation_id: str) -> BotBinding | None:
-    bindings = _bindings_for_connection(provider, external_conversation_id)
-    if len(bindings) == 1:
-        return bindings[0]
-    return None
 
 
-def _first_binding_for_connection(provider: str, external_conversation_id: str | None) -> BotBinding | None:
-    if not external_conversation_id:
-        return None
-    bindings = _bindings_for_connection(provider, external_conversation_id)
-    return bindings[0] if bindings else None
 
 
-def _bindings_for_connection(provider: str, external_conversation_id: str) -> list[BotBinding]:
-    normalized_provider = provider.lower()
-    return [
-        binding
-        for binding in _load_bot_bindings()
-        if binding.provider == normalized_provider and binding.external_conversation_id == external_conversation_id
-    ]
 
 
-def _bindings_for_thread(thread_id: str) -> list[BotBinding]:
-    return [binding for binding in _load_bot_bindings() if binding.thread_id == thread_id]
 
 
-def _bindings_for_project(provider: str, project_id: str) -> list[BotBinding]:
-    normalized_provider = provider.lower()
-    return [
-        binding
-        for binding in _load_bot_bindings()
-        if binding.provider == normalized_provider and binding.project_id == project_id
-    ]
 
 
-def _primary_binding_for_project(
-    provider: str,
-    project_id: str,
-    external_conversation_id: str | None = None,
-) -> BotBinding | None:
-    masters = [binding for binding in _bindings_for_project(provider, project_id) if binding.is_master]
-    if not masters:
-        return None
-    preferred_thread = next(
-        (
-            binding.thread_id
-            for binding in masters
-            if (_binding_prefix(binding) or "").strip().lower() in {"orchestrator", "codex"}
-        ),
-        None,
-    )
-    if not preferred_thread:
-        thread_ids = {binding.thread_id for binding in masters}
-        if len(thread_ids) == 1:
-            preferred_thread = next(iter(thread_ids))
-    if not preferred_thread:
-        preferred_thread = max(masters, key=lambda binding: binding.updated_at).thread_id
-    same_channel = [
-        binding
-        for binding in _bindings_for_project(provider, project_id)
-        if binding.thread_id == preferred_thread and binding.external_conversation_id == external_conversation_id
-    ]
-    if same_channel:
-        return same_channel[0]
-    for binding in masters:
-        if binding.thread_id == preferred_thread:
-            return binding
-    return None
 
 
 def _binding_for_external_target(

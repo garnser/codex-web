@@ -32,6 +32,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
 from codex_web.services.bot_connections import install_bot_connection_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
@@ -125,6 +126,7 @@ core.start_turn = turn_service.start
 slack_client = SlackClient()
 telegram_client = TelegramClient()
 bot_connection_service = install_bot_connection_service(app, core)
+bot_binding_selection_service = install_bot_binding_selection_service(app, core)
 bot_runtime = install_bot_runtime(
     app,
     core,
