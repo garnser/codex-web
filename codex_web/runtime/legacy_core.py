@@ -360,32 +360,6 @@ def _leading_owner_cue_in_action(next_action: str | None) -> str | None:
     return None
 
 
-def _gitlab_event_target_agents(
-    payload: dict[str, Any],
-    project_settings: GitLabProjectRoutingSettings,
-    projected_state: WorkItemState | None,
-) -> list[str]:
-    if projected_state:
-        findings = _work_item_split_brain_findings(projected_state)
-        if findings:
-            return ["orchestrator"]
-        if projected_state.handoff and projected_state.handoff.status == "pending":
-            recipient = _coerce_owner(projected_state.handoff.to_agent)
-            if recipient:
-                return [recipient]
-        if projected_state.current_stage == "failed_with_action_owner":
-            owner = _coerce_owner(projected_state.current_owner or projected_state.next_owner)
-            if owner:
-                return [owner]
-        owner = _coerce_owner(projected_state.current_owner)
-        if owner and projected_state.current_stage in {
-            "implementation_active",
-            "ready_for_validation",
-            "validation_running",
-            "ready_to_close",
-        }:
-            return [owner]
-    return _gitlab_routing_agents(payload, project_settings)
 
 
 def _maybe_infer_pending_handoff_from_gitlab_projection(
@@ -678,14 +652,6 @@ def _work_item_contract_binding(thread_id: str | None) -> BotBinding | None:
     return max(bindings, key=lambda item: item.updated_at) if bindings else None
 
 
-def _gitlab_routing_enabled_for_project(project_id: str | None) -> bool:
-    if not project_id:
-        return False
-    settings = _load_gitlab_routing_settings()
-    if not settings.enabled:
-        return False
-    project_settings = settings.projects.get(project_id)
-    return bool(project_settings and project_settings.enabled)
 
 
 def _work_item_contract_instructions(thread_id: str | None) -> str | None:
@@ -1218,39 +1184,10 @@ def _clone_binding_to_known_channel(source: BotBinding, channel_id: str) -> BotB
     )
 
 
-def _gitlab_routing_agents(payload: dict[str, Any], project_settings: GitLabProjectRoutingSettings) -> list[str]:
-    explicit = _normalize_string_list(project_settings.route_agents)
-    return explicit or _gitlab_owner_agents(payload, project_settings)
 
 
-def _gitlab_routing_bindings_for_agent(
-    agent: str,
-    project_id: str,
-    project_settings: GitLabProjectRoutingSettings,
-) -> list[BotBinding]:
-    binding = _binding_for_agent(agent, project_id)
-    if not binding:
-        return []
-    route_channels = _normalize_string_list(project_settings.channel_ids)
-    if not route_channels:
-        return [binding]
-    preferred_channels = _preferred_agent_conversations(agent, project_id, route_channels)
-    if not preferred_channels:
-        return []
-    return [_clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
 
 
-def _gitlab_routing_bindings_for_master(
-    project_id: str,
-    project_settings: GitLabProjectRoutingSettings,
-) -> list[BotBinding]:
-    master = _master_binding(project_id)
-    if not master:
-        return []
-    route_channels = _normalize_string_list(project_settings.channel_ids)
-    if not route_channels or master.provider != "slack":
-        return [master]
-    return [_clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
 
 
 def _binding_for_agent(
@@ -3370,240 +3307,36 @@ def _verify_gitlab_webhook(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid GitLab webhook token")
 
 
-def _gitlab_event_id(request: Request, payload: dict[str, Any]) -> str:
-    for header in ("x-gitlab-event-uuid", "x-request-id"):
-        value = request.headers.get(header)
-        if value:
-            return value
-    attrs = payload.get("object_attributes") or {}
-    project = payload.get("project") or {}
-    parts = [
-        str(payload.get("object_kind") or payload.get("event_name") or "gitlab"),
-        str(project.get("id") or project.get("path_with_namespace") or ""),
-        str(attrs.get("id") or attrs.get("iid") or attrs.get("sha") or attrs.get("commit_id") or ""),
-        str(attrs.get("updated_at") or attrs.get("finished_at") or attrs.get("created_at") or ""),
-        str(attrs.get("action") or attrs.get("state") or attrs.get("status") or ""),
-    ]
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def _remember_gitlab_event(event_id: str) -> bool:
-    now = time.time()
-    for key, seen_at in list(GITLAB_EVENT_IDS.items()):
-        if now - seen_at > 3600:
-            GITLAB_EVENT_IDS.pop(key, None)
-    if event_id in GITLAB_EVENT_IDS:
-        return False
-    GITLAB_EVENT_IDS[event_id] = now
-    return True
 
 
-def _support_servicedesk_project_paths() -> list[str]:
-    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATHS") or os.environ.get(
-        "CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH"
-    )
-    values = raw.split(",") if raw else ["veridataops/support"]
-    return [value.strip().lower().strip("/") for value in values if value.strip()]
 
 
-def _support_servicedesk_owner_agent() -> str:
-    return (os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_OWNER_AGENT") or "james").strip().lower() or "james"
 
 
-def _support_servicedesk_project_matches(project_path: str) -> bool:
-    normalized = project_path.strip().lower().strip("/")
-    return bool(normalized and normalized in _support_servicedesk_project_paths())
 
 
-def _support_servicedesk_ticket_key(payload: dict[str, Any]) -> str | None:
-    attrs = payload.get("object_attributes") or {}
-    project = payload.get("project") or {}
-    project_id = project.get("id") or project.get("path_with_namespace")
-    iid = attrs.get("iid")
-    if project_id is None or iid is None:
-        return None
-    return f"{project_id}:{iid}"
 
 
-def _is_support_servicedesk_ticket_payload(payload: dict[str, Any]) -> bool:
-    kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
-    if kind != "issue":
-        return False
-    project_path = str((payload.get("project") or {}).get("path_with_namespace") or "")
-    if not _support_servicedesk_project_matches(project_path):
-        return False
-    attrs = payload.get("object_attributes") or {}
-    state = str(attrs.get("state") or payload.get("state") or "").lower()
-    action = str(attrs.get("action") or "").lower()
-    if action and action not in {"open", "reopen", "sweep"}:
-        return False
-    return bool(attrs.get("iid")) and state not in {"closed", "merged"}
 
 
-def _remember_support_servicedesk_ticket(payload: dict[str, Any], source: str, event_id: str | None = None) -> bool:
-    ticket_key = _support_servicedesk_ticket_key(payload)
-    if not ticket_key:
-        return False
-    state = _load_support_servicedesk_state()
-    tickets = state.setdefault("tickets", {})
-    now = time.time()
-    attrs = payload.get("object_attributes") or {}
-    project = payload.get("project") or {}
-    if ticket_key in tickets:
-        tickets[ticket_key]["last_seen_at"] = now
-        tickets[ticket_key]["last_source"] = source
-        _save_support_servicedesk_state(state)
-        return False
-    tickets[ticket_key] = {
-        "first_seen_at": now,
-        "last_seen_at": now,
-        "first_source": source,
-        "last_source": source,
-        "event_id": event_id,
-        "project": project.get("path_with_namespace") or project.get("id"),
-        "iid": attrs.get("iid"),
-        "title": attrs.get("title"),
-        "url": attrs.get("url") or attrs.get("web_url"),
-    }
-    _save_support_servicedesk_state(state)
-    return True
 
 
-def _support_servicedesk_ticket_seen(payload: dict[str, Any]) -> bool:
-    ticket_key = _support_servicedesk_ticket_key(payload)
-    if not ticket_key:
-        return False
-    return ticket_key in _load_support_servicedesk_state().get("tickets", {})
 
 
-def _format_support_servicedesk_prompt(payload: dict[str, Any], source: str, agent: str) -> str:
-    attrs = payload.get("object_attributes") or {}
-    labels = _gitlab_label_names(payload)
-    url = _gitlab_url(payload)
-    lines = [
-        f"Support ServiceDesk ticket intake for {agent}: {_gitlab_reference(payload)}",
-        f"Intake source: {source}",
-    ]
-    if labels:
-        lines.append("Labels: " + ", ".join(labels))
-    if url:
-        lines.append(f"URL: {url}")
-    if attrs.get("description"):
-        lines.append("Ticket description is available in GitLab; inspect the linked ticket only as needed.")
-    lines.extend(
-        [
-            "",
-            "Handle Support intake triage for this new ticket. Do not change the ticket-response workflow.",
-            "Do not poll generic queues. Do not use Slack tools, Slack connectors, MCP Slack apps, or direct Slack API calls.",
-            "Keep any GitLab update concise and avoid repeating prior evidence.",
-        ]
-    )
-    return "\n".join(lines)
 
 
-async def _dispatch_support_servicedesk_ticket(
-    payload: dict[str, Any],
-    *,
-    source: str,
-    event_id: str | None = None,
-    settings: GitLabRoutingSettings | None = None,
-) -> dict[str, Any]:
-    if not _is_support_servicedesk_ticket_payload(payload):
-        return {"ok": True, "ignored": True, "reason": "not_support_servicedesk_ticket"}
-    if _support_servicedesk_ticket_seen(payload):
-        return {"ok": True, "ignored": True, "reason": "duplicate_support_ticket", "ticketKey": _support_servicedesk_ticket_key(payload)}
-
-    project_id, project_settings = _gitlab_project_settings_for_payload(payload, settings)
-    if not project_id or not project_settings or not project_settings.enabled:
-        _append_bot_event(
-            {
-                "type": "support_servicedesk_ticket_ignored",
-                "source": source,
-                "event_id": event_id,
-                "reason": "no_enabled_gitlab_project_route",
-                "ticket_key": _support_servicedesk_ticket_key(payload),
-            }
-        )
-        return {"ok": True, "accepted": False, "reason": "no_enabled_gitlab_project_route"}
-
-    agent = next(iter(_gitlab_owner_agents(payload, project_settings)), _support_servicedesk_owner_agent())
-    binding = _binding_for_agent(agent, project_id) or _master_binding(project_id)
-    if not binding:
-        _append_bot_event(
-            {
-                "type": "support_servicedesk_ticket_ignored",
-                "source": source,
-                "event_id": event_id,
-                "reason": "no_matching_binding",
-                "agent": agent,
-                "ticket_key": _support_servicedesk_ticket_key(payload),
-            }
-        )
-        return {"ok": False, "accepted": False, "reason": "no_matching_binding", "agent": agent}
-
-    _remember_support_servicedesk_ticket(payload, source, event_id)
-    result = await _dispatch_event_to_binding(
-        binding,
-        _format_support_servicedesk_prompt(payload, source, agent),
-        source=f"gitlab:servicedesk:{source}",
-    )
-    target = {
-        "agent": agent,
-        "threadId": result.get("threadId"),
-        "queued": result.get("queued", False),
-        "ok": result.get("ok", False),
-    }
-    _append_bot_event(
-        {
-            "type": "support_servicedesk_ticket_dispatched",
-            "source": source,
-            "event_id": event_id,
-            "project_id": project_id,
-            "ticket_key": _support_servicedesk_ticket_key(payload),
-            "target": target,
-        }
-    )
-    await hub.publish(
-        {
-            "type": "support.servicedesk.ticket",
-            "eventId": event_id,
-            "projectId": project_id,
-            "ticketKey": _support_servicedesk_ticket_key(payload),
-            "target": target,
-        }
-    )
-    return {"ok": True, "accepted": True, "eventId": event_id, "ticketKey": _support_servicedesk_ticket_key(payload), "targets": [target]}
 
 
-def _gitlab_api_base_url() -> str:
-    base = os.environ.get("CODEX_WEB_GITLAB_BASE_URL") or os.environ.get("GITLAB_BASE_URL") or "https://dev.veridataops.com/gitlab"
-    return base.rstrip("/")
 
 
-def _gitlab_api_token() -> str | None:
-    return os.environ.get("CODEX_WEB_GITLAB_TOKEN") or os.environ.get("GITLAB_TOKEN")
 
 
-def _support_servicedesk_sweep_project() -> str:
-    return (
-        os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_ID")
-        or os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH")
-        or "veridataops/support"
-    ).strip()
 
 
-def _support_servicedesk_sweep_interval() -> int:
-    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_INTERVAL_SECONDS", "3600")
-    with contextlib.suppress(ValueError):
-        return max(0, int(raw))
-    return 3600
 
 
-def _support_servicedesk_sweep_lookback_hours() -> int:
-    raw = os.environ.get("CODEX_WEB_SUPPORT_SERVICEDESK_SWEEP_LOOKBACK_HOURS", "0")
-    with contextlib.suppress(ValueError):
-        return max(0, int(raw))
-    return 0
 
 
 def _gitlab_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
@@ -3624,30 +3357,6 @@ def _gitlab_api_get(path: str, params: dict[str, Any] | None = None) -> Any:
         raise RuntimeError(f"GitLab API request failed for {path}: {exc.reason}") from exc
 
 
-def _issue_to_support_servicedesk_payload(issue: dict[str, Any], project_path: str, project_id: Any) -> dict[str, Any]:
-    labels = issue.get("labels") or []
-    return {
-        "object_kind": "issue",
-        "event_name": "issue",
-        "project": {
-            "id": project_id,
-            "path_with_namespace": project_path,
-            "web_url": issue.get("references", {}).get("full"),
-        },
-        "object_attributes": {
-            "id": issue.get("id"),
-            "iid": issue.get("iid"),
-            "title": issue.get("title"),
-            "description": issue.get("description"),
-            "state": issue.get("state"),
-            "action": "sweep",
-            "created_at": issue.get("created_at"),
-            "updated_at": issue.get("updated_at"),
-            "url": issue.get("web_url"),
-            "web_url": issue.get("web_url"),
-        },
-        "labels": [{"title": label} for label in labels if isinstance(label, str)],
-    }
 
 
 def _support_servicedesk_sweep_payloads() -> list[dict[str, Any]]:
@@ -3675,183 +3384,28 @@ def _support_servicedesk_sweep_payloads() -> list[dict[str, Any]]:
     return [_issue_to_support_servicedesk_payload(issue, project_path, project_id) for issue in issues if isinstance(issue, dict)]
 
 
-async def _run_support_servicedesk_sweep_once() -> dict[str, Any]:
-    payloads = await asyncio.to_thread(_support_servicedesk_sweep_payloads)
-    results: list[dict[str, Any]] = []
-    settings = _load_gitlab_routing_settings()
-    for payload in payloads:
-        result = await _dispatch_support_servicedesk_ticket(payload, source="sweep", settings=settings)
-        results.append(result)
-    state = _load_support_servicedesk_state()
-    state["last_sweep_at"] = time.time()
-    _save_support_servicedesk_state(state)
-    accepted = sum(1 for result in results if result.get("accepted"))
-    duplicates = sum(1 for result in results if result.get("reason") == "duplicate_support_ticket")
-    return {"ok": True, "checked": len(payloads), "accepted": accepted, "duplicates": duplicates, "results": results}
 
 
 
 
-def _gitlab_semantic_dedupe_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_GITLAB_SEMANTIC_DEDUPE_SECONDS") or "300")
-    except ValueError:
-        return 300.0
-    return max(30.0, seconds)
 
 
-def _gitlab_semantic_key_for_state(
-    ref: str | None,
-    *,
-    kind: str,
-    labels: list[str],
-    state: str | None,
-) -> str | None:
-    if not ref:
-        return None
-    payload = {
-        "ref": ref,
-        "kind": (kind or "issue").strip().lower(),
-        "labels": sorted({label.strip() for label in labels if label and label.strip()}),
-        "state": (state or "opened").strip().lower(),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _gitlab_semantic_key(payload: dict[str, Any]) -> str | None:
-    ref = _project_issue_ref(payload)
-    if not ref:
-        return None
-    attrs = payload.get("object_attributes") or {}
-    kind = str(payload.get("object_kind") or payload.get("event_name") or "issue")
-    state = str(attrs.get("state") or attrs.get("status") or "opened")
-    return _gitlab_semantic_key_for_state(
-        ref,
-        kind=kind,
-        labels=_gitlab_label_names(payload),
-        state=state,
-    )
 
 
-def _remember_gitlab_semantic_key(key: str | None, *, reason: str) -> bool:
-    if not key:
-        return True
-    now = time.time()
-    ttl = _gitlab_semantic_dedupe_seconds()
-    events = {
-        stored_key: seen_at
-        for stored_key, seen_at in _load_gitlab_semantic_events().items()
-        if now - seen_at <= max(ttl, 3600.0)
-    }
-    seen_at = events.get(key)
-    if seen_at is not None and now - seen_at < ttl:
-        _append_bot_event(
-            {
-                "type": "gitlab_semantic_duplicate_ignored",
-                "reason": reason,
-                "semantic_key": key,
-                "age_seconds": now - seen_at,
-            }
-        )
-        _save_gitlab_semantic_events(events)
-        return False
-    events[key] = now
-    _save_gitlab_semantic_events(events)
-    return True
 
 
-def _remember_gitlab_semantic_issue_state(
-    ref: str,
-    *,
-    labels: list[str],
-    state: str | None,
-    reason: str,
-) -> None:
-    key = _gitlab_semantic_key_for_state(ref, kind="issue", labels=labels, state=state)
-    if not key:
-        return
-    events = _load_gitlab_semantic_events()
-    events[key] = time.time()
-    _save_gitlab_semantic_events(events)
-    _append_bot_event({"type": "gitlab_semantic_state_recorded", "reason": reason, "ref": ref})
 
 
-def _gitlab_label_names(payload: dict[str, Any]) -> list[str]:
-    labels: list[str] = []
-
-    def add(value: Any) -> None:
-        if isinstance(value, str) and value:
-            labels.append(value)
-        elif isinstance(value, dict):
-            name = value.get("title") or value.get("name")
-            if name:
-                labels.append(str(name))
-
-    attrs = payload.get("object_attributes") or {}
-    for source in (
-        payload.get("labels"),
-        attrs.get("labels"),
-        (payload.get("changes") or {}).get("labels", {}).get("current"),
-    ):
-        if isinstance(source, list):
-            for item in source:
-                add(item)
-    for key in ("labels", "label_names"):
-        source = attrs.get(key)
-        if isinstance(source, list):
-            for item in source:
-                add(item)
-    return sorted({label.strip() for label in labels if label and label.strip()})
 
 
-def _gitlab_owner_agents(payload: dict[str, Any], project_settings: GitLabProjectRoutingSettings) -> list[str]:
-    owners: list[str] = []
-    for label in _gitlab_label_names(payload):
-        match = re.match(r"owner::(.+)", label.strip(), re.IGNORECASE)
-        if match:
-            owners.append(match.group(1).strip().lower())
-    if owners:
-        return sorted(set(owners))
-    kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
-    return project_settings.fallback_agents_by_kind.get(kind, [])
 
 
-def _gitlab_project_path_matches(project_path: str, configured_path: str) -> bool:
-    project_path = project_path.strip().lower().strip("/")
-    configured_path = configured_path.strip().lower().strip("/")
-    if not project_path or not configured_path:
-        return False
-    return project_path == configured_path or project_path.startswith(f"{configured_path}/")
 
 
-def _gitlab_group_path(project_settings: GitLabProjectRoutingSettings) -> str | None:
-    for path in project_settings.project_paths:
-        normalized = (path or "").strip().strip("/")
-        if not normalized:
-            continue
-        return normalized.split("/", 1)[0]
-    return None
 
 
-def _gitlab_token_for_project(project_id: str) -> str | None:
-    env_token = (os.environ.get("CODEX_WEB_GITLAB_TOKEN") or "").strip()
-    if env_token:
-        return env_token
-    with contextlib.suppress(Exception):
-        secrets_path = Path(_project(project_id).path) / "CODEX-SECRETS.md"
-        section = False
-        for line in secrets_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("### "):
-                if line.strip() == "### GitLab codexops":
-                    section = True
-                    continue
-                if section:
-                    break
-            if section and line.startswith("- Token: "):
-                token = line.split(": ", 1)[1].strip()
-                if token:
-                    return token
-    return None
 
 
 def _gitlab_group_issues(
@@ -3893,33 +3447,10 @@ def _sync_work_item_states_from_gitlab() -> dict[str, int]:
     return {"synced": synced, "refs": len(seen_refs)}
 
 
-def _gitlab_project_settings_for_payload(
-    payload: dict[str, Any],
-    settings: GitLabRoutingSettings | None = None,
-) -> tuple[str | None, GitLabProjectRoutingSettings | None]:
-    project_path = ((payload.get("project") or {}).get("path_with_namespace") or "").lower()
-    settings = settings or _load_gitlab_routing_settings()
-    for project_id, project_settings in settings.projects.items():
-        if any(_gitlab_project_path_matches(project_path, path) for path in project_settings.project_paths):
-            return project_id, project_settings
-    return None, None
 
 
-def _gitlab_reference(payload: dict[str, Any]) -> str:
-    attrs = payload.get("object_attributes") or {}
-    project = payload.get("project") or {}
-    kind = str(payload.get("object_kind") or payload.get("event_name") or "event").replace("_", " ")
-    project_name = project.get("path_with_namespace") or project.get("name") or "unknown project"
-    iid = attrs.get("iid")
-    title = attrs.get("title") or attrs.get("name") or attrs.get("ref") or attrs.get("status") or ""
-    if iid:
-        return f"{project_name} {kind} !/#{iid}: {title}".strip()
-    return f"{project_name} {kind}: {title}".strip()
 
 
-def _gitlab_url(payload: dict[str, Any]) -> str | None:
-    attrs = payload.get("object_attributes") or {}
-    return attrs.get("url") or attrs.get("web_url") or (payload.get("project") or {}).get("web_url")
 
 
 def _work_item_stage_from_gitlab_payload(payload: dict[str, Any]) -> str:
