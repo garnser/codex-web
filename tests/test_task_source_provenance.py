@@ -23,7 +23,8 @@ class _GitLab:
 
 
 class _StateMachine:
-    pass
+    def _upsert_work_item_state_from_gitlab_event(self, payload, *, project_id):
+        return None
 
 
 class _Projector:
@@ -32,7 +33,7 @@ class _Projector:
         self.source = None
         self.snapshot = None
 
-    async def upsert(self, source, snapshot, *, project_id):
+    def upsert(self, source, snapshot, *, project_id):
         self.source = source
         self.snapshot = snapshot
         self.saved = WorkItemState(
