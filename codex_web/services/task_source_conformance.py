@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
-from codex_web.models import TaskSourceIdentity
+from codex_web.models import TaskSourceIdentity, WorkItemStage
 from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import (
     TaskSource,
@@ -60,6 +60,12 @@ class TaskSourceConformanceSuite:
         identity: TaskSourceIdentity,
     ) -> TaskSourceIdentity:
         self.validate_adapter(source)
+        if not isinstance(identity, TaskSourceIdentity):
+            raise TaskSourceConformanceError(
+                "invalid_identity",
+                "Normalized task-source identity must be TaskSourceIdentity.",
+            )
+
         expected_type = str(source.source_type).strip().casefold()
         actual_type = identity.source_type.strip().casefold()
         if actual_type != expected_type:
@@ -82,6 +88,11 @@ class TaskSourceConformanceSuite:
         source: TaskSource,
         snapshot: TaskSourceSnapshot,
     ) -> TaskSourceSnapshot:
+        if not isinstance(snapshot, TaskSourceSnapshot):
+            raise TaskSourceConformanceError(
+                "invalid_snapshot",
+                "Adapter discovery/read output must be TaskSourceSnapshot.",
+            )
         self.validate_identity(source, snapshot.identity)
         return snapshot
 
@@ -90,6 +101,11 @@ class TaskSourceConformanceSuite:
         source: TaskSource,
         event: TaskSourceEvent,
     ) -> TaskSourceEvent:
+        if not isinstance(event, TaskSourceEvent):
+            raise TaskSourceConformanceError(
+                "invalid_event",
+                "Adapter event output must be TaskSourceEvent.",
+            )
         self.validate_identity(source, event.identity)
         if event.snapshot is not None:
             self.validate_snapshot(source, event.snapshot)
@@ -107,10 +123,20 @@ class TaskSourceConformanceSuite:
         projection: TaskSourceCanonicalProjection,
     ) -> TaskSourceCanonicalProjection:
         self.validate_snapshot(source, snapshot)
+        if not isinstance(projection, TaskSourceCanonicalProjection):
+            raise TaskSourceConformanceError(
+                "invalid_projection",
+                "Adapter canonical mapping must return TaskSourceCanonicalProjection.",
+            )
         self.validate_identity(source, projection.identity)
         if not same_task_source_identity(snapshot.identity, projection.identity):
             raise TaskSourceConformanceError(
                 "projection_identity_mismatch",
                 "Canonical projection must retain the normalized snapshot identity.",
+            )
+        if projection.stage is not None and projection.stage not in get_args(WorkItemStage):
+            raise TaskSourceConformanceError(
+                "invalid_canonical_stage",
+                f"Adapter projected noncanonical work-item stage: {projection.stage!r}.",
             )
         return projection
