@@ -4,7 +4,7 @@ from typing import Final
 
 from fastapi import HTTPException
 
-from codex_web.models import WorkItemStage, WorkItemState
+from codex_web.models import WorkItemStage, WorkItemState, WorkItemTerminalOutcome
 
 
 WORK_ITEM_STAGES: Final[tuple[WorkItemStage, ...]] = (
@@ -66,8 +66,8 @@ WORK_ITEM_STAGE_TRANSITIONS: Final[dict[WorkItemStage, frozenset[WorkItemStage]]
             "failed_with_action_owner",
         }
     ),
-    # Reopening a closed GitLab item is an external reconciliation event, not a
-    # manual progress transition. Manual callers must not silently resurrect a
+    # Reopening a closed external item is an external reconciliation event, not
+    # a manual progress transition. Manual callers must not silently resurrect a
     # terminal lane.
     "closed": frozenset({"closed"}),
 }
@@ -85,7 +85,18 @@ class WorkItemTransitionPolicy:
         target_stage: WorkItemStage,
         *,
         source: str,
+        terminal_outcome: WorkItemTerminalOutcome | None = None,
     ) -> WorkItemStage:
+        # Cancellation and terminal failure are explicit terminal decisions and
+        # may stop work from any active lane. Successful completion still has to
+        # pass through ready_to_close and the ordinary transition matrix.
+        if (
+            target_stage == "closed"
+            and current_stage != "closed"
+            and terminal_outcome in {"cancelled", "failed"}
+        ):
+            return target_stage
+
         if target_stage in self.allowed_targets(current_stage):
             return target_stage
 
@@ -97,19 +108,19 @@ class WorkItemTransitionPolicy:
                 "from_stage": current_stage,
                 "to_stage": target_stage,
                 "source": source,
+                "terminal_outcome": terminal_outcome,
                 "allowed_targets": sorted(self.allowed_targets(current_stage)),
             },
         )
 
 
 class WorkItemTransitionService:
-    """Single authority for mutating the canonical work-item stage.
+    """Single authority for mutating canonical work-item lifecycle state.
 
-    Manual/API transitions must satisfy ``WorkItemTransitionPolicy``. External
-    projections such as GitLab close/reopen reconciliation intentionally use the
-    same mutation primitive while bypassing the manual transition matrix. This
-    keeps the mutation point singular without pretending upstream state changes
-    are operator/API requests.
+    ``closed`` remains the compatibility lifecycle stage. ``terminal_outcome``
+    carries the semantically distinct terminal result: completed, cancelled, or
+    failed. The resumable ``failed_with_action_owner`` stage is therefore not a
+    terminal failure.
     """
 
     def __init__(self, policy: WorkItemTransitionPolicy | None = None) -> None:
@@ -122,8 +133,57 @@ class WorkItemTransitionService:
         *,
         source: str,
         external_projection: bool = False,
+        terminal_outcome: WorkItemTerminalOutcome | None = None,
     ) -> WorkItemState:
+        if terminal_outcome is not None and target_stage != "closed":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "terminal_outcome_requires_closed_stage",
+                    "message": "A terminal outcome can only be recorded while closing a work item.",
+                    "from_stage": state.current_stage,
+                    "to_stage": target_stage,
+                    "source": source,
+                    "terminal_outcome": terminal_outcome,
+                },
+            )
+
+        if state.current_stage == "closed" and terminal_outcome is not None:
+            existing = state.terminal_outcome
+            if existing is not None and existing != terminal_outcome:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "terminal_outcome_conflict",
+                        "message": "A terminal work-item outcome cannot be rewritten in place.",
+                        "existing_terminal_outcome": existing,
+                        "requested_terminal_outcome": terminal_outcome,
+                        "source": source,
+                    },
+                )
+
         if not external_projection:
-            self.policy.validate(state.current_stage, target_stage, source=source)
+            self.policy.validate(
+                state.current_stage,
+                target_stage,
+                source=source,
+                terminal_outcome=terminal_outcome,
+            )
+
+        previous_stage = state.current_stage
         state.current_stage = target_stage
+
+        if target_stage == "closed":
+            if terminal_outcome is not None:
+                state.terminal_outcome = terminal_outcome
+            elif not external_projection and previous_stage != "closed":
+                # The only ordinary manual close path is ready_to_close -> closed,
+                # which is successful completion unless explicitly classified
+                # otherwise.
+                state.terminal_outcome = "completed"
+        elif previous_stage == "closed":
+            # Only an external projection can reopen a closed lane. Its previous
+            # terminal classification must not leak into the active lifecycle.
+            state.terminal_outcome = None
+
         return state
