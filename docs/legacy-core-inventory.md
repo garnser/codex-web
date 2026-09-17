@@ -54,21 +54,31 @@ Moved out of legacy ownership into `codex_web/services/bot_binding_selection.py`
 - `_orchestrator_binding`
 - `_primary_binding_for_project`
 
-`BotBindingSelectionService` now owns deterministic lookup and primary/master selection while leaving agent-channel preference, cloning, cross-channel routing and dispatch behavior untouched.
+`BotBindingSelectionService` now owns deterministic lookup and primary/master selection while leaving cross-channel routing and dispatch behavior untouched.
+
+### Agent channel preferences and preference-aware agent selection
+
+Moved out of legacy ownership into `codex_web/services/agent_channel_preferences.py`:
+- `_parse_agent_channel_overrides`
+- `_preferred_agent_conversation`
+- `_preferred_agent_conversations`
+- `_clone_binding_to_known_channel`
+- `_binding_for_agent`
+- `_logical_bindings_for_binding`
+
+`AgentChannelPreferenceService` now owns persisted/environment channel preference resolution, preference-aware agent selection, known-channel clone naming and logical-binding grouping. The lower-level clone implementation and routing/dispatch behavior remain unchanged.
 
 ## Extraction candidates
 
-### Remaining bot binding/routing and dispatch behavior
+### Remaining bot routing and dispatch behavior
 
 Representative definitions:
-- `_binding_for_agent`
-- `_logical_bindings_for_binding`
 - `_binding_for_external_target`
 - `_clone_binding_for_conversation`
-- `_clone_binding_to_known_channel`
+- cross-channel route resolution helpers
 - `_dispatch_event_to_binding`
 
-Likely owner: extracted bot-routing service. The next routing cleanup should keep agent/channel preference and cloning separate from actual dispatch/queue/recovery behavior where practical.
+Likely owner: extracted bot-routing service. Keep clone/external-target routing separate from dispatch/queue/recovery where practical.
 
 ### Work-item policy and projection helpers
 
@@ -113,10 +123,11 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 2. ~~Move bot connection management helpers.~~ Completed.
 3. ~~Consolidate thread run settings / execution-contract composition.~~ Completed.
 4. ~~Move deterministic binding lookup/primary selection.~~ Completed.
-5. Move remaining agent/channel preference and binding-cloning helpers.
-6. Move work-item policy/projection helpers into the work-item owner.
-7. Consolidate queue/recovery helpers under runtime execution/supervisors.
-8. Move diagnostics aggregation to observability/devhealth.
-9. Re-inventory remaining globals and compatibility shims.
+5. ~~Move agent/channel preferences and preference-aware agent selection.~~ Completed.
+6. Move remaining external-target/cloning routing helpers.
+7. Move work-item policy/projection helpers into the work-item owner.
+8. Consolidate queue/recovery helpers under runtime execution/supervisors.
+9. Move diagnostics aggregation to observability/devhealth.
+10. Re-inventory remaining globals and compatibility shims.
 
 Each extraction should include focused compatibility tests and tighten the legacy-core no-return/size ratchet after duplicate definitions are physically removed.
