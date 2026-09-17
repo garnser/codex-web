@@ -65,7 +65,8 @@ class WorkItemContractService:
             f"CANONICAL EXECUTION CONTRACT (schema {contract.schema_version})\n"
             "This work item was populated/reconciled from GitLab and codex-web state remains authoritative for "
             "owner, stage, handoff and next action. The versioned contract was validated from that canonical state "
-            "before dispatch. Apply the execution role below; do not create a parallel ownership or permission model.\n\n"
+            "before dispatch. Apply the execution role below; do not create a parallel ownership model or a parallel "
+            "permission model.\n\n"
             f"{execution_contract_prompt(role)}"
         )
 
