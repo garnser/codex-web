@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -9,6 +10,7 @@ from codex_web.models import (
     WorkItemHandoffCreate,
     WorkItemProgressUpdate,
 )
+from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.task_source_events import (
@@ -36,6 +38,7 @@ class WorkItemService:
         task_source_event_reconciler: TaskSourceWorkItemEventReconciler | None = None,
         task_source_registry: TaskSourceRegistry | None = None,
         task_source_writeback: TaskSourceWritebackService | None = None,
+        gitlab_artifact_events: GitLabArtifactEventProjector | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
@@ -56,28 +59,21 @@ class WorkItemService:
         else:
             self.task_source_writeback = task_source_writeback
             self.task_source_registry = task_source_registry or task_source_writeback.registry
-
-        self._legacy_gitlab_event_projector = getattr(
+        self.gitlab_artifact_events = gitlab_artifact_events or GitLabArtifactEventProjector(
             host,
-            "_upsert_work_item_state_from_gitlab_event",
-            None,
-        ) or getattr(
             self.state_machine,
-            "_upsert_work_item_state_from_gitlab_event",
-            None,
         )
 
         # Preserve historical entrypoints while publishing canonical service
-        # behavior to remaining legacy composition seams.
+        # behavior to remaining legacy composition seams. These aliases now end
+        # at TaskSource/integration services rather than provider code in the
+        # canonical state machine.
         host.create_work_item_handoff = self.handoff
         host.ack_work_item_handoff = self.acknowledge
         host.update_work_item_progress = self.progress
         host._reconcile_task_source_event = self.reconcile_task_source_event
-        # GitLabService still invokes this historical synchronous hook. Issue
-        # events now terminate at the provider-neutral TaskSource boundary;
-        # non-issue events temporarily retain the legacy projector until their
-        # artifact semantics are migrated in the next #101 slice.
         host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
+        host._sync_gitlab_issue_labels_from_work_item = self.schedule_task_source_writeback
 
     def _compat(self, name: str, fallback: Any) -> Any:
         """Resolve a composed host seam while supporting lightweight hosts."""
@@ -95,6 +91,31 @@ class WorkItemService:
             token,
             client=self.gitlab,
         )
+
+    def schedule_task_source_writeback(self, state: Any) -> Any:
+        """Compatibility scheduler backed by provider-neutral write-back."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return state
+        snapshot = state.model_copy(deep=True) if hasattr(state, "model_copy") else state
+
+        async def run() -> None:
+            try:
+                await self.task_source_writeback.sync(snapshot)
+            except Exception as exc:
+                append = getattr(self.host, "_append_bot_event", None)
+                if callable(append):
+                    append(
+                        {
+                            "type": "task_source_writeback_failed",
+                            "ref": getattr(snapshot, "ref", None),
+                            "error": str(exc)[:500],
+                        }
+                    )
+
+        loop.create_task(run())
+        return state
 
     async def list(
         self,
@@ -197,10 +218,7 @@ class WorkItemService:
         labels = list(getattr(state, "labels", None) or [])
         if not any(str(label).startswith(("owner::", "status::")) for label in labels):
             return state
-        sync = getattr(self.host, "_sync_gitlab_issue_labels_from_work_item", None)
-        if not callable(sync):
-            return state
-        projected = sync(state)
+        projected = self.schedule_task_source_writeback(state)
         if projected is not None:
             state = projected
         save = getattr(self.state_machine, "_save_work_item_state", None)
@@ -214,7 +232,7 @@ class WorkItemService:
         *,
         project_id: str,
     ) -> Any:
-        """Compatibility hook used by GitLabService during incremental migration."""
+        """Compatibility hook used by GitLabService during migration."""
 
         source = GitLabWebhookTaskSource(
             self.host.GITLAB_API_BASE,
@@ -222,9 +240,7 @@ class WorkItemService:
         )
         event = source.normalize_event_sync(payload)
         if event is None:
-            if self._legacy_gitlab_event_projector is None:
-                return None
-            return self._legacy_gitlab_event_projector(payload, project_id=project_id)
+            return self.gitlab_artifact_events.project(payload, project_id=project_id)
 
         result = self.reconcile_task_source_event(
             source,
