@@ -50,6 +50,7 @@ Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
 
 ## Other architecture documents
 
+- [Canonical execution contract schema](execution-contract-schema.md) — versioned Milestone 2 machine-readable contract derived from canonical work-item state.
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
