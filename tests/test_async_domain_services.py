@@ -62,15 +62,19 @@ class _GitLabClient:
         ]
 
 
-class _StateMachine:
+class _TaskSourceProjector:
     def __init__(self) -> None:
         self.projection_thread_id: int | None = None
+
+    async def upsert(self, source, snapshot, *, project_id):
+        self.projection_thread_id = threading.get_ident()
+        return SimpleNamespace(ref=snapshot.identity.external_id)
+
+
+class _StateMachine:
+    def __init__(self) -> None:
         self.progress_thread_id: int | None = None
         self.label_syncs = 0
-
-    def _upsert_work_item_state_from_gitlab_issue(self, issue, *, project_id):
-        self.projection_thread_id = threading.get_ident()
-        return SimpleNamespace(ref=issue["references"]["full"])
 
     def _structured_progress(self, ref, payload):
         self.progress_thread_id = threading.get_ident()
@@ -139,14 +143,20 @@ class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
         host = _WorkItemHost()
         gitlab = _GitLabClient()
         state_machine = _StateMachine()
-        service = WorkItemService(host, gitlab, state_machine)
+        projector = _TaskSourceProjector()
+        service = WorkItemService(
+            host,
+            gitlab,
+            state_machine,
+            task_source_projector=projector,
+        )
         event_loop_thread = threading.get_ident()
 
         result = await service.sync_from_gitlab()
 
         self.assertEqual(result, {"ok": True, "synced": 1, "refs": 1})
         self.assertEqual(gitlab.event_loop_thread_id, event_loop_thread)
-        self.assertEqual(state_machine.projection_thread_id, event_loop_thread)
+        self.assertEqual(projector.projection_thread_id, event_loop_thread)
         self.assertEqual(host.hub.events[-1]["type"], "work-item.sync")
 
     async def test_progress_uses_extracted_state_machine_and_async_label_projection(self) -> None:
