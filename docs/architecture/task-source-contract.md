@@ -23,7 +23,7 @@ Provider-specific API response objects must not cross this boundary into canonic
 
 ## Identity and provenance
 
-`TaskSourceIdentity` carries the external provenance needed to identify and reconcile one authoritative item:
+`TaskSourceIdentity` is a frozen canonical model in `codex_web.models` and carries the external provenance needed to identify and reconcile one authoritative item:
 
 - source type;
 - source instance;
@@ -32,7 +32,11 @@ Provider-specific API response objects must not cross this boundary into canonic
 - source revision when available;
 - source event cursor when available.
 
-The identity object rejects missing source type, source instance, or external ID. Persisting this provenance on canonical work items is a follow-up Milestone 2 subtask; this contract defines the shape without prematurely changing persisted state.
+`WorkItemState.source_identity` persists that object separately from `WorkItemState.ref`. The canonical work-item ref therefore does not need to be rewritten when a provider adapter changes or when an external system uses a different ID vocabulary.
+
+Existing persisted work items remain compatible because `source_identity` is optional during migration. The current GitLab discovery/sync path backfills provenance for discovered items using the GitLab API base as `source_instance`, the provider issue ID/IID/ref as external identity, and the provider URL/revision when present.
+
+Webhook/event provenance will move behind the GitLab `TaskSource` adapter in the next migration steps; provider-specific event logic is not duplicated here.
 
 ## Capabilities
 
@@ -71,8 +75,8 @@ Exactly one external task source should be authoritative for mutable external ta
 
 The intended incremental migration is:
 
-1. define and test this provider-neutral contract;
-2. persist task-source identity/provenance on `WorkItemState`;
+1. define and test the provider-neutral contract — implemented;
+2. persist task-source identity/provenance on `WorkItemState` and backfill discovery — implemented;
 3. implement a GitLab `TaskSource` adapter;
 4. move discovery/read/event normalization behind the adapter;
 5. move supported write-back behind adapter capabilities;

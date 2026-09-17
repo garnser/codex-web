@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
@@ -27,6 +27,19 @@ WorkItemStage: TypeAlias = Literal[
 WorkItemTerminalOutcome: TypeAlias = Literal["completed", "cancelled", "failed"]
 ArtifactState: TypeAlias = Literal["branch", "merge_request", "merged_main", "tag_pipeline"]
 HandoffStatus: TypeAlias = Literal["pending", "accepted", "rejected", "superseded"]
+
+
+class TaskSourceIdentity(BaseModel):
+    """Provider-neutral authoritative external identity/provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    source_type: str = Field(min_length=1)
+    source_instance: str = Field(min_length=1)
+    external_id: str = Field(min_length=1)
+    external_url: str | None = None
+    revision: str | None = None
+    event_cursor: str | None = None
 
 
 class Project(BaseModel):
@@ -95,6 +108,7 @@ class WorkItemState(BaseModel):
     ref: str
     project_id: str | None = None
     project_path: str | None = None
+    source_identity: TaskSourceIdentity | None = None
     title: str | None = None
     url: str | None = None
     kind: str | None = None
