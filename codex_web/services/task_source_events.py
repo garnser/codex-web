@@ -25,7 +25,7 @@ class TaskSourceWorkItemEventReconciler:
 
     Provider webhook payloads must already have been normalized by a TaskSource
     adapter. This boundary decides authority/staleness deterministically and then
-    delegates state projection to the same projector used by discovery/read.
+    delegates state projection to the same local projector used by discovery.
     """
 
     def __init__(
@@ -40,7 +40,7 @@ class TaskSourceWorkItemEventReconciler:
         self.policy = policy or TaskSourceReconciliationPolicy()
         self.conformance = TaskSourceConformanceSuite()
 
-    async def reconcile(
+    def reconcile(
         self,
         source: TaskSource,
         event: TaskSourceEvent,
@@ -92,7 +92,7 @@ class TaskSourceWorkItemEventReconciler:
         if event.snapshot is None:
             return TaskSourceEventReconciliationResult(state=state, decision=decision)
 
-        state = await self.projector.upsert(
+        state = self.projector.upsert(
             source,
             event.snapshot,
             project_id=project_id,
