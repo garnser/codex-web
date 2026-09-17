@@ -1,0 +1,31 @@
+name: shrink-configuration-normalizers
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  shrink:
+    if: github.head_ref == 'refactor/delete-legacy-configuration-normalizers'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Generate shrink
+        run: python tools/shrink_configuration_normalizers.py
+      - name: Commit generated shrink
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Delete extracted configuration normalizers from legacy core"
+          git push
