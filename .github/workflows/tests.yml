@@ -102,12 +102,72 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Log in to Docker Hub for authenticated pulls
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Validate Compose configuration
         run: docker compose config
 
-      - name: Build container image
-        run: docker build --tag codex-web:test .
+      - name: Select runtime base
+        id: runtime-base
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"
+          test -n "$expected"
+
+          if git rev-parse HEAD^1 >/dev/null 2>&1; then
+            parent=HEAD^1
+          else
+            parent="$(git hash-object -t tree /dev/null)"
+          fi
+
+          base_changed=false
+          changed_files="$(git diff --name-only "$parent" HEAD 2>/dev/null || true)"
+          if printf '%s\n' "$changed_files" | grep -Eq '^(Dockerfile\.base|requirements\.txt|requirements\.lock|\.github/workflows/publish-base-image\.yml)$'; then
+            base_changed=true
+          elif git diff "$parent" HEAD -- .env.example 2>/dev/null | grep -Eq '^[+-]CODEX_VERSION='; then
+            base_changed=true
+          fi
+
+          if [ "$base_changed" = true ]; then
+            echo 'Runtime base inputs changed; cold-building candidate base for this revision.'
+            docker build \
+              --file Dockerfile.base \
+              --build-arg "CODEX_VERSION=${expected}" \
+              --tag codex-web-base:test \
+              .
+            base_image=codex-web-base:test
+            echo 'mode=candidate' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Runtime base inputs unchanged; pulling trusted Docker Hub base.'
+            docker pull garnser/codex-web:base
+            base_image=garnser/codex-web:base
+            echo 'mode=published' >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "base_image=${base_image}" >> "$GITHUB_OUTPUT"
+          echo "codex_version=${expected}" >> "$GITHUB_OUTPUT"
+
+      - name: Build application image
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.runtime-base.outputs.base_image }}
+          CODEX_VERSION: ${{ steps.runtime-base.outputs.codex_version }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            --build-arg "CODEX_VERSION=${CODEX_VERSION}" \
+            --tag codex-web:test \
+            .
 
       - name: Verify pinned Codex version
         run: |

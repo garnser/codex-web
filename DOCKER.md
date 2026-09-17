@@ -1,6 +1,6 @@
 # Docker deployment
 
-The container image is self-contained: it runs codex-web and installs the Codex CLI directly from the official `@openai/codex` npm package during `docker build`. The host only needs Docker/Compose; it does not need Codex, Node.js, npm, or Python installed.
+The application image is self-contained at runtime: it runs codex-web and includes the Codex CLI, Node.js, Python, and the locked Python runtime dependencies. Normal builds use the trusted `garnser/codex-web:base` image published from this repository's `main` branch, so those slow dependencies do not need to be rebuilt for every application change. The host only needs Docker/Compose; it does not need Codex, Node.js, npm, or Python installed.
 
 The container uses a non-root `codex` user, persists application state under `/app/data`, stores Codex CLI state under `/home/codex/.codex`, and expects developer repositories to be mounted below `/workspace`.
 
@@ -17,6 +17,37 @@ docker compose up -d
 The UI is exposed on `127.0.0.1:8765` by default. Set `CODEX_WEB_BIND=0.0.0.0` only when a reverse proxy or trusted network boundary protects the service.
 
 The image has a Docker healthcheck against `/api/livez`. `/api/healthz` remains the deeper readiness/daemon-health endpoint and can return 503 when the Codex app-server is unavailable.
+
+## Runtime base image
+
+`Dockerfile.base` owns the slow, rarely changing runtime foundation:
+
+- Python 3.14 base image;
+- required Debian runtime tools;
+- Node.js 24;
+- the pinned Codex CLI;
+- packages from `requirements.lock`.
+
+`.github/workflows/publish-base-image.yml` cold-builds and verifies that image on trusted `main` changes, then publishes both:
+
+- `garnser/codex-web:base` as the current trusted base used by ordinary builds;
+- `garnser/codex-web:base-<main-commit>` as an immutable historical tag for traceability and rollback.
+
+The publishing workflow authenticates with the GitHub Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Never place those credentials in `.env`, a Dockerfile, build arguments, repository files, or application configuration.
+
+`CODEX_WEB_BASE_IMAGE` controls the base used by Compose. The default is:
+
+```text
+garnser/codex-web:base
+```
+
+To reproduce or roll back to a particular runtime foundation, set it to an immutable tag, for example:
+
+```bash
+CODEX_WEB_BASE_IMAGE=garnser/codex-web:base-<main-commit> docker compose build
+```
+
+Normal CI pulls the published base and builds only the small codex-web application layer. If a PR changes `Dockerfile.base`, `requirements.txt`, `requirements.lock`, the base publishing workflow, or the configured Codex version, CI instead cold-builds a candidate base locally and builds the application on top of that candidate. This keeps dependency/runtime changes fully validated without paying the cold-build cost on unrelated commits.
 
 ## Workspace mounts and project paths
 
@@ -40,6 +71,8 @@ The container runs as UID/GID 1000 by default. If the mounted workspace uses ano
 CODEX_UID=$(id -u) CODEX_GID=$(id -g) docker compose build
 ```
 
+The UID/GID-specific `codex` user is created in the final application layer rather than the shared base image, so these overrides remain local to the deployment.
+
 ## Persistent data
 
 Compose creates two named volumes:
@@ -62,21 +95,28 @@ Do not bake secrets into the image. For production, inject them through the orch
 The repository separates human-maintained compatibility constraints from the exact runtime set:
 
 - `requirements.txt` declares supported top-level Python dependency ranges.
-- `requirements.lock` contains the complete Python runtime versions validated by CI and used by Docker.
+- `requirements.lock` contains the complete Python runtime versions validated by CI and installed into the published base.
+- `.env.example` declares the Codex CLI version expected by the application image and CI.
 
-Docker also defaults `CODEX_VERSION` to the stable Codex CLI version validated by CI for this repository revision. To intentionally test or upgrade Codex, override it explicitly:
+The final Dockerfile checks that `CODEX_VERSION` matches the Codex CLI already present in the selected base. It does not silently install another version. A mismatch fails the build explicitly.
 
-```bash
-CODEX_VERSION=<version> docker compose build
-```
-
-The version is installed inside the image with:
+To test a new Codex/runtime foundation locally before it is published:
 
 ```bash
-npm install -g "@openai/codex@${CODEX_VERSION}"
+docker build \
+  -f Dockerfile.base \
+  --build-arg CODEX_VERSION=<version> \
+  -t codex-web-base:test \
+  .
+
+docker build \
+  --build-arg BASE_IMAGE=codex-web-base:test \
+  --build-arg CODEX_VERSION=<version> \
+  -t codex-web:test \
+  .
 ```
 
-CI checks the installed `codex --version` against `.env.example`, so an accidental `latest` drift or broken installation fails before merge.
+CI performs the equivalent cold candidate build automatically when runtime-base inputs change. After such a change is merged, the trusted `main` workflow publishes the new base tags to Docker Hub.
 
 For a reproducible local Python environment use:
 
