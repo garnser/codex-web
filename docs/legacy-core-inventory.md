@@ -28,22 +28,21 @@ Moved out of legacy ownership into `codex_web/services/bot_connections.py`:
 
 `BotConnectionService` now owns lookup, public projection, mutation and deduplication while continuing to use the existing bot connection/binding repositories. Historical `core._...` names remain compatibility aliases to the extracted owner.
 
-## Extraction candidates
-
 ### Thread execution settings and contract composition
 
-Representative definitions:
+Moved out of legacy ownership into `codex_web/services/thread_execution_settings.py`:
 - `_remember_thread_run_settings`
 - `_thread_run_settings`
+- `_codex_web_internal_base_url`
 - `_work_item_contract_binding`
 - `_work_item_contract_instructions`
 - `_effective_developer_instructions`
 - `_base_developer_instructions`
 - `_sync_bot_binding_settings`
 
-Likely owners: runtime execution / Executive integration / configuration storage. These functions currently mix persistence, policy and execution-contract construction.
+`ThreadExecutionSettingsService` now owns thread run-setting updates/fallbacks and the legacy GitLab work-item developer-instruction contract composition. The existing runtime-state repository still owns persistence, while historical `core._...` names remain compatibility aliases.
 
-This is the next cleanup block to analyze because it is smaller and more deterministic than the broader routing/dispatch surface.
+## Extraction candidates
 
 ### Bot binding/routing and dispatch
 
@@ -60,7 +59,7 @@ Representative definitions:
 - `_bindings_for_project`
 - `_primary_binding_for_project`
 
-Likely owner: extracted bot-routing service. This is a high-value block but has broader behavioral surface than connection management and should remain a separate PR.
+Likely owner: extracted bot-routing service. This is now the next cleanup block, but lookup/selection helpers should be separated from dispatch behavior where practical so each PR stays reviewable.
 
 ### Work-item policy and projection helpers
 
@@ -102,8 +101,8 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 ## Cleanup order
 
 1. ~~Remove duplicated JSON/state-file primitives.~~ Completed.
-2. ~~Move bot connection management helpers.~~ Completed by the bot connection service extraction.
-3. Consolidate thread run settings / execution-contract composition.
+2. ~~Move bot connection management helpers.~~ Completed.
+3. ~~Consolidate thread run settings / execution-contract composition.~~ Completed.
 4. Move binding lookup/routing helpers into the bot-routing owner.
 5. Move work-item policy/projection helpers into the work-item owner.
 6. Consolidate queue/recovery helpers under runtime execution/supervisors.
