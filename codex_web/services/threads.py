@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import Any
 
 from fastapi import HTTPException
@@ -15,8 +16,61 @@ from codex_web.models import (
 class ThreadService:
     """Thread/query operations that do not own turn queue orchestration yet."""
 
+    DEFAULT_MESSAGE_LIMIT = 100
+
     def __init__(self, host: Any) -> None:
         self.host = host
+
+    def default_message_limit(self) -> int:
+        try:
+            limit = int(
+                os.environ.get("CODEX_WEB_THREAD_MESSAGE_LIMIT")
+                or os.environ.get("CODEX_WEB_THREAD_TURN_LIMIT")
+                or self.DEFAULT_MESSAGE_LIMIT
+            )
+        except ValueError:
+            return self.DEFAULT_MESSAGE_LIMIT
+        return max(1, min(limit, 1000))
+
+    def coerce_message_limit(self, limit: int | None) -> int:
+        if limit is None:
+            return self.default_message_limit()
+        return max(1, min(int(limit), 1000))
+
+    @staticmethod
+    def trim_messages(response: dict[str, Any], limit: int) -> dict[str, Any]:
+        if limit <= 0:
+            return response
+        thread = response.get("thread") if isinstance(response.get("thread"), dict) else response
+        turns = thread.get("turns") if isinstance(thread, dict) else None
+        if not isinstance(turns, list):
+            return response
+        total_items = sum(len(turn.get("items") or []) for turn in turns if isinstance(turn, dict))
+        if total_items <= limit:
+            thread["messageLimit"] = limit
+            return response
+        remaining = limit
+        kept_turns: list[dict[str, Any]] = []
+        for turn in reversed(turns):
+            if not isinstance(turn, dict):
+                continue
+            items = turn.get("items") or []
+            if not isinstance(items, list):
+                items = []
+            if remaining <= 0:
+                break
+            if len(items) <= remaining:
+                kept_turns.append(turn)
+                remaining -= len(items)
+                continue
+            kept_turn = {**turn, "items": items[-remaining:]}
+            kept_turns.append(kept_turn)
+            remaining = 0
+        thread["turns"] = list(reversed(kept_turns))
+        thread["messagesTruncated"] = True
+        thread["messagesOmitted"] = total_items - limit
+        thread["messageLimit"] = limit
+        return response
 
     async def list(
         self,
