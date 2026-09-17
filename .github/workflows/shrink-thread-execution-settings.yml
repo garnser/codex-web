@@ -1,0 +1,39 @@
+name: shrink-thread-execution-settings
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  shrink:
+    if: github.head_ref == 'refactor/thread-execution-settings'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+      - name: Generate shrink
+        run: python tools/shrink_thread_execution_settings.py
+      - name: Focused validation
+        run: python -m unittest tests.test_thread_execution_settings tests.test_application_composition tests.test_core_budget tests.test_codex_runtime
+      - name: Commit generated shrink
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Move thread execution settings out of legacy core"
+          git push
