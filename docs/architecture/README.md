@@ -34,7 +34,7 @@ The policy defines deterministic-first execution, event-driven activation, minim
 The roadmap defines the intended progression and checkable subtasks for:
 
 1. Executive-contract foundation.
-2. Work-item lifecycle and execution contracts.
+2. Work-item lifecycle, execution contracts, and provider-neutral authoritative task sources.
 3. Dependency-aware work graphs.
 4. First-class goals.
 5. Role authority and permission contracts.
@@ -43,6 +43,7 @@ The roadmap defines the intended progression and checkable subtasks for:
 8. Executive management through goals, decisions, and work graphs.
 9. Durable organizational/company memory.
 10. Controlled production autonomy, budgets, approvals, auditability, and progressive rollout.
+11. End-to-end product documentation and adoption guidance.
 
 Developers and agents should identify the milestone/subtask their work advances and respect the dependency order. Roadmap checkboxes should only be marked complete after the implementation is merged, required tests are green, and documentation is current.
 
@@ -51,7 +52,8 @@ Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
 ## Other architecture documents
 
 - [Canonical execution contract schema](execution-contract-schema.md) — versioned Milestone 2 machine-readable contract derived from canonical work-item state.
-- [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, GitLab reconciliation boundary, and transition failure contract.
+- [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
+- [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, and adapter boundary for GitLab and future authoritative task systems.
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
