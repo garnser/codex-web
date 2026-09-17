@@ -3,6 +3,7 @@ services:
     build:
       context: .
       args:
+        BASE_IMAGE: ${CODEX_WEB_BASE_IMAGE:-garnser/codex-web:base}
         CODEX_VERSION: ${CODEX_VERSION:-0.154.0}
         CODEX_UID: ${CODEX_UID:-1000}
         CODEX_GID: ${CODEX_GID:-1000}
