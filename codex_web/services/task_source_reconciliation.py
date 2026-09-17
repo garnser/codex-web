@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from codex_web.models import TaskSourceIdentity, WorkItemStage
-from codex_web.services.task_sources import TaskSourceEvent
+from codex_web.services.task_sources import TaskSourceCanonicalProjection, TaskSourceEvent
 
 
 class TaskSourceReconciliationOutcome(StrEnum):
@@ -16,22 +16,6 @@ class TaskSourceReconciliationOutcome(StrEnum):
     DUPLICATE = "duplicate"
     STALE = "stale"
     CONFLICT = "conflict"
-
-
-@dataclass(frozen=True, slots=True)
-class TaskSourceCanonicalProjection:
-    """Provider-neutral canonical facts produced by an adapter mapping.
-
-    Providers may have completely different native state vocabularies. Their
-    adapter maps those facts into this small canonical shape before core
-    reconciliation compares them with ``WorkItemState``.
-    """
-
-    identity: TaskSourceIdentity
-    stage: WorkItemStage | None = None
-    owner: str | None = None
-    owner_known: bool = True
-    source_state: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
