@@ -85,7 +85,7 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 
 **Objective:** make every unit of work have a deterministic lifecycle, contract, owner, audit trail, and completion path.
 
-**Status:** 🚧 In progress. The versioned canonical execution-contract schema and the canonical manual/API work-item transition policy are merged on `main`; state-mutation centralization, richer terminal states, audit/event history, checkpoints, cost hooks, migration, and UI work remain open.
+**Status:** 🚧 In progress. The versioned canonical execution-contract schema, transition policy, and authoritative stage-mutation service are merged on `main`; richer terminal outcomes, audit/event history, checkpoints, cost hooks, migration, and UI work remain open.
 
 ### Subtasks
 
@@ -93,8 +93,8 @@ This roadmap must be implemented together with the [Token Efficiency Ruleset](to
 - [ ] Define terminal states including `completed`, `cancelled`, and `failed`.
 - [x] Define allowed state transitions.
 - [x] Reject illegal state transitions.
-- [ ] Create a single authoritative state-transition service.
-- [ ] Remove direct state mutations scattered through the codebase.
+- [x] Create a single authoritative state-transition service. (PR #92)
+- [x] Remove direct state mutations scattered through the codebase. (PR #92; existing-item stage mutation is centralized, while initial construction sets the initial stage directly.)
 - [x] Define the canonical execution-contract schema.
 - [x] Include role in the execution contract.
 - [x] Include agent identity/binding in the execution contract.
@@ -522,3 +522,23 @@ Every milestone must preserve the following invariants:
 5. **Bound reasoning:** cap calls, rounds, retries, handoffs, context, tokens, and cost.
 6. **Canonical state:** goals, work, decisions, authority, approvals, and budgets live in structured application state.
 7. **Canonical execution path:** Executive/autonomous features must use existing/canonical work, queue, sandbox, approval, and execution mechanisms rather than bypassing them.
+8. **Traceability:** autonomous work should be traceable from goal/request through decision/work/execution/result.
+9. **Auditability:** state-changing actions must explain who/what acted, why, and under which authority.
+10. **Learning toward determinism:** verified recurring solutions should become reusable knowledge or deterministic handlers.
+
+# Developer/Agent continuation protocol
+
+When continuing improvement work:
+
+1. Read `AGENTS.md`.
+2. Read `docs/architecture/token-efficiency-rules.md` for any LLM/agent/autonomy work.
+3. Read this roadmap and identify the earliest incomplete prerequisite relevant to the requested change.
+4. Inspect current code/tests before assuming a roadmap checkbox is incomplete or complete.
+5. Prefer completing a small coherent subtask over partially implementing several later milestones.
+6. Do not introduce a second state, work, permission, or execution system when an existing canonical primitive can be extended.
+7. Add tests with each behavioral subtask.
+8. Update documentation when contracts or architecture change.
+9. Mark a roadmap checkbox complete only after the implementation is merged and verified.
+10. When a requested change belongs to a later milestone, ensure required earlier primitives exist; otherwise implement or explicitly surface the prerequisite first.
+
+The intended end state is not an unconstrained AI company. It is a **bounded autonomous software-company operating system** in which humans define objectives and authority, deterministic software manages known state and policy, and models provide judgment only where judgment is actually required.
