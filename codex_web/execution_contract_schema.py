@@ -8,7 +8,7 @@ from codex_web.execution_contracts import ExecutionRoleContract
 from codex_web.models import ArtifactState, HandoffStatus, WorkItemStage, WorkItemState
 
 
-EXECUTION_CONTRACT_SCHEMA_VERSION = "1.0"
+EXECUTION_CONTRACT_SCHEMA_VERSION = "1.1"
 
 
 class ExecutionTargetV1(BaseModel):
@@ -51,6 +51,26 @@ class CanonicalWorkItemInputV1(BaseModel):
     handoff_to: str | None = None
     handoff_status: HandoffStatus | None = None
     split_brain_findings: tuple[str, ...] = ()
+    retry_attempt: int = 0
+    retry_max_attempts: int = 3
+    timeout_seconds: float | None = None
+    deadline_at: float | None = None
+    failure_category: str | None = None
+    failure_code: str | None = None
+    checkpoint_id: str | None = None
+    checkpoint_summary: str | None = None
+
+
+class ExecutionAccountingV1(BaseModel):
+    """Stable attribution hooks for model usage recorded by the executor."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    work_item_ref: str = Field(min_length=1)
+    checkpoint_id: str | None = None
+    goal_id: str | None = None
+    decision_id: str | None = None
+    usage_recording_required: Literal[True] = True
 
 
 class ExecutionContractV1(BaseModel):
@@ -58,13 +78,14 @@ class ExecutionContractV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.0"] = EXECUTION_CONTRACT_SCHEMA_VERSION
+    schema_version: Literal["1.1"] = EXECUTION_CONTRACT_SCHEMA_VERSION
     work_item_ref: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
     agent_id: str | None = None
     target: ExecutionTargetV1
     permissions: ExecutionPermissionsV1 = Field(default_factory=ExecutionPermissionsV1)
     inputs: CanonicalWorkItemInputV1
+    accounting: ExecutionAccountingV1
     expected_outputs: tuple[str, ...]
     success_criteria: tuple[str, ...]
     failure_conditions: tuple[str, ...]
@@ -90,6 +111,9 @@ def execution_contract_for_work_item(
         else None
     )
     agent_id = pending_recipient or state.current_owner
+    lifecycle = state.execution
+    checkpoint = lifecycle.latest_checkpoint
+    failure = lifecycle.failure_reason
 
     return ExecutionContractV1(
         work_item_ref=state.ref,
@@ -105,12 +129,27 @@ def execution_contract_for_work_item(
             handoff_to=handoff.to_agent if handoff else None,
             handoff_status=handoff.status if handoff else None,
             split_brain_findings=tuple(split_brain_findings),
+            retry_attempt=lifecycle.retry.attempt,
+            retry_max_attempts=lifecycle.retry.policy.max_attempts,
+            timeout_seconds=lifecycle.timeout_seconds,
+            deadline_at=lifecycle.deadline_at,
+            failure_category=failure.category if failure else None,
+            failure_code=failure.code if failure else None,
+            checkpoint_id=checkpoint.id if checkpoint else None,
+            checkpoint_summary=checkpoint.summary if checkpoint else None,
+        ),
+        accounting=ExecutionAccountingV1(
+            work_item_ref=state.ref,
+            checkpoint_id=checkpoint.id if checkpoint else None,
+            goal_id=lifecycle.usage.goal_id,
+            decision_id=lifecycle.usage.decision_id,
         ),
         expected_outputs=tuple(role.required_artifacts),
         success_criteria=(
             "Produce the artifacts required by the resolved execution role.",
             "Record concrete progress, an explicit handoff, or one exact blocker in canonical work-item state.",
             "Preserve the inherited sandbox and approval-policy controls.",
+            "Record model usage against the work item when model execution occurs.",
         ),
         failure_conditions=tuple(role.failure_conditions),
     )

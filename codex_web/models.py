@@ -4,6 +4,8 @@ from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
+
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
 ApprovalPolicy: TypeAlias = Literal["on-request", "untrusted", "never"]
@@ -134,6 +136,7 @@ class WorkItemState(BaseModel):
     artifact_state: ArtifactState = "branch"
     handoff: WorkItemHandoff | None = None
     handoff_history: list[WorkItemHandoff] = Field(default_factory=list)
+    execution: WorkItemExecutionLifecycle = Field(default_factory=WorkItemExecutionLifecycle)
     last_meaningful_update_at: float
     last_owner_activity_at: float | None = None
     last_gitlab_event_at: float | None = None
@@ -156,6 +159,8 @@ class WorkItemEvent(BaseModel):
     event_type: str
     created_at: float
     actor: str | None = None
+    source: str | None = None
+    reason: str | None = None
     payload: dict[str, str | int | float | bool | None | list[str] | dict[str, str]] = Field(default_factory=dict)
 
 
