@@ -4,12 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from codex_web.models import TaskSourceIdentity
-from codex_web.services.task_source_reconciliation import (
-    TaskSourceCanonicalProjection,
-    same_task_source_identity,
-)
+from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import (
     TaskSource,
+    TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceEvent,
     TaskSourceSnapshot,
