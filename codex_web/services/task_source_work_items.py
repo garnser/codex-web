@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.models import WorkItemState
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
+from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import TaskSource, TaskSourceSnapshot
 from codex_web.services.work_item_state import WorkItemStateMachine
 
@@ -50,6 +51,21 @@ class TaskSourceWorkItemProjector:
                 return value
         return None
 
+    @staticmethod
+    def _find_existing_state(
+        states: dict[str, WorkItemState],
+        snapshot: TaskSourceSnapshot,
+    ) -> WorkItemState | None:
+        direct = states.get(snapshot.identity.external_id.strip())
+        if direct is not None:
+            return direct
+        for candidate in states.values():
+            if candidate.source_identity is None:
+                continue
+            if same_task_source_identity(candidate.source_identity, snapshot.identity):
+                return candidate
+        return None
+
     async def upsert(
         self,
         source: TaskSource,
@@ -58,12 +74,13 @@ class TaskSourceWorkItemProjector:
         project_id: str,
     ) -> WorkItemState:
         self.conformance.validate_snapshot(source, snapshot)
-        ref = snapshot.identity.external_id.strip()
-        if not ref:
+        external_ref = snapshot.identity.external_id.strip()
+        if not external_ref:
             raise ValueError("Task-source snapshot external identity must not be empty")
 
         states = self.host._load_work_item_states()
-        state = states.get(ref)
+        state = self._find_existing_state(states, snapshot)
+        ref = state.ref if state is not None else external_ref
         projection = source.project(
             snapshot,
             current_stage=state.current_stage if state is not None else None,
@@ -75,7 +92,7 @@ class TaskSourceWorkItemProjector:
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
         priority = self._first_prefixed(tuple(labels), "priority::")
-        project_path = ref.split("#", 1)[0] if "#" in ref else None
+        project_path = external_ref.split("#", 1)[0] if "#" in external_ref else None
         projected_stage = projection.stage or (state.current_stage if state is not None else "implementation_active")
         projected_owner = None if projected_stage == "closed" else projection.owner
         projected_status_label = None if projected_stage == "closed" else status_label
