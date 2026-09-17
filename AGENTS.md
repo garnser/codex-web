@@ -2,14 +2,30 @@
 
 This file is the repository-level entry point for AI agents and developers working on codex-web.
 
-## Required Architecture Policy
+## Required Architecture Policy and Roadmap
 
 Before designing or modifying any LLM-driven, Executive, autonomous, orchestration, memory, routing, or agent-execution behavior, read and follow:
 
 - [`docs/architecture/token-efficiency-rules.md`](docs/architecture/token-efficiency-rules.md)
+- [`docs/architecture/autonomy-roadmap.md`](docs/architecture/autonomy-roadmap.md)
 - [`EXECUTIVE.md`](EXECUTIVE.md) for the current Executive control-plane integration
 
-The token-efficiency rules are **architecture policy**, not optional optimization advice.
+The token-efficiency rules are **architecture policy**, not optional optimization advice. The autonomy roadmap is the **canonical development sequence** for evolving codex-web toward bounded autonomous company operation.
+
+## Roadmap-Driven Development
+
+For substantial improvement work, identify the milestone and subtask being advanced before implementation.
+
+1. Inspect the current code and tests before assuming a roadmap item is incomplete or complete.
+2. Prefer the earliest incomplete prerequisite relevant to the requested change.
+3. Do not create parallel state, work, permission, decision, or execution systems when an existing canonical primitive can be extended.
+4. Later-milestone work may proceed only when its required earlier primitives already exist or are implemented as part of the work.
+5. Keep changes small and coherent where possible: complete one meaningful subtask rather than partially implementing several future layers.
+6. Add focused tests for behavioral roadmap work.
+7. Update architecture/contracts when implementation changes their meaning.
+8. Mark a roadmap checkbox complete only after the implementation is merged into the default branch, required tests are green, and documentation is current.
+9. If implementation changes the intended architecture, update the roadmap in the same PR rather than allowing code and roadmap to drift.
+10. Every roadmap milestone remains subject to the token-efficiency and authority invariants below.
 
 ## Non-Negotiable Invariants
 
@@ -56,6 +72,7 @@ Persist useful knowledge/checkpoint
 
 A change that introduces or expands model usage should document, in code comments, tests, PR text, or architecture docs as appropriate:
 
+- Which roadmap milestone/subtask it advances.
 - Why model reasoning is required.
 - Why deterministic logic is insufficient.
 - What activates the reasoning path.
