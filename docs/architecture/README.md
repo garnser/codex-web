@@ -1,6 +1,8 @@
 # Codex-Web Architecture
 
-This directory contains architecture decisions, constraints, cross-cutting policies, and the canonical development roadmap for codex-web.
+This directory contains architecture decisions, constraints, cross-cutting policies, schemas, and durable design contracts for codex-web.
+
+**Delivery status and roadmap completion are not tracked in repository markdown.** GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests are the delivery source of truth. See repository-level instructions in [`../../AGENTS.md`](../../AGENTS.md).
 
 ## Required reading for LLM, Executive, and autonomous features
 
@@ -13,13 +15,13 @@ Read this before implementing or reviewing any feature involving:
 - LLM/model calls
 - Codex agent orchestration
 - Executive roles or Board reviews
-- Autonomous execution
-- Goal or decision reasoning
-- Company/project memory and retrieval
-- Context construction or compaction
-- Agent handoffs and escalation
-- Model routing or model-tier selection
-- Token/cost budgets
+- autonomous execution
+- Goal or Decision reasoning
+- company/project memory and retrieval
+- context construction or compaction
+- agent handoffs and escalation
+- model routing or model-tier selection
+- token/cost budgets
 
 The central rule is:
 
@@ -27,48 +29,39 @@ The central rule is:
 
 The policy defines deterministic-first execution, event-driven activation, minimum-sufficient context, retrieval-before-prompt, bounded multi-agent reasoning, checkpointing, token/cost accounting, loop protection, progressive retrieval, and outcome-efficiency requirements.
 
-### [Autonomous Company Roadmap](autonomy-roadmap.md)
+## Delivery tracking
 
-**Status: Canonical development roadmap.**
+Actionable autonomous-company work has been migrated to GitHub Issues. Issues `#97`–`#125` represent the initial migration of the former roadmap and cross-milestone UI scope. Tracking bootstrap issue `#126` defines the target GitHub Project and Milestones M1–M11.
 
-The roadmap defines the intended progression and checkable subtasks for:
+Use GitHub tracking as follows:
 
-1. Executive-contract foundation.
-2. Work-item lifecycle, execution contracts, and provider-neutral authoritative task sources.
-3. Dependency-aware work graphs.
-4. First-class goals.
-5. Role authority and permission contracts.
-6. Event-driven autonomous orchestration.
-7. First-class decision objects.
-8. Executive management through goals, decisions, and work graphs.
-9. Durable organizational/company memory.
-10. Controlled production autonomy, budgets, approvals, auditability, and progressive rollout.
-11. End-to-end product documentation and adoption guidance.
+- **Milestones** define the delivery phases and dependency order.
+- **Issues** define independently completable work packages and acceptance criteria.
+- **GitHub Project** provides status, priority, risk, area, and cross-milestone views.
+- **Pull Requests** provide implementation and validation evidence linked to issues.
+- **Architecture documents** define durable technical truth and should not contain completion checklists that duplicate GitHub state.
 
-Developers and agents should identify the milestone/subtask their work advances and respect the dependency order. Roadmap checkboxes should only be marked complete after the implementation is merged, required tests are green, and documentation is current.
+If architecture changes materially while implementing an issue, update the relevant architecture contract and GitHub issue/Project state together.
 
-Repository-level agent instructions are in [`../../AGENTS.md`](../../AGENTS.md).
+## Architecture documents
 
-## Other architecture documents
-
-- [Canonical execution contract schema](execution-contract-schema.md) — versioned Milestone 2 machine-readable contract derived from canonical work-item state.
+- [Canonical execution contract schema](execution-contract-schema.md) — versioned machine-readable contract derived from canonical work-item state.
 - [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, and adapter boundary for GitLab and future authoritative task systems.
-- [Cross-milestone UI adaptation requirements](ui-adaptation-requirements.md) — product information architecture, operator explainability, provenance, navigation, and milestone-specific UI requirements for Milestones 2–11.
 - [Runtime supervision](runtime-supervision.md)
 - [Storage scaling](storage-scaling.md)
 
 ## Design review expectation
 
-Any design or PR that adds or materially increases LLM activity should explicitly verify compliance with the Token Efficiency Ruleset and identify the relevant roadmap milestone. In particular, reviewers should be able to identify:
+Any design or PR that adds or materially increases LLM activity should explicitly verify compliance with the Token Efficiency Ruleset and link the GitHub issue(s) whose acceptance criteria it advances. Reviewers should be able to identify:
 
-1. Which roadmap milestone/subtask the change advances.
+1. Which issue/work package the change advances.
 2. Why reasoning is needed instead of deterministic application logic.
 3. What event/request activates the reasoning path.
 4. What context is retrieved and how it is bounded.
 5. Which roles/models participate and why.
 6. Maximum calls, rounds, retries, handoffs, token usage, and cost.
-7. How usage is attributed to a goal/work item/decision and measured against an outcome.
+7. How usage is attributed to a Goal, Work Item, or Decision and measured against an outcome.
 8. How repeated successful reasoning can become reusable knowledge or deterministic handling.
 
 The target architecture is:
