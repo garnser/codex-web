@@ -18,7 +18,7 @@ The UI is exposed on `127.0.0.1:8765` by default. Set `CODEX_WEB_BIND=0.0.0.0` o
 
 The image has a Docker healthcheck against `/api/livez`. `/api/healthz` remains the deeper readiness/daemon-health endpoint and can return 503 when the Codex app-server is unavailable.
 
-## Workspace mounts
+## Workspace mounts and project paths
 
 Set `CODEX_WORKSPACE` to the host directory that contains the repositories Codex should be allowed to work with:
 
@@ -26,7 +26,13 @@ Set `CODEX_WORKSPACE` to the host directory that contains the repositories Codex
 CODEX_WORKSPACE=/srv/development docker compose up -d
 ```
 
-Inside the container that directory is `/workspace`. Project records created on the host store absolute paths, so an existing project such as `/home/user/src/product` must be recreated or updated to its container-visible path such as `/workspace/product`.
+Inside the container that directory is `/workspace`. Compose sets `CODEX_WEB_WORKSPACE_ROOT=/workspace`, so project records are stored as portable paths relative to that root. For example, a project entered as `product` is persisted as `product` while Codex receives `/workspace/product` as its runtime working directory. Nested paths such as `customer/api` work the same way.
+
+When `CODEX_WORKSPACE` is an absolute host path, Compose also supplies it as `CODEX_WEB_WORKSPACE_SOURCE_ROOT`. Existing project records below that old/native prefix are migrated automatically. A stored `/srv/development/product`, for example, resolves to `/workspace/product` and is rewritten as the portable value `product` on load.
+
+If an older project record contains an absolute path outside both `/workspace` and the configured source root, codex-web rejects it instead of guessing by basename. Set `CODEX_WEB_WORKSPACE_SOURCE_ROOT` to the previous common workspace directory, or update the project record explicitly. This keeps project paths from escaping the mounted workspace into `/app`, `/etc`, or another container filesystem location.
+
+For a native/non-Compose deployment you can opt into the same behavior by setting an absolute `CODEX_WEB_WORKSPACE_ROOT`. If it is unset, codex-web retains the historical native behavior and stores normal absolute project paths.
 
 The container runs as UID/GID 1000 by default. If the mounted workspace uses another owner, set `CODEX_UID` and `CODEX_GID` before building:
 
@@ -84,6 +90,7 @@ python -m pip install -r requirements.lock
 docker build -t codex-web .
 docker run --rm \
   -p 127.0.0.1:8765:8765 \
+  -e CODEX_WEB_WORKSPACE_ROOT=/workspace \
   -v codex-web-data:/app/data \
   -v codex-home:/home/codex/.codex \
   -v "$PWD/workspace:/workspace" \
