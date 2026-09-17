@@ -408,167 +408,22 @@ def _project_issue_ref(payload: dict[str, Any]) -> str | None:
     return f"{project_path}#{iid}"
 
 
-def _bot_connection(connection_id: str) -> BotConnection:
-    for connection in _load_bot_connections():
-        if connection.id == connection_id:
-            return connection
-    raise HTTPException(status_code=404, detail="Bot connection not found")
 
 
-def _bot_connection_for_conversation(provider: str, external_conversation_id: str) -> BotConnection | None:
-    for connection in _load_bot_connections():
-        if connection.provider == provider and connection.default_external_conversation_id == external_conversation_id:
-            return connection
-    return None
 
 
-def _mask_secret(value: str | None) -> str | None:
-    if not value:
-        return None
-    if len(value) <= 8:
-        return "********"
-    return f"{value[:4]}...{value[-4:]}"
 
 
-def _bot_connection_public(connection: BotConnection) -> dict[str, Any]:
-    data = connection.model_dump()
-    data["bot_token"] = _mask_secret(connection.bot_token)
-    data["slack_app_token"] = _mask_secret(connection.slack_app_token)
-    data["signing_secret"] = _mask_secret(connection.signing_secret)
-    data["webhook_secret"] = _mask_secret(connection.webhook_secret)
-    return data
 
 
-def _connection_identity(connection: BotConnection | BotConnectionCreate) -> tuple[Any, ...]:
-    return (
-        connection.provider.lower(),
-        connection.project_id,
-        (connection.default_external_conversation_id or "").strip(),
-        (connection.name or "").strip().lower(),
-        connection.bot_token or "",
-        connection.slack_app_token or "",
-        connection.signing_secret or "",
-        connection.webhook_secret or "",
-    )
 
 
-def _connection_matches_payload(connection: BotConnection, payload: BotConnectionCreate) -> bool:
-    if payload.id and connection.id == payload.id:
-        return True
-    payload_identity = _connection_identity(
-        BotConnection(
-            id=connection.id,
-            provider=payload.provider,
-            name=payload.name,
-            project_id=payload.project_id,
-            bot_token=payload.bot_token or connection.bot_token,
-            slack_app_token=payload.slack_app_token or connection.slack_app_token,
-            signing_secret=payload.signing_secret or connection.signing_secret,
-            webhook_secret=payload.webhook_secret or connection.webhook_secret,
-            default_external_conversation_id=payload.default_external_conversation_id,
-            default_external_name=payload.default_external_name,
-            telegram_update_offset=connection.telegram_update_offset,
-            created_at=connection.created_at,
-            updated_at=connection.updated_at,
-        )
-    )
-    return _connection_identity(connection) == payload_identity
 
 
-def _upsert_bot_connection(payload: BotConnectionCreate) -> BotConnection:
-    now = time.time()
-    provider = payload.provider.lower()
-    if provider not in {"slack", "telegram"}:
-        raise HTTPException(status_code=400, detail="Provider must be slack or telegram")
-    _project(payload.project_id)
-    connections = _load_bot_connections()
-    for index, connection in enumerate(connections):
-        if _connection_matches_payload(connection, payload):
-            current = connection.model_dump()
-            updates = payload.model_dump(exclude={"id"})
-            for secret in ("bot_token", "slack_app_token", "signing_secret", "webhook_secret"):
-                if updates.get(secret) in {None, "", "********"}:
-                    updates[secret] = current.get(secret)
-            current.update({key: value for key, value in updates.items() if value is not None})
-            current["provider"] = provider
-            current["updated_at"] = now
-            updated = BotConnection.model_validate(current)
-            connections[index] = updated
-            _save_bot_connections(connections)
-            _dedupe_bot_integrations()
-            return updated
-
-    connection = BotConnection(
-        id=uuid.uuid4().hex[:12],
-        provider=provider,
-        name=payload.name,
-        project_id=payload.project_id,
-        bot_token=payload.bot_token or None,
-        slack_app_token=payload.slack_app_token or None,
-        signing_secret=payload.signing_secret or None,
-        webhook_secret=payload.webhook_secret or None,
-        default_external_conversation_id=payload.default_external_conversation_id or None,
-        default_external_name=payload.default_external_name or None,
-        created_at=now,
-        updated_at=now,
-    )
-    connections.append(connection)
-    _save_bot_connections(connections)
-    _dedupe_bot_integrations()
-    return connection
 
 
-def _dedupe_bot_integrations() -> None:
-    connections = sorted(_load_bot_connections(), key=lambda item: item.created_at)
-    canonical_by_key: dict[tuple[Any, ...], BotConnection] = {}
-    connection_rewrites: dict[str, str] = {}
-    kept_connections: list[BotConnection] = []
-    for connection in connections:
-        key = _connection_identity(connection)
-        canonical = canonical_by_key.get(key)
-        if canonical:
-            connection_rewrites[connection.id] = canonical.id
-            continue
-        canonical_by_key[key] = connection
-        kept_connections.append(connection)
-
-    bindings = sorted(_load_bot_bindings(), key=lambda item: item.created_at)
-    seen_binding_routes: set[tuple[str, str, str, str]] = set()
-    kept_bindings: list[BotBinding] = []
-    for binding in bindings:
-        if binding.connection_id in connection_rewrites:
-            binding.connection_id = connection_rewrites[binding.connection_id]
-        route_key = (
-            binding.provider,
-            binding.external_conversation_id,
-            binding.thread_id,
-            (_binding_prefix(binding) or "").lower(),
-        )
-        if route_key in seen_binding_routes:
-            continue
-        seen_binding_routes.add(route_key)
-        kept_bindings.append(binding)
-
-    if len(kept_connections) != len(connections):
-        _save_bot_connections(kept_connections)
-    if len(kept_bindings) != len(bindings) or connection_rewrites:
-        _save_bot_bindings(kept_bindings)
 
 
-def _update_bot_connection(connection_id: str, **updates: Any) -> None:
-    connections = _load_bot_connections()
-    changed = False
-    for index, connection in enumerate(connections):
-        if connection.id != connection_id:
-            continue
-        data = connection.model_dump()
-        data.update(updates)
-        data["updated_at"] = time.time()
-        connections[index] = BotConnection.model_validate(data)
-        changed = True
-        break
-    if changed:
-        _save_bot_connections(connections)
 
 
 def _remember_thread_run_settings(

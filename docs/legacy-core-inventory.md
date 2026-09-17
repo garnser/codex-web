@@ -2,24 +2,20 @@
 
 `codex_web/runtime/legacy_core.py` is still the migration boundary for a mixture of compatibility state, runtime orchestration, storage helpers, bot routing, work-item policy and diagnostics. This inventory is intentionally ownership-focused: each group should either move to an existing owner, become a thin compatibility alias, or remain only when the runtime layer is the correct owner.
 
-## Immediate removal candidates
+## Completed cleanup blocks
 
 ### JSON/state-file primitives
 
-Legacy definitions:
+Removed from legacy ownership:
 - `_state_file_lock`
 - `_atomic_write_text`
 - `STATE_FILE_LOCKS`
 
-Canonical owner already exists in `codex_web/storage/json_files.py` as `state_file_lock()` / `atomic_write_text()`.
+Canonical ownership now lives in `codex_web/storage/json_files.py` as `state_file_lock()` / `atomic_write_text()`, with historical host names rebound during application composition.
 
-Next change: rebind/import the storage-owned functions, delete the duplicate implementations and remove the legacy lock registry once compatibility tests prove callers do not depend on object identity.
+### Bot connection management helpers
 
-### Bot connection persistence helpers
-
-Legacy currently still owns connection lookup/public masking/upsert/dedup/update helpers even though `runtime/bots.py` and extracted bot services own bot behavior.
-
-Representative definitions:
+Moved out of legacy ownership into `codex_web/services/bot_connections.py`:
 - `_bot_connection`
 - `_bot_connection_for_conversation`
 - `_mask_secret`
@@ -30,7 +26,7 @@ Representative definitions:
 - `_dedupe_bot_integrations`
 - `_update_bot_connection`
 
-Next change: determine whether these belong in bot service or bot/configuration repositories, move ownership as one coherent block, then retain only compatibility aliases if needed.
+`BotConnectionService` now owns lookup, public projection, mutation and deduplication while continuing to use the existing bot connection/binding repositories. Historical `core._...` names remain compatibility aliases to the extracted owner.
 
 ## Extraction candidates
 
@@ -47,6 +43,8 @@ Representative definitions:
 
 Likely owners: runtime execution / Executive integration / configuration storage. These functions currently mix persistence, policy and execution-contract construction.
 
+This is the next cleanup block to analyze because it is smaller and more deterministic than the broader routing/dispatch surface.
+
 ### Bot binding/routing and dispatch
 
 Representative definitions:
@@ -62,7 +60,7 @@ Representative definitions:
 - `_bindings_for_project`
 - `_primary_binding_for_project`
 
-Likely owner: extracted bot-routing service. This is a high-value block but should follow the storage-primitives cleanup because it has broader behavioral surface.
+Likely owner: extracted bot-routing service. This is a high-value block but has broader behavioral surface than connection management and should remain a separate PR.
 
 ### Work-item policy and projection helpers
 
@@ -103,8 +101,8 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 
 ## Cleanup order
 
-1. Remove duplicated JSON/state-file primitives.
-2. Move bot connection persistence helpers.
+1. ~~Remove duplicated JSON/state-file primitives.~~ Completed.
+2. ~~Move bot connection management helpers.~~ Completed by the bot connection service extraction.
 3. Consolidate thread run settings / execution-contract composition.
 4. Move binding lookup/routing helpers into the bot-routing owner.
 5. Move work-item policy/projection helpers into the work-item owner.
