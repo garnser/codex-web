@@ -587,8 +587,13 @@ class ExecutionWorkerService:
             or lease.expires_at <= now
         ):
             raise WorkerLeaseError("assignment lease is stale or invalid")
-        if worker.lifecycle in {WorkerLifecycle.QUARANTINED, WorkerLifecycle.REVOKED}:
+        if worker.lifecycle not in {
+            WorkerLifecycle.ACTIVE,
+            WorkerLifecycle.DRAINING,
+        }:
             raise WorkerLeaseError("worker is not trusted to continue assignment")
+        if assignment.deadline_at is not None and assignment.deadline_at <= now:
+            raise WorkerLeaseError("assignment deadline has expired")
         return lease
 
     def renew(
