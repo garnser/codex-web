@@ -26,6 +26,7 @@ from codex_web.services.crypto_keys import (
     CryptoKeyNotFoundError,
     CryptoKeyService,
 )
+from codex_web.services.identity import TenantIsolationError
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -110,7 +111,7 @@ class CryptoKeyServiceTests(unittest.TestCase):
 
         with self.assertRaises(CryptoDecryptError):
             self.service.decrypt(envelope, wrong_object, actor=self.actor)
-        with self.assertRaises(Exception):
+        with self.assertRaises(TenantIsolationError):
             self.service.decrypt(envelope, self.context, actor=self.other)
         with self.assertRaises(CryptoKeyNotFoundError):
             self.service.get_key(key.id, self.other)
