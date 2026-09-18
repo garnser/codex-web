@@ -417,6 +417,86 @@
                     <button id="refresh-model-gateway" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="model-gateway-status" class="form-result" aria-live="polite">Open to load canonical model-routing state.</div>
+                  <details id="model-gateway-management-panel">
+                    <summary>Registry & routing policy management</summary>
+                    <div id="model-gateway-management-assurance" class="form-result">Sensitive routing administration requires canonical admin authority and MFA/step-up assurance.</div>
+                    <details>
+                      <summary>Upsert provider</summary>
+                      <div class="route-test">
+                        <select id="model-provider-existing"><option value="">New provider</option></select>
+                        <input id="model-provider-id" placeholder="Provider ID" />
+                        <input id="model-provider-name" placeholder="Display name" />
+                        <input id="model-provider-adapter" placeholder="Adapter type" />
+                        <input id="model-provider-base-url" placeholder="Base URL (optional)" />
+                        <select id="model-provider-credential"><option value="">No credential reference</option></select>
+                        <label><input id="model-provider-credential-required" type="checkbox" checked /> Credential required</label>
+                        <input id="model-provider-residency" placeholder="Residency tags, comma separated" />
+                        <input id="model-provider-compliance" placeholder="Compliance tags, comma separated" />
+                        <select id="model-provider-status">
+                          <option value="active">Active</option>
+                          <option value="degraded">Degraded</option>
+                          <option value="disabled">Disabled</option>
+                        </select>
+                        <button id="save-model-provider" type="button" class="ghost-button">Save provider</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Upsert model definition</summary>
+                      <div class="route-test">
+                        <select id="model-definition-existing"><option value="">New model</option></select>
+                        <input id="model-definition-id" placeholder="Model definition ID" />
+                        <select id="model-definition-provider"></select>
+                        <input id="model-definition-concrete" placeholder="Concrete provider model" />
+                        <input id="model-definition-version" placeholder="Model version (optional)" />
+                        <input id="model-definition-classes" placeholder="Model classes, comma separated" />
+                        <input id="model-definition-capabilities" value="text" placeholder="Capabilities" />
+                        <input id="model-definition-modalities" value="text" placeholder="Modalities" />
+                        <label><input id="model-definition-tools" type="checkbox" /> Supports tools</label>
+                        <input id="model-definition-context" type="number" min="1" value="128000" placeholder="Context window" />
+                        <input id="model-definition-output" type="number" min="1" value="8192" placeholder="Max output" />
+                        <select id="model-definition-latency">
+                          <option value="low">Low latency</option>
+                          <option value="standard" selected>Standard latency</option>
+                          <option value="high">High latency</option>
+                        </select>
+                        <input id="model-definition-input-price" type="number" min="0" step="0.0001" placeholder="Input $ / 1M" />
+                        <input id="model-definition-output-price" type="number" min="0" step="0.0001" placeholder="Output $ / 1M" />
+                        <input id="model-definition-residency" placeholder="Residency tags" />
+                        <input id="model-definition-compliance" placeholder="Compliance tags" />
+                        <input id="model-definition-priority" type="number" min="0" value="100" placeholder="Route priority" />
+                        <select id="model-definition-lifecycle">
+                          <option value="active">Active</option>
+                          <option value="deprecated">Deprecated</option>
+                          <option value="disabled">Disabled</option>
+                        </select>
+                        <button id="save-model-definition" type="button" class="ghost-button">Save model definition</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Publish prompt/template version</summary>
+                      <div class="route-test">
+                        <select id="model-prompt-source"><option value="">Start blank</option></select>
+                        <input id="model-prompt-id" placeholder="Template ID" />
+                        <input id="model-prompt-version" placeholder="New version" />
+                        <textarea id="model-prompt-content" rows="5" placeholder="Template content"></textarea>
+                        <label><input id="model-prompt-active" type="checkbox" checked /> Active</label>
+                        <button id="save-model-prompt" type="button" class="ghost-button">Publish template version</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Tenant routing policy</summary>
+                      <div class="route-test">
+                        <label>Allowed providers <select id="model-policy-providers" multiple size="4"></select></label>
+                        <label>Allowed models <select id="model-policy-models" multiple size="5"></select></label>
+                        <input id="model-policy-residency" placeholder="Required residency tags" />
+                        <input id="model-policy-compliance" placeholder="Required compliance tags" />
+                        <input id="model-policy-max-cost" type="number" min="0" step="0.0001" placeholder="Max invocation cost USD" />
+                        <input id="model-policy-max-attempts" type="number" min="1" max="10" value="2" />
+                        <button id="save-model-policy" type="button" class="ghost-button">Save routing policy</button>
+                      </div>
+                    </details>
+                    <div id="model-gateway-management-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="section-title"><span>Effective tenant policy</span></div>
                   <div id="model-gateway-policy" class="comm-log"></div>
                   <details id="model-route-preview-panel">
@@ -569,6 +649,7 @@
     <script src="static/secret_admin.js" type="module"></script>
     <script src="static/crypto_key_admin.js" type="module"></script>
     <script src="static/model_gateway_admin.js" type="module"></script>
+    <script src="static/model_gateway_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
