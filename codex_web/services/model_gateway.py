@@ -725,7 +725,12 @@ class ModelGatewayService:
             and self._same_scope(item, actor)
         )
         rendered_request = effective_request.model_copy(
-            update={"system_prompt": self._render_system_prompt(template, request)}
+            update={
+                "system_prompt": self._render_system_prompt(
+                    template,
+                    effective_request,
+                )
+            }
         )
         attempts: list[ModelInvocationAttempt] = []
         budget_remaining = route.effective_max_cost_usd
@@ -864,8 +869,8 @@ class ModelGatewayService:
                 prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
                 rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
                 message_count=len(effective_request.messages),
-                input_character_count=len(rendered_effective_request.system_prompt)
-                + sum(len(item.content) for item in rendered_effective_request.messages),
+                input_character_count=len(rendered_request.system_prompt)
+                + sum(len(item.content) for item in rendered_request.messages),
                 required_capabilities=effective_request.required_capabilities,
                 required_residency_tags=route.effective_required_residency_tags,
                 required_compliance_tags=route.effective_required_compliance_tags,
@@ -906,8 +911,8 @@ class ModelGatewayService:
             prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
             rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
             message_count=len(effective_request.messages),
-            input_character_count=len(rendered_effective_request.system_prompt)
-            + sum(len(item.content) for item in rendered_effective_request.messages),
+            input_character_count=len(rendered_request.system_prompt)
+            + sum(len(item.content) for item in rendered_request.messages),
             required_capabilities=effective_request.required_capabilities,
             required_residency_tags=route.effective_required_residency_tags,
             required_compliance_tags=route.effective_required_compliance_tags,
