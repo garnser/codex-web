@@ -526,6 +526,14 @@
                   <div id="model-invocation-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Action Providers</h2>
+                    <button id="refresh-action-providers" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="action-provider-status" class="form-result" aria-live="polite">Open to load canonical action-provider state.</div>
+                  <div id="action-provider-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -650,6 +658,7 @@
     <script src="static/crypto_key_admin.js" type="module"></script>
     <script src="static/model_gateway_admin.js" type="module"></script>
     <script src="static/model_gateway_management.js" type="module"></script>
+    <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
