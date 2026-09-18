@@ -50,6 +50,7 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/projects": "projects",
             "/api/resources": "resources",
             "/api/action-providers": "action-providers",
+            "/api/action-intents": "action-intents",
             "/api/execution-workspaces": "execution-workspaces",
             "/api/artifacts": "artifact-evidence",
             "/api/threads": "threads",
