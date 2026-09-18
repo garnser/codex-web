@@ -112,3 +112,91 @@ should produce canonical evidence through #136 where applicable.
 heartbeat/health, concurrency, assignment/fence/lease status, drain/quarantine/
 revocation, sandbox/network/resource limits, and failure evidence. Raw lease
 tokens and secret material must never be rendered.
+
+
+## Local isolated execution backend
+
+The built-in local worker no longer advertises `command_execution` merely because
+codex-web is running on the same host. At startup the control plane probes the
+Bubblewrap sandbox and reconciles the canonical worker capabilities with the
+actual result.
+
+If Bubblewrap is missing, user namespaces are disabled, or the probe otherwise
+fails, the local worker remains registered for metadata-safe capabilities such
+as Git/artifact handling but **does not** advertise command execution. Pending
+command assignments therefore remain ineligible instead of falling back to an
+unsandboxed subprocess.
+
+A local command execution requires all of the following:
+
+- a canonical execution assignment already authorized by the control plane;
+- the canonical local worker identity and active fenced lease;
+- an active #135 filesystem execution workspace matching the execution,
+  Work Item, project/resource set and base revision;
+- `command_execution` in the assignment capability set;
+- a sandbox other than `danger-full-access`;
+- a network-disabled policy that Bubblewrap can actually enforce;
+- bounded CPU, address-space, process-count, file-size/disk and wall-clock
+  limits.
+
+The local backend uses a read-only bind of the host filesystem as its outer
+view, overlays only the assigned execution workspace writable for
+`workspace-write` assignments (read-only otherwise), provides private
+`/tmp`, unshares process/user/IPC/UTS/network namespaces and starts the command
+in a new process session. POSIX rlimits constrain CPU time, address space,
+processes and individual file size. The parent worker monitors total workspace
+disk usage and wall time and kills the complete process group on breach.
+
+### Network policy
+
+Bubblewrap can reliably provide a private network namespace for network-disabled
+assignments. It does not by itself provide hostname/DNS allowlist enforcement.
+Consequently the local worker does not advertise the canonical `network`
+capability and rejects network-enabled assignments, including allowlisted ones.
+A future remote/container transport may advertise that capability only after it
+can enforce the requested egress policy.
+
+This is deliberately fail-closed: codex-web never converts
+`allowed_hosts=(...)` into unrestricted network access.
+
+### Environment and secrets
+
+The execution process receives a minimal environment containing only ordinary
+locale/terminal/timezone values and `PATH`. Ambient control-plane environment
+variables such as provider tokens, cloud credentials and application secrets
+are not inherited.
+
+Secret references on the canonical assignment remain references. The local
+backend does not resolve them automatically. Any future credential grant must be
+purpose-specific, time-bounded and mediated by the canonical SecretBroker rather
+than copying the control-plane environment into the worker.
+
+Command argv is ephemeral execution input. Worker results and limit-breach
+Evidence store only the executable basename and a SHA-256 argv digest, never the
+raw argv, stdout or stderr.
+
+### Lease and failure behavior
+
+The local runtime claims the exact assignment through the existing worker state
+machine, starts it with the current fence/token, heartbeats the worker, and
+renews the same fenced lease while the sandboxed process runs. Completion still
+goes through the canonical worker service.
+
+CPU/file/disk/wall/resource failures produce a structured failed assignment.
+When Artifact/Evidence storage is available, limit breaches also produce
+metadata-only `policy_evaluation` failure Evidence tied to the canonical
+execution/workspace. If the completion fence changes before the assignment can
+commit, that Evidence is invalidated rather than being left as accepted proof.
+
+### Current migration boundary
+
+This backend is the concrete execution primitive for local worker command
+execution. Existing long-lived Codex app-server/thread transport is still a
+separate compatibility runtime and must not be treated as proof that arbitrary
+repository commands are isolated merely because a worker registry entry exists.
+Moving Codex turn execution onto assignment-bound worker processes requires
+explicit Codex authentication/state delegation rather than exposing the
+control-plane home directory or ambient credentials. Until that delegation
+exists, new untrusted command/tool execution paths must use this local worker
+backend rather than introducing direct `subprocess` execution in the control
+plane.
