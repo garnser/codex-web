@@ -25,6 +25,13 @@ from codex_web.model_gateway import (
     PromptTemplateUpsert,
     TenantModelPolicyUpdate,
 )
+from codex_web.input_plugins import (
+    InputContextBlock,
+    InputPatch,
+    InputPhase,
+    InputPluginPipeline,
+    InputPluginRegistration,
+)
 from codex_web.model_providers import (
     ModelProviderAdapter,
     ModelProviderTransientError,
@@ -51,16 +58,44 @@ class _FakeAdapter:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None]] = []
+        self.requests: list[ModelInvocationRequest] = []
         self.transient_models: set[str] = set()
 
     async def invoke(self, provider, model, request, *, credential):
         self.calls.append((model.id, credential))
+        self.requests.append(request)
         if model.id in self.transient_models:
             raise ModelProviderTransientError("temporary provider outage")
         return ModelProviderResult(
             text=f"reply:{model.id}",
             usage=ModelProviderUsage(input_tokens=100, output_tokens=20),
             provider_request_id=f"request:{model.id}",
+        )
+
+
+class _GatewayInputPlugin:
+    id = "builtin.gateway-test"
+    version = "1.0.0"
+    transport = "builtin"
+
+    async def transform(self, envelope, context):
+        del context
+        return InputPatch(
+            plugin_id=self.id,
+            plugin_version=self.version,
+            phase=InputPhase.COMPOSE,
+            changes={
+                "system_prompt": "PLUGIN COMPOSED SYSTEM",
+                "context_blocks": (
+                    InputContextBlock(
+                        id="plugin-context",
+                        source="test-plugin",
+                        content="PLUGIN CONTEXT BODY",
+                    ),
+                ),
+                "output_contract": {"format": "concise-json"},
+                "max_output_tokens": 500,
+            },
         )
 
 
@@ -278,6 +313,106 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         registry_json = self.service.store.load().model_dump_json()
         self.assertNotIn("super-secret-provider-key", registry_json)
         self.assertIn(secret.id, registry_json)
+
+    async def test_input_pipeline_composes_before_policy_routing_and_persists_hash_only_provenance(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        self.service.input_pipeline = InputPluginPipeline(
+            [
+                InputPluginRegistration(
+                    plugin=_GatewayInputPlugin(),
+                    phase=InputPhase.COMPOSE,
+                )
+            ],
+            gated_validator=lambda field, value, current, context: (
+                field == "max_output_tokens"
+                and int(value) <= current.max_output_tokens
+            ),
+        )
+
+        result = await self.service.invoke(
+            self._request(
+                system_prompt="ORIGINAL SYSTEM",
+                max_output_tokens=1000,
+            ),
+            actor=self.actor,
+        )
+
+        provider_request = self.adapter.requests[-1]
+        self.assertIn("PLUGIN COMPOSED SYSTEM", provider_request.system_prompt)
+        self.assertIn("PLUGIN CONTEXT BODY", provider_request.system_prompt)
+        self.assertIn('zone="TOOL_OUTPUT"', provider_request.system_prompt)
+        self.assertIn("concise-json", provider_request.system_prompt)
+        self.assertEqual(provider_request.max_output_tokens, 500)
+
+        record = result.invocation
+        self.assertEqual(len(record.input_plugin_provenance), 1)
+        self.assertEqual(
+            record.input_plugin_provenance[0].plugin_id,
+            "builtin.gateway-test",
+        )
+        self.assertEqual(
+            record.input_plugin_provenance[0].applied_fields,
+            (
+                "context_blocks",
+                "max_output_tokens",
+                "output_contract",
+                "system_prompt",
+            ),
+        )
+        self.assertEqual(len(record.input_gated_proposals), 1)
+        self.assertEqual(
+            record.input_gated_proposals[0].field,
+            "max_output_tokens",
+        )
+
+        durable = self.service.store.load().model_dump_json()
+        self.assertNotIn("PLUGIN COMPOSED SYSTEM", durable)
+        self.assertNotIn("PLUGIN CONTEXT BODY", durable)
+        self.assertNotIn("concise-json", durable)
+        self.assertIn("builtin.gateway-test", durable)
+
+    async def test_input_pipeline_cannot_expand_gateway_budget_without_core_acceptance(self) -> None:
+        class _BudgetExpansionPlugin:
+            id = "builtin.budget-expansion"
+            version = "1.0.0"
+            transport = "builtin"
+
+            async def transform(self, envelope, context):
+                del context
+                return InputPatch(
+                    plugin_id=self.id,
+                    plugin_version=self.version,
+                    phase=InputPhase.OPTIMIZE,
+                    changes={
+                        "max_output_tokens": envelope.max_output_tokens * 10,
+                        "max_cost_usd": 1000.0,
+                    },
+                )
+
+        self._provider("p1")
+        self._model("m1")
+        self.service.input_pipeline = InputPluginPipeline(
+            [
+                InputPluginRegistration(
+                    plugin=_BudgetExpansionPlugin(),
+                    phase=InputPhase.OPTIMIZE,
+                )
+            ]
+        )
+
+        result = await self.service.invoke(
+            self._request(max_output_tokens=1000, max_cost_usd=1.0),
+            actor=self.actor,
+        )
+
+        provider_request = self.adapter.requests[-1]
+        self.assertEqual(provider_request.max_output_tokens, 1000)
+        self.assertEqual(provider_request.max_cost_usd, 1.0)
+        self.assertEqual(
+            result.invocation.input_plugin_provenance[0].rejected_fields,
+            ("max_cost_usd", "max_output_tokens"),
+        )
 
     async def test_invocation_ledger_contains_hashes_not_prompt_or_output_content(self) -> None:
         self._provider("p1")
