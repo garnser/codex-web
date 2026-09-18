@@ -87,6 +87,14 @@ configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
 app.state.configuration_service = configuration_service
 
+identity_state_store = IdentityStateStore(state_store)
+identity_service = IdentityService(identity_state_store)
+identity_service.bootstrap_local()
+install_identity_middleware(app, identity_service)
+app.include_router(build_identity_router(identity_service))
+app.state.identity_state_store = identity_state_store
+app.state.identity_service = identity_service
+
 runtime_state = RuntimeStateRepositories(
     state_store,
     thread_settings_file=THREAD_SETTINGS_FILE,
