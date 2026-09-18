@@ -770,10 +770,7 @@ class ActionIntentService:
                     intent,
                     result=None,
                     outcome="unknown",
-                    details={
-                        "reason": type(exc).__name__,
-                        "message": str(exc)[:500],
-                    },
+                    details={"reason": type(exc).__name__},
                 )
                 return self._set_status(
                     intent.id,
@@ -1087,7 +1084,7 @@ class ActionIntentService:
             return self._set_status(
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
-                error=f"rollback failed: {type(exc).__name__}: {exc}",
+                error=f"rollback failed: {type(exc).__name__}",
             )
         self._append_receipt(
             intent,
