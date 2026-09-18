@@ -178,6 +178,8 @@ class ActionExecutionService:
 
         if binding.project_id is not None and request.project_id != binding.project_id:
             raise ActionResolutionError("action request project does not match provider binding")
+        if binding.resource_ids and not request.resource_ids:
+            raise ActionResolutionError("resource-scoped provider binding requires explicit action targets")
         if binding.resource_ids and not set(request.resource_ids).issubset(set(binding.resource_ids)):
             raise ActionResolutionError("action request targets resources outside provider binding")
 
@@ -189,7 +191,13 @@ class ActionExecutionService:
                 values = ", ".join(sorted(item.value for item in missing))
                 raise ActionRequirementError(f"action requires resource types: {values}")
 
-        credential_ref = request.credential_ref or binding.credential_ref
+        if (
+            binding.credential_ref
+            and request.credential_ref
+            and request.credential_ref != binding.credential_ref
+        ):
+            raise ActionResolutionError("action request cannot override provider binding credential")
+        credential_ref = binding.credential_ref or request.credential_ref
         if definition.credential_required and not credential_ref:
             raise ActionRequirementError("action requires credential reference")
         if request.dry_run:
