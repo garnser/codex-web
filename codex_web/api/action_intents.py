@@ -106,7 +106,12 @@ def build_action_intents_router(service: ActionIntentService) -> APIRouter:
         actor = request_actor(request)
         try:
             IdentityService.require_admin(actor)
-            return {"intent_ids": service.recover_stale_claims()}
+            return {
+                "intent_ids": service.recover_stale_claims(
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                )
+            }
         except Exception as exc:
             if isinstance(
                 exc,
