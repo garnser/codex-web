@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -173,6 +174,35 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
+
+    def test_assignment_workspace_subject_mismatch_fails_closed(self) -> None:
+        self.service.workspaces = SimpleNamespace(
+            get=lambda workspace_id, actor: SimpleNamespace(
+                id=workspace_id,
+                execution_id="exec-thread-mismatch",
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.WORK_ITEM,
+                    ref="group/app#42",
+                ),
+                project_id="home",
+                resource_ids=("repo-1",),
+                base_revision="abc123",
+            )
+        )
+
+        with self.assertRaisesRegex(
+            WorkerConflictError,
+            "execution subject does not match",
+        ):
+            self._assignment(
+                work_item_ref=None,
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD,
+                    ref="thread-mismatch",
+                ),
+                execution_id="exec-thread-mismatch",
+                execution_workspace_id="execws-thread",
+            )
 
     def test_registration_requires_existing_tenant_service_identity(self) -> None:
         with self.assertRaises(WorkerConflictError):
