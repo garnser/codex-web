@@ -175,6 +175,14 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first.branch_name, second.branch_name)
         self.assertEqual(len(self.backend.provisioned), 2)
 
+    def test_same_execution_acquisition_is_idempotent(self) -> None:
+        first = self._acquire("same-exec", self.repo.id)
+        second = self._acquire("same-exec", self.repo.id)
+
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(second.lease_id, first.lease_id)
+        self.assertEqual(len(self.backend.provisioned), 1)
+
     def test_conflicting_write_lease_fails_closed(self) -> None:
         self._acquire("exec-1", self.repo.id)
         with self.assertRaises(ExecutionWorkspaceConflictError):
