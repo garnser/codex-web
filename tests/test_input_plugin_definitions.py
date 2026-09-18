@@ -231,7 +231,7 @@ class InputPluginDefinitionTests(unittest.IsolatedAsyncioTestCase):
         ).execute(self._envelope(coding))
         self.assertEqual(
             applied.envelope.system_prompt,
-            "PREFIX:   system  ",
+            "PREFIX:  system  ",
         )
 
         other = self._request(purpose="executive-advice")
@@ -265,7 +265,7 @@ class InputPluginDefinitionTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
 
-        self.assertEqual(effective.system_prompt, "DEFINED: request body")
+        self.assertEqual(effective.system_prompt, "DEFINED:request body")
         self.assertIsNotNone(result)
         self.assertEqual(len(result.provenance), 1)
         self.assertEqual(
