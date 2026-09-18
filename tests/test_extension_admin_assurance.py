@@ -13,7 +13,7 @@ from codex_web.extensions import (
     ExtensionConfigureRequest,
     ExtensionGrantRequest,
     ExtensionInstallRequest,
-    ExtensionLifecycleRequest,
+    ExtensionManifest,
     ExtensionRemoveRequest,
     ExtensionType,
 )
@@ -27,7 +27,33 @@ from codex_web.services.extensions import ExtensionService
 from codex_web.services.identity import AuthorizationError
 from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
-from tests.test_extension_lifecycle import manifest
+
+
+def manifest(
+    extension_type: ExtensionType,
+    *,
+    extension_id: str,
+) -> ExtensionManifest:
+    return ExtensionManifest.model_validate(
+        {
+            "id": extension_id,
+            "version": "1.0.0",
+            "publisher": {"id": "com.example", "name": "Example"},
+            "provenance": {
+                "source": f"local-test:{extension_id}:1.0.0",
+                "digest": "sha256:" + "a" * 64,
+            },
+            "compatibility": {"codex_web": ">=3.0.0 <4.0.0"},
+            "types": [extension_type.value],
+            "capabilities": {
+                "requested": ["extension.read"],
+                "mandatory": ["extension.read"],
+            },
+            "entrypoints": {
+                extension_type.value: f"extension:{extension_type.value}",
+            },
+        }
+    )
 
 
 class ExtensionAdminAssuranceTests(unittest.TestCase):
