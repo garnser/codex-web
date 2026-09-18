@@ -524,7 +524,7 @@ app.state.context_compaction_service = context_service
 EXTRACTED_ROUTE_COUNTS = {
     "definitions": replace_routes(
         app,
-        build_definitions_router(definition_registry_service),
+        build_definitions_router(definition_registry_service, project_service),
         paths=set(),
         key="definitions",
     ),
