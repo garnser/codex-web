@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
@@ -36,6 +37,7 @@ from codex_web.runtime import core
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
+from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
@@ -49,6 +51,7 @@ from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
+from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
@@ -65,6 +68,7 @@ from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
+from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -130,6 +134,25 @@ app.include_router(build_resources_router(resource_catalog_service, project_serv
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
 
+action_provider_state_store = ActionProviderStateStore(state_store)
+action_provider_registry = ActionProviderRegistry(action_provider_state_store)
+reference_action_provider = ReferenceActionProvider()
+action_provider_registry.register(reference_action_provider)
+action_execution_service = ActionExecutionService(
+    action_provider_registry,
+    resource_catalog_service,
+    secret_broker=secret_broker,
+)
+app.include_router(
+    build_action_providers_router(
+        action_provider_registry,
+        action_execution_service,
+    )
+)
+app.state.action_provider_state_store = action_provider_state_store
+app.state.action_provider_registry = action_provider_registry
+app.state.action_execution_service = action_execution_service
+
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
     return resource_catalog_service.resource_ids_for_project(project)
@@ -170,7 +193,7 @@ thread_execution_settings_service = install_thread_execution_settings_service(ap
 turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
-autonomy_service = install_autonomy_service(app, core)
+autonomy_service = install_autonomy_service(app, core, action_execution_service)
 turn_queue_policy = install_turn_queue_policy(app, core)
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 turn_service = TurnService(core)
