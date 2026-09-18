@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.api.definitions import build_definitions_router
@@ -19,6 +19,12 @@ from codex_web.execution_contract_seed import execution_role_catalog_seed_payloa
 from codex_web.execution_contracts import (
     execution_role,
     route_execution_role,
+)
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
 )
 from codex_web.models import WorkItemState
 from codex_web.services.work_item_contracts import WorkItemContractService
@@ -37,6 +43,7 @@ from codex_web.services.definitions import (
     DefinitionRegistryService,
 )
 from codex_web.services.execution_role_definitions import ExecutionRoleDefinitionService
+from codex_web.services.projects import ProjectNotFoundError
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -346,65 +353,243 @@ class ExecutionRoleDefinitionTests(unittest.TestCase):
 
 
 class DefinitionRegistryApiTests(unittest.TestCase):
-    def test_api_and_runtime_resolve_the_same_published_record(self) -> None:
-        with tempfile.TemporaryDirectory() as tempdir:
-            state = SQLiteStateStore(Path(tempdir) / "state.db")
-            service = DefinitionRegistryService(DefinitionRegistryStore(state))
-            service.register_schema(
-                DefinitionKindSchema(
-                    kind=EXECUTION_ROLE_CATALOG_KIND,
-                    schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
-                    validate=validate_execution_role_catalog,
-                )
-            )
-            app = FastAPI()
-            app.include_router(build_definitions_router(service))
-            payload = execution_role_catalog_seed_payload()
+    class _Projects:
+        @staticmethod
+        def get(project_id, scope):
+            if (
+                project_id == "project-a"
+                and scope.organization_id == "org-a"
+                and scope.workspace_id == "ws-a"
+            ):
+                return object()
+            raise ProjectNotFoundError("Project not found")
 
-            with TestClient(app) as client:
-                draft = client.post(
-                    "/api/definitions/drafts",
-                    json={
-                        "definition_id": EXECUTION_ROLE_CATALOG_ID,
-                        "kind": EXECUTION_ROLE_CATALOG_KIND,
-                        "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
-                        "payload": payload,
-                        "actor": "admin",
-                    },
-                )
-                self.assertEqual(draft.status_code, 200)
-                record_id = draft.json()["record"]["record_id"]
-
-                validated = client.post(
-                    f"/api/definitions/{record_id}/validate",
-                    json={"actor": "reviewer"},
-                )
-                self.assertEqual(validated.status_code, 200)
-
-                published = client.post(
-                    f"/api/definitions/{record_id}/publish",
-                    json={"actor": "publisher", "approval_metadata": {"ticket": "A-1"}},
-                )
-                self.assertEqual(published.status_code, 200)
-
-                resolved_api = client.post(
-                    "/api/definitions/resolve",
-                    json={
-                        "definition_id": EXECUTION_ROLE_CATALOG_ID,
-                        "kind": EXECUTION_ROLE_CATALOG_KIND,
-                    },
-                )
-                self.assertEqual(resolved_api.status_code, 200)
-
-            resolved_runtime = service.resolve(
-                definition_id=EXECUTION_ROLE_CATALOG_ID,
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.state = SQLiteStateStore(Path(self.tempdir.name) / "state.db")
+        self.service = DefinitionRegistryService(DefinitionRegistryStore(self.state))
+        self.service.register_schema(
+            DefinitionKindSchema(
                 kind=EXECUTION_ROLE_CATALOG_KIND,
+                schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                validate=validate_execution_role_catalog,
             )
-            self.assertEqual(
-                resolved_api.json()["record"]["record_id"],
-                resolved_runtime.record_id,
+        )
+        self.actor = AuthenticationActor(
+            identity_id="authenticated-admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_definitions_router(self.service, self._Projects()))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.tempdir.cleanup()
+
+    def _draft_payload(self, **overrides):
+        payload = {
+            "definition_id": EXECUTION_ROLE_CATALOG_ID,
+            "kind": EXECUTION_ROLE_CATALOG_KIND,
+            "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+            "payload": execution_role_catalog_seed_payload(),
+            "actor": "spoofed-client-actor",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_authenticated_actor_replaces_payload_actor_and_runtime_resolves_same_record(self) -> None:
+        draft = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(),
+        )
+        self.assertEqual(draft.status_code, 200)
+        self.assertEqual(draft.json()["record"]["created_by"], self.actor.identity_id)
+        record_id = draft.json()["record"]["record_id"]
+
+        validated = self.client.post(
+            f"/api/definitions/{record_id}/validate",
+            json={"actor": "spoofed-reviewer"},
+        )
+        self.assertEqual(validated.status_code, 200)
+        self.assertEqual(
+            validated.json()["record"]["validated_by"],
+            self.actor.identity_id,
+        )
+
+        published = self.client.post(
+            f"/api/definitions/{record_id}/publish",
+            json={
+                "actor": "spoofed-publisher",
+                "approval_metadata": {"ticket": "A-1"},
+            },
+        )
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(
+            published.json()["record"]["published_by"],
+            self.actor.identity_id,
+        )
+
+        resolved_api = self.client.post(
+            "/api/definitions/resolve",
+            json={
+                "definition_id": EXECUTION_ROLE_CATALOG_ID,
+                "kind": EXECUTION_ROLE_CATALOG_KIND,
+            },
+        )
+        self.assertEqual(resolved_api.status_code, 200)
+
+        resolved_runtime = self.service.resolve(
+            definition_id=EXECUTION_ROLE_CATALOG_ID,
+            kind=EXECUTION_ROLE_CATALOG_KIND,
+        )
+        self.assertEqual(
+            resolved_api.json()["record"]["record_id"],
+            resolved_runtime.record_id,
+        )
+        self.assertEqual(resolved_runtime.approval_metadata["ticket"], "A-1")
+
+    def test_low_assurance_human_cannot_mutate_workspace_definition(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.PRIMARY}
+        )
+
+        response = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(
+                scope_type="workspace",
+                scope_id="ws-a",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("mfa", response.json()["detail"].lower())
+
+    def test_cross_tenant_scopes_are_denied_or_filtered(self) -> None:
+        denied = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(
+                scope_type="organization",
+                scope_id="org-b",
+            ),
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        own = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id="execution-roles.own",
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                scope_type="organization",
+                scope_id="org-a",
+                payload=execution_role_catalog_seed_payload(),
+                actor="internal-bootstrap",
             )
-            self.assertEqual(resolved_runtime.approval_metadata["ticket"], "A-1")
+        )
+        other = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id="execution-roles.other",
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                scope_type="organization",
+                scope_id="org-b",
+                payload=execution_role_catalog_seed_payload(),
+                actor="internal-bootstrap",
+            )
+        )
+
+        rows = self.client.get("/api/definitions/records")
+        self.assertEqual(rows.status_code, 200)
+        ids = {item["record_id"] for item in rows.json()["items"]}
+        self.assertIn(own.record_id, ids)
+        self.assertNotIn(other.record_id, ids)
+
+        hidden = self.client.get(f"/api/definitions/{other.record_id}/usage")
+        self.assertEqual(hidden.status_code, 404)
+
+    def test_project_scope_is_fenced_by_canonical_project_service(self) -> None:
+        allowed = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(
+                definition_id="execution-roles.project-a",
+                scope_type="project",
+                scope_id="project-a",
+            ),
+        )
+        self.assertEqual(allowed.status_code, 200)
+
+        denied = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(
+                definition_id="execution-roles.project-b",
+                scope_type="project",
+                scope_id="project-b",
+            ),
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        resolved_denied = self.client.post(
+            "/api/definitions/resolve",
+            json={
+                "definition_id": EXECUTION_ROLE_CATALOG_ID,
+                "kind": EXECUTION_ROLE_CATALOG_KIND,
+                "context": {"project_id": "project-b"},
+            },
+        )
+        self.assertEqual(resolved_denied.status_code, 403)
+
+    def test_service_definition_admin_scope_can_mutate_workspace_but_not_global(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="definition-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("definitions:admin",),
+        )
+
+        allowed = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(
+                scope_type="workspace",
+                scope_id="ws-a",
+            ),
+        )
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(
+            allowed.json()["record"]["created_by"],
+            "definition-service",
+        )
+
+        global_denied = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(definition_id="execution-roles.global-service"),
+        )
+        self.assertEqual(global_denied.status_code, 403)
+        self.assertIn("definitions:global-admin", global_denied.json()["detail"])
+
+    def test_global_mutation_requires_local_trusted_human_context(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+
+        response = self.client.post(
+            "/api/definitions/drafts",
+            json=self._draft_payload(),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("local-trusted", response.json()["detail"])
 
 
 if __name__ == "__main__":
