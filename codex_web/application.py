@@ -33,6 +33,7 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
+from codex_web.extension_packages import LocalExtensionPackageCatalog
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
@@ -45,6 +46,7 @@ from codex_web.execution_workers import WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     EXECUTION_WORKSPACE_DIR,
+    EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
@@ -340,6 +342,7 @@ app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 
 extension_state_store = ExtensionStateStore(state_store)
+extension_package_catalog = LocalExtensionPackageCatalog(EXTENSION_PACKAGE_DIR)
 extension_service = ExtensionService(
     extension_state_store,
     secrets=secret_broker,
@@ -347,8 +350,14 @@ extension_service = ExtensionService(
     resources=resource_catalog_service,
     artifact_evidence=artifact_evidence_service,
 )
-app.include_router(build_extensions_router(extension_service))
+app.include_router(
+    build_extensions_router(
+        extension_service,
+        extension_package_catalog,
+    )
+)
 app.state.extension_state_store = extension_state_store
+app.state.extension_package_catalog = extension_package_catalog
 app.state.extension_service = extension_service
 
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
