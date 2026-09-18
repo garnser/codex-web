@@ -5,6 +5,7 @@ from codex_web.api.approvals import build_approvals_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
+from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
@@ -24,8 +25,10 @@ from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.integrations.webhook_security import install_webhook_security
+from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
+    EXECUTION_WORKSPACE_DIR,
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
@@ -49,6 +52,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
@@ -70,6 +74,7 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
+from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
@@ -153,6 +158,20 @@ app.state.action_provider_state_store = action_provider_state_store
 app.state.action_provider_registry = action_provider_registry
 app.state.action_execution_service = action_execution_service
 
+execution_workspace_state_store = ExecutionWorkspaceStateStore(state_store)
+execution_workspace_backend = LocalGitWorkspaceBackend(EXECUTION_WORKSPACE_DIR)
+execution_workspace_service = ExecutionWorkspaceService(
+    execution_workspace_state_store,
+    execution_workspace_backend,
+    resource_catalog_service,
+    project_service.get,
+    work_item_host=core,
+)
+app.include_router(build_execution_workspaces_router(execution_workspace_service))
+app.state.execution_workspace_state_store = execution_workspace_state_store
+app.state.execution_workspace_backend = execution_workspace_backend
+app.state.execution_workspace_service = execution_workspace_service
+
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
     return resource_catalog_service.resource_ids_for_project(project)
@@ -183,6 +202,8 @@ core._save_work_item_states = runtime_state.work_item_states.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
+# Release expired resource locks and clean abandoned worktrees on startup.
+execution_workspace_service.recover_expired()
 
 # Compose extracted runtime ownership here rather than in server.py so direct
 # application imports and tests observe the same implementation as the CLI
