@@ -683,6 +683,71 @@ class IdentityService:
             and item.workspace_id == actor.workspace_id
         ]
 
+    def create_organization(self, *, name: str, organization_id: str | None = None) -> Organization:
+        organization = Organization(
+            id=(organization_id or f"org-{secrets.token_hex(6)}"),
+            name=name,
+        )
+
+        def apply(state: IdentityState) -> IdentityState:
+            if any(item.id == organization.id for item in state.organizations):
+                raise IdentityError("organization already exists")
+            state.organizations.append(organization)
+            return state
+
+        self.store.update(apply)
+        return organization
+
+    def create_workspace(
+        self,
+        *,
+        organization_id: str,
+        name: str,
+        workspace_id: str | None = None,
+    ) -> Workspace:
+        workspace = Workspace(
+            id=(workspace_id or f"ws-{secrets.token_hex(6)}"),
+            organization_id=organization_id,
+            name=name,
+        )
+
+        def apply(state: IdentityState) -> IdentityState:
+            organization = next(
+                (item for item in state.organizations if item.id == organization_id and item.disabled_at is None),
+                None,
+            )
+            if organization is None:
+                raise IdentityError("organization not found or disabled")
+            if any(item.id == workspace.id for item in state.workspaces):
+                raise IdentityError("workspace already exists")
+            state.workspaces.append(workspace)
+            return state
+
+        self.store.update(apply)
+        return workspace
+
+    def create_human_identity(
+        self,
+        *,
+        display_name: str,
+        email: str | None = None,
+        identity_id: str | None = None,
+    ) -> HumanIdentity:
+        human = HumanIdentity(
+            id=identity_id or f"human-{uuid.uuid4().hex}",
+            display_name=display_name,
+            email=email,
+        )
+
+        def apply(state: IdentityState) -> IdentityState:
+            if any(item.id == human.id for item in state.humans):
+                raise IdentityError("human identity already exists")
+            state.humans.append(human)
+            return state
+
+        self.store.update(apply)
+        return human
+
     def add_membership(self, membership: Membership) -> Membership:
         state = self.store.load()
         if membership.principal_kind == PrincipalKind.HUMAN:
