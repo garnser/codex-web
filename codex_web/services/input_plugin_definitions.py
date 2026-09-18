@@ -194,9 +194,16 @@ class InputPipelineDefinitionService:
         )
 
 
-def default_input_plugin_catalog() -> InputPluginCatalog:
+def default_input_plugin_catalog(
+    *,
+    skill_root: str | None = None,
+) -> InputPluginCatalog:
     catalog = InputPluginCatalog()
     catalog.register(NormalizeWhitespaceInputPlugin())
+    if skill_root is not None:
+        from codex_web.input_plugin_skills import register_skill_plugins_from_root
+
+        register_skill_plugins_from_root(catalog, skill_root)
     return catalog
 
 
