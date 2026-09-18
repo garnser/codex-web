@@ -7,6 +7,7 @@ from typing import Callable, Mapping, TypeVar
 from codex_web.execution_workers import AssignmentStatus, ExecutionAssignment
 from codex_web.identity import AuthenticationActor, PrincipalKind
 from codex_web.secrets import SecretReference, SecretStatus
+from codex_web.services.identity import TenantIsolationError
 from codex_web.services.secrets import (
     SecretBroker,
     SecretBrokerError,
@@ -158,7 +159,7 @@ class CodexAuthDelegationService:
                     actor=actor,
                     require_use=True,
                 )
-            except (SecretBrokerError, SecretUseDeniedError) as exc:
+            except (SecretBrokerError, SecretUseDeniedError, TenantIsolationError) as exc:
                 raise CodexAuthDelegationUnavailableError(
                     "assignment secret reference is unavailable to the worker"
                 ) from exc
