@@ -163,6 +163,7 @@
       <summary><strong>${escapeHtml(item.name)} · ${escapeHtml(item.status)} · ${duration(item.durationSeconds)}</strong></summary>
       <small>Correlation: ${escapeHtml(item.correlationId)} · causation: ${escapeHtml(item.causationId || "none")} · span: ${escapeHtml(item.spanId)} · parent: ${escapeHtml(item.parentSpanId || "none")}</small>
       <small>${timeText(item.startedAt)} → ${timeText(item.endedAt)}</small>
+      <button type="button" class="ghost-button" data-operations-log-correlation="${escapeHtml(item.correlationId)}">Logs for this correlation</button>
       <pre>${escapeHtml(JSON.stringify(item.attributes || {}, null, 2))}</pre>
     </details>`).join("") || '<div class="comm-entry"><strong>No recent traces match the filter.</strong></div>';
   }
