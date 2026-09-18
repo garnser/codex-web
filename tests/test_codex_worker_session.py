@@ -25,6 +25,7 @@ from codex_web.services.codex_auth_delegation import (
 )
 from codex_web.services.codex_worker_session import (
     AssignmentBoundCodexSession,
+    AssignmentBoundCodexSessionManager,
     AssignmentBoundCodexSessionStaleError,
 )
 from codex_web.services.codex_model_egress import CodexModelEgressEndpoint
@@ -497,6 +498,40 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertIn("credential expired", session.last_error)
+
+    async def test_manager_completes_exact_fenced_assignment_and_stops_session(self) -> None:
+        assignment = self._create_assignment()
+        manager = AssignmentBoundCodexSessionManager(
+            self.local_worker,
+            SimpleNamespace(),
+            runtime_factory=_FakeCodexRuntime,
+            watchdog_interval_seconds=60,
+        )
+
+        session = await manager.start(assignment.id)
+        self.assertEqual(
+            next(
+                item.status
+                for item in self.worker_service.store.load().assignments
+                if item.id == assignment.id
+            ),
+            AssignmentStatus.RUNNING,
+        )
+
+        completed = await manager.complete(
+            assignment.id,
+            succeeded=True,
+            artifact_ids=("artifact-1",),
+            evidence_ids=("evidence-1",),
+        )
+
+        self.assertEqual(completed.status, AssignmentStatus.SUCCEEDED)
+        self.assertEqual(completed.artifact_ids, ("artifact-1",))
+        self.assertEqual(completed.evidence_ids, ("evidence-1",))
+        self.assertIsNone(completed.lease)
+        self.assertIsNone(manager.get(assignment.id))
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertEqual(session.fence, completed.fence)
 
     async def test_request_reuses_existing_codex_runtime_protocol_owner(self) -> None:
         assignment = self._create_assignment()
