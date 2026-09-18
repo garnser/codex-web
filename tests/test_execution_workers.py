@@ -366,6 +366,55 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 actor=self.worker_actor,
             )
 
+    def test_targeted_recovery_never_steals_live_lease_and_marks_expired_assignment_lost(self) -> None:
+        assignment = self._assignment(execution_id="exec-targeted-recovery")
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+        self.service.start(
+            self.worker.id,
+            assignment.id,
+            AssignmentStartRequest(
+                fence=claimed.fence,
+                lease_token=claimed.lease.lease_token,
+            ),
+            actor=self.worker_actor,
+        )
+
+        with self.assertRaisesRegex(WorkerLeaseError, "still valid"):
+            self.service.recover_assignment_if_expired(
+                assignment.id,
+                actor=self.admin,
+                now=claimed.lease.expires_at - 1,
+                failure_code="codex_session_lost",
+                failure_message="private Codex process disappeared",
+            )
+
+        recovered = self.service.recover_assignment_if_expired(
+            assignment.id,
+            actor=self.admin,
+            now=claimed.lease.expires_at + 1,
+            failure_code="codex_session_lost",
+            failure_message="private Codex process disappeared",
+        )
+
+        self.assertEqual(recovered.status, AssignmentStatus.LOST)
+        self.assertIsNone(recovered.lease)
+        self.assertEqual(recovered.fence, claimed.fence)
+        self.assertEqual(recovered.failure_code, "codex_session_lost")
+        self.assertEqual(
+            recovered.failure_message,
+            "private Codex process disappeared",
+        )
+        events = self.service.events(self.admin)
+        self.assertEqual(events[0].event_type, "assignment_lost")
+        self.assertEqual(events[0].assignment_id, assignment.id)
+        self.assertEqual(events[0].details["fence"], claimed.fence)
+        self.assertEqual(events[0].details["reason"], "codex_session_lost")
+
     def test_quarantined_worker_cannot_complete_existing_work(self) -> None:
         assignment = self._assignment()
         claimed = self.service.claim(
