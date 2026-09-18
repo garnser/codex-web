@@ -21,6 +21,7 @@ from codex_web.services.task_source_events import (
 )
 from codex_web.services.task_source_runtime import (
     TaskSourceRegistry,
+    TaskSourceResolutionError,
     TaskSourceWritebackService,
 )
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
