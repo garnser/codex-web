@@ -91,30 +91,26 @@ class ActionIntentService:
             return "action-intent:admin" in actor.service_scopes
         return actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
 
-    @classmethod
-    def _require_worker(cls, actor: AuthenticationActor) -> None:
-        if cls._admin(actor):
-            return
+    @staticmethod
+    def _require_worker(actor: AuthenticationActor) -> None:
         if (
             actor.principal_kind == PrincipalKind.SERVICE
-            and {"action-intent:worker", "action-intent:admin"}.intersection(actor.service_scopes)
+            and "action-intent:worker" in actor.service_scopes
         ):
             return
         raise AuthorizationError(
-            "action intent worker operations require action-intent:worker scope or administrator identity"
+            "action intent execution requires service principal with action-intent:worker scope"
         )
 
-    @classmethod
-    def _require_callback_actor(cls, actor: AuthenticationActor) -> None:
-        if cls._admin(actor):
-            return
+    @staticmethod
+    def _require_callback_actor(actor: AuthenticationActor) -> None:
         if (
             actor.principal_kind == PrincipalKind.SERVICE
-            and {"action-intent:callback", "action-intent:admin"}.intersection(actor.service_scopes)
+            and "action-intent:callback" in actor.service_scopes
         ):
             return
         raise AuthorizationError(
-            "provider callback ingestion requires action-intent:callback scope or administrator identity"
+            "provider callback ingestion requires service principal with action-intent:callback scope"
         )
 
     @classmethod
