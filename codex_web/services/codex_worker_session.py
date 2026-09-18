@@ -388,6 +388,7 @@ class AssignmentBoundCodexSession:
                     cwd=workspace_path,
                     popen=_OneShotProcessFactory(process),
                 )
+                self.runtime.approval_namespace = assignment.id
                 await self.runtime.start()
                 self.watchdog_task = asyncio.create_task(
                     self._watchdog(),
