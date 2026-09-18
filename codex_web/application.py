@@ -292,6 +292,7 @@ execution_worker_store = ExecutionWorkerStore(state_store)
 execution_worker_service = ExecutionWorkerService(
     execution_worker_store,
     identity=identity_service,
+    workspaces=execution_workspace_service,
 )
 local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
@@ -382,6 +383,9 @@ app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
+execution_worker_service.mark_stale_workers_offline(
+    actor=identity_service.local_trusted_actor(),
+)
 execution_worker_service.recover_expired(
     actor=identity_service.local_trusted_actor(),
 )
