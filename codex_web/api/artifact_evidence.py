@@ -194,7 +194,7 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 raise _error(exc) from exc
             raise
 
-    @router.get("/api/work-items/{ref:path}/evidence-requirements")
+    @router.get("/api/evidence-requirements/work-items/{ref:path}")
     async def work_item_requirements(ref: str, request: Request) -> dict[str, Any]:
         try:
             requirements = service.work_item_requirements(
@@ -215,7 +215,7 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 raise _error(exc) from exc
             raise
 
-    @router.put("/api/work-items/{ref:path}/evidence-requirements")
+    @router.put("/api/evidence-requirements/work-items/{ref:path}")
     async def set_work_item_requirements(
         ref: str,
         payload: EvidenceRequirementsUpdate,
@@ -241,7 +241,7 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 raise _error(exc) from exc
             raise
 
-    @router.post("/api/work-items/{ref:path}/evidence-evaluation")
+    @router.post("/api/evidence-evaluations/work-items/{ref:path}")
     async def evaluate_work_item_evidence(
         ref: str,
         payload: EvidenceEvaluationRequest,
