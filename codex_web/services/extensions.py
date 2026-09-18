@@ -986,11 +986,14 @@ class ExtensionService:
         self.store.update(apply)
         return updated[0]
 
-    def upgrade(
+    def _upgrade_with_verification(
         self,
         installation_id: str,
-        payload: ExtensionUpgradeRequest,
         *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        package_ref: str | None,
+        migration_evidence_id: str | None,
         actor: AuthenticationActor,
     ) -> ExtensionInstallation:
         self._require_admin(actor)
@@ -999,19 +1002,19 @@ class ExtensionService:
             raise ExtensionConflictError("disable extension before upgrade")
         if current.lifecycle == ExtensionLifecycleState.REMOVED:
             raise ExtensionConflictError("removed extension cannot be upgraded")
-        if payload.manifest.id != current.manifest.id:
+        if manifest.id != current.manifest.id:
             raise ExtensionConflictError("upgrade manifest extension id changed")
-        if payload.manifest.version == current.manifest.version:
+        if manifest.version == current.manifest.version:
             raise ExtensionConflictError("upgrade version must change")
-        verification = self._verify_package(
-            payload.manifest,
-            payload.observed_digest,
+        verification = self._validate_package_verification(
+            manifest,
+            verification,
             current.deployment_mode,
         )
-        incompatible_reason = self._compatibility_reason(payload.manifest)
-        migration_evidence_id = None
-        if payload.manifest.migrations.entrypoint:
-            if payload.migration_evidence_id is None:
+        incompatible_reason = self._compatibility_reason(manifest)
+        verified_migration_evidence_id = None
+        if manifest.migrations.entrypoint:
+            if migration_evidence_id is None:
                 raise ExtensionConflictError(
                     "extension declares a migration entrypoint; canonical migration evidence is required"
                 )
@@ -1026,7 +1029,7 @@ class ExtensionService:
                         actor,
                         include_inactive=False,
                     )
-                    if item.id == payload.migration_evidence_id
+                    if item.id == migration_evidence_id
                 ),
                 None,
             )
@@ -1043,12 +1046,17 @@ class ExtensionService:
                     EvidenceType.CI_CHECK,
                 }
                 or evidence.metadata.get("extension_id") != current.manifest.id
-                or evidence.metadata.get("to_version") != payload.manifest.version
+                or evidence.metadata.get("to_version") != manifest.version
             ):
                 raise ExtensionConflictError(
                     "extension migration evidence does not verify this target version"
                 )
-            migration_evidence_id = evidence.id
+            verified_migration_evidence_id = evidence.id
+        elif migration_evidence_id is not None:
+            raise ExtensionConflictError(
+                "migration evidence supplied but target manifest declares no migration"
+            )
+
         updated: list[ExtensionInstallation] = []
 
         def apply(state):
@@ -1057,7 +1065,7 @@ class ExtensionService:
                 raise ExtensionConflictError(
                     "extension changed while upgrade was being prepared"
                 )
-            requested = set(payload.manifest.capabilities.requested)
+            requested = set(manifest.capabilities.requested)
             now = time.time()
             state.grants = [
                 grant.model_copy(
@@ -1075,12 +1083,13 @@ class ExtensionService:
                 else grant
                 for grant in state.grants
             ]
-            allowed_slots = set(payload.manifest.configuration.secret_refs)
+            allowed_slots = set(manifest.configuration.secret_refs)
             replacement = item.model_copy(
                 update={
                     "manifest_history": (*item.manifest_history, item.manifest),
-                    "manifest": payload.manifest,
+                    "manifest": manifest,
                     "package_verification": verification,
+                    "package_ref": package_ref,
                     "lifecycle": (
                         ExtensionLifecycleState.INCOMPATIBLE
                         if incompatible_reason
@@ -1105,15 +1114,59 @@ class ExtensionService:
                 actor,
                 "extension_upgraded",
                 from_version=item.manifest.version,
-                to_version=payload.manifest.version,
+                to_version=manifest.version,
                 lifecycle=replacement.lifecycle.value,
-                migration_evidence_id=migration_evidence_id,
+                migration_evidence_id=verified_migration_evidence_id,
+                package_ref=package_ref,
+                verifier=verification.verifier,
             )
             updated.append(replacement)
             return state
 
         self.store.update(apply)
         return updated[0]
+
+    def upgrade(
+        self,
+        installation_id: str,
+        payload: ExtensionUpgradeRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExtensionInstallation:
+        current = self.get(installation_id, actor)
+        verification = self._verify_package(
+            payload.manifest,
+            payload.observed_digest,
+            current.deployment_mode,
+        )
+        return self._upgrade_with_verification(
+            installation_id,
+            manifest=payload.manifest,
+            verification=verification,
+            package_ref=None,
+            migration_evidence_id=payload.migration_evidence_id,
+            actor=actor,
+        )
+
+    def upgrade_verified_package(
+        self,
+        installation_id: str,
+        *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        package_ref: str,
+        migration_evidence_id: str | None,
+        actor: AuthenticationActor,
+    ) -> ExtensionInstallation:
+        """Upgrade from server-observed package metadata and digest."""
+        return self._upgrade_with_verification(
+            installation_id,
+            manifest=manifest,
+            verification=verification,
+            package_ref=package_ref,
+            migration_evidence_id=migration_evidence_id,
+            actor=actor,
+        )
 
     def remove(
         self,
