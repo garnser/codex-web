@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from codex_web.compatibility import TASK_SOURCE_CONTRACT
 from codex_web.models import TaskSourceIdentity, WorkItemStage
 from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection,
@@ -22,6 +23,7 @@ class ReferenceTaskSource:
     """
 
     source_type = "reference"
+    contract_version = TASK_SOURCE_CONTRACT.current
     capabilities = TaskSourceCapabilities(frozenset(TaskSourceCapability))
 
     def __init__(
