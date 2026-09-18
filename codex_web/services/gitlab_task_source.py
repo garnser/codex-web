@@ -12,6 +12,7 @@ from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
+    TaskSourceCreateRequest,
     TaskSourceEvent,
     TaskSourceSnapshot,
 )
@@ -30,6 +31,7 @@ class GitLabTaskSource:
     capabilities = TaskSourceCapabilities(
         frozenset(
             {
+                TaskSourceCapability.CREATE,
                 TaskSourceCapability.DISCOVERY,
                 TaskSourceCapability.READ,
                 TaskSourceCapability.EVENTS,
@@ -159,6 +161,38 @@ class GitLabTaskSource:
             raise ValueError("Task-source identity does not belong to GitLab adapter")
         if identity.source_instance.strip().rstrip("/") != self.source_instance:
             raise ValueError("Task-source identity belongs to another GitLab instance")
+
+    async def create(
+        self,
+        request: TaskSourceCreateRequest,
+        *,
+        scope: str,
+    ) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.CREATE)
+        project_path = str(scope or "").strip().strip("/")
+        if not project_path:
+            raise ValueError("GitLab task creation requires a configured project scope")
+        labels = list(request.labels)
+        if request.owners:
+            labels = self._replace_prefixed_label(
+                tuple(labels),
+                "owner::",
+                f"owner::{request.owners[0].strip().lower()}",
+            )
+        payload: dict[str, Any] = {"title": request.title}
+        if request.body:
+            payload["description"] = request.body
+        if labels:
+            payload["labels"] = ",".join(labels)
+        issue = await self.client.create_project_issue(
+            self.api_base,
+            project_path,
+            token=self.token,
+            payload=payload,
+        )
+        if not issue:
+            raise RuntimeError("GitLab task creation returned no issue")
+        return self._snapshot_from_issue(issue, project_path=project_path)
 
     @staticmethod
     def _split_external_id(external_id: str) -> tuple[str, int]:
