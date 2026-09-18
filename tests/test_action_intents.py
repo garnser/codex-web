@@ -292,6 +292,31 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.reference.values, {})
 
+    async def test_existing_idempotent_intent_is_retrievable_after_entitlement_revocation(self) -> None:
+        stable = self._request(idempotency_key="stable-before-plan-change")
+        first = self.service.create(
+            ActionIntentCreate(
+                binding_id=self.binding.id,
+                request=stable,
+                work_item_ref=self.work_item.ref,
+            ),
+            actor=self.actor,
+        )
+
+        self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
+        with self.assertRaises(EntitlementDeniedError):
+            self._create()
+
+        duplicate = self.service.create(
+            ActionIntentCreate(
+                binding_id=self.binding.id,
+                request=stable,
+                work_item_ref=self.work_item.ref,
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(duplicate.id, first.id)
+
     async def test_hard_quota_denies_before_provider_execution_and_keeps_attempt_unspent(self) -> None:
         self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
         self.entitlements.set_capability(
