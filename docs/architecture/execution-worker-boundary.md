@@ -235,6 +235,48 @@ Rotation, expiry, tenant mismatch, missing worker ACL, stale/reassigned fences,
 expired leases and assignment deadline expiry all fail closed before launch or
 when a delegation is revalidated.
 
+### Assignment-bound Codex app-server session
+
+The local worker now has a concrete interactive Codex session primitive. One
+session belongs to exactly one canonical ExecutionAssignment, local worker ID
+and monotonic fence. It is not a reusable global app-server and cannot silently
+restart after the bound process exits.
+
+Launch proceeds in this order:
+
+1. validate the canonical execution workspace and Bubblewrap assignment policy;
+2. heartbeat/claim/start the exact assignment through the worker state machine;
+3. resolve one short-lived Codex credential through the worker-scoped delegation
+   contract above;
+4. inside that SecretBroker callback, start `codex app-server` through the same
+   Bubblewrap namespace, minimal environment and POSIX resource limits as other
+   local worker commands;
+5. hand only the already-running subprocess to the existing `CodexRuntime`,
+   which remains the single JSON-RPC protocol implementation.
+
+The raw access token is therefore present only while trusted worker code creates
+the Codex process. The Python session retains the process handle and
+metadata-only delegation (secret reference, rotation, expiry, assignment,
+worker and fence), never the credential value.
+
+While the process is alive, a deterministic watchdog:
+
+- requires the worker to remain active/draining and the assignment to remain
+  running on the exact worker/fence;
+- revalidates delegated secret rotation/expiry and assignment deadline;
+- heartbeats the worker and renews the same canonical fenced lease before
+  expiry;
+- enforces the assignment wall-clock and total workspace disk limits in
+  addition to the Bubblewrap process rlimits;
+- terminates the app-server if the worker is quarantined/revoked/offline, the
+  lease/fence changes, the assignment deadline passes, delegated authentication
+  rotates/expires, or resource bounds are exceeded.
+
+Shutdown uses the normal runtime supervisor to stop any assignment-bound
+sessions. A session intentionally does not complete the canonical assignment on
+its own; later production transport orchestration owns the semantic completion
+point and must submit artifacts/evidence through the existing worker boundary.
+
 ### Current migration boundary
 
 This backend is the concrete execution primitive for local worker command

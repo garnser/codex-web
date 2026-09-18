@@ -253,6 +253,14 @@ class RuntimeSupervisor:
         h.ACTIONABLE_OWNER_CONTINUITY_TASKS.clear()
         h.HANDOFF_CONTINUITY_TASKS.clear()
 
+        codex_worker_sessions = getattr(
+            self.app.state,
+            "assignment_bound_codex_session_manager",
+            None,
+        )
+        if codex_worker_sessions is not None:
+            await codex_worker_sessions.stop_all()
+
         await h.bot_runtime.stop()
         await h.codex.stop()
         self.started = False
