@@ -88,7 +88,12 @@ class ExtensionEvents(BaseModel):
 
 
 class ExtensionConfiguration(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        populate_by_name=True,
+    )
 
     schema_path: str | None = Field(default=None, alias="schema")
     secret_refs: tuple[str, ...] = ()
