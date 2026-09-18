@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import contextlib
 import os
+import uuid
 from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
     ThreadPrimaryUpdate,
     ThreadRunSettings,
+)
+
+from codex_web.services.codex_worker_session import (
+    AssignmentBoundCodexSessionManager,
+)
+from codex_web.services.thread_bootstrap_bindings import (
+    ThreadBootstrapBindingService,
+)
+from codex_web.services.turn_execution_binding import (
+    TurnExecutionBindingService,
 )
 
 
@@ -18,8 +30,43 @@ class ThreadService:
 
     DEFAULT_MESSAGE_LIMIT = 100
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        binding_service: TurnExecutionBindingService | None = None,
+        session_manager: AssignmentBoundCodexSessionManager | None = None,
+        bootstrap_bindings: ThreadBootstrapBindingService | None = None,
+        control_actor: AuthenticationActor | None = None,
+    ) -> None:
         self.host = host
+        self.binding_service = binding_service
+        self.session_manager = session_manager
+        self.bootstrap_bindings = bootstrap_bindings
+        self.control_actor = control_actor
+
+    def _require_bootstrap_routing(self) -> tuple[
+        TurnExecutionBindingService,
+        AssignmentBoundCodexSessionManager,
+        ThreadBootstrapBindingService,
+        AuthenticationActor,
+    ]:
+        if (
+            self.binding_service is None
+            or self.session_manager is None
+            or self.bootstrap_bindings is None
+            or self.control_actor is None
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="isolated thread bootstrap routing is unavailable",
+            )
+        return (
+            self.binding_service,
+            self.session_manager,
+            self.bootstrap_bindings,
+            self.control_actor,
+        )
 
     def default_message_limit(self) -> int:
         try:
@@ -138,7 +185,8 @@ class ThreadService:
                 "turns": [],
             }
             with contextlib.suppress(Exception):
-                thread_response = await self.host.codex.request(
+                thread_response = await self.host._codex_request_for_thread(
+                    indexed.id,
                     "thread/read",
                     {"threadId": indexed.id, "includeTurns": False},
                 )
@@ -170,30 +218,133 @@ class ThreadService:
         model: str | None = None,
         reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
+        (
+            binding_service,
+            session_manager,
+            bootstrap_bindings,
+            control_actor,
+        ) = self._require_bootstrap_routing()
         project = self.host._project(project_id)
-        response = await self.host.codex.request(
-            "thread/start",
-            self.host._project_params(
-                project,
-                {
-                    "sessionStartSource": "startup",
-                    "sandbox": sandbox,
-                    "approvalPolicy": approval_policy,
-                    "model": model,
-                },
-            ),
+        effective_sandbox = sandbox or project.sandbox
+        effective_approval_policy = approval_policy or project.approval_policy
+        token = uuid.uuid4().hex
+        bootstrap_id = f"bootstrap-{token}"
+        execution_id = f"thread-bootstrap-{token}"
+
+        binding = binding_service.prepare_bootstrap(
+            bootstrap_id=bootstrap_id,
+            execution_id=execution_id,
+            project_id=project.id,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
         )
-        thread = response.get("thread", response)
-        thread_id = thread.get("id") if isinstance(thread, dict) else None
-        if thread_id:
-            self.host._remember_thread_run_settings(
-                thread_id,
-                sandbox=sandbox or project.sandbox,
-                approval_policy=approval_policy or project.approval_policy,
-                model=model or project.model,
-                reasoning_effort=reasoning_effort,
-                developer_instructions=None,
+        session = await session_manager.start(binding.assignment_id)
+        status = session.status()
+        workspace_path = session.workspace_path
+        if workspace_path is None or status.fence is None:
+            with contextlib.suppress(Exception):
+                await session_manager.complete(
+                    binding.assignment_id,
+                    succeeded=False,
+                    failure_code="codex_thread_bootstrap_invalid",
+                    failure_message=(
+                        "assignment-bound bootstrap session lacks canonical "
+                        "workspace/fence"
+                    ),
+                )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "assignment-bound bootstrap session lacks canonical "
+                    "workspace/fence"
+                ),
             )
+
+        workspace_cwd = str(workspace_path)
+        params = self.host._project_params(
+            project,
+            {
+                "sessionStartSource": "startup",
+                "sandbox": effective_sandbox,
+                "approvalPolicy": effective_approval_policy,
+                "model": model,
+            },
+        )
+        params["cwd"] = workspace_cwd
+        params["sandboxPolicy"] = self.host._sandbox_policy(
+            effective_sandbox,
+            workspace_cwd,
+        )
+
+        try:
+            response = await session.request("thread/start", params)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                await session_manager.complete(
+                    binding.assignment_id,
+                    succeeded=False,
+                    failure_code="codex_thread_start_failed",
+                    failure_message=str(exc)[:500],
+                )
+            raise
+
+        thread = response.get("thread", response) if isinstance(response, dict) else {}
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        if not thread_id:
+            with contextlib.suppress(Exception):
+                await session_manager.complete(
+                    binding.assignment_id,
+                    succeeded=False,
+                    failure_code="codex_thread_id_missing",
+                    failure_message="thread/start returned no canonical thread id",
+                )
+            raise HTTPException(
+                status_code=502,
+                detail="thread/start returned no canonical thread id",
+            )
+
+        try:
+            bootstrap = bootstrap_bindings.bind(
+                bootstrap_id=bootstrap_id,
+                thread_id=thread_id,
+                execution_id=binding.execution_id,
+                assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,
+                actor=control_actor,
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                await session_manager.complete(
+                    binding.assignment_id,
+                    succeeded=False,
+                    failure_code="codex_thread_binding_failed",
+                    failure_message=(
+                        "returned Codex thread could not be durably bound "
+                        "to its bootstrap execution"
+                    ),
+                )
+            raise
+
+        self.host._remember_thread_run_settings(
+            thread_id,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
+            model=model or project.model,
+            reasoning_effort=reasoning_effort,
+            developer_instructions=None,
+        )
+        self.host._append_bot_event(
+            {
+                "type": "thread_bootstrap_bound",
+                "thread_id": thread_id,
+                "bootstrap_id": bootstrap.bootstrap_id,
+                "execution_id": bootstrap.execution_id,
+                "assignment_id": bootstrap.assignment_id,
+                "execution_workspace_id": bootstrap.execution_workspace_id,
+                "worker_id": status.worker_id,
+                "fence": status.fence,
+            }
+        )
         return response
 
     async def read(
