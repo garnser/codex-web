@@ -73,6 +73,7 @@ from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
+from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
@@ -317,7 +318,7 @@ local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
     name="Local Execution Worker",
     scope=identity_service.local_trusted_actor().tenant,
-    service_scopes=("execution-worker:run",),
+    service_scopes=("execution-worker:run", "secret:use"),
 )
 local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
@@ -370,6 +371,9 @@ app.state.extension_state_store = extension_state_store
 app.state.extension_package_catalog = extension_package_catalog
 app.state.extension_service = extension_service
 
+codex_auth_delegation_service = CodexAuthDelegationService(secret_broker)
+app.state.codex_auth_delegation_service = codex_auth_delegation_service
+
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
     execution_workspace_service,
@@ -378,6 +382,7 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     worker_actor=local_worker_actor,
     control_actor=identity_service.local_trusted_actor(),
     artifact_evidence=artifact_evidence_service,
+    codex_auth_delegation=codex_auth_delegation_service,
 )
 app.state.local_execution_worker_runtime = local_execution_worker_runtime
 
