@@ -8,6 +8,7 @@ from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
 from codex_web.api.data_governance import build_data_governance_router
+from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
@@ -59,6 +60,7 @@ from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.data_governance import DataGovernanceService
+from codex_web.services.entitlements import EntitlementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
@@ -86,6 +88,7 @@ from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
+from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -131,6 +134,12 @@ data_governance_service = DataGovernanceService(data_governance_store)
 app.include_router(build_data_governance_router(data_governance_service))
 app.state.data_governance_store = data_governance_store
 app.state.data_governance_service = data_governance_service
+
+entitlement_store = EntitlementStore(state_store)
+entitlement_service = EntitlementService(entitlement_store)
+app.include_router(build_entitlements_router(entitlement_service))
+app.state.entitlement_store = entitlement_store
+app.state.entitlement_service = entitlement_service
 
 secret_state_store = SecretStateStore(state_store)
 local_secret_backend = LocalFileSecretBackend(SECRET_MATERIAL_DIR)
@@ -224,6 +233,7 @@ action_intent_service = ActionIntentService(
     artifact_evidence=artifact_evidence_service,
     work_item_host=core,
     security_boundary=security_boundary_service,
+    entitlements=entitlement_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
