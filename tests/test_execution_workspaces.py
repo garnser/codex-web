@@ -310,6 +310,48 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertIsNotNone(lease.released_at)
         self.assertEqual(lease.release_reason, "provisioning-failed")
 
+    def test_inspection_projects_active_expired_and_released_lease_state(self) -> None:
+        workspace = self._acquire("inspect-exec", self.repo.id)
+        current = self.service.inspect(self.actor)
+        item = next(entry for entry in current if entry.workspace.id == workspace.id)
+
+        self.assertEqual(item.lease.id, workspace.lease_id)
+        self.assertEqual(item.lease.owner_identity_id, self.actor.identity_id)
+        self.assertEqual(item.lease.mode, LeaseMode.WRITE)
+        self.assertTrue(item.lease_active)
+        self.assertFalse(item.lease_expired)
+
+        future = self.service.inspect(self.actor, now=time.time() + 31)
+        expired = next(entry for entry in future if entry.workspace.id == workspace.id)
+        self.assertFalse(expired.lease_active)
+        self.assertTrue(expired.lease_expired)
+
+        self.service.release(
+            workspace.id,
+            ExecutionWorkspaceRelease(reason="inspection release"),
+            actor=self.actor,
+        )
+        released = next(
+            entry
+            for entry in self.service.inspect(self.actor, now=time.time() + 31)
+            if entry.workspace.id == workspace.id
+        )
+        self.assertFalse(released.lease_active)
+        self.assertFalse(released.lease_expired)
+        self.assertIsNotNone(released.lease.released_at)
+        self.assertEqual(released.lease.release_reason, "inspection release")
+
+    def test_inspection_is_tenant_scoped(self) -> None:
+        self._acquire("tenant-visible", self.repo.id)
+        other_actor = self.actor.model_copy(
+            update={
+                "organization_id": "other-org",
+                "workspace_id": "other-workspace",
+            }
+        )
+
+        self.assertEqual(self.service.inspect(other_actor), [])
+
     def test_workspace_reference_is_projected_into_execution_contract(self) -> None:
         workspace = self._acquire("contract-exec", self.repo.id)
         state = self.host.states[self.work_item.ref]

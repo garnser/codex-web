@@ -66,6 +66,15 @@ def build_execution_workspaces_router(service: ExecutionWorkspaceService) -> API
             ]
         }
 
+    @router.get("/api/execution-workspaces/inspection")
+    async def inspect_workspaces(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        items = service.inspect(actor)
+        return {
+            "items": [item.model_dump(mode="json") for item in items],
+            "count": len(items),
+        }
+
     @router.post("/api/execution-workspaces")
     async def acquire_workspace(
         payload: ExecutionWorkspaceAcquire,

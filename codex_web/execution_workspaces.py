@@ -195,6 +195,18 @@ class WorkspaceIntegrationRecord(BaseModel):
         return self
 
 
+class ExecutionWorkspaceInspection(BaseModel):
+    """Read-only operator projection joining workspace state to its lease."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workspace: ExecutionWorkspace
+    lease: ExecutionWorkspaceLease | None = None
+    lease_active: bool = False
+    lease_expired: bool = False
+    observed_at: float
+
+
 class ExecutionWorkspaceReference(BaseModel):
     """Compact canonical execution-contract reference."""
 
