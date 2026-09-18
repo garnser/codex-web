@@ -157,6 +157,7 @@ model_gateway_store = ModelGatewayStore(state_store)
 model_gateway_service = ModelGatewayService(
     model_gateway_store,
     secret_broker=secret_broker,
+    entitlements=entitlement_service,
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
 app.include_router(build_model_gateway_router(model_gateway_service))
@@ -512,7 +513,11 @@ EXTRACTED_ROUTE_COUNTS = {
 }
 app.state.extracted_route_counts = EXTRACTED_ROUTE_COUNTS
 
-core.executive_service = install_executive_integrated(app, core)
+core.executive_service = install_executive_integrated(
+    app,
+    core,
+    model_gateway=model_gateway_service,
+)
 
 
 def main() -> None:
