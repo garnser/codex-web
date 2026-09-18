@@ -148,20 +148,23 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             workspace = root / "workspace"
-            home = root / "home"
             workspace.mkdir()
-            home.mkdir()
 
             command = backend.build_command(
                 _assignment(),
                 argv=("python", "-m", "pytest"),
                 workspace_path=workspace,
-                home_path=home,
             )
 
         self.assertEqual(command[0], "/usr/bin/bwrap")
         self.assertIn("--unshare-net", command)
         self.assertIn("--ro-bind", command)
+        self.assertNotIn(["--ro-bind", "/", "/"], [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ])
+        self.assertNotIn("/app/data", command)
+        self.assertIn("/tmp/codex-worker-home", command)
         write_index = command.index("--bind")
         self.assertEqual(command[write_index + 1], str(workspace.resolve()))
         self.assertEqual(command[write_index + 2], str(workspace.resolve()))
