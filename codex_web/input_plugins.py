@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
@@ -11,6 +12,9 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.definitions import DefinitionReference
+
+
+logger = logging.getLogger(__name__)
 
 
 class InputPhase(StrEnum):
@@ -257,6 +261,34 @@ class InputGatedProposal(BaseModel):
     value_sha256: str = Field(min_length=64, max_length=64)
 
 
+class InputPluginAuditEvent(BaseModel):
+    """Metadata-only audit event emitted before composition failure escapes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    organization_id: str
+    workspace_id: str
+    actor_id: str
+    request_id: str
+    work_item_ref: str | None = None
+    execution_id: str | None = None
+    plugin_id: str
+    plugin_version: str
+    transport: str
+    phase: InputPhase
+    failure_policy: InputFailurePolicy
+    event_type: str
+    outcome: str
+    rejected_fields: tuple[str, ...] = ()
+    exception_type: str | None = None
+    started_at: float
+    completed_at: float
+    duration_seconds: float = Field(ge=0.0)
+
+
+InputPluginAuditSink = Callable[[InputPluginAuditEvent], None]
+
+
 class InputPluginProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -387,6 +419,7 @@ class InputPluginPipeline:
         registrations: tuple[InputPluginRegistration, ...] | list[InputPluginRegistration] = (),
         *,
         gated_validator: GatedValidator | None = None,
+        audit_sink: InputPluginAuditSink | None = None,
     ) -> None:
         self.registrations = tuple(
             sorted(
@@ -400,6 +433,53 @@ class InputPluginPipeline:
             )
         )
         self.gated_validator = gated_validator
+        self.audit_sink = audit_sink
+
+    def _audit(
+        self,
+        *,
+        context: InputPluginContext,
+        registration: InputPluginRegistration,
+        event_type: str,
+        outcome: str,
+        started_at: float,
+        rejected_fields: tuple[str, ...] = (),
+        exception_type: str | None = None,
+    ) -> None:
+        if self.audit_sink is None:
+            return
+        completed = time.time()
+        event = InputPluginAuditEvent(
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            actor_id=context.actor_id,
+            request_id=context.request_id,
+            work_item_ref=context.work_item_ref,
+            execution_id=context.execution_id,
+            plugin_id=str(registration.plugin.id),
+            plugin_version=str(registration.plugin.version),
+            transport=str(registration.plugin.transport),
+            phase=registration.phase,
+            failure_policy=registration.failure_policy,
+            event_type=event_type,
+            outcome=outcome,
+            rejected_fields=rejected_fields,
+            exception_type=exception_type,
+            started_at=started_at,
+            completed_at=completed,
+            duration_seconds=max(0.0, completed - started_at),
+        )
+        try:
+            self.audit_sink(event)
+        except Exception:
+            logger.exception(
+                "input plugin audit sink failed",
+                extra={
+                    "plugin_id": event.plugin_id,
+                    "plugin_version": event.plugin_version,
+                    "event_type": event.event_type,
+                },
+            )
 
     async def execute(self, envelope: InputEnvelope) -> InputPipelineResult:
         current = envelope
@@ -426,6 +506,7 @@ class InputPluginPipeline:
             before_hash = _canonical_hash(before)
             before_chars = _input_character_count(before)
             started = time.time()
+            security_audited = False
 
             try:
                 raw_patch = await plugin.transform(before, context)
@@ -470,6 +551,16 @@ class InputPluginPipeline:
 
                 if protected or unknown:
                     rejected = tuple(sorted({*protected, *unknown}))
+                    self._audit(
+                        context=context,
+                        registration=registration,
+                        event_type="protected_mutation_rejected",
+                        outcome="denied",
+                        started_at=started,
+                        rejected_fields=rejected,
+                        exception_type="InputPluginSecurityError",
+                    )
+                    security_audited = True
                     raise InputPluginSecurityError(
                         "input plugin attempted protected/unknown mutations: "
                         + ", ".join(rejected)
@@ -545,11 +636,39 @@ class InputPluginPipeline:
                         duration_seconds=max(0.0, completed - started),
                     )
                 )
-            except InputPluginSecurityError:
+            except InputPluginSecurityError as exc:
                 # Security classification is structural and never fail-open.
+                if not security_audited:
+                    self._audit(
+                        context=context,
+                        registration=registration,
+                        event_type="plugin_security_violation",
+                        outcome="denied",
+                        started_at=started,
+                        exception_type=type(exc).__name__,
+                    )
                 raise
             except Exception as exc:
                 completed = time.time()
+                exception_type = type(exc).__name__
+                if exception_type == "ExternalInputTransportError":
+                    event_type = "external_transport_failure"
+                elif isinstance(exc, InputPluginBudgetError):
+                    event_type = "plugin_budget_failure"
+                else:
+                    event_type = "plugin_execution_failure"
+                self._audit(
+                    context=context,
+                    registration=registration,
+                    event_type=event_type,
+                    outcome=(
+                        "denied"
+                        if registration.failure_policy == InputFailurePolicy.FAIL_CLOSED
+                        else "continued"
+                    ),
+                    started_at=started,
+                    exception_type=exception_type,
+                )
                 if registration.failure_policy == InputFailurePolicy.FAIL_CLOSED:
                     raise InputPluginExecutionError(
                         f"input plugin {plugin.id} failed with {type(exc).__name__}"
