@@ -4,6 +4,8 @@ import dataclasses
 import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping, TypeVar
 
+from pydantic import BaseModel
+
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.secrets import SecretAuditEvent, SecretCreate, SecretReference, SecretRotate, SecretStatus
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
@@ -43,6 +45,8 @@ def _contains_secret(value: Any, secret: str) -> bool:
         return any(_contains_secret(item, secret) for item in value)
     if dataclasses.is_dataclass(value):
         return _contains_secret(dataclasses.asdict(value), secret)
+    if isinstance(value, BaseModel):
+        return _contains_secret(value.model_dump(mode="python"), secret)
     return False
 
 
@@ -61,6 +65,9 @@ def scrub_secret(value: Any, secret_values: Iterable[str]) -> Any:
         return [scrub_secret(item, secrets) for item in value]
     if isinstance(value, tuple):
         return tuple(scrub_secret(item, secrets) for item in value)
+    if isinstance(value, BaseModel):
+        scrubbed = scrub_secret(value.model_dump(mode="python"), secrets)
+        return value.__class__.model_validate(scrubbed)
     return value
 
 
