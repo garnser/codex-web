@@ -16,6 +16,7 @@ from codex_web.identity import (
 )
 from codex_web.model_gateway import (
     MODEL_CLASS_STRATEGIC,
+    MODEL_GATEWAY_CONTRACT,
     ModelDefinitionUpsert,
     ModelInvocationRequest,
     ModelMessage,
@@ -181,6 +182,22 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         }
         payload.update(overrides)
         return ModelInvocationRequest(**payload)
+
+    async def test_model_gateway_v1_state_migrates_with_empty_input_plugin_provenance(self) -> None:
+        migrated = self.service.store._decode(
+            {
+                "schema_version": "1.0",
+                "providers": [],
+                "models": [],
+                "prompt_templates": [],
+                "policies": [],
+                "invocations": [],
+            }
+        )
+
+        self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.1")
+        self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
 
     async def test_routing_is_deterministic_by_class_policy_health_and_priority(self) -> None:
         self._provider("p1")
