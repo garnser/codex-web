@@ -19,6 +19,10 @@ from codex_web.entitlements import (
     TenantEntitlementSettings,
     UsageEvent,
     UsageEventCreate,
+    UsageExportBatch,
+    UsageExportRecord,
+    UsageReconciliationBatch,
+    UsageReconciliationResult,
     UsageRecordResult,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
@@ -545,6 +549,86 @@ class EntitlementService:
 
         self.store.update(apply)
         return result[0]
+
+
+    def reconcile_usage(
+        self,
+        payload: UsageReconciliationBatch,
+        *,
+        actor: AuthenticationActor,
+    ) -> UsageReconciliationResult:
+        """Idempotently ingest a late/duplicate-safe usage batch."""
+        self._require_meter(actor)
+        accepted = 0
+        duplicates = 0
+        event_ids: list[str] = []
+
+        def apply(state: EntitlementState) -> EntitlementState:
+            nonlocal accepted, duplicates
+            known = {
+                item.idempotency_key: item
+                for item in state.usage
+                if self._same_scope(item, actor)
+            }
+            for incoming in payload.events:
+                existing = known.get(incoming.idempotency_key)
+                if existing is not None:
+                    duplicates += 1
+                    event_ids.append(existing.id)
+                    continue
+                event = self._event_from_payload(incoming, actor)
+                state.usage.append(event)
+                known[event.idempotency_key] = event
+                accepted += 1
+                event_ids.append(event.id)
+            return state
+
+        self.store.update(apply)
+        return UsageReconciliationResult(
+            accepted=accepted,
+            duplicates=duplicates,
+            event_ids=tuple(event_ids),
+        )
+
+    def export_usage(
+        self,
+        actor: AuthenticationActor,
+        *,
+        received_after: float | None = None,
+        limit: int = 500,
+    ) -> UsageExportBatch:
+        """Return a provider-neutral metadata-only feed for optional billing sinks."""
+        self._require_admin(actor)
+        capped = max(1, min(limit, 5000))
+        rows = [
+            item
+            for item in self.store.load().usage
+            if self._same_scope(item, actor)
+            and (received_after is None or item.received_at > received_after)
+        ]
+        rows.sort(key=lambda item: (item.received_at, item.id))
+        selected = rows[:capped]
+        records = tuple(
+            UsageExportRecord(
+                event_id=item.id,
+                organization_id=item.organization_id,
+                workspace_id=item.workspace_id,
+                metric=item.metric,
+                amount=item.amount,
+                occurred_at=item.occurred_at,
+                received_at=item.received_at,
+                source=item.source,
+                project_id=item.project_id,
+                resource_id=item.resource_id,
+                work_item_ref=item.work_item_ref,
+                action_intent_id=item.action_intent_id,
+            )
+            for item in selected
+        )
+        return UsageExportBatch(
+            records=records,
+            next_received_after=(selected[-1].received_at if selected else received_after),
+        )
 
     def usage(
         self,
