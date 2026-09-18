@@ -413,28 +413,31 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertIn("quarantined", session.last_error)
 
-    async def test_watchdog_terminates_when_delegated_credential_rotates_or_expires(self) -> None:
-        for error in (
-            CodexAuthDelegationStaleError("credential rotated or changed"),
-            CodexAuthDelegationStaleError("credential expired"),
-        ):
-            with self.subTest(error=str(error)):
-                assignment = self._create_assignment(
-                    execution_id=f"exec-codex-{error}",
-                    work_item_ref=f"group/app#{error}",
-                    execution_workspace_id="execws-codex",
-                )
-                # Keep the fake workspace's canonical identity aligned with the assignment.
-                self.workspaces.workspace.execution_id = assignment.execution_id
-                self.workspaces.workspace.work_item_ref = assignment.work_item_ref
-                gate = asyncio.Event()
-                session = await self._session(assignment, gate)
-                self.delegation.validation_error = error
-                gate.set()
-                await asyncio.wait_for(session.watchdog_task, timeout=1)
-                self.assertTrue(self.backend.processes[-1].terminated)
-                self.assertIn(str(error), session.last_error)
-                self.delegation.validation_error = None
+    async def test_watchdog_terminates_when_delegated_credential_rotates(self) -> None:
+        assignment = self._create_assignment()
+        gate = asyncio.Event()
+        session = await self._session(assignment, gate)
+        self.delegation.validation_error = CodexAuthDelegationStaleError(
+            "credential rotated or changed"
+        )
+        gate.set()
+        await asyncio.wait_for(session.watchdog_task, timeout=1)
+
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertIn("credential rotated or changed", session.last_error)
+
+    async def test_watchdog_terminates_when_delegated_credential_expires(self) -> None:
+        assignment = self._create_assignment()
+        gate = asyncio.Event()
+        session = await self._session(assignment, gate)
+        self.delegation.validation_error = CodexAuthDelegationStaleError(
+            "credential expired"
+        )
+        gate.set()
+        await asyncio.wait_for(session.watchdog_task, timeout=1)
+
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertIn("credential expired", session.last_error)
 
     async def test_request_reuses_existing_codex_runtime_protocol_owner(self) -> None:
         assignment = self._create_assignment()
