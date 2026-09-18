@@ -20,7 +20,6 @@ from codex_web.services.action_providers import (
     ActionExecutionService,
     ActionProviderNotFoundError,
     ActionProviderRegistry,
-    ActionResolutionError,
 )
 from codex_web.services.extension_conformance import ExtensionRuntimeDescriptor
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
