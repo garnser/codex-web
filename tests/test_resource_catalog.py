@@ -310,7 +310,7 @@ class ResourceCatalogTests(unittest.TestCase):
             ROLE_CONTRACTS["james"],
         )
 
-        self.assertEqual(contract.schema_version, "1.2")
+        self.assertEqual(contract.schema_version, "1.3")
         self.assertEqual(
             contract.target.resource_ids,
             (repository.id, environment.id),

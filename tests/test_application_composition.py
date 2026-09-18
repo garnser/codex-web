@@ -50,6 +50,7 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/projects": "projects",
             "/api/resources": "resources",
             "/api/action-providers": "action-providers",
+            "/api/execution-workspaces": "execution-workspaces",
             "/api/threads": "threads",
             "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
