@@ -208,6 +208,23 @@ def build_definitions_router(
             if record_visible(item, actor)
         ]
 
+    def visible_usage(items: list[dict[str, Any]], actor: AuthenticationActor) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in items:
+            organization_id = item.get("organization_id")
+            workspace_id = item.get("workspace_id")
+            project_id = item.get("project_id")
+            if organization_id is not None and organization_id != actor.organization_id:
+                continue
+            if workspace_id is not None and workspace_id != actor.workspace_id:
+                continue
+            if project_id is not None and not project_visible(str(project_id), actor):
+                continue
+            if organization_id is None and workspace_id is None and project_id is None:
+                continue
+            visible.append(item)
+        return visible
+
     @router.get("/schemas")
     async def schemas(request: Request) -> dict[str, Any]:
         authenticated(request)
@@ -428,7 +445,9 @@ def build_definitions_router(
         try:
             record = service.get_record(record_id)
             require_visible(record, actor)
-            return service.usage(record_id)
+            result = service.usage(record_id)
+            items = visible_usage(result.get("items", []), actor)
+            return {**result, "items": items, "count": len(items)}
         except (DefinitionError, DefinitionNotFoundError, ValueError) as exc:
             raise _error(exc) from exc
 
