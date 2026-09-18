@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from codex_web.action_providers import ActionDefinition, ActionProviderBinding, ActionRequest
 from codex_web.identity import AuthenticationActor
+from codex_web.input_plugins import InputPluginAuditEvent
 from codex_web.security import (
     ExecutionSecurityPolicy,
     NetworkEgressPolicy,
@@ -142,6 +143,67 @@ class SecurityBoundaryService:
 
         self.store.update(apply)
         return event
+
+    def record_input_plugin_event(
+        self,
+        event: InputPluginAuditEvent,
+    ) -> SecurityEvent:
+        """Persist one metadata-only input-plugin boundary event."""
+        reason_map = {
+            "protected_mutation_rejected": (
+                "input plugin attempted protected or unknown field mutation"
+            ),
+            "plugin_security_violation": (
+                "input plugin failed code-owned security validation"
+            ),
+            "external_transport_failure": (
+                "external input plugin transport failed"
+            ),
+            "plugin_budget_failure": (
+                "input plugin exceeded code-owned budget"
+            ),
+            "plugin_execution_failure": (
+                "input plugin execution failed"
+            ),
+        }
+        security_event = SecurityEvent(
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
+            event_type=f"input_plugin.{event.event_type}",
+            violation_kind=SecurityViolationKind.INPUT_PLUGIN_BOUNDARY,
+            outcome=SecurityDecisionOutcome.DENY,
+            actor_identity_id=event.actor_id,
+            work_item_ref=event.work_item_ref,
+            execution_id=event.execution_id,
+            source_zone=TrustZone.TOOL_OUTPUT,
+            reason=reason_map.get(
+                event.event_type,
+                "input plugin boundary event",
+            ),
+            details=redact_boundary_payload(
+                {
+                    "request_id": event.request_id,
+                    "plugin_id": event.plugin_id,
+                    "plugin_version": event.plugin_version,
+                    "transport": event.transport,
+                    "phase": event.phase.value,
+                    "failure_policy": event.failure_policy.value,
+                    "plugin_outcome": event.outcome,
+                    "exception_type": event.exception_type,
+                    "rejected_fields": ",".join(event.rejected_fields),
+                    "duration_seconds": event.duration_seconds,
+                }
+            ),
+            occurred_at=event.completed_at,
+        )
+
+        def apply(state):
+            state.events.append(security_event)
+            state.events = state.events[-5000:]
+            return state
+
+        self.store.update(apply)
+        return security_event
 
     def events(
         self,
