@@ -218,7 +218,7 @@ app.state.telegram_client = telegram_client
 # task globals populated for diagnostics while owning cancellation and shutdown.
 runtime_supervisor = install_runtime_supervisor(app, core)
 
-install_webhook_security(core)
+install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
     core.hub.unsubscribe(previous_context_service.observe)
