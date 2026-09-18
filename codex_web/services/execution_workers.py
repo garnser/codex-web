@@ -1,0 +1,878 @@
+from __future__ import annotations
+
+import secrets
+import time
+
+from codex_web.execution_workers import (
+    AssignmentClaimRequest,
+    AssignmentCompleteRequest,
+    AssignmentLease,
+    AssignmentRenewRequest,
+    AssignmentStartRequest,
+    AssignmentStatus,
+    ExecutionAssignment,
+    ExecutionAssignmentCreate,
+    ExecutionWorker,
+    ExecutionWorkerRegister,
+    ExecutionWorkerState,
+    WorkerEvent,
+    WorkerHeartbeatRequest,
+    WorkerLifecycle,
+)
+from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.storage.execution_workers import ExecutionWorkerStore
+
+
+class ExecutionWorkerError(RuntimeError):
+    pass
+
+
+class WorkerNotFoundError(ExecutionWorkerError):
+    pass
+
+
+class AssignmentNotFoundError(ExecutionWorkerError):
+    pass
+
+
+class WorkerConflictError(ExecutionWorkerError):
+    pass
+
+
+class WorkerLeaseError(ExecutionWorkerError):
+    pass
+
+
+class WorkerCapabilityError(ExecutionWorkerError):
+    pass
+
+
+class ExecutionWorkerService:
+    def __init__(
+        self,
+        store: ExecutionWorkerStore,
+        *,
+        identity: IdentityService | None = None,
+        workspaces: ExecutionWorkspaceService | None = None,
+    ) -> None:
+        self.store = store
+        self.identity = identity
+        self.workspaces = workspaces
+
+    @staticmethod
+    def _admin(actor: AuthenticationActor) -> bool:
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            return "execution-worker:admin" in actor.service_scopes
+        return actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+
+    @classmethod
+    def _require_admin(cls, actor: AuthenticationActor) -> None:
+        if not cls._admin(actor):
+            raise AuthorizationError("execution worker administrator required")
+
+    @staticmethod
+    def _same_scope(item, actor: AuthenticationActor) -> bool:
+        return (
+            item.organization_id == actor.organization_id
+            and item.workspace_id == actor.workspace_id
+        )
+
+    @staticmethod
+    def _event(
+        state: ExecutionWorkerState,
+        *,
+        actor: AuthenticationActor | None,
+        event_type: str,
+        worker_id: str | None = None,
+        assignment_id: str | None = None,
+        details: dict[str, str | int | float | bool | None] | None = None,
+    ) -> None:
+        state.events.append(
+            WorkerEvent(
+                organization_id=(actor.organization_id if actor else "system"),
+                workspace_id=(actor.workspace_id if actor else "system"),
+                event_type=event_type,
+                worker_id=worker_id,
+                assignment_id=assignment_id,
+                actor_id=actor.identity_id if actor else None,
+                details=details or {},
+            )
+        )
+        state.events = state.events[-10000:]
+
+    def _worker(
+        self,
+        state: ExecutionWorkerState,
+        worker_id: str,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        item = next(
+            (
+                value
+                for value in state.workers
+                if value.id == worker_id and self._same_scope(value, actor)
+            ),
+            None,
+        )
+        if item is None:
+            raise WorkerNotFoundError("execution worker not found")
+        return item
+
+    def _assignment(
+        self,
+        state: ExecutionWorkerState,
+        assignment_id: str,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        item = next(
+            (
+                value
+                for value in state.assignments
+                if value.id == assignment_id and self._same_scope(value, actor)
+            ),
+            None,
+        )
+        if item is None:
+            raise AssignmentNotFoundError("execution assignment not found")
+        return item
+
+    @staticmethod
+    def _require_worker_actor(
+        worker: ExecutionWorker,
+        actor: AuthenticationActor,
+    ) -> None:
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            raise AuthorizationError("execution worker operation requires service identity")
+        if actor.identity_id != worker.service_identity_id:
+            raise AuthorizationError("worker service identity does not match registered worker")
+        if not {
+            "execution-worker:run",
+            "execution-worker:admin",
+        }.intersection(actor.service_scopes):
+            raise AuthorizationError("execution-worker:run scope required")
+
+    @staticmethod
+    def _active_count(
+        state: ExecutionWorkerState,
+        worker_id: str,
+        now: float,
+    ) -> int:
+        return sum(
+            1
+            for item in state.assignments
+            if item.assigned_worker_id == worker_id
+            and item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+            and item.lease is not None
+            and item.lease.expires_at > now
+        )
+
+    @staticmethod
+    def _eligible(
+        worker: ExecutionWorker,
+        assignment: ExecutionAssignment,
+        state: ExecutionWorkerState,
+        now: float,
+    ) -> tuple[bool, str | None]:
+        if worker.lifecycle != WorkerLifecycle.ACTIVE:
+            return False, f"worker_{worker.lifecycle.value}"
+        if assignment.deadline_at is not None and assignment.deadline_at <= now:
+            return False, "assignment_deadline_expired"
+        missing = set(assignment.required_capabilities) - set(worker.capabilities)
+        if missing:
+            return False, "capability_mismatch"
+        if ExecutionWorkerService._active_count(state, worker.id, now) >= worker.max_concurrency:
+            return False, "worker_concurrency_exhausted"
+        return True, None
+
+    def list_workers(self, actor: AuthenticationActor) -> list[ExecutionWorker]:
+        self._require_admin(actor)
+        return sorted(
+            [item for item in self.store.load().workers if self._same_scope(item, actor)],
+            key=lambda item: (item.registered_at, item.id),
+            reverse=True,
+        )
+
+    def register(
+        self,
+        payload: ExecutionWorkerRegister,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        if self.identity is not None:
+            identity_state = self.identity.state()
+            service = next(
+                (
+                    item
+                    for item in identity_state.services
+                    if item.id == payload.service_identity_id
+                    and item.disabled_at is None
+                ),
+                None,
+            )
+            memberships = self.identity._active_memberships(
+                identity_state,
+                payload.service_identity_id,
+                actor.tenant,
+                principal_kind=PrincipalKind.SERVICE,
+            )
+            if service is None or not memberships:
+                raise WorkerConflictError(
+                    "worker service identity must exist and belong to the tenant/workspace"
+                )
+        created: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            existing = next(
+                (
+                    item
+                    for item in state.workers
+                    if self._same_scope(item, actor)
+                    and item.service_identity_id == payload.service_identity_id
+                    and item.pool == payload.pool
+                    and item.lifecycle != WorkerLifecycle.REVOKED
+                ),
+                None,
+            )
+            if existing is not None:
+                raise WorkerConflictError("active worker already registered for service identity and pool")
+            worker = ExecutionWorker(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                service_identity_id=payload.service_identity_id,
+                pool=payload.pool,
+                version=payload.version,
+                capabilities=payload.capabilities,
+                max_concurrency=payload.max_concurrency,
+                registered_by=actor.identity_id,
+            )
+            state.workers.append(worker)
+            self._event(
+                state,
+                actor=actor,
+                event_type="worker_registered",
+                worker_id=worker.id,
+                details={"pool": worker.pool, "version": worker.version},
+            )
+            created.append(worker)
+            return state
+
+        self.store.update(apply)
+        return created[0]
+
+    def ensure_local_worker(
+        self,
+        *,
+        service_identity_id: str,
+        version: str,
+        capabilities: tuple,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        existing = next(
+            (
+                item
+                for item in self.store.load().workers
+                if self._same_scope(item, actor)
+                and item.service_identity_id == service_identity_id
+                and item.pool == "local"
+                and item.lifecycle != WorkerLifecycle.REVOKED
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        return self.register(
+            ExecutionWorkerRegister(
+                service_identity_id=service_identity_id,
+                pool="local",
+                version=version,
+                capabilities=capabilities,
+                max_concurrency=1,
+            ),
+            actor=actor,
+        )
+
+    def heartbeat(
+        self,
+        worker_id: str,
+        payload: WorkerHeartbeatRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        updated: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            self._require_worker_actor(worker, actor)
+            if worker.lifecycle == WorkerLifecycle.REVOKED:
+                raise WorkerConflictError("revoked worker cannot heartbeat")
+            replacement = worker.model_copy(
+                update={
+                    "last_heartbeat_at": time.time(),
+                    "version": payload.version or worker.version,
+                    "lifecycle": (
+                        WorkerLifecycle.ACTIVE
+                        if worker.lifecycle == WorkerLifecycle.OFFLINE
+                        else worker.lifecycle
+                    ),
+                }
+            )
+            state.workers = [
+                replacement if item.id == worker.id else item for item in state.workers
+            ]
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def set_lifecycle(
+        self,
+        worker_id: str,
+        lifecycle: WorkerLifecycle,
+        *,
+        actor: AuthenticationActor,
+        reason: str | None = None,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        if lifecycle == WorkerLifecycle.ACTIVE:
+            raise WorkerConflictError("use heartbeat/reactivation flow for active lifecycle")
+        updated: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            now = time.time()
+            replacement = worker.model_copy(
+                update={
+                    "lifecycle": lifecycle,
+                    "quarantine_reason": (
+                        reason if lifecycle == WorkerLifecycle.QUARANTINED else None
+                    ),
+                    "revoked_at": (
+                        now if lifecycle == WorkerLifecycle.REVOKED else worker.revoked_at
+                    ),
+                }
+            )
+            state.workers = [
+                replacement if item.id == worker.id else item for item in state.workers
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type=f"worker_{lifecycle.value}",
+                worker_id=worker.id,
+                details={"reason": reason},
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def activate(
+        self,
+        worker_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        updated: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            if worker.lifecycle == WorkerLifecycle.REVOKED:
+                raise WorkerConflictError("revoked worker cannot be reactivated")
+            replacement = worker.model_copy(
+                update={
+                    "lifecycle": WorkerLifecycle.ACTIVE,
+                    "quarantine_reason": None,
+                    "last_heartbeat_at": time.time(),
+                }
+            )
+            state.workers = [
+                replacement if item.id == worker.id else item for item in state.workers
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="worker_activated",
+                worker_id=worker.id,
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def create_assignment(
+        self,
+        payload: ExecutionAssignmentCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        self._require_admin(actor)
+        if payload.execution_workspace_id is not None:
+            if self.workspaces is None:
+                raise WorkerConflictError(
+                    "execution workspace validation service is unavailable"
+                )
+            workspace = self.workspaces.get(payload.execution_workspace_id, actor)
+            if workspace.execution_id != payload.execution_id:
+                raise WorkerConflictError(
+                    "assignment execution does not match execution workspace"
+                )
+            if workspace.work_item_ref != payload.work_item_ref:
+                raise WorkerConflictError(
+                    "assignment Work Item does not match execution workspace"
+                )
+            if payload.project_id is not None and workspace.project_id != payload.project_id:
+                raise WorkerConflictError(
+                    "assignment project does not match execution workspace"
+                )
+            if set(payload.resource_ids) - set(workspace.resource_ids):
+                raise WorkerConflictError(
+                    "assignment resources exceed execution workspace lease"
+                )
+            if (
+                payload.base_revision is not None
+                and workspace.base_revision is not None
+                and payload.base_revision != workspace.base_revision
+            ):
+                raise WorkerConflictError(
+                    "assignment base revision does not match execution workspace"
+                )
+        created: list[ExecutionAssignment] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            duplicate = next(
+                (
+                    item
+                    for item in state.assignments
+                    if self._same_scope(item, actor)
+                    and item.execution_id == payload.execution_id
+                    and item.status
+                    not in {
+                        AssignmentStatus.CANCELLED,
+                        AssignmentStatus.FAILED,
+                        AssignmentStatus.LOST,
+                    }
+                ),
+                None,
+            )
+            if duplicate is not None:
+                raise WorkerConflictError("active assignment already exists for execution")
+            assignment = ExecutionAssignment(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                created_by=actor.identity_id,
+                **payload.model_dump(),
+            )
+            state.assignments.append(assignment)
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_created",
+                assignment_id=assignment.id,
+                details={
+                    "execution_id": assignment.execution_id,
+                    "work_item_ref": assignment.work_item_ref,
+                },
+            )
+            created.append(assignment)
+            return state
+
+        self.store.update(apply)
+        return created[0]
+
+    def list_assignments(
+        self,
+        actor: AuthenticationActor,
+        *,
+        worker_id: str | None = None,
+    ) -> list[ExecutionAssignment]:
+        self._require_admin(actor)
+        items = [
+            item for item in self.store.load().assignments if self._same_scope(item, actor)
+        ]
+        if worker_id is not None:
+            items = [item for item in items if item.assigned_worker_id == worker_id]
+        return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def claim(
+        self,
+        worker_id: str,
+        payload: AssignmentClaimRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment | None:
+        claimed: list[ExecutionAssignment] = []
+        now = time.time()
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            self._require_worker_actor(worker, actor)
+            candidates = [
+                item
+                for item in state.assignments
+                if self._same_scope(item, actor)
+                and item.status == AssignmentStatus.PENDING
+            ]
+            candidates.sort(key=lambda item: (item.created_at, item.id))
+            target = None
+            for candidate in candidates:
+                eligible, _ = self._eligible(worker, candidate, state, now)
+                if eligible:
+                    target = candidate
+                    break
+            if target is None:
+                return state
+            fence = target.fence + 1
+            lease = AssignmentLease(
+                worker_id=worker.id,
+                fence=fence,
+                lease_token=secrets.token_urlsafe(32),
+                acquired_at=now,
+                expires_at=now + payload.lease_seconds,
+            )
+            replacement = target.model_copy(
+                update={
+                    "status": AssignmentStatus.CLAIMED,
+                    "fence": fence,
+                    "lease": lease,
+                    "assigned_worker_id": worker.id,
+                    "updated_at": now,
+                    "failure_code": None,
+                    "failure_message": None,
+                }
+            )
+            state.assignments = [
+                replacement if item.id == target.id else item for item in state.assignments
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_claimed",
+                worker_id=worker.id,
+                assignment_id=target.id,
+                details={"fence": fence, "expires_at": lease.expires_at},
+            )
+            claimed.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return claimed[0] if claimed else None
+
+    def _validate_lease(
+        self,
+        assignment: ExecutionAssignment,
+        worker: ExecutionWorker,
+        *,
+        actor: AuthenticationActor,
+        fence: int,
+        token: str,
+        now: float,
+    ) -> AssignmentLease:
+        self._require_worker_actor(worker, actor)
+        lease = assignment.lease
+        if (
+            assignment.assigned_worker_id != worker.id
+            or lease is None
+            or lease.worker_id != worker.id
+            or lease.fence != fence
+            or assignment.fence != fence
+            or not secrets.compare_digest(lease.lease_token, token)
+            or lease.expires_at <= now
+        ):
+            raise WorkerLeaseError("assignment lease is stale or invalid")
+        if worker.lifecycle not in {
+            WorkerLifecycle.ACTIVE,
+            WorkerLifecycle.DRAINING,
+        }:
+            raise WorkerLeaseError("worker is not trusted to continue assignment")
+        if assignment.deadline_at is not None and assignment.deadline_at <= now:
+            raise WorkerLeaseError("assignment deadline has expired")
+        return lease
+
+    def renew(
+        self,
+        worker_id: str,
+        assignment_id: str,
+        payload: AssignmentRenewRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        updated: list[ExecutionAssignment] = []
+        now = time.time()
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            assignment = self._assignment(state, assignment_id, actor)
+            lease = self._validate_lease(
+                assignment,
+                worker,
+                actor=actor,
+                fence=payload.fence,
+                token=payload.lease_token,
+                now=now,
+            )
+            if assignment.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}:
+                raise WorkerLeaseError("assignment is not renewable")
+            replacement = assignment.model_copy(
+                update={
+                    "lease": lease.model_copy(
+                        update={
+                            "expires_at": now + payload.lease_seconds,
+                            "renewed_at": now,
+                        }
+                    ),
+                    "updated_at": now,
+                }
+            )
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def start(
+        self,
+        worker_id: str,
+        assignment_id: str,
+        payload: AssignmentStartRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        updated: list[ExecutionAssignment] = []
+        now = time.time()
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            assignment = self._assignment(state, assignment_id, actor)
+            self._validate_lease(
+                assignment,
+                worker,
+                actor=actor,
+                fence=payload.fence,
+                token=payload.lease_token,
+                now=now,
+            )
+            if assignment.status != AssignmentStatus.CLAIMED:
+                raise WorkerConflictError("assignment must be claimed before start")
+            replacement = assignment.model_copy(
+                update={
+                    "status": AssignmentStatus.RUNNING,
+                    "started_at": now,
+                    "updated_at": now,
+                }
+            )
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_started",
+                worker_id=worker.id,
+                assignment_id=assignment.id,
+                details={"fence": payload.fence},
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def complete(
+        self,
+        worker_id: str,
+        assignment_id: str,
+        payload: AssignmentCompleteRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        updated: list[ExecutionAssignment] = []
+        now = time.time()
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            assignment = self._assignment(state, assignment_id, actor)
+            self._validate_lease(
+                assignment,
+                worker,
+                actor=actor,
+                fence=payload.fence,
+                token=payload.lease_token,
+                now=now,
+            )
+            if assignment.status != AssignmentStatus.RUNNING:
+                raise WorkerConflictError("assignment must be running before completion")
+            status = AssignmentStatus.SUCCEEDED if payload.succeeded else AssignmentStatus.FAILED
+            replacement = assignment.model_copy(
+                update={
+                    "status": status,
+                    "lease": None,
+                    "completed_at": now,
+                    "updated_at": now,
+                    "failure_code": payload.failure_code,
+                    "failure_message": payload.failure_message,
+                    "artifact_ids": tuple(dict.fromkeys(payload.artifact_ids)),
+                    "evidence_ids": tuple(dict.fromkeys(payload.evidence_ids)),
+                }
+            )
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_completed",
+                worker_id=worker.id,
+                assignment_id=assignment.id,
+                details={
+                    "fence": payload.fence,
+                    "status": status.value,
+                    "artifact_count": len(replacement.artifact_ids),
+                    "evidence_count": len(replacement.evidence_ids),
+                },
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def mark_stale_workers_offline(
+        self,
+        *,
+        actor: AuthenticationActor,
+        stale_after_seconds: int = 120,
+        now: float | None = None,
+    ) -> list[str]:
+        self._require_admin(actor)
+        current = time.time() if now is None else now
+        cutoff = current - max(10, stale_after_seconds)
+        changed: list[str] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            for index, worker in enumerate(state.workers):
+                if (
+                    not self._same_scope(worker, actor)
+                    or worker.lifecycle != WorkerLifecycle.ACTIVE
+                    or worker.last_heartbeat_at > cutoff
+                ):
+                    continue
+                state.workers[index] = worker.model_copy(
+                    update={"lifecycle": WorkerLifecycle.OFFLINE}
+                )
+                changed.append(worker.id)
+                self._event(
+                    state,
+                    actor=actor,
+                    event_type="worker_offline",
+                    worker_id=worker.id,
+                    details={"last_heartbeat_at": worker.last_heartbeat_at},
+                )
+            return state
+
+        self.store.update(apply)
+        return changed
+
+    def recover_expired(
+        self,
+        *,
+        actor: AuthenticationActor,
+        now: float | None = None,
+    ) -> list[str]:
+        self._require_admin(actor)
+        current = time.time() if now is None else now
+        lost: list[str] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            for index, assignment in enumerate(state.assignments):
+                if not self._same_scope(assignment, actor):
+                    continue
+                lease = assignment.lease
+                if (
+                    lease is None
+                    or lease.expires_at > current
+                    or assignment.status
+                    not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+                ):
+                    continue
+                state.assignments[index] = assignment.model_copy(
+                    update={
+                        "status": AssignmentStatus.LOST,
+                        "lease": None,
+                        "updated_at": current,
+                        "failure_code": "worker_lease_expired",
+                        "failure_message": "worker lease expired before trusted completion",
+                    }
+                )
+                lost.append(assignment.id)
+                self._event(
+                    state,
+                    actor=actor,
+                    event_type="assignment_lost",
+                    worker_id=assignment.assigned_worker_id,
+                    assignment_id=assignment.id,
+                    details={"fence": assignment.fence},
+                )
+            return state
+
+        self.store.update(apply)
+        return lost
+
+    def retry_lost(
+        self,
+        assignment_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        self._require_admin(actor)
+        updated: list[ExecutionAssignment] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            assignment = self._assignment(state, assignment_id, actor)
+            if assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED}:
+                raise WorkerConflictError("only lost or failed assignment can be retried")
+            replacement = assignment.model_copy(
+                update={
+                    "status": AssignmentStatus.PENDING,
+                    "lease": None,
+                    "assigned_worker_id": None,
+                    "updated_at": time.time(),
+                    "failure_code": None,
+                    "failure_message": None,
+                }
+            )
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+    def events(self, actor: AuthenticationActor) -> list[WorkerEvent]:
+        self._require_admin(actor)
+        return sorted(
+            [
+                item
+                for item in self.store.load().events
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+            ],
+            key=lambda item: (item.occurred_at, item.id),
+            reverse=True,
+        )

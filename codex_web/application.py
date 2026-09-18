@@ -14,6 +14,7 @@ from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
+from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
@@ -38,6 +39,7 @@ from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.model_providers import OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
+from codex_web.execution_workers import WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     EXECUTION_WORKSPACE_DIR,
@@ -73,6 +75,7 @@ from codex_web.services.execution_role_definitions import install_execution_role
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.projects import ProjectService
@@ -103,6 +106,7 @@ from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
+from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -284,6 +288,33 @@ app.state.execution_workspace_state_store = execution_workspace_state_store
 app.state.execution_workspace_backend = execution_workspace_backend
 app.state.execution_workspace_service = execution_workspace_service
 
+execution_worker_store = ExecutionWorkerStore(state_store)
+execution_worker_service = ExecutionWorkerService(
+    execution_worker_store,
+    identity=identity_service,
+    workspaces=execution_workspace_service,
+)
+local_worker_actor = identity_service.bootstrap_service_actor(
+    identity_id="execution-worker-local",
+    name="Local Execution Worker",
+    scope=identity_service.local_trusted_actor().tenant,
+    service_scopes=("execution-worker:run",),
+)
+local_execution_worker = execution_worker_service.ensure_local_worker(
+    service_identity_id=local_worker_actor.identity_id,
+    version="local-v1",
+    capabilities=(
+        WorkerCapability.GIT,
+        WorkerCapability.COMMAND_EXECUTION,
+        WorkerCapability.ARTIFACT_UPLOAD,
+    ),
+    actor=identity_service.local_trusted_actor(),
+)
+app.include_router(build_execution_workers_router(execution_worker_service))
+app.state.execution_worker_store = execution_worker_store
+app.state.execution_worker_service = execution_worker_service
+app.state.local_execution_worker = local_execution_worker
+
 artifact_evidence_store = ArtifactEvidenceStore(state_store)
 artifact_evidence_service = ArtifactEvidenceService(
     artifact_evidence_store,
@@ -352,6 +383,12 @@ app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
+execution_worker_service.mark_stale_workers_offline(
+    actor=identity_service.local_trusted_actor(),
+)
+execution_worker_service.recover_expired(
+    actor=identity_service.local_trusted_actor(),
+)
 artifact_evidence_service.expire_retention()
 action_intent_service.recover_stale_claims()
 
