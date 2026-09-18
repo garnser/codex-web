@@ -271,20 +271,20 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         # Mutate the durable binding to an explicitly unsafe sandbox after queueing.
-        state = self.registry.store.load()
-        for index, item in enumerate(state.bindings):
-            if item.id == binding.id:
-                state.bindings[index] = item.model_copy(
-                    update={
-                        "security_policy": ExecutionSecurityPolicy(
-                            sandbox="danger-full-access"
-                        )
-                    }
-                )
-        self.registry.store.store.set(
-            self.registry.store.namespace,
-            state.model_dump(mode="json"),
-        )
+        def tighten(current):
+            for index, item in enumerate(current.bindings):
+                if item.id == binding.id:
+                    current.bindings[index] = item.model_copy(
+                        update={
+                            "security_policy": ExecutionSecurityPolicy(
+                                sandbox="danger-full-access"
+                            )
+                        }
+                    )
+                    break
+            return current
+
+        self.registry.store.update(tighten)
 
         completed = await self.intents.execute_claimed(
             intent.id,
