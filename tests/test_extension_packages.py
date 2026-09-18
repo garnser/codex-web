@@ -154,6 +154,7 @@ class ExtensionPackageCatalogTests(unittest.TestCase):
             installed.package_verification.verifier,
             "local-package-catalog-v1",
         )
+        self.assertEqual(installed.package_ref, candidate.package_ref)
         events = service.events(actor)
         event = next(
             item
