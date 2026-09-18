@@ -10,6 +10,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
 from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_routing import BotRoutingService
+from codex_web.services.secrets import SecretBroker
 
 
 class BotService:
@@ -21,15 +22,37 @@ class BotService:
         *,
         slack_client: SlackClient | None = None,
         routing_service: BotRoutingService | None = None,
+        secret_broker: SecretBroker | None = None,
     ) -> None:
         self.host = host
         self.slack_client = slack_client or SlackClient()
         self.routing_service = routing_service
+        self.secret_broker = secret_broker
         # The real compatibility host exposes its FastAPI app and is composed
         # after auxiliary persistence. Lightweight service test hosts need not
         # emulate the whole application just to exercise channel discovery.
         app = getattr(host, "app", None)
         self.detail_service = install_bot_detail_service(app, host) if getattr(app, "state", None) is not None else None
+
+    @staticmethod
+    def _credential_identity(connection, field: str) -> str | None:
+        return getattr(connection, f"{field}_secret_id", None) or getattr(connection, field, None)
+
+    async def _with_credential(self, connection, field: str, operation: str, consumer):
+        secret_id = getattr(connection, f"{field}_secret_id", None)
+        if secret_id and self.secret_broker is not None:
+            actor = self.host._bot_runtime_actor(connection.project_id)
+            return await self.secret_broker.use_async(
+                secret_id,
+                actor=actor,
+                operation=operation,
+                consumer=consumer,
+                context={"connection_id": connection.id, "provider": connection.provider},
+            )
+        raw = getattr(connection, field, None)
+        if raw:
+            return await consumer(raw)
+        raise RuntimeError(f"Bot connection is missing {field}")
 
     def status(self) -> dict[str, Any]:
         bindings = self.host._load_bot_bindings()
@@ -46,7 +69,7 @@ class BotService:
                     "signatureVerification": bool(
                         os.environ.get("SLACK_SIGNING_SECRET")
                         or any(
-                            connection.signing_secret
+                            self._credential_identity(connection, "signing_secret")
                             for connection in connections
                             if connection.provider == "slack"
                         )
@@ -58,7 +81,7 @@ class BotService:
                     "secretVerification": bool(
                         os.environ.get("TELEGRAM_WEBHOOK_SECRET")
                         or any(
-                            connection.webhook_secret
+                            self._credential_identity(connection, "webhook_secret")
                             for connection in connections
                             if connection.provider == "telegram"
                         )
@@ -116,10 +139,19 @@ class BotService:
             for item in self.host._known_bot_channels(project_id)
         }
         for connection in self.host._load_bot_connections():
-            if connection.project_id != project_id or connection.provider != "slack" or not connection.bot_token:
+            if (
+                connection.project_id != project_id
+                or connection.provider != "slack"
+                or not self._credential_identity(connection, "bot_token")
+            ):
                 continue
             with contextlib.suppress(Exception):
-                for channel in await self.slack_client.list_channels(connection.bot_token):
+                async def list_with_token(token: str):
+                    return await self.slack_client.list_channels(token)
+                discovered = await self._with_credential(
+                    connection, "bot_token", "slack.list_channels", list_with_token
+                )
+                for channel in discovered:
                     channels[(channel["provider"], channel["id"])] = channel
 
             unresolved = [
@@ -129,7 +161,11 @@ class BotService:
             ]
             for channel in unresolved:
                 with contextlib.suppress(Exception):
-                    resolved = await self.slack_client.channel_info(connection.bot_token, channel["id"])
+                    async def channel_info(token: str):
+                        return await self.slack_client.channel_info(token, channel["id"])
+                    resolved = await self._with_credential(
+                        connection, "bot_token", "slack.channel_info", channel_info
+                    )
                     if resolved:
                         channels[(resolved["provider"], resolved["id"])] = resolved
 
