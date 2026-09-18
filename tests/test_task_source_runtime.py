@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from codex_web.models import TaskSourceIdentity, WorkItemState
+from codex_web.identity import TenantScope
+from codex_web.models import TaskSourceConfiguration, TaskSourceIdentity, WorkItemState
 from codex_web.services.reference_task_source import ReferenceTaskSource
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
 from codex_web.services.task_source_runtime import (
@@ -10,7 +11,7 @@ from codex_web.services.task_source_runtime import (
     TaskSourceResolutionError,
     TaskSourceWritebackService,
 )
-from codex_web.services.task_sources import TaskSourceCapability, TaskSourceSnapshot
+from codex_web.services.task_sources import TaskSourceCapability, TaskSourceCreateRequest, TaskSourceSnapshot
 
 
 class _Host:
@@ -69,6 +70,57 @@ class TaskSourceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         suite.validate_event(source, event)
         self.assertTrue(source.capabilities.supports(TaskSourceCapability.COMMENTS))
         self.assertTrue(source.capabilities.supports(TaskSourceCapability.ARTIFACT_LINKS))
+
+    async def test_project_binding_resolves_create_capable_source_before_item_exists(self) -> None:
+        source = ReferenceTaskSource("runtime-test")
+        registry = TaskSourceRegistry()
+        scope = TenantScope(organization_id="org-a", workspace_id="ws-a")
+        registry.register_project(
+            "reference",
+            lambda configuration, project_id, tenant: source,
+        )
+        configuration = TaskSourceConfiguration(
+            source_type="reference",
+            source_instance="runtime-test",
+            scope="project-a",
+        )
+
+        resolved = registry.resolve_project(
+            configuration,
+            project_id="project-a",
+            scope=scope,
+            required=True,
+        )
+        self.assertIs(resolved, source)
+        self.assertTrue(resolved.capabilities.supports(TaskSourceCapability.CREATE))
+        created = await source.create(
+            TaskSourceCreateRequest(title="New authoritative work"),
+            scope=configuration.scope,
+        )
+        self.assertEqual(created.identity.source_type, "reference")
+        self.assertEqual(created.title, "New authoritative work")
+
+    def test_project_binding_rejects_wrong_source_instance(self) -> None:
+        source = ReferenceTaskSource("other-instance")
+        registry = TaskSourceRegistry()
+        scope = TenantScope(organization_id="org-a", workspace_id="ws-a")
+        registry.register_project(
+            "reference",
+            lambda configuration, project_id, tenant: source,
+        )
+        configuration = TaskSourceConfiguration(
+            source_type="reference",
+            source_instance="runtime-test",
+            scope="project-a",
+        )
+
+        with self.assertRaises(TaskSourceResolutionError):
+            registry.resolve_project(
+                configuration,
+                project_id="project-a",
+                scope=scope,
+                required=True,
+            )
 
     async def test_writeback_updates_reference_provider_without_provider_branching(self) -> None:
         source, state = self._source_and_state()
