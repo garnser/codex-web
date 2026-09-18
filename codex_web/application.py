@@ -74,6 +74,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
+from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
@@ -385,6 +386,12 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     codex_auth_delegation=codex_auth_delegation_service,
 )
 app.state.local_execution_worker_runtime = local_execution_worker_runtime
+
+assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
+    local_execution_worker_runtime,
+    core,
+)
+app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
 action_intent_store = ActionIntentStore(state_store)
 action_intent_service = ActionIntentService(
