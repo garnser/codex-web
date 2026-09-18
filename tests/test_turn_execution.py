@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock
 
 from fastapi import FastAPI, HTTPException
 
-from codex_web.models import Project, ThreadRunSettings
+from codex_web.models import Project, ThreadRunSettings, TurnCreate
 from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
+from codex_web.services.turns import TurnService
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
@@ -380,6 +381,40 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(host.events[-1]["session_retained"])
 
+    async def test_start_rechecks_active_state_under_shared_start_lock(self) -> None:
+        host, binding, sessions, service = self._service()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        service.mark_thread_active(
+            "t1",
+            execution_id="already-running",
+            assignment_id="assignment-existing",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="racing turn",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="exec-race",
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "thread_turn_already_active",
+        )
+        self.assertEqual(binding.calls, [])
+        self.assertEqual(sessions.started, [])
+        host.codex.request.assert_not_awaited()
+
     async def test_thread_resume_failure_completes_assignment_before_turn_start(self) -> None:
         host, _binding, sessions, service = self._service()
         project = Project(
@@ -479,6 +514,53 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
         self.assertIn("provider failure", kwargs["failure_message"])
+
+
+class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_start_queues_when_thread_becomes_active_during_start_lock(self) -> None:
+        host = _Host()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        host._raise_if_thread_replaced = lambda _thread_id: None
+        host._project = lambda _project_id: project
+        host._remember_thread_run_settings = lambda *_args, **_kwargs: ThreadRunSettings()
+        host._release_stale_active_turn = lambda *_args, **_kwargs: None
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        host._is_codex_timeout_error = lambda _exc: False
+        host._is_stale_thread_error = lambda _exc: False
+        queue_owner = TurnExecutionService(host)
+        host._enqueue_turn = queue_owner.enqueue_turn
+        host._publish_queue_status = AsyncMock()
+        host._thread_is_active = lambda _thread_id: False
+        host._start_thread_turn_now = AsyncMock(
+            side_effect=HTTPException(
+                status_code=409,
+                detail={
+                    "code": "thread_turn_already_active",
+                    "threadId": "t1",
+                },
+            )
+        )
+        host._schedule_queue_drain = lambda _thread_id: None
+        service = TurnService(host)
+
+        result = await service.start(
+            "t1",
+            TurnCreate(project_id="p1", message="second request"),
+        )
+
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["queueDepth"], 1)
+        self.assertEqual(host._thread_queue_depth("t1"), 1)
+        self.assertEqual(
+            host.events[-1]["type"],
+            "web_turn_queued_after_concurrent_start",
+        )
 
 
 class TurnExecutionInstallationTests(unittest.TestCase):
