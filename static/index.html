@@ -839,6 +839,30 @@
                 </div>
                 <div class="developer-card">
                   <div class="section-title">
+                    <h2>Security & Trust Diagnostics</h2>
+                    <button id="refresh-security-trust" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="security-trust-status" class="form-result" aria-live="polite">Open to load canonical trust/security diagnostics.</div>
+                  <div class="section-title"><span>Trust zones & classes</span></div>
+                  <div id="security-trust-zones" class="comm-log"></div>
+                  <div class="section-title"><span>Security events & violations</span></div>
+                  <div class="route-test">
+                    <input id="security-event-search" type="search" placeholder="Search event, actor, work, execution, resource or detail field name" />
+                    <select id="security-event-kind-filter"><option value="">All violation kinds</option></select>
+                    <select id="security-event-outcome-filter">
+                      <option value="">All outcomes</option>
+                      <option value="allow">Allow</option>
+                      <option value="deny">Deny</option>
+                    </select>
+                  </div>
+                  <div id="security-event-list" class="comm-log"></div>
+                  <div class="section-title"><span>Governed-data classification & retention</span></div>
+                  <div id="security-governance-summary" class="comm-log"></div>
+                  <div class="section-title"><span>Persisted disabled/denied action explanations</span></div>
+                  <div id="security-disabled-actions" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
+                  <div class="section-title">
                     <h2>Operations & Observability</h2>
                     <button id="refresh-operations" type="button" class="ghost-button">Refresh</button>
                   </div>
@@ -1008,6 +1032,7 @@
     <script src="static/execution_workspace_admin.js" type="module"></script>
     <script src="static/artifact_evidence_admin.js" type="module"></script>
     <script src="static/action_intent_admin.js" type="module"></script>
+    <script src="static/security_trust_diagnostics.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
