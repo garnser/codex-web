@@ -171,6 +171,46 @@ class UsageRecordResult(BaseModel):
     decision: EntitlementDecision | None = None
 
 
+class UsageReconciliationBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[UsageEventCreate] = Field(min_length=1, max_length=1000)
+
+
+class UsageReconciliationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    accepted: int
+    duplicates: int
+    event_ids: tuple[str, ...]
+
+
+class UsageExportRecord(BaseModel):
+    """Provider-neutral metering export row; contains no prompt/secret content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: str
+    organization_id: str
+    workspace_id: str
+    metric: str
+    amount: float
+    occurred_at: float
+    received_at: float
+    source: str
+    project_id: str | None = None
+    resource_id: str | None = None
+    work_item_ref: str | None = None
+    action_intent_id: str | None = None
+
+
+class UsageExportBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    records: tuple[UsageExportRecord, ...]
+    next_received_after: float | None = None
+
+
 class TenantModeUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
