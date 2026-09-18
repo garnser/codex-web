@@ -531,7 +531,7 @@ class InputPluginPipeline:
                 completed = time.time()
                 if registration.failure_policy == InputFailurePolicy.FAIL_CLOSED:
                     raise InputPluginExecutionError(
-                        f"input plugin {plugin.id} failed: {type(exc).__name__}: {exc}"
+                        f"input plugin {plugin.id} failed with {type(exc).__name__}"
                     ) from exc
                 outcome = (
                     "failed_open"
@@ -548,7 +548,7 @@ class InputPluginPipeline:
                         input_sha256=before_hash,
                         output_sha256=before_hash,
                         outcome=outcome,
-                        warnings=(f"{type(exc).__name__}: {exc}",),
+                        warnings=(f"plugin failed with {type(exc).__name__}",),
                         input_characters_before=before_chars,
                         input_characters_after=before_chars,
                         estimated_tokens_before=_estimated_tokens(before),
