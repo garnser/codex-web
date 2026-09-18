@@ -20,15 +20,15 @@ The contract follows the repository architecture policy:
 - future authority controls must extend the versioned contract rather than bypass it;
 - the prompt path receives only the schema version in addition to the existing role contract, avoiding duplicated structured payload tokens.
 
-## Version 1.3
+## Version 1.4
 
-Schema `1.3` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
+Schema `1.4` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
 
 `ExecutionContractV1` contains:
 
 | Field | Purpose |
 | --- | --- |
-| `schema_version` | Exact schema version, currently `1.3`. |
+| `schema_version` | Exact schema version, currently `1.4`. |
 | `work_item_ref` | Canonical work-item identity. |
 | `role_id` | Resolved execution-role contract. |
 | `agent_id` | Current canonical owner, or pending handoff recipient when applicable. |
@@ -37,6 +37,7 @@ Schema `1.3` is a backward-compatible evolution of the v1 contract family. It ad
 | `inputs` | Minimum canonical state required for execution, including stage/handoff plus retry, deadline, failure classification, and latest checkpoint resume hints. |
 | `accounting` | Stable work-item/checkpoint/goal/decision attribution hooks; usage recording is required whenever model execution occurs. |
 | `expected_outputs` | Artifacts required by the resolved role. |
+| `required_evidence` | Machine-readable evidence requirements stored on canonical Work Item execution state. |
 | `success_criteria` | Conditions required for a successful execution outcome. |
 | `failure_conditions` | Failure conditions already defined by the resolved role contract. |
 
@@ -44,7 +45,7 @@ The Pydantic models use `extra="forbid"` so unknown fields cannot silently chang
 
 ### Resume inputs
 
-The v1.3 input envelope adds:
+The v1.4 input envelope adds:
 
 ```yaml
 retry_attempt: 0
@@ -61,7 +62,7 @@ Only the latest checkpoint id and summary are copied into the contract. Full che
 
 ### Accounting envelope
 
-Every v1.3 contract includes:
+Every v1.4 contract includes:
 
 ```yaml
 accounting:
@@ -94,7 +95,7 @@ Before a canonical work-item wake-up is formatted for an agent, `WorkItemContrac
 
 1. resolves split-brain findings deterministically;
 2. resolves the execution role from canonical state;
-3. constructs and validates `ExecutionContractV1` schema 1.3;
+3. constructs and validates `ExecutionContractV1` schema 1.4;
 4. carries only the compact latest-checkpoint resume hint into the structured contract;
 5. continues through the existing role-prompt path.
 
@@ -114,4 +115,11 @@ A future schema change must:
 
 ## Execution workspace target
 
-Schema 1.3 adds the optional `target.workspace` projection. It carries canonical execution-workspace and lease identity, resource IDs, isolated path/branch, pinned base/head revision, lifecycle status, and lease expiry. The field is derived from canonical Work Item execution state; prompts do not invent workspace ownership.
+Schema 1.4 adds the optional `target.workspace` projection. It carries canonical execution-workspace and lease identity, resource IDs, isolated path/branch, pinned base/head revision, lifecycle status, and lease expiry. The field is derived from canonical Work Item execution state; prompts do not invent workspace ownership.
+
+
+## Evidence requirements
+
+Schema 1.4 adds `required_evidence`. Each requirement declares evidence type, accepted result, optional artifact type/provider, minimum count, freshness bound, and whether independent verification is required. Requirements are copied from canonical `WorkItemState.execution.evidence_requirements`; dispatch does not derive proof requirements from agent prose.
+
+Artifact/evidence/verification records live in the canonical artifact-evidence registry. A gate is satisfied only by valid, in-scope evidence that matches the structured requirements. Superseded, invalidated, or expired artifacts invalidate dependent evidence and verification so stale proof cannot satisfy later execution/release gates.
