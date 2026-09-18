@@ -496,13 +496,18 @@ class EntitlementService:
             action_intent_id=payload.action_intent_id,
         )
 
-    def record_usage(
+    def record_domain_usage(
         self,
         payload: UsageEventCreate,
         *,
         actor: AuthenticationActor,
     ) -> UsageRecordResult:
-        self._require_meter(actor)
+        """Record usage from an already-authorized in-process canonical service.
+
+        This method is deliberately not exposed as a public API permission bypass:
+        the caller supplies the authenticated actor and usage remains bound to that
+        exact tenant/workspace. External ingestion uses record_usage/reconcile_usage.
+        """
         result: list[UsageRecordResult] = []
 
         def apply(state: EntitlementState) -> EntitlementState:
@@ -526,6 +531,15 @@ class EntitlementService:
 
         self.store.update(apply)
         return result[0]
+
+    def record_usage(
+        self,
+        payload: UsageEventCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> UsageRecordResult:
+        self._require_meter(actor)
+        return self.record_domain_usage(payload, actor=actor)
 
     def consume(
         self,

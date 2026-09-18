@@ -60,7 +60,15 @@ class OpenAIModelProviderAdapter:
             ) from exc
         if provider.credential_required and not credential:
             raise ModelProviderAdapterError("provider credential is required")
-        kwargs: dict[str, Any] = {"api_key": credential or "local"}
+        kwargs: dict[str, Any] = {}
+        if credential:
+            kwargs["api_key"] = credential
+        elif provider.adapter_type != "openai" or provider.base_url:
+            # Local/OpenAI-compatible endpoints commonly require a syntactic
+            # key even when they do not authenticate it.
+            kwargs["api_key"] = "local"
+        # Native OpenAI compatibility bootstrap intentionally leaves api_key
+        # unset so the SDK can resolve OPENAI_API_KEY from the environment.
         if provider.base_url:
             kwargs["base_url"] = provider.base_url.rstrip("/") + "/"
         return AsyncOpenAI(**kwargs)

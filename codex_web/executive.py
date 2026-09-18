@@ -194,6 +194,8 @@ class ExecutiveChatResponse(BaseModel):
     reply: str
     consulted: list[SpecialistAnswer] = Field(default_factory=list)
     model: str
+    model_class: str | None = None
+    model_invocation_ids: list[str] = Field(default_factory=list)
 
 
 class DelegateRequest(BaseModel):

@@ -7,6 +7,12 @@ import math
 import time
 from typing import Any
 
+from codex_web.entitlements import (
+    METRIC_MODEL_COST_USD,
+    METRIC_MODEL_INPUT_TOKENS,
+    METRIC_MODEL_OUTPUT_TOKENS,
+    UsageEventCreate,
+)
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
@@ -32,6 +38,7 @@ from codex_web.model_providers import (
     ModelProviderAdapterError,
     ModelProviderTransientError,
 )
+from codex_web.services.entitlements import EntitlementService
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.secrets import SecretBroker
 from codex_web.storage.model_gateway import ModelGatewayStore
@@ -59,9 +66,11 @@ class ModelGatewayService:
         store: ModelGatewayStore,
         *,
         secret_broker: SecretBroker | None = None,
+        entitlements: EntitlementService | None = None,
     ) -> None:
         self.store = store
         self.secret_broker = secret_broker
+        self.entitlements = entitlements
         self.adapters: dict[str, ModelProviderAdapter] = {}
 
     def register_adapter(self, adapter: ModelProviderAdapter) -> None:
@@ -544,6 +553,45 @@ class ModelGatewayService:
 
         self.store.update(apply)
 
+    def _meter_invocation(
+        self,
+        record: ModelInvocationRecord,
+        *,
+        actor: AuthenticationActor,
+    ) -> None:
+        """Best-effort canonical usage attribution after a successful provider call."""
+        if self.entitlements is None or not record.attempts:
+            return
+        successful = next(
+            (item for item in reversed(record.attempts) if item.outcome == "success"),
+            None,
+        )
+        if successful is None:
+            return
+        events: list[tuple[str, float]] = []
+        if successful.input_tokens is not None and successful.input_tokens > 0:
+            events.append((METRIC_MODEL_INPUT_TOKENS, float(successful.input_tokens)))
+        if successful.output_tokens is not None and successful.output_tokens > 0:
+            events.append((METRIC_MODEL_OUTPUT_TOKENS, float(successful.output_tokens)))
+        if successful.actual_cost_usd is not None and successful.actual_cost_usd > 0:
+            events.append((METRIC_MODEL_COST_USD, float(successful.actual_cost_usd)))
+        for metric, amount in events:
+            try:
+                self.entitlements.record_domain_usage(
+                    UsageEventCreate(
+                        idempotency_key=f"{record.id}:{metric}",
+                        metric=metric,
+                        amount=amount,
+                        source="model-gateway",
+                        work_item_ref=record.work_item_ref,
+                    ),
+                    actor=actor,
+                )
+            except Exception:
+                # Provider success must remain the source of truth. Usage
+                # reconciliation can repair a metering sink independently.
+                continue
+
     async def invoke(
         self,
         request: ModelInvocationRequest,
@@ -721,6 +769,7 @@ class ModelGatewayService:
                 completed_at=completed,
             )
             self._append_invocation(record)
+            self._meter_invocation(record, actor=actor)
             return ModelInvocationResponse(text=result.text, invocation=record)
 
         completed = time.time()
