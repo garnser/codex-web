@@ -26,12 +26,17 @@ from codex_web.services.action_intents import (
     ActionIntentUnsafeRetryError,
 )
 from codex_web.services.action_providers import ActionProviderError
+from codex_web.services.entitlements import EntitlementDeniedError, QuotaExceededError
 from codex_web.services.identity import AuthorizationError, IdentityService, TenantIsolationError
 
 
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, ActionIntentNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, QuotaExceededError):
+        return HTTPException(status_code=429, detail=str(exc))
+    if isinstance(exc, EntitlementDeniedError):
+        return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, (AuthorizationError, TenantIsolationError)):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, (ActionIntentConflictError, ActionIntentLeaseError, ActionIntentUnsafeRetryError)):
@@ -80,6 +85,7 @@ def build_action_intents_router(service: ActionIntentService) -> APIRouter:
                     ActionProviderError,
                     AuthorizationError,
                     TenantIsolationError,
+                    EntitlementDeniedError,
                 ),
             ):
                 raise _error(exc) from exc
