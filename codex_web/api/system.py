@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from codex_web.action_providers import ACTION_PROVIDER_CONTRACT
 from codex_web.compatibility import (
     API_CONTRACT,
     CANONICAL_EVENT_CONTRACT,
@@ -72,6 +73,7 @@ def build_system_router(host: Any) -> APIRouter:
             "api": API_CONTRACT.metadata(),
             "canonical_event": CANONICAL_EVENT_CONTRACT.metadata(),
             "task_source": TASK_SOURCE_CONTRACT.metadata(),
+            "action_provider": ACTION_PROVIDER_CONTRACT.metadata(),
             "persisted_record": PERSISTED_RECORD_CONTRACT.metadata(),
         }
 
