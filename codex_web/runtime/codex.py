@@ -51,6 +51,8 @@ class CodexRuntime:
         self.next_id = 1
         self.pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self.pending_approvals: dict[int | str, dict[str, Any]] = {}
+        self.pending_approval_rpc_ids: dict[int | str, int | str] = {}
+        self.approval_namespace: str | None = None
         self.last_error: str | None = None
         self.write_lock = asyncio.Lock()
         self.ready = asyncio.Event()
@@ -158,6 +160,13 @@ class CodexRuntime:
                     await task
         self.reader_task = None
         self.stderr_task = None
+        self.pending_approvals.clear()
+        self.pending_approval_rpc_ids.clear()
+
+    def _approval_public_id(self, request_id: int | str) -> int | str:
+        if not self.approval_namespace:
+            return request_id
+        return f"{self.approval_namespace}:{request_id}"
 
     def _fail_pending(self, exc: Exception) -> None:
         failed = 0
@@ -256,11 +265,16 @@ class CodexRuntime:
                 )
                 return
 
-            self.pending_approvals[message_id] = message
+            public_id = self._approval_public_id(message_id)
+            public_message = {**message, "id": public_id}
+            self.pending_approvals[public_id] = public_message
+            self.pending_approval_rpc_ids[public_id] = message_id
             if self.metrics:
                 self.metrics.increment("codex.approvals_requested")
-            await self.host._record_bot_approval_request(message)
-            await self.host.hub.publish({"type": "approval.request", "request": message})
+            await self.host._record_bot_approval_request(public_message)
+            await self.host.hub.publish(
+                {"type": "approval.request", "request": public_message}
+            )
             return
 
         self.host._record_thread_activity(message)
@@ -360,10 +374,13 @@ class CodexRuntime:
 
     async def respond_to_server_request(self, request_id: int | str, result: dict[str, Any]) -> None:
         self.pending_approvals.pop(request_id, None)
-        await self._send({"id": request_id, "result": result})
+        rpc_request_id = self.pending_approval_rpc_ids.pop(request_id, request_id)
+        await self._send({"id": rpc_request_id, "result": result})
         if self.metrics:
             self.metrics.increment("codex.approvals_resolved")
-        await self.host.hub.publish({"type": "approval.resolved", "id": request_id, "result": result})
+        await self.host.hub.publish(
+            {"type": "approval.resolved", "id": request_id, "result": result}
+        )
 
 
 def install_codex_runtime(app: Any, host: Any) -> CodexRuntime:
