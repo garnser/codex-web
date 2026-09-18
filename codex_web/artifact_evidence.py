@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.data_governance import DataClassification, GovernanceAction
+
 
 class ArtifactType(StrEnum):
     COMMIT = "commit"
@@ -94,6 +96,7 @@ class Artifact(BaseModel):
     invalidated_at: float | None = None
     invalidation_reason: str | None = None
     retention_expires_at: float | None = None
+    governance_record_id: str | None = None
     produced_at: float = Field(default_factory=time.time)
     created_at: float = Field(default_factory=time.time)
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
@@ -130,6 +133,7 @@ class Evidence(BaseModel):
     invalidated_at: float | None = None
     invalidation_reason: str | None = None
     retention_expires_at: float | None = None
+    governance_record_id: str | None = None
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -223,7 +227,12 @@ class ArtifactCreate(BaseModel):
     revision: str | None = None
     digest: ArtifactDigest | None = None
     supersedes_artifact_id: str | None = None
+    classification: DataClassification = DataClassification.INTERNAL
+    retention_policy_ref: str | None = None
     retention_expires_at: float | None = None
+    retention_action: GovernanceAction = GovernanceAction.REDACT
+    residency_tags: tuple[str, ...] = ()
+    deny_model_context: bool = False
     produced_at: float | None = None
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
@@ -245,7 +254,12 @@ class EvidenceCreate(BaseModel):
     summary: str | None = None
     digest: ArtifactDigest | None = None
     observed_at: float | None = None
+    classification: DataClassification = DataClassification.INTERNAL
+    retention_policy_ref: str | None = None
     retention_expires_at: float | None = None
+    retention_action: GovernanceAction = GovernanceAction.REDACT
+    residency_tags: tuple[str, ...] = ()
+    deny_model_context: bool = False
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
