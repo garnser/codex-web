@@ -17,6 +17,7 @@ from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
+from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
@@ -186,6 +187,7 @@ input_pipeline_definition_service = install_input_plugin_definitions(
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
+app.include_router(build_input_plugins_router(input_pipeline_definition_service))
 core._execution_role_definition_service = execution_role_definition_service
 
 def _work_item_definition_usage(reference):
