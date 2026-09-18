@@ -193,6 +193,31 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(set(self.host.states), {self.work_item.ref})
         self.assertEqual(self.host.events, [])
 
+    def test_thread_bootstrap_workspace_is_canonical_without_work_item_sync(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+                    ref="bootstrap-abc",
+                ),
+                execution_id="bootstrap-exec",
+                project_id="home",
+                resource_ids=(self.repo.id,),
+                repository_resource_id=self.repo.id,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(
+            workspace.subject.kind,
+            ExecutionSubjectKind.THREAD_BOOTSTRAP,
+        )
+        self.assertEqual(workspace.subject.ref, "bootstrap-abc")
+        self.assertIsNone(workspace.work_item_ref)
+        self.assertEqual(set(self.host.states), {self.work_item.ref})
+        self.assertEqual(self.host.events, [])
+
     def test_v1_workspace_state_migrates_work_item_subject_on_workspace_and_lease(self) -> None:
         workspace = self._acquire("migrate-exec", self.repo.id)
         raw = self.service.store.store.get(self.service.store.namespace)
@@ -210,7 +235,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.1")
+        self.assertEqual(state.schema_version, "1.2")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
