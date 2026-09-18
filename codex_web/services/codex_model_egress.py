@@ -44,6 +44,7 @@ def endpoints_from_provider_base_urls(
     endpoints: set[tuple[str, int]] = set()
     if include_default_openai:
         endpoints.add(("api.openai.com", 443))
+        endpoints.add(("chatgpt.com", 443))
     for raw in base_urls:
         value = (raw or "").strip()
         if not value:
