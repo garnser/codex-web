@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codex_web.extensions import ExtensionManifest, ExtensionType
+from codex_web.extensions import (
+    ExtensionCapabilityGrant,
+    ExtensionManifest,
+    ExtensionType,
+)
 from codex_web.identity import AuthenticationActor
 from codex_web.services.extensions import (
     ExtensionAuthorizationError,
-    ExtensionCapabilityGrant,
     ExtensionService,
 )
 
