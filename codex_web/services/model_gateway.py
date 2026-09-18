@@ -384,7 +384,7 @@ class ModelGatewayService:
             for index, provider_id in enumerate(request.preferred_provider_ids)
         }
 
-        candidates: list[ModelRouteCandidate] = []
+        candidates: list[tuple[int, int, int, str, ModelRouteCandidate]] = []
         rejected: list[str] = []
         for model in state.models:
             if not self._same_scope(model, actor):
