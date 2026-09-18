@@ -455,7 +455,10 @@ def _resource_ids_for_project(project_id: str) -> list[str]:
 
 core._resource_ids_for_project = _resource_ids_for_project
 runtime_service = RuntimeService(core)
-approval_service = ApprovalService(core)
+approval_service = ApprovalService(
+    core,
+    assignment_sessions=assignment_bound_codex_session_manager,
+)
 thread_service = ThreadService(core)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
