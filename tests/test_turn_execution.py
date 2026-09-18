@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from codex_web.models import Project, ThreadRunSettings
 from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
@@ -129,14 +131,70 @@ class TurnExecutionQueueTests(unittest.TestCase):
         self.assertEqual(host._thread_queue_depth("t1"), 1)
 
 
+class _BindingService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def prepare(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            assignment_id="assignment-1",
+            workspace_id="workspace-1",
+        )
+
+
+class _Session:
+    def __init__(self) -> None:
+        self.workspace_path = Path("/isolated/workspace")
+        self.requests = []
+
+    def status(self):
+        return SimpleNamespace(worker_id="worker-1", fence=7)
+
+    def validate_current(self):
+        return SimpleNamespace(id="assignment-1")
+
+    async def request(self, method, params=None):
+        self.requests.append((method, params))
+        if method == "thread/resume":
+            return {"thread": {"id": "t1"}}
+        if method == "turn/start":
+            return {"turn": {"id": "turn-1"}}
+        return {"ok": True}
+
+
+class _SessionManager:
+    def __init__(self) -> None:
+        self.session = _Session()
+        self.started = []
+        self.completed = []
+
+    async def start(self, assignment_id):
+        self.started.append(assignment_id)
+        return self.session
+
+    def get(self, assignment_id):
+        return self.session if assignment_id == "assignment-1" else None
+
+    async def complete(self, assignment_id, **kwargs):
+        self.completed.append((assignment_id, kwargs))
+        return SimpleNamespace(id=assignment_id)
+
+
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
-    async def test_start_resumes_then_starts_and_marks_active(self) -> None:
+    def _service(self):
         host = _Host()
-        service = TurnExecutionService(host)
-        host.codex.request.side_effect = [
-            {"thread": {"id": "t1"}},
-            {"turn": {"id": "turn-1"}},
-        ]
+        binding = _BindingService()
+        sessions = _SessionManager()
+        service = TurnExecutionService(
+            host,
+            binding_service=binding,
+            session_manager=sessions,
+        )
+        return host, binding, sessions, service
+
+    async def test_start_routes_resume_and_turn_start_through_assignment_bound_session(self) -> None:
+        host, binding, sessions, service = self._service()
         project = Project(
             id="p1",
             name="Project",
@@ -152,23 +210,61 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             sandbox="workspace-write",
             approval_policy="on-request",
             source="web",
+            execution_id="exec-1",
         )
 
         self.assertEqual(result["turn"]["id"], "turn-1")
+        host.codex.request.assert_not_awaited()
+        self.assertEqual(sessions.started, ["assignment-1"])
         self.assertEqual(
-            [call.args[0] for call in host.codex.request.await_args_list],
+            [method for method, _params in sessions.session.requests],
             ["thread/resume", "turn/start"],
         )
-        self.assertEqual(host.active["t1"].turn_id, "turn-1")
-        self.assertEqual(host.active["t1"].project_id, "p1")
-        self.assertEqual(service.last_inputs["t1"]["message"], "do work")
-        self.assertEqual(host.events[-1]["type"], "turn_started")
+        resume = sessions.session.requests[0][1]
+        turn = sessions.session.requests[1][1]
+        self.assertEqual(resume["cwd"], "/isolated/workspace")
+        self.assertEqual(turn["cwd"], "/isolated/workspace")
+        self.assertEqual(binding.calls[0]["execution_id"], "exec-1")
+        active = host.active["t1"]
+        self.assertEqual(active.turn_id, "turn-1")
+        self.assertEqual(active.execution_id, "exec-1")
+        self.assertEqual(active.assignment_id, "assignment-1")
+        self.assertEqual(active.execution_workspace_id, "workspace-1")
+        self.assertEqual(active.worker_id, "worker-1")
+        self.assertEqual(active.fence, 7)
+        self.assertEqual(service.last_inputs["t1"]["assignment_id"], "assignment-1")
+        self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
 
-    async def test_completed_activity_clears_active_state(self) -> None:
-        host = _Host()
-        service = TurnExecutionService(host)
-        service.mark_thread_active("t1", turn_id="turn-1", project_id="p1")
+    async def test_active_thread_request_never_falls_back_when_session_missing(self) -> None:
+        host, _binding, _sessions, service = self._service()
+        service.mark_thread_active(
+            "t1",
+            execution_id="exec-1",
+            assignment_id="assignment-missing",
+        )
+
+        with self.assertRaisesRegex(HTTPException, "no live Codex session"):
+            await service.request_for_thread(
+                "t1",
+                "turn/interrupt",
+                {"threadId": "t1"},
+            )
+
+        host.codex.request.assert_not_awaited()
+
+    async def test_completed_activity_schedules_exact_assignment_completion(self) -> None:
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active(
+            "t1",
+            turn_id="turn-1",
+            project_id="p1",
+            execution_id="exec-1",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
 
         service.record_thread_activity(
             {
@@ -176,8 +272,40 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 "params": {"threadId": "t1", "turn": {"id": "turn-1"}},
             }
         )
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
 
         self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        assignment_id, kwargs = sessions.completed[0]
+        self.assertEqual(assignment_id, "assignment-1")
+        self.assertTrue(kwargs["succeeded"])
+        self.assertEqual(host.events[-1]["type"], "turn_assignment_completed")
+
+    async def test_failed_activity_marks_assignment_failed(self) -> None:
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active(
+            "t1",
+            turn_id="turn-1",
+            execution_id="exec-1",
+            assignment_id="assignment-1",
+        )
+
+        service.record_thread_activity(
+            {
+                "method": "turn/failed",
+                "params": {
+                    "threadId": "t1",
+                    "turn": {"id": "turn-1"},
+                    "error": "provider failure",
+                },
+            }
+        )
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+
+        _assignment_id, kwargs = sessions.completed[0]
+        self.assertFalse(kwargs["succeeded"])
+        self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
+        self.assertIn("provider failure", kwargs["failure_message"])
 
 
 class TurnExecutionInstallationTests(unittest.TestCase):
@@ -192,6 +320,7 @@ class TurnExecutionInstallationTests(unittest.TestCase):
         self.assertIs(app.state.turn_execution_service, first)
         self.assertIs(host._enqueue_turn.__self__, first)
         self.assertIs(host._start_thread_turn_now.__self__, first)
+        self.assertIs(host._codex_request_for_thread.__self__, first)
         self.assertIs(host._schedule_queue_drain.__self__, first)
         self.assertIs(host._record_terminal_turn_result.__self__, first)
         self.assertIs(host.CODEX_TURN_START_LOCK, first.turn_start_lock)
@@ -199,6 +328,7 @@ class TurnExecutionInstallationTests(unittest.TestCase):
         self.assertIs(host.TERMINAL_RECOVERY_TASKS, first.terminal_recovery_tasks)
         self.assertIs(host.THREAD_TERMINAL_FAILURES, first.terminal_failures)
         self.assertIs(host.THREAD_LAST_INPUTS, first.last_inputs)
+        self.assertIs(host.ASSIGNMENT_COMPLETION_TASKS, first.assignment_completion_tasks)
 
 
 if __name__ == "__main__":
