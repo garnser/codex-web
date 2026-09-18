@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+
+from codex_web.api.identity import request_actor
+from codex_web.identity import PrincipalKind
+from codex_web.services.identity import AuthorizationError, IdentityService
 
 
 CORRELATION_HEADER = "x-correlation-id"
@@ -569,21 +573,39 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
 
     router = APIRouter()
 
+    def require_observability_reader(request: Request) -> None:
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if "observability:read" not in actor.service_scopes:
+                raise HTTPException(
+                    status_code=403,
+                    detail="observability:read service scope required",
+                )
+            return
+        try:
+            IdentityService.require_admin(actor)
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     @router.get("/api/metrics")
-    async def runtime_metrics() -> dict[str, Any]:
+    async def runtime_metrics(request: Request) -> dict[str, Any]:
+        require_observability_reader(request)
         return metrics.snapshot()
 
     @router.get("/api/health")
-    async def runtime_health() -> dict[str, Any]:
+    async def runtime_health(request: Request) -> dict[str, Any]:
+        require_observability_reader(request)
         return health.snapshot()
 
     @router.get("/api/traces/recent")
-    async def recent_traces() -> dict[str, Any]:
+    async def recent_traces(request: Request) -> dict[str, Any]:
+        require_observability_reader(request)
         items = tracer.snapshot()
         return {"items": items, "count": len(items)}
 
     @router.get("/api/observability")
-    async def observability_snapshot() -> dict[str, Any]:
+    async def observability_snapshot(request: Request) -> dict[str, Any]:
+        require_observability_reader(request)
         spans = tracer.snapshot()
         return {
             "metrics": metrics.snapshot(),
