@@ -18,6 +18,7 @@ from codex_web.extensions import (
     ExtensionInstallRequest,
     ExtensionLifecycleRequest,
     ExtensionPackageInstallRequest,
+    ExtensionPackageUpgradeRequest,
     ExtensionRemoveRequest,
     ExtensionUpgradeRequest,
 )
@@ -330,6 +331,47 @@ def build_extensions_router(
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ExtensionError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/{installation_id}/packages/{package_ref}/upgrade")
+    async def upgrade_extension_package(
+        installation_id: str,
+        package_ref: str,
+        payload: ExtensionPackageUpgradeRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        if package_catalog is None:
+            raise HTTPException(
+                status_code=503,
+                detail="extension package catalog is unavailable",
+            )
+        actor = request_actor(request)
+        try:
+            service._require_admin(actor)
+            candidate = package_catalog.get(package_ref)
+            item = service.upgrade_verified_package(
+                installation_id,
+                manifest=candidate.manifest,
+                verification=candidate.verification,
+                package_ref=candidate.package_ref,
+                migration_evidence_id=payload.migration_evidence_id,
+                actor=actor,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except ExtensionPackageNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ExtensionPackageCatalogError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ExtensionError,
+                    AuthorizationError,
+                    ValueError,
+                ),
+            ):
                 raise _error(exc) from exc
             raise
 
