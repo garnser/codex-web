@@ -434,6 +434,42 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             ActionIntentStatus.REQUIRES_RECONCILIATION,
         )
 
+    async def test_callback_provider_must_match_intent_provider(self) -> None:
+        intent = self._create()
+        with self.assertRaises(Exception):
+            self.service.ingest_callback(
+                ActionInboxCreate(
+                    provider_type="wrong-provider",
+                    provider_instance=intent.provider_instance,
+                    delivery_id="delivery-wrong-provider",
+                    intent_id=intent.id,
+                    event_type="completed",
+                    outcome=ActionIntentStatus.SUCCEEDED,
+                ),
+                actor=self.actor,
+            )
+
+        history = self.service.history(intent.id, self.actor)
+        self.assertEqual(history["inbox"], [])
+
+    async def test_failed_callback_records_terminal_completion_timestamp(self) -> None:
+        intent = self._create()
+        self.service.ingest_callback(
+            ActionInboxCreate(
+                provider_type=intent.provider_type,
+                provider_instance=intent.provider_instance,
+                delivery_id="delivery-failed",
+                intent_id=intent.id,
+                event_type="failed",
+                outcome=ActionIntentStatus.FAILED,
+            ),
+            actor=self.actor,
+        )
+
+        current = self.service.get(intent.id, self.actor)
+        self.assertEqual(current.status, ActionIntentStatus.FAILED)
+        self.assertIsNotNone(current.completed_at)
+
     async def test_non_idempotent_unknown_outcome_cannot_be_replayed(self) -> None:
         provider = _NonIdempotentUnknownProvider()
         self.registry.register(provider)
