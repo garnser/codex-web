@@ -77,6 +77,7 @@ from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_watchdog_candidates import install_work_item_watchdog_candidate_policy
+from codex_web.services.work_item_watchdog_prompts import install_work_item_watchdog_prompt_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.action_intents import ActionIntentStore
@@ -254,6 +255,7 @@ thread_execution_settings_service = install_thread_execution_settings_service(ap
 turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
+work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(app, core)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
 autonomy_service = install_autonomy_service(
     app,
