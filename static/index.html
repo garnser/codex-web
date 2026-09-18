@@ -646,6 +646,28 @@
                     <button id="refresh-configuration" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="configuration-status" class="form-result" aria-live="polite">Open to load canonical typed configuration state.</div>
+                  <details id="configuration-management-panel">
+                    <summary>Configuration lifecycle management</summary>
+                    <div id="configuration-management-assurance" class="form-result">Configuration mutation requires canonical admin authority and elevated assurance. Deployment/global writes are platform-scoped.</div>
+                    <div class="route-test">
+                      <label>Configuration key <select id="configuration-draft-key"></select></label>
+                      <label>Scope <select id="configuration-draft-scope"></select></label>
+                      <label>Project <select id="configuration-draft-project"><option value="">Select project</option></select></label>
+                      <label>Resource <select id="configuration-draft-resource"><option value="">Select resource</option></select></label>
+                      <label>Reason <input id="configuration-draft-reason" placeholder="Why this revision is needed" /></label>
+                      <div id="configuration-draft-value-host"></div>
+                      <details id="configuration-targeting-panel">
+                        <summary>Feature rollout targeting</summary>
+                        <label>Percentage <input id="configuration-target-percentage" type="number" min="0" max="100" step="0.01" value="100" /></label>
+                        <label>Cohorts <input id="configuration-target-cohorts" placeholder="beta, internal" /></label>
+                        <label>Owner <input id="configuration-target-owner" placeholder="Optional owner" /></label>
+                        <label>Expires <input id="configuration-target-expires" type="datetime-local" /></label>
+                      </details>
+                      <label><input id="configuration-force-disabled" type="checkbox" /> Force-disabled kill switch</label>
+                      <button id="create-configuration-draft" type="button" class="ghost-button">Create typed draft</button>
+                    </div>
+                    <div id="configuration-management-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="route-test">
                     <input id="configuration-search" type="search" placeholder="Search key, scope, actor or value reference" />
                     <select id="configuration-scope-filter">
@@ -810,6 +832,7 @@
     <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/entitlement_admin.js" type="module"></script>
     <script src="static/configuration_admin.js" type="module"></script>
+    <script src="static/configuration_management.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
