@@ -31,6 +31,7 @@ from codex_web.api.threads import build_threads_router
 from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
+from codex_web.api.work_graph import build_work_graph_router
 from codex_web.composition import replace_routes
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.extension_packages import LocalExtensionPackageCatalog
@@ -417,6 +418,7 @@ work_graph_service = WorkGraphService(
 )
 app.state.work_graph_store = work_graph_store
 app.state.work_graph_service = work_graph_service
+app.include_router(build_work_graph_router(work_graph_service, project_service))
 extension_runtime_registry = ExtensionRuntimeRegistry(
     extension_service,
     work_item_service.task_source_registry,

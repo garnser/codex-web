@@ -808,6 +808,59 @@
                   <div class="section-title"><span>Independent verification</span></div>
                   <div id="verification-list" class="comm-log"></div>
                 </div>
+                <div class="developer-card" id="work-graph-panel">
+                  <div class="section-title">
+                    <h2>Work Graph</h2>
+                    <button id="refresh-work-graph" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="work-graph-status" class="form-result" aria-live="polite">Open to load deterministic dependency state.</div>
+                  <div class="route-test">
+                    <label>Project <select id="work-graph-project"></select></label>
+                    <input id="work-graph-search" type="search" placeholder="Search Work Item ref or title" />
+                    <select id="work-graph-readiness-filter">
+                      <option value="">All readiness states</option>
+                      <option value="runnable">Runnable</option>
+                      <option value="blocked">Blocked</option>
+                      <option value="terminal">Terminal</option>
+                    </select>
+                    <button id="work-graph-zoom-out" type="button" class="ghost-button" aria-label="Zoom graph out">−</button>
+                    <button id="work-graph-zoom-in" type="button" class="ghost-button" aria-label="Zoom graph in">+</button>
+                    <button id="work-graph-clear-focus" type="button" class="ghost-button">Clear focus</button>
+                  </div>
+                  <div id="work-graph-progress" class="comm-log"></div>
+                  <div class="work-graph-canvas" tabindex="0" aria-label="Dependency graph">
+                    <svg id="work-graph-svg" role="img" aria-labelledby="work-graph-svg-title">
+                      <title id="work-graph-svg-title">Work dependency graph</title>
+                    </svg>
+                  </div>
+                  <div id="work-graph-node-detail" class="comm-log"></div>
+                  <details id="work-graph-management-panel">
+                    <summary>Edit graph relationships</summary>
+                    <div id="work-graph-management-assurance" class="form-result">Graph mutation requires admin + MFA or work-graph:admin service authority.</div>
+                    <div class="route-test">
+                      <label>Source <select id="work-graph-source"></select></label>
+                      <label>Relation <select id="work-graph-relation">
+                        <option value="blocks">Blocks</option>
+                        <option value="parent">Parent</option>
+                      </select></label>
+                      <label>Target <select id="work-graph-target"></select></label>
+                      <label>Failure behavior <select id="work-graph-failure-behavior">
+                        <option value="pause">Pause</option>
+                        <option value="fail">Fail</option>
+                        <option value="replan">Replan</option>
+                        <option value="escalate">Escalate</option>
+                      </select></label>
+                      <input id="work-graph-edge-reason" placeholder="Optional relationship reason" />
+                      <button id="add-work-graph-edge" type="button" class="ghost-button">Add relationship</button>
+                    </div>
+                    <div id="work-graph-management-status" class="form-result" aria-live="polite"></div>
+                    <div id="work-graph-edge-list" class="comm-log"></div>
+                  </details>
+                  <details>
+                    <summary>Graph audit events</summary>
+                    <div id="work-graph-events" class="comm-log"></div>
+                  </details>
+                </div>
                 <div class="developer-card">
                   <div class="section-title">
                     <h2>ActionIntents & Side Effects</h2>
@@ -1054,6 +1107,7 @@
     <script src="static/execution_worker_management.js" type="module"></script>
     <script src="static/execution_workspace_admin.js" type="module"></script>
     <script src="static/artifact_evidence_admin.js" type="module"></script>
+    <script src="static/work_graph_admin.js" type="module"></script>
     <script src="static/action_intent_admin.js" type="module"></script>
     <script src="static/security_trust_diagnostics.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
