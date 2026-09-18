@@ -25,6 +25,9 @@
     if (lifecycle === "quarantined") {
       actions.push(["clear-quarantine", "Clear quarantine"]);
     }
+    if (!["enabled", "removed"].includes(lifecycle)) {
+      actions.push(["remove", "Remove"]);
+    }
     if (!actions.length) return "";
     const id = escapeHtml(item.id);
     const label = escapeHtml(item.manifest?.id || item.id);
@@ -180,11 +183,13 @@
     if (!action || !installationId) return;
 
     let reason = null;
-    if (["disable", "quarantine", "clear-quarantine"].includes(action)) {
+    if (["disable", "quarantine", "clear-quarantine", "remove"].includes(action)) {
       reason = window.prompt(`Reason for ${action.replace("-", " ")} of ${label}:`, "");
       if (reason === null) return;
     }
-    const confirmation = `${action.replace("-", " ")} ${label}? Current lifecycle: ${lifecycle}. This updates canonical extension state.`;
+    const confirmation = action === "remove"
+      ? `Remove ${label}? Current lifecycle: ${lifecycle}. Removal revokes active grants, stops future runtime use, and preserves the canonical tombstone; hard deletion is not supported.`
+      : `${action.replace("-", " ")} ${label}? Current lifecycle: ${lifecycle}. This updates canonical extension state.`;
     if (!window.confirm(confirmation)) return;
 
     const status = document.getElementById("extension-admin-status");
@@ -192,7 +197,12 @@
     if (status) status.textContent = `Applying ${action.replace("-", " ")} to ${label}...`;
     try {
       const options = { method: "POST" };
-      if (action !== "enable") {
+      if (action === "remove") {
+        options.body = JSON.stringify({
+          reason: reason?.trim() || "operator removed",
+          preserve_tombstone: true,
+        });
+      } else if (action !== "enable") {
         options.body = JSON.stringify({ reason: reason?.trim() || null });
       }
       await apiRequest(
