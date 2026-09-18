@@ -5,6 +5,7 @@ from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
+from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.slack import build_slack_router
@@ -45,6 +46,7 @@ from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
+from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
@@ -59,6 +61,7 @@ from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
+from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
