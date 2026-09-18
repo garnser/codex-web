@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from codex_web.action_providers import (
     ActionProvider,
     ActionProviderBinding,
@@ -75,7 +73,7 @@ class AuthorizedExtensionActionProvider:
             organization_id != self._actor.organization_id
             or workspace_id != self._actor.workspace_id
         ):
-            raise ExtensionAuthorizationError(
+            raise ActionResolutionError(
                 "extension action provider cannot cross tenant boundary"
             )
 
