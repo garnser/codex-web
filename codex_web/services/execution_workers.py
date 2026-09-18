@@ -336,6 +336,41 @@ class ExecutionWorkerService:
         self.store.update(apply)
         return updated[0]
 
+    def activate(
+        self,
+        worker_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        updated: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            worker = self._worker(state, worker_id, actor)
+            if worker.lifecycle == WorkerLifecycle.REVOKED:
+                raise WorkerConflictError("revoked worker cannot be reactivated")
+            replacement = worker.model_copy(
+                update={
+                    "lifecycle": WorkerLifecycle.ACTIVE,
+                    "quarantine_reason": None,
+                    "last_heartbeat_at": time.time(),
+                }
+            )
+            state.workers = [
+                replacement if item.id == worker.id else item for item in state.workers
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="worker_activated",
+                worker_id=worker.id,
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
     def create_assignment(
         self,
         payload: ExecutionAssignmentCreate,
