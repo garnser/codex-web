@@ -379,7 +379,11 @@ class ActionExecutionService:
         actor: AuthenticationActor,
     ) -> ActionVerification:
         binding = self.registry.binding(binding_id, actor)
-        provider = self.registry.provider(binding.provider_type, binding.provider_instance)
+        provider = self.registry.provider(
+            binding.provider_type,
+            binding.provider_instance,
+            actor=actor,
+        )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("verification")
         return await provider.verify(result, binding=binding)
@@ -392,7 +396,11 @@ class ActionExecutionService:
         actor: AuthenticationActor,
     ) -> ActionResult:
         binding = self.registry.binding(binding_id, actor)
-        provider = self.registry.provider(binding.provider_type, binding.provider_instance)
+        provider = self.registry.provider(
+            binding.provider_type,
+            binding.provider_instance,
+            actor=actor,
+        )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("rollback")
         if not definition.reversible:
