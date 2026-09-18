@@ -751,6 +751,29 @@
                 </div>
                 <div class="developer-card">
                   <div class="section-title">
+                    <h2>Execution Workspaces & Leases</h2>
+                    <button id="refresh-execution-workspaces" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="execution-workspace-status" class="form-result" aria-live="polite">Open to load isolated execution workspace state.</div>
+                  <div class="route-test">
+                    <input id="execution-workspace-search" type="search" placeholder="Search Work Item, execution, project, branch, owner or resource" />
+                    <select id="execution-workspace-state-filter">
+                      <option value="">All workspace states</option>
+                      <option value="provisioning">Provisioning</option>
+                      <option value="active">Active</option>
+                      <option value="integrated">Integrated</option>
+                      <option value="conflicted">Conflicted</option>
+                      <option value="released">Released</option>
+                      <option value="abandoned">Abandoned</option>
+                      <option value="discarded">Discarded</option>
+                      <option value="error">Error</option>
+                    </select>
+                    <button id="recover-execution-workspaces" type="button" class="ghost-button">Recover expired leases</button>
+                  </div>
+                  <div id="execution-workspace-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
+                  <div class="section-title">
                     <h2>Operations & Observability</h2>
                     <button id="refresh-operations" type="button" class="ghost-button">Refresh</button>
                   </div>
@@ -917,6 +940,7 @@
     <script src="static/configuration_management.js" type="module"></script>
     <script src="static/execution_worker_admin.js" type="module"></script>
     <script src="static/execution_worker_management.js" type="module"></script>
+    <script src="static/execution_workspace_admin.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
