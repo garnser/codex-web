@@ -24,10 +24,7 @@ from codex_web.services.action_providers import (
 )
 from codex_web.services.extension_conformance import ExtensionRuntimeDescriptor
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
-from codex_web.services.extensions import (
-    ExtensionAuthorizationError,
-    ExtensionService,
-)
+from codex_web.services.extensions import ExtensionService
 from codex_web.services.identity import IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.reference_task_source import ReferenceTaskSource
@@ -182,7 +179,7 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
             reason="runtime authority revoked",
         )
-        with self.assertRaises(ExtensionAuthorizationError):
+        with self.assertRaises(TaskSourceResolutionError):
             self.task_sources.resolve(state, required=True)
 
     async def test_two_tenants_can_register_same_task_source_type(self) -> None:
