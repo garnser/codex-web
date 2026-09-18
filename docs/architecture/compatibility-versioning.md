@@ -85,7 +85,7 @@ During rolling upgrades, readers must support every persisted version that can l
 | Canonical event | 1.0 | none yet | construction/consumer boundary rejects | register event migration/consumer compatibility deliberately |
 | TaskSource | 1.0 | omitted version treated as legacy 1.0 during migration | registry rejects declared unsupported version | adapter upgrade is explicit; capabilities negotiated separately |
 | Persisted record | 1.0 | domain-specific legacy loaders may seed 1.0 | envelope rejects unsupported version | use `MigrationRegistry` step chain |
-| Execution contract | 1.1 | governed by its own exact schema validator | Pydantic/literal validation rejects | introduce and test explicit new execution-contract schema |
+| Execution contract | 1.2 | governed by its own exact schema validator | Pydantic/literal validation rejects | introduce and test explicit new execution-contract schema |
 
 ## Deprecation policy
 
