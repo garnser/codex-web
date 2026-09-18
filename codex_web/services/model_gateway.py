@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import time
@@ -531,12 +532,20 @@ class ModelGatewayService:
             started = time.time()
 
             async def call(credential: str | None):
-                return await adapter.invoke(
-                    provider,
-                    model,
-                    request,
-                    credential=credential,
-                )
+                try:
+                    return await asyncio.wait_for(
+                        adapter.invoke(
+                            provider,
+                            model,
+                            request,
+                            credential=credential,
+                        ),
+                        timeout=request.timeout_seconds,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise ModelProviderTransientError(
+                        f"provider attempt timed out after {request.timeout_seconds}s"
+                    ) from exc
 
             try:
                 if provider.credential_ref:
