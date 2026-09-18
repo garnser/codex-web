@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.execution_subjects import ExecutionSubject, normalize_execution_subject
+
 
 class ExecutionWorkspaceKind(StrEnum):
     GIT_WORKTREE = "git_worktree"
@@ -62,7 +64,8 @@ class ExecutionWorkspaceLease(BaseModel):
     execution_workspace_id: str
     organization_id: str
     workspace_id: str
-    work_item_ref: str
+    subject: ExecutionSubject | None = None
+    work_item_ref: str | None = None
     execution_id: str
     owner_identity_id: str
     resource_ids: tuple[str, ...]
@@ -72,6 +75,14 @@ class ExecutionWorkspaceLease(BaseModel):
     renewed_at: float | None = None
     released_at: float | None = None
     release_reason: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_subject(self) -> "ExecutionWorkspaceLease":
+        self.subject, self.work_item_ref = normalize_execution_subject(
+            self.subject,
+            self.work_item_ref,
+        )
+        return self
 
     @property
     def active(self) -> bool:
@@ -96,7 +107,8 @@ class ExecutionWorkspace(BaseModel):
     id: str
     organization_id: str
     workspace_id: str
-    work_item_ref: str
+    subject: ExecutionSubject | None = None
+    work_item_ref: str | None = None
     execution_id: str
     project_id: str
     owner_identity_id: str
@@ -117,6 +129,14 @@ class ExecutionWorkspace(BaseModel):
     error: str | None = None
     integration: WorkspaceIntegrationState = Field(default_factory=WorkspaceIntegrationState)
 
+    @model_validator(mode="after")
+    def normalize_subject(self) -> "ExecutionWorkspace":
+        self.subject, self.work_item_ref = normalize_execution_subject(
+            self.subject,
+            self.work_item_ref,
+        )
+        return self
+
 
 class ExecutionWorkspaceEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -131,7 +151,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)
@@ -140,7 +160,8 @@ class ExecutionWorkspaceState(BaseModel):
 class ExecutionWorkspaceAcquire(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    work_item_ref: str = Field(min_length=1)
+    subject: ExecutionSubject | None = None
+    work_item_ref: str | None = None
     execution_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     resource_ids: tuple[str, ...]
@@ -152,6 +173,10 @@ class ExecutionWorkspaceAcquire(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionWorkspaceAcquire":
+        self.subject, self.work_item_ref = normalize_execution_subject(
+            self.subject,
+            self.work_item_ref,
+        )
         self.resource_ids = tuple(dict.fromkeys(item.strip() for item in self.resource_ids if item.strip()))
         if not self.resource_ids:
             raise ValueError("execution workspace requires at least one canonical resource")
@@ -227,15 +252,21 @@ class ExecutionWorkspaceReference(BaseModel):
 def deterministic_workspace_id(
     organization_id: str,
     workspace_id: str,
-    work_item_ref: str,
+    work_item_ref: str | None,
     execution_id: str,
+    *,
+    subject: ExecutionSubject | None = None,
 ) -> str:
-    raw = f"{organization_id}\n{workspace_id}\n{work_item_ref}\n{execution_id}".encode()
+    normalized_subject, _ = normalize_execution_subject(subject, work_item_ref)
+    raw = (
+        f"{organization_id}\n{workspace_id}\n"
+        f"{normalized_subject.key}\n{execution_id}"
+    ).encode()
     return f"execws-{hashlib.sha256(raw).hexdigest()[:20]}"
 
 
-def deterministic_branch_name(work_item_ref: str, execution_id: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", work_item_ref).strip("-._").lower()
+def deterministic_branch_name(subject_ref: str, execution_id: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", subject_ref).strip("-._").lower()
     slug = slug[:64] or "work-item"
     suffix = hashlib.sha256(execution_id.encode()).hexdigest()[:10]
     return f"codex/{slug}/{suffix}"

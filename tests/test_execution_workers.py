@@ -4,11 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.api.execution_workers import _operator_assignment, build_execution_workers_router
+from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
@@ -127,6 +129,80 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             ExecutionAssignmentCreate(**payload),
             actor=self.admin,
         )
+
+    def test_thread_subject_assignment_does_not_require_fake_work_item(self) -> None:
+        assignment = self._assignment(
+            work_item_ref=None,
+            subject=ExecutionSubject(
+                kind=ExecutionSubjectKind.THREAD,
+                ref="thread-abc",
+            ),
+            execution_id="exec-thread",
+        )
+
+        self.assertEqual(assignment.subject.kind, ExecutionSubjectKind.THREAD)
+        self.assertEqual(assignment.subject.ref, "thread-abc")
+        self.assertIsNone(assignment.work_item_ref)
+
+    def test_conflicting_legacy_work_item_ref_and_subject_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "conflicts with execution subject"):
+            ExecutionAssignmentCreate(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.WORK_ITEM,
+                    ref="group/app#99",
+                ),
+                work_item_ref="group/app#42",
+                execution_id="exec-conflict",
+                project_id="home",
+                resource_ids=("repo-1",),
+                execution_contract_version="1.0",
+                required_capabilities=(WorkerCapability.GIT,),
+            )
+
+    def test_v1_worker_state_migrates_work_item_assignment_to_subject(self) -> None:
+        assignment = self._assignment(execution_id="exec-migrate")
+        raw = self.service.store.store.get(self.service.store.namespace)
+        raw["schema_version"] = "1.0"
+        for item in raw["assignments"]:
+            if item["id"] == assignment.id:
+                item.pop("subject", None)
+        self.service.store.store.put(self.service.store.namespace, raw)
+
+        state = self.service.store.load()
+        migrated = next(item for item in state.assignments if item.id == assignment.id)
+        self.assertEqual(state.schema_version, "1.1")
+        self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
+        self.assertEqual(migrated.subject.ref, "group/app#42")
+        self.assertEqual(migrated.work_item_ref, "group/app#42")
+
+    def test_assignment_workspace_subject_mismatch_fails_closed(self) -> None:
+        self.service.workspaces = SimpleNamespace(
+            get=lambda workspace_id, actor: SimpleNamespace(
+                id=workspace_id,
+                execution_id="exec-thread-mismatch",
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.WORK_ITEM,
+                    ref="group/app#42",
+                ),
+                project_id="home",
+                resource_ids=("repo-1",),
+                base_revision="abc123",
+            )
+        )
+
+        with self.assertRaisesRegex(
+            WorkerConflictError,
+            "execution subject does not match",
+        ):
+            self._assignment(
+                work_item_ref=None,
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD,
+                    ref="thread-mismatch",
+                ),
+                execution_id="exec-thread-mismatch",
+                execution_workspace_id="execws-thread",
+            )
 
     def test_registration_requires_existing_tenant_service_identity(self) -> None:
         with self.assertRaises(WorkerConflictError):

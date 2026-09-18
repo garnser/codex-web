@@ -9,17 +9,49 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
     },
+)
+
+
+def _subject_from_legacy(item: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(item)
+    if migrated.get("subject") is None and migrated.get("work_item_ref"):
+        migrated["subject"] = {
+            "kind": "work_item",
+            "ref": migrated["work_item_ref"],
+        }
+    return migrated
+
+
+def _migrate_1_0_to_1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "schema_version": "1.1",
+        "workspaces": [
+            _subject_from_legacy(item)
+            for item in payload.get("workspaces", [])
+        ],
+        "leases": [
+            _subject_from_legacy(item)
+            for item in payload.get("leases", [])
+        ],
+    }
+
+
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    _migrate_1_0_to_1_1,
 )
 
 

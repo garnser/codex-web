@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from codex_web.execution_contract_schema import execution_contract_for_work_item
+from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
@@ -169,6 +170,50 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             ),
             actor=self.actor,
         )
+
+    def test_thread_subject_workspace_is_canonical_without_fake_work_item_sync(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD,
+                    ref="thread-abc",
+                ),
+                execution_id="thread-exec",
+                project_id="home",
+                resource_ids=(self.repo.id,),
+                repository_resource_id=self.repo.id,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(workspace.subject.kind, ExecutionSubjectKind.THREAD)
+        self.assertEqual(workspace.subject.ref, "thread-abc")
+        self.assertIsNone(workspace.work_item_ref)
+        self.assertEqual(set(self.host.states), {self.work_item.ref})
+        self.assertEqual(self.host.events, [])
+
+    def test_v1_workspace_state_migrates_work_item_subject_on_workspace_and_lease(self) -> None:
+        workspace = self._acquire("migrate-exec", self.repo.id)
+        raw = self.service.store.store.get(self.service.store.namespace)
+        raw["schema_version"] = "1.0"
+        for item in raw["workspaces"]:
+            if item["id"] == workspace.id:
+                item.pop("subject", None)
+        for item in raw["leases"]:
+            if item["execution_workspace_id"] == workspace.id:
+                item.pop("subject", None)
+        self.service.store.store.put(self.service.store.namespace, raw)
+
+        state = self.service.store.load()
+        migrated_workspace = next(item for item in state.workspaces if item.id == workspace.id)
+        migrated_lease = next(
+            item for item in state.leases if item.execution_workspace_id == workspace.id
+        )
+        self.assertEqual(state.schema_version, "1.1")
+        self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
+        self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
+        self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
 
     def test_parallel_non_conflicting_executions_get_distinct_worktrees_and_branches(self) -> None:
         first = self._acquire("exec-1", self.repo.id)

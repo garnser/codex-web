@@ -176,6 +176,8 @@ class ExecutionWorkspaceService:
         saver = getattr(host, "_save_work_item_states", None)
         if not callable(loader) or not callable(saver):
             return
+        if workspace.work_item_ref is None:
+            return
         states = loader()
         state = states.get(workspace.work_item_ref)
         if state is None:
@@ -390,6 +392,7 @@ class ExecutionWorkspaceService:
             actor.workspace_id,
             request.work_item_ref,
             request.execution_id,
+            subject=request.subject,
         )
         existing = self._existing(workspace_id, actor)
         if existing is not None:
@@ -412,7 +415,7 @@ class ExecutionWorkspaceService:
             else ExecutionWorkspaceKind.RESOURCE_LEASE
         )
         branch_name = (
-            deterministic_branch_name(request.work_item_ref, request.execution_id)
+            deterministic_branch_name(request.subject.key, request.execution_id)
             if kind == ExecutionWorkspaceKind.GIT_WORKTREE
             else None
         )
@@ -426,6 +429,7 @@ class ExecutionWorkspaceService:
             execution_workspace_id=workspace_id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
+            subject=request.subject,
             work_item_ref=request.work_item_ref,
             execution_id=request.execution_id,
             owner_identity_id=actor.identity_id,
@@ -438,6 +442,7 @@ class ExecutionWorkspaceService:
             id=workspace_id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
+            subject=request.subject,
             work_item_ref=request.work_item_ref,
             execution_id=request.execution_id,
             project_id=request.project_id,
@@ -494,6 +499,8 @@ class ExecutionWorkspaceService:
                     details={
                         "lease_id": lease.id,
                         "kind": kind.value,
+                        "subject_kind": request.subject.kind.value,
+                        "subject_ref": request.subject.ref,
                         "expires_at": lease.expires_at,
                     },
                 ),
