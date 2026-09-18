@@ -204,6 +204,7 @@ class InputPluginContext(BaseModel):
     purpose: str
     max_patch_bytes: int
     max_added_characters: int
+    settings: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class InputPlugin(Protocol):
@@ -236,6 +237,7 @@ class InputPluginRegistration(BaseModel):
         le=1_000_000,
     )
     definition_ref: DefinitionReference | None = None
+    settings: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_plugin(self) -> "InputPluginRegistration":
@@ -418,6 +420,7 @@ class InputPluginPipeline:
                 purpose=current.purpose,
                 max_patch_bytes=registration.max_patch_bytes,
                 max_added_characters=registration.max_added_characters,
+                settings=dict(registration.settings),
             )
             before = current
             before_hash = _canonical_hash(before)
