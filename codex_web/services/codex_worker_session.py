@@ -617,6 +617,23 @@ class AssignmentBoundCodexSessionManager:
     def get(self, assignment_id: str) -> AssignmentBoundCodexSession | None:
         return self.sessions.get(assignment_id)
 
+    def reconcile_missing_session(self, assignment_id: str) -> ExecutionAssignment:
+        """Reconcile a missing in-memory session through canonical lease state.
+
+        A still-valid worker lease is never stolen. Once that lease expires,
+        the exact assignment is transitioned to LOST so restart/session loss
+        is visible in canonical execution state rather than only as an HTTP
+        routing error.
+        """
+        return self.local_worker.worker_service.recover_assignment_if_expired(
+            assignment_id,
+            actor=self.local_worker.control_actor,
+            failure_code="codex_session_lost",
+            failure_message=(
+                "assignment-bound Codex session disappeared before trusted completion"
+            ),
+        )
+
     async def complete(
         self,
         assignment_id: str,
