@@ -74,6 +74,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
+from codex_web.services.codex_worker_configuration import install_codex_worker_configuration
 from codex_web.services.codex_model_egress import endpoints_from_provider_base_urls
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.services.context import ContextCompactionService
@@ -103,6 +104,7 @@ from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.threads import ThreadService
 from codex_web.services.turn_queue_policy import install_turn_queue_policy
+from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_timing import install_work_item_timing_policy
@@ -153,7 +155,11 @@ project_repository = ProjectRepository(PROJECTS_FILE)
 state_store = SQLiteStateStore(STATE_DB_FILE)
 configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
+codex_worker_configuration_spec = install_codex_worker_configuration(
+    configuration_service
+)
 app.state.configuration_service = configuration_service
+app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
     try:
@@ -337,6 +343,16 @@ app.state.execution_worker_service = execution_worker_service
 app.state.local_execution_worker = local_execution_worker
 app.state.local_execution_backend = local_execution_backend
 app.state.local_execution_backend_status = local_execution_backend_status
+
+turn_execution_binding_service = TurnExecutionBindingService(
+    configuration_service,
+    project_service,
+    resource_catalog_service,
+    execution_workspace_service,
+    execution_worker_service,
+    control_actor=identity_service.local_trusted_actor(),
+)
+app.state.turn_execution_binding_service = turn_execution_binding_service
 
 artifact_evidence_store = ArtifactEvidenceStore(state_store)
 artifact_evidence_service = ArtifactEvidenceService(
