@@ -515,6 +515,7 @@ class ExtensionService:
         def apply(state):
             item = self._installation(state, installation_id, actor)
             if item.lifecycle in {
+                ExtensionLifecycleState.ENABLED,
                 ExtensionLifecycleState.REMOVED,
                 ExtensionLifecycleState.INCOMPATIBLE,
                 ExtensionLifecycleState.UPGRADING,
@@ -662,6 +663,7 @@ class ExtensionService:
     ) -> ExtensionCapabilityGrant:
         self._require_admin(actor)
         updated: list[ExtensionCapabilityGrant] = []
+        quarantined_installations: list[ExtensionInstallation] = []
 
         def apply(state):
             item = self._installation(state, installation_id, actor)
@@ -722,10 +724,13 @@ class ExtensionService:
                     "extension_quarantined",
                     reason=quarantined.quarantine_reason,
                 )
+                quarantined_installations.append(quarantined)
             updated.append(replacement)
             return state
 
         self.store.update(apply)
+        for installation in quarantined_installations:
+            self._notify_lifecycle(installation, "quarantined")
         return updated[0]
 
     def grants(
@@ -829,6 +834,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "enabled")
         return updated[0]
 
     def disable(
@@ -869,6 +875,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "disabled")
         return updated[0]
 
     def quarantine(
@@ -904,6 +911,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "quarantined")
         return updated[0]
 
     def clear_quarantine(
@@ -941,6 +949,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "disabled")
         return updated[0]
 
     def report_health(
@@ -952,6 +961,7 @@ class ExtensionService:
     ) -> ExtensionInstallation:
         self._require_health_reporter(actor)
         updated: list[ExtensionInstallation] = []
+        newly_quarantined: list[ExtensionInstallation] = []
 
         def apply(state):
             item = self._installation(state, installation_id, actor)
@@ -1005,10 +1015,13 @@ class ExtensionService:
                     "extension_quarantined",
                     reason=quarantine_reason,
                 )
+                newly_quarantined.append(replacement)
             updated.append(replacement)
             return state
 
         self.store.update(apply)
+        for installation in newly_quarantined:
+            self._notify_lifecycle(installation, "quarantined")
         return updated[0]
 
     def _upgrade_with_verification(
@@ -1149,6 +1162,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "upgraded")
         return updated[0]
 
     def upgrade(
@@ -1247,6 +1261,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "removed")
         return updated[0]
 
     def require_runtime_capability(
