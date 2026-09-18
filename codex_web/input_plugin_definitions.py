@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.input_plugins import InputFailurePolicy, InputPhase
@@ -10,6 +12,31 @@ INPUT_PIPELINE_DEFINITION_KIND = "input_pipeline"
 INPUT_PIPELINE_SCHEMA_VERSION = "1.0"
 MAX_INPUT_PIPELINE_PLUGINS = 32
 MAX_INPUT_PLUGIN_SETTINGS = 32
+FORBIDDEN_INPUT_PLUGIN_SETTING_FRAGMENTS = (
+    "password",
+    "secret",
+    "credential",
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "private_key",
+)
+
+
+def forbidden_input_plugin_setting_keys(
+    settings: Mapping[str, object],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            key
+            for key in settings
+            if any(
+                fragment in key.casefold()
+                for fragment in FORBIDDEN_INPUT_PLUGIN_SETTING_FRAGMENTS
+            )
+        )
+    )
+
 
 
 class InputPluginConditionDefinition(BaseModel):
@@ -62,24 +89,11 @@ class InputPluginRegistrationDefinition(BaseModel):
             raise ValueError(
                 f"input plugin settings cannot exceed {MAX_INPUT_PLUGIN_SETTINGS} keys"
             )
-        forbidden_fragments = (
-            "password",
-            "secret",
-            "credential",
-            "api_key",
-            "access_token",
-            "refresh_token",
-            "private_key",
-        )
-        forbidden = [
-            key
-            for key in self.settings
-            if any(fragment in key.casefold() for fragment in forbidden_fragments)
-        ]
+        forbidden = forbidden_input_plugin_setting_keys(self.settings)
         if forbidden:
             raise ValueError(
                 "input plugin settings cannot contain credential/secret fields: "
-                + ", ".join(sorted(forbidden))
+                + ", ".join(forbidden)
             )
         return self
 
