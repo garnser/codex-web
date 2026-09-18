@@ -32,7 +32,7 @@
     ));
   }
 
-  function renderUpgrade(candidate, installed, evidence, evidenceError) {
+  function renderUpgrade(candidate, installed, evidence, evidenceError, canMutate) {
     const host = hostFor(candidate.package_ref);
     if (!host) return;
     const manifest = candidate.manifest || {};
@@ -43,7 +43,7 @@
 
     const migrationEntrypoint = manifest.migrations?.entrypoint || null;
     const matches = migrationEntrypoint ? validEvidence(manifest, evidence) : [];
-    const blocked = Boolean(migrationEntrypoint && (evidenceError || !matches.length));
+    const blocked = !canMutate || Boolean(migrationEntrypoint && (evidenceError || !matches.length));
     const evidenceControl = migrationEntrypoint
       ? `<div class="comm-entry">
           <small>Migration: ${escapeHtml(migrationEntrypoint)} · canonical passing evidence is required.</small>
@@ -57,12 +57,13 @@
 
     host.innerHTML = `<div data-extension-upgrade-controls data-installation-id="${escapeHtml(installed.id)}" data-package-ref="${escapeHtml(candidate.package_ref)}" data-extension-id="${escapeHtml(manifest.id)}" data-target-version="${escapeHtml(manifest.version)}">
       <small>Installed: ${escapeHtml(installed.manifest?.version || "unknown")} · lifecycle: ${escapeHtml(installed.lifecycle)}.</small>
+      ${!canMutate ? '<small>Upgrade mutation requires tenant admin/owner plus MFA/local-trusted assurance or extensions:admin service authority.</small>' : ""}
       ${evidenceControl}
       <button type="button" class="ghost-button" data-extension-package-upgrade ${blocked ? "disabled" : ""}>Apply package upgrade</button>
     </div>`;
   }
 
-  async function hydrateUpgrades(discovery, installations) {
+  async function hydrateUpgrades(discovery, installations, canMutate) {
     const current = ++generation;
     const candidates = discovery?.items || [];
     const upgradePairs = candidates.map((candidate) => {
@@ -84,7 +85,7 @@
     }
     if (current !== generation) return;
     upgradePairs.forEach(([candidate, installed]) => {
-      renderUpgrade(candidate, installed, evidence, evidenceError);
+      renderUpgrade(candidate, installed, evidence, evidenceError, canMutate);
     });
   }
 
@@ -94,7 +95,7 @@
     const packageRef = root?.dataset.packageRef;
     const extensionId = root?.dataset.extensionId || installationId;
     const targetVersion = root?.dataset.targetVersion || "unknown";
-    if (!root || !installationId || !packageRef) return;
+    if (!root || !installationId || !packageRef || button.disabled) return;
 
     const evidenceSelect = root.querySelector("[data-extension-migration-evidence]");
     const migrationEvidenceId = evidenceSelect?.value || null;
@@ -129,6 +130,7 @@
     hydrateUpgrades(
       event.detail?.discovery || { items: [] },
       event.detail?.installations || [],
+      Boolean(event.detail?.canMutateMutation),
     ).catch(console.error);
   });
 
