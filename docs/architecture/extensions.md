@@ -1,0 +1,209 @@
+# Extension and plugin lifecycle
+
+## Status
+
+Milestone 3 extension/platform contract.
+
+This document defines the canonical package manifest, installation state,
+authorization, compatibility and lifecycle boundary for third-party and
+out-of-tree providers.
+
+The central rule is:
+
+> Installing extension code does not enable it and does not grant it authority.
+
+## Package manifest vs canonical state
+
+ExtensionManifest is immutable package-owned metadata validated before
+extension code executes. It declares:
+
+- reverse-DNS extension ID and SemVer package version;
+- publisher and source provenance;
+- SHA-256 package digest and optional signature metadata;
+- supported codex-web extension-host version range;
+- extension categories such as TaskSource, ActionProvider and model provider;
+- requested and mandatory capabilities;
+- subscribed/published event names;
+- typed-configuration schema reference and logical secret slots;
+- required resource scopes;
+- bounded declarative UI contributions;
+- migration and health-check metadata;
+- category-specific runtime entrypoints.
+
+The manifest never contains granted authority or raw secret material.
+
+ExtensionInstallation is tenant/workspace-scoped canonical application state.
+It records the installed manifest snapshot, package-verification result,
+deployment mode, lifecycle, configuration-record references, secret-reference
+bindings, health/circuit-breaker state, manifest history and operator-visible
+failure reasons.
+
+Capability grants are separate ExtensionCapabilityGrant records. This is
+intentional: package declaration, installation, configuration, authorization
+and enablement are independent auditable operations.
+
+## Compatibility
+
+The v1 extension host compatibility level is 3.0.0. This is a code-owned
+extension-host contract version, not a marketing release number and not the
+HTTP API contract version.
+
+Manifest compatibility uses an intentionally small fail-closed grammar of exact
+SemVer values and whitespace/comma-separated comparators, for example:
+
+    >=3.0.0 <4.0.0
+
+Unknown range syntaxes are rejected rather than guessed. An incompatible
+package may be persisted in the incompatible lifecycle so an operator can
+inspect why it cannot run, but it cannot be enabled.
+
+## Package integrity and signature policy
+
+The package verifier is a code-owned boundary. The default self-hosted verifier
+compares the observed package SHA-256 digest with the manifest declaration but
+does not claim cryptographic signature verification.
+
+- digest mismatch: install fails;
+- invalid signature: install fails;
+- self-hosted mode: unsigned or not-yet-verified signatures may be accepted
+  explicitly, while their verification state remains visible;
+- hosted mode: a cryptographically verified signature is required.
+
+A manifest merely containing a signature string is not proof that the signature
+was verified.
+
+Future Sigstore/KMS/release-signing integrations must implement the verifier
+interface rather than letting an API caller assert a verified state.
+
+## Lifecycle
+
+The canonical lifecycle vocabulary is:
+
+- discovered;
+- installed;
+- configured;
+- enabled;
+- disabled;
+- quarantined;
+- upgrading;
+- incompatible;
+- deprecated;
+- removed.
+
+The initial service persists installs as installed or incompatible.
+Configuration moves an installed extension to configured; configuration of a
+disabled extension leaves it disabled.
+
+Enablement requires all of the following:
+
+- compatible host range;
+- acceptable package verification for deployment mode;
+- no unhealthy status;
+- every mandatory declared capability has an active canonical grant;
+- every declared required secret slot has a canonical secret reference;
+- a typed configuration record is present when the manifest declares a
+  configuration schema.
+
+No extension may add a grant to itself. Human owners/admins or service actors
+with extensions:admin own installation and authorization changes.
+
+## Runtime authorization
+
+ExtensionRuntimeDescriptor is the provider-neutral SDK/conformance seam used
+before category-specific dispatch. It binds runtime code to:
+
+- exact extension ID;
+- exact installed package version;
+- declared extension category;
+- the capabilities the runtime intends to use.
+
+The descriptor must match the installed manifest. Each attempted capability is
+then resolved through ExtensionService.require_runtime_capability().
+
+An extension must be enabled, the category must be declared, and an active
+grant must exist. Resource-scoped grants additionally require the runtime target
+resources to be a subset of the granted resource set.
+
+This same boundary applies to TaskSource, ActionProvider, model-provider and
+future extension categories. Category-specific conformance suites may add
+protocol checks after this shared lifecycle/authority gate.
+
+## Secrets and configuration
+
+Manifest secret_refs are logical slot names only. Installation state maps those
+slots to canonical SecretBroker reference IDs. Configuration validates that
+every supplied slot was declared and that the requesting actor may use the
+referenced secret.
+
+Raw secret values are never stored in extension state or returned by extension
+administration APIs.
+
+Typed configuration is referenced by canonical configuration-record ID. The
+extension registry does not create a second configuration system.
+
+## Health and quarantine
+
+Health state is canonical metadata, not an authorization source.
+
+The reference circuit breaker quarantines an enabled extension after three
+consecutive unhealthy reports. A quarantined extension cannot pass runtime
+capability resolution.
+
+Clearing quarantine is a separate administrator operation and leaves the
+extension disabled; it must pass normal enablement gates again.
+
+Revoking a mandatory capability grant from an enabled extension immediately
+quarantines it, preventing code from continuing with authority that no longer
+exists.
+
+## Upgrade and removal
+
+Upgrade is only allowed while the extension is not enabled.
+
+An upgrade:
+
+- requires the same extension ID and a different package version;
+- re-runs digest/signature policy and compatibility checks;
+- retains the previous manifest in immutable history;
+- revokes grants for capabilities no longer requested;
+- drops secret-slot bindings no longer declared;
+- resets health state;
+- returns to disabled when compatible or incompatible otherwise.
+
+If the new manifest declares a migration entrypoint, migration completion must
+be explicit before the manifest replacement commits. A later package execution
+layer should run those migrations through the isolated worker boundary rather
+than inside the control-plane process.
+
+Removal uses a tombstone. Active grants are revoked and the installation moves
+to removed. Hard deletion is intentionally unsupported until a canonical
+reference graph can prove there are no retained Work Item, ActionProvider,
+resource, evidence or audit references.
+
+## Failure isolation
+
+Extension lifecycle state is independent from provider-specific runtime
+objects. A broken, incompatible, unhealthy or quarantined extension can be
+disabled without corrupting unrelated control-plane functions.
+
+Extension code does not gain direct access to canonical database state,
+credentials, worker authority or ActionIntent authority by virtue of being
+installed or enabled. Privileged external side effects must still flow through
+ActionProvider/ActionIntent and canonical identity/resource/secret boundaries.
+
+## UI impact
+
+Platform administration UI work is tracked by #141/#125. The UI should expose:
+
+- extension identity, publisher and provenance;
+- digest/signature verification state;
+- compatibility and current version;
+- declared vs granted capabilities;
+- resource scopes;
+- configuration and secret-reference metadata without secret values;
+- health, lifecycle, quarantine and failure reason;
+- upgrade history and removal tombstone;
+- audit events and links to provider/resource/action usage.
+
+Installation, configuration, authorization and enablement must remain visibly
+distinct operations.
