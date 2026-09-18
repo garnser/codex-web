@@ -774,6 +774,71 @@
                 </div>
                 <div class="developer-card">
                   <div class="section-title">
+                    <h2>Artifacts, Evidence & Verification</h2>
+                    <button id="refresh-artifact-evidence" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="artifact-evidence-status" class="form-result" aria-live="polite">Open to load canonical artifact/evidence state.</div>
+                  <div class="route-test">
+                    <input id="artifact-evidence-search" type="search" placeholder="Search Work Item, execution, artifact, evidence or verifier" />
+                    <select id="artifact-evidence-lifecycle-filter">
+                      <option value="">All lifecycle states</option>
+                      <option value="active">Active artifacts</option>
+                      <option value="valid">Valid evidence</option>
+                      <option value="superseded">Superseded</option>
+                      <option value="invalidated">Invalidated</option>
+                      <option value="expired">Expired</option>
+                    </select>
+                    <input id="artifact-evidence-work-item" placeholder="Work Item ref for gate evaluation" />
+                    <button id="evaluate-evidence-gate" type="button" class="ghost-button">Evaluate evidence gate</button>
+                  </div>
+                  <div id="evidence-gate-result" class="comm-log"></div>
+                  <details id="artifact-evidence-admin-panel">
+                    <summary>Governance administration</summary>
+                    <div id="artifact-evidence-admin-assurance" class="form-result">Requirement/governance administration requires admin + MFA or artifact-evidence:admin service authority.</div>
+                    <div class="route-test">
+                      <button id="sync-artifact-governance" type="button" class="ghost-button">Sync governance metadata</button>
+                      <button id="expire-artifact-retention" type="button" class="ghost-button">Expire due retention</button>
+                    </div>
+                    <div id="artifact-evidence-admin-status" class="form-result" aria-live="polite"></div>
+                  </details>
+                  <div class="section-title"><span>Artifacts</span></div>
+                  <div id="artifact-list" class="comm-log"></div>
+                  <div class="section-title"><span>Evidence</span></div>
+                  <div id="evidence-list" class="comm-log"></div>
+                  <div class="section-title"><span>Independent verification</span></div>
+                  <div id="verification-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
+                  <div class="section-title">
+                    <h2>ActionIntents & Side Effects</h2>
+                    <button id="refresh-action-intents" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="action-intent-status" class="form-result" aria-live="polite">Open to load durable side-effect state.</div>
+                  <div class="route-test">
+                    <input id="action-intent-search" type="search" placeholder="Search Work Item, provider, action, decision, execution or correlation ID" />
+                    <select id="action-intent-status-filter">
+                      <option value="">All statuses</option>
+                      <option value="pending">Pending</option>
+                      <option value="claimed">Claimed</option>
+                      <option value="executing">Executing</option>
+                      <option value="succeeded">Succeeded</option>
+                      <option value="failed">Failed</option>
+                      <option value="cancelled">Cancelled</option>
+                      <option value="uncertain">Uncertain</option>
+                      <option value="requires_reconciliation">Requires reconciliation</option>
+                      <option value="rolled_back">Rolled back</option>
+                    </select>
+                  </div>
+                  <details id="action-intent-recovery-panel">
+                    <summary>Stale claim recovery</summary>
+                    <div id="action-intent-recovery-assurance" class="form-result">Recovery requires admin + MFA or action-intent:admin service authority.</div>
+                    <button id="recover-stale-action-intents" type="button" class="ghost-button">Recover stale claims</button>
+                    <div id="action-intent-recovery-status" class="form-result" aria-live="polite"></div>
+                  </details>
+                  <div id="action-intent-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
+                  <div class="section-title">
                     <h2>Operations & Observability</h2>
                     <button id="refresh-operations" type="button" class="ghost-button">Refresh</button>
                   </div>
@@ -941,6 +1006,8 @@
     <script src="static/execution_worker_admin.js" type="module"></script>
     <script src="static/execution_worker_management.js" type="module"></script>
     <script src="static/execution_workspace_admin.js" type="module"></script>
+    <script src="static/artifact_evidence_admin.js" type="module"></script>
+    <script src="static/action_intent_admin.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
