@@ -10,6 +10,7 @@ from codex_web.models import WorkItemState
 from codex_web.services.work_graph import (
     WorkGraphConflictError,
     WorkGraphCycleError,
+    WorkGraphNotFoundError,
     WorkGraphScopeError,
     WorkGraphService,
 )
@@ -208,8 +209,49 @@ class WorkGraphServiceTests(unittest.TestCase):
             workspace_id="ws-b",
         )
 
-        with self.assertRaisesRegex(Exception, "work item not found"):
+        with self.assertRaisesRegex(
+            WorkGraphNotFoundError,
+            "work item not found",
+        ):
             self.add("A", "E")
+
+    def test_deep_dependency_chain_uses_iterative_critical_path(self) -> None:
+        for index in range(1200):
+            ref = f"N{index:04d}"
+            self.items[ref] = item(ref)
+        for index in range(1199):
+            self.add(f"N{index:04d}", f"N{index + 1:04d}")
+
+        graph = self.service.snapshot("project-a", scope=self.scope)
+
+        self.assertEqual(graph.critical_path.node_count, 1200)
+        self.assertEqual(graph.critical_path.edge_count, 1199)
+        self.assertEqual(graph.critical_path.refs[0], "N0000")
+        self.assertEqual(graph.critical_path.refs[-1], "N1199")
+
+    def test_all_failure_behaviors_are_reported_without_llm_reasoning(self) -> None:
+        behaviors = (
+            DependencyFailureBehavior.PAUSE,
+            DependencyFailureBehavior.FAIL,
+            DependencyFailureBehavior.REPLAN,
+            DependencyFailureBehavior.ESCALATE,
+        )
+        for index, behavior in enumerate(behaviors):
+            blocker = f"F{index}"
+            blocked = f"T{index}"
+            self.items[blocker] = item(blocker)
+            self.items[blocked] = item(blocked)
+            self.add(blocker, blocked, failure_behavior=behavior)
+            self.items[blocker].terminal_outcome = "failed"
+
+            readiness = self.service.readiness(blocked, scope=self.scope)
+
+            self.assertEqual(readiness.status, WorkReadinessStatus.BLOCKED)
+            self.assertEqual(readiness.failure_impacts[0].behavior, behavior)
+            self.assertIn(
+                f"downstream behavior is {behavior.value}",
+                readiness.failure_impacts[0].reason,
+            )
 
     def test_edge_mutation_is_persistent_and_audited(self) -> None:
         edge = self.add("A", "B")
