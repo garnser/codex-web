@@ -20,6 +20,13 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("configuration_record_ids", javascript)
         self.assertIn("secret_bindings", javascript)
 
+        self.assertIn('data-extension-action="', javascript)
+        self.assertIn('["installed", "configured", "disabled"]', javascript)
+        self.assertIn('["disable", "quarantine", "clear-quarantine"]', javascript)
+        self.assertIn("window.confirm", javascript)
+        self.assertIn("window.prompt", javascript)
+        self.assertIn('/api/extensions/${encodeURIComponent(installationId)}/${action}', javascript)
+
 
 if __name__ == "__main__":
     unittest.main()
