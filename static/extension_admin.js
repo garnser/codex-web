@@ -34,7 +34,65 @@
     )).join("")}</div>`;
   }
 
-  function renderExtensionAdmin(installations, packages) {
+  function resourceScopeText(resourceIds, resources) {
+    if (!resourceIds?.length) return "workspace-wide (no resource restriction)";
+    const byId = new Map(resources.map((item) => [item.id, item]));
+    return resourceIds.map((id) => {
+      const resource = byId.get(id);
+      return resource ? `${resource.name} (${id})` : id;
+    }).join(", ");
+  }
+
+  function capabilityAdministration(item, grantsState, resources, resourceError) {
+    const capabilities = item.manifest?.capabilities || {};
+    const requested = capabilities.requested || [];
+    if (!requested.length) return '<small>Authorization: no capabilities requested.</small>';
+    if (grantsState.error) {
+      return `<small>Authorization unavailable: ${escapeHtml(grantsState.error)}</small>`;
+    }
+
+    const mandatory = new Set(capabilities.mandatory || []);
+    const grants = grantsState.items || [];
+    const active = new Map(
+      grants.filter((grant) => grant.revoked_at == null).map((grant) => [grant.capability, grant]),
+    );
+    const id = escapeHtml(item.id);
+    const removed = item.lifecycle === "removed";
+    return `<div class="extension-capabilities">
+      <small>Authorization (separate from installation/enablement):</small>
+      ${requested.map((capability) => {
+        const grant = active.get(capability);
+        const capabilityText = escapeHtml(capability);
+        const requiredText = mandatory.has(capability) ? " · mandatory" : "";
+        if (grant) {
+          const warning = mandatory.has(capability) && item.lifecycle === "enabled"
+            ? " Revoking this mandatory grant will quarantine the enabled extension."
+            : "";
+          return `<div class="comm-entry" data-extension-capability-row data-extension-id="${id}" data-capability="${capabilityText}">
+            <strong>${capabilityText}</strong>
+            <small>Granted${requiredText} · Scope: ${escapeHtml(resourceScopeText(grant.resource_ids, resources))}</small>
+            ${removed ? "" : `<button type="button" class="ghost-button" data-extension-grant-action="revoke" data-grant-id="${escapeHtml(grant.id)}" data-mandatory="${mandatory.has(capability) ? "true" : "false"}" data-extension-lifecycle="${escapeHtml(item.lifecycle)}" title="${escapeHtml(warning.trim())}">Revoke</button>`}
+          </div>`;
+        }
+
+        const resourceOptions = resources.map((resource) => (
+          `<option value="${escapeHtml(resource.id)}">${escapeHtml(resource.name)} · ${escapeHtml(resource.resource_type)} · ${escapeHtml(resource.id)}</option>`
+        )).join("");
+        const grantDisabled = removed || Boolean(resourceError);
+        return `<div class="comm-entry" data-extension-capability-row data-extension-id="${id}" data-capability="${capabilityText}">
+          <strong>${capabilityText}</strong>
+          <small>Not granted${requiredText}. No selected resources means an explicit workspace-wide grant.</small>
+          ${resourceError ? `<small>Resource catalog unavailable: ${escapeHtml(resourceError)}</small>` : ""}
+          <select data-extension-resource-scope multiple size="${Math.min(Math.max(resources.length, 2), 5)}" ${grantDisabled ? "disabled" : ""} aria-label="Resources for ${capabilityText}">
+            ${resourceOptions}
+          </select>
+          <button type="button" class="ghost-button" data-extension-grant-action="grant" ${grantDisabled ? "disabled" : ""}>Grant capability</button>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+
+  function renderExtensionAdmin(installations, packages, grantsByInstallation, resources, resourceError) {
     const list = document.getElementById("extension-admin-list");
     const status = document.getElementById("extension-admin-status");
     if (!list || !status) return;
@@ -51,6 +109,7 @@
       const verification = item.package_verification || {};
       const capabilities = manifest.capabilities || {};
       const requested = capabilities.requested || [];
+      const grantsState = grantsByInstallation.get(item.id) || { items: [], error: null };
       return `<div class="comm-entry">
         <strong>${escapeHtml(manifest.id || item.id)} @ ${escapeHtml(manifest.version || "unknown")}</strong>
         <small>Lifecycle: ${escapeHtml(item.lifecycle)} · Health: ${escapeHtml(item.health_status)} · Deployment: ${escapeHtml(item.deployment_mode)}</small>
@@ -58,9 +117,24 @@
         <small>Requested capabilities: ${requested.length ? requested.map(escapeHtml).join(", ") : "none"} · Config refs: ${item.configuration_record_ids?.length || 0} · Secret bindings: ${Object.keys(item.secret_bindings || {}).length}</small>
         ${item.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(item.quarantine_reason)}</small>` : ""}
         ${item.disabled_reason ? `<small>Disabled reason: ${escapeHtml(item.disabled_reason)}</small>` : ""}
+        ${capabilityAdministration(item, grantsState, resources, resourceError)}
         ${extensionLifecycleActions(item)}
       </div>`;
     }).join("");
+  }
+
+  async function loadGrantState(installations) {
+    const entries = await Promise.all(installations.map(async (item) => {
+      try {
+        const response = await apiRequest(
+          `/api/extensions/${encodeURIComponent(item.id)}/grants`,
+        );
+        return [item.id, { items: response.items || [], error: null }];
+      } catch (error) {
+        return [item.id, { items: [], error: error.message }];
+      }
+    }));
+    return new Map(entries);
   }
 
   async function refreshExtensionAdmin() {
@@ -71,13 +145,26 @@
     }
     try {
       const extensions = await apiRequest("/api/extensions");
+      const installations = extensions.items || [];
       let packages = { items: [], errors: [] };
-      try {
-        packages = await apiRequest("/api/extensions/packages");
-      } catch (error) {
-        packages = { items: [], errors: [{ detail: error.message }] };
-      }
-      renderExtensionAdmin(extensions.items || [], packages);
+      let resources = [];
+      let resourceError = null;
+      const [grantsByInstallation] = await Promise.all([
+        loadGrantState(installations),
+        apiRequest("/api/extensions/packages")
+          .then((value) => { packages = value; })
+          .catch((error) => { packages = { items: [], errors: [{ detail: error.message }] }; }),
+        apiRequest("/api/resources")
+          .then((value) => { resources = value.items || []; })
+          .catch((error) => { resourceError = error.message; }),
+      ]);
+      renderExtensionAdmin(
+        installations,
+        packages,
+        grantsByInstallation,
+        resources,
+        resourceError,
+      );
     } catch (error) {
       if (status) status.textContent = `Unable to load extensions: ${error.message}`;
       const list = document.getElementById("extension-admin-list");
@@ -119,6 +206,68 @@
     }
   }
 
+  async function mutateCapabilityGrant(button) {
+    const row = button.closest("[data-extension-capability-row]");
+    const installationId = row?.dataset.extensionId;
+    const capability = row?.dataset.capability;
+    const action = button.dataset.extensionGrantAction;
+    const status = document.getElementById("extension-admin-status");
+    if (!row || !installationId || !capability || !action) return;
+
+    if (action === "grant") {
+      const select = row.querySelector("[data-extension-resource-scope]");
+      const resourceIds = Array.from(select?.selectedOptions || []).map((option) => option.value);
+      const scope = resourceIds.length
+        ? `${resourceIds.length} selected canonical resource(s)`
+        : "workspace-wide with no resource restriction";
+      if (!window.confirm(`Grant ${capability} to this extension with ${scope}? Installation and enablement remain separate operations.`)) return;
+      button.disabled = true;
+      try {
+        await apiRequest(
+          `/api/extensions/${encodeURIComponent(installationId)}/grants`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              capabilities: [capability],
+              resource_ids: resourceIds,
+            }),
+          },
+        );
+        await refreshExtensionAdmin();
+      } catch (error) {
+        button.disabled = false;
+        if (status) status.textContent = `Capability grant failed: ${error.message}`;
+      }
+      return;
+    }
+
+    if (action === "revoke") {
+      const grantId = button.dataset.grantId;
+      if (!grantId) return;
+      const reason = window.prompt(`Reason for revoking ${capability}:`, "");
+      if (reason === null) return;
+      const quarantineWarning = button.dataset.mandatory === "true"
+        && button.dataset.extensionLifecycle === "enabled"
+        ? " This is a mandatory capability; the server will quarantine the enabled extension."
+        : "";
+      if (!window.confirm(`Revoke ${capability}?${quarantineWarning}`)) return;
+      button.disabled = true;
+      try {
+        await apiRequest(
+          `/api/extensions/${encodeURIComponent(installationId)}/grants/${encodeURIComponent(grantId)}/revoke`,
+          {
+            method: "POST",
+            body: JSON.stringify({ reason: reason.trim() || "operator revoked" }),
+          },
+        );
+        await refreshExtensionAdmin();
+      } catch (error) {
+        button.disabled = false;
+        if (status) status.textContent = `Capability revocation failed: ${error.message}`;
+      }
+    }
+  }
+
   function bindExtensionAdmin() {
     const panel = document.getElementById("developer-panel");
     const refresh = document.getElementById("refresh-extensions");
@@ -131,9 +280,14 @@
       if (panel.open) refreshExtensionAdmin().catch(console.error);
     });
     list?.addEventListener("click", (event) => {
-      const button = event.target.closest?.("[data-extension-action]");
-      if (!button) return;
-      mutateExtensionLifecycle(button).catch(console.error);
+      const target = event.target;
+      const lifecycleButton = target.closest?.("[data-extension-action]");
+      if (lifecycleButton) {
+        mutateExtensionLifecycle(lifecycleButton).catch(console.error);
+        return;
+      }
+      const grantButton = target.closest?.("[data-extension-grant-action]");
+      if (grantButton) mutateCapabilityGrant(grantButton).catch(console.error);
     });
 
     if (panel?.open) refreshExtensionAdmin().catch(console.error);
