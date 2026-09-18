@@ -212,6 +212,53 @@
                       <option value="deleted">Deleted</option>
                     </select>
                   </div>
+                  <details id="resource-create-panel">
+                    <summary>Create resource</summary>
+                    <div class="route-test">
+                      <input id="resource-create-name" placeholder="Resource name" />
+                      <select id="resource-create-type">
+                        <option value="repository">Repository</option>
+                        <option value="service">Service</option>
+                        <option value="environment">Environment</option>
+                        <option value="deployment_target">Deployment target</option>
+                        <option value="cloud_account">Cloud account</option>
+                        <option value="database">Database</option>
+                        <option value="other">Other</option>
+                      </select>
+                      <textarea id="resource-create-description" rows="2" placeholder="Description"></textarea>
+                      <select id="resource-create-owner"><option value="">Unassigned owner</option></select>
+                      <select id="resource-create-sensitivity">
+                        <option value="public">Public</option>
+                        <option value="internal" selected>Internal</option>
+                        <option value="confidential">Confidential</option>
+                        <option value="restricted">Restricted</option>
+                      </select>
+                      <select id="resource-create-risk">
+                        <option value="low">Low</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                      <button id="create-resource" type="button" class="ghost-button">Create resource</button>
+                    </div>
+                  </details>
+                  <details id="resource-relationship-panel">
+                    <summary>Create relationship</summary>
+                    <div class="route-test">
+                      <select id="resource-relationship-from"><option value="">Source resource</option></select>
+                      <select id="resource-relationship-type">
+                        <option value="contains">Contains</option>
+                        <option value="depends_on">Depends on</option>
+                        <option value="implements">Implements</option>
+                        <option value="deploys_to">Deploys to</option>
+                        <option value="hosted_in">Hosted in</option>
+                        <option value="connects_to">Connects to</option>
+                      </select>
+                      <select id="resource-relationship-to"><option value="">Target resource</option></select>
+                      <button id="create-resource-relationship" type="button" class="ghost-button">Create relationship</button>
+                    </div>
+                  </details>
+                  <div id="resource-management-status" class="form-result" aria-live="polite"></div>
                   <div id="resource-catalog-status" class="form-result" aria-live="polite">Open to load canonical resources.</div>
                   <div id="resource-catalog-list" class="comm-log"></div>
                 </div>
@@ -333,6 +380,7 @@
     <script src="static/extension_upgrade_admin.js" type="module"></script>
     <script src="static/extension_observability_admin.js" type="module"></script>
     <script src="static/resource_catalog_admin.js" type="module"></script>
+    <script src="static/resource_catalog_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>

@@ -26,6 +26,8 @@ class ResourceCatalogAdminUiTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("relationship.relationship_type", javascript)
+        self.assertIn("data-resource-mutation-host", javascript)
+        self.assertIn("codex:resource-catalog-rendered", javascript)
 
 
 if __name__ == "__main__":
