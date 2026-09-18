@@ -36,6 +36,7 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn("input_price_per_million_usd", javascript)
         self.assertIn("output_price_per_million_usd", javascript)
         self.assertIn("no model/provider invocation occurred", javascript)
+        self.assertIn("codex:model-gateway-rendered", javascript)
         self.assertNotIn("/invoke", javascript)
         self.assertNotIn("OPENAI_API_KEY", javascript)
 
