@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.execution_workspace_backend import ExecutionWorkspaceBackendError
 from codex_web.execution_workspaces import (
     ExecutionWorkspaceAcquire,
@@ -43,6 +44,18 @@ def _error(exc: Exception) -> HTTPException:
 def build_execution_workspaces_router(service: ExecutionWorkspaceService) -> APIRouter:
     router = APIRouter(tags=["execution-workspaces"])
 
+    def require_workspace_admin(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if "execution-workspace:admin" not in actor.service_scopes:
+                raise AuthorizationError(
+                    "execution-workspace:admin service scope required"
+                )
+            return actor
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
+
     @router.get("/api/execution-workspaces")
     async def list_workspaces(request: Request) -> dict[str, Any]:
         actor = request_actor(request)
@@ -77,9 +90,8 @@ def build_execution_workspaces_router(service: ExecutionWorkspaceService) -> API
 
     @router.post("/api/execution-workspaces/recover")
     async def recover_workspaces(request: Request) -> dict[str, Any]:
-        actor = request_actor(request)
         try:
-            IdentityService.require_admin(actor)
+            actor = require_workspace_admin(request)
             items = service.recover_expired(scope=actor.tenant)
             return {"items": [item.model_dump(mode="json") for item in items]}
         except Exception as exc:
