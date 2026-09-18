@@ -260,17 +260,6 @@ app.include_router(build_resources_router(resource_catalog_service, project_serv
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
 
-extension_state_store = ExtensionStateStore(state_store)
-extension_service = ExtensionService(
-    extension_state_store,
-    secrets=secret_broker,
-    configuration=configuration_service,
-    resources=resource_catalog_service,
-)
-app.include_router(build_extensions_router(extension_service))
-app.state.extension_state_store = extension_state_store
-app.state.extension_service = extension_service
-
 action_provider_state_store = ActionProviderStateStore(state_store)
 action_provider_registry = ActionProviderRegistry(action_provider_state_store)
 reference_action_provider = ReferenceActionProvider()
@@ -349,6 +338,18 @@ data_governance_service.register_action_handler(
 app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+
+extension_state_store = ExtensionStateStore(state_store)
+extension_service = ExtensionService(
+    extension_state_store,
+    secrets=secret_broker,
+    configuration=configuration_service,
+    resources=resource_catalog_service,
+    artifact_evidence=artifact_evidence_service,
+)
+app.include_router(build_extensions_router(extension_service))
+app.state.extension_state_store = extension_state_store
+app.state.extension_service = extension_service
 
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
