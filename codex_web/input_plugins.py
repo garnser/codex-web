@@ -319,6 +319,12 @@ def _canonical_hash(value: BaseModel | Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _warning_marker(value: str) -> str:
+    return "plugin_warning_sha256:" + hashlib.sha256(
+        value.encode("utf-8", errors="replace")
+    ).hexdigest()
+
+
 def _serialized_size(value: BaseModel | Mapping[str, Any]) -> int:
     if isinstance(value, BaseModel):
         payload: Any = value.model_dump(mode="json")
@@ -504,7 +510,9 @@ class InputPluginPipeline:
 
                 current = candidate
                 completed = time.time()
-                warnings = tuple(patch.warnings) + tuple(
+                warnings = tuple(
+                    _warning_marker(value) for value in patch.warnings
+                ) + tuple(
                     f"gated field rejected by core validator: {field}"
                     for field in sorted(rejected_gated)
                 )
