@@ -213,7 +213,7 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
             env = backend.minimal_environment()
 
         self.assertEqual(env["LANG"], "C.UTF-8")
-        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["PATH"], "/usr/local/bin:/usr/bin:/bin")
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
 
