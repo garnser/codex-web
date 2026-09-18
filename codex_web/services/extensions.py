@@ -1195,8 +1195,15 @@ class ExtensionService:
                 for value in self._active_grants(state, item)
                 if value.capability == capability
                 and (
-                    not value.resource_ids
-                    or set(resource_ids).issubset(set(value.resource_ids))
+                    (
+                        not value.resource_ids
+                        and not resource_ids
+                    )
+                    or (
+                        bool(resource_ids)
+                        and bool(value.resource_ids)
+                        and set(resource_ids).issubset(set(value.resource_ids))
+                    )
                 )
             ),
             None,
