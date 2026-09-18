@@ -21,6 +21,7 @@ The full reference is intentionally separate from codex-web's canonical `WorkIte
 
 The API-backed adapter declares:
 
+- authoritative issue creation;
 - discovery;
 - read;
 - event normalization;
@@ -39,6 +40,14 @@ Canonical work-item mutation no longer needs to call a GitLab label-sync method.
 Normal owner/stage synchronization is best-effort so temporary provider credential or availability problems do not prevent canonical progress. Explicit provider operations such as adding a comment are strict: the source must resolve and declare the requested capability.
 
 The runtime also contains `ReferenceTaskSource`, a transport-free in-memory adapter implementing the complete `TaskSource` surface. Shared conformance and write-back tests run against it so provider portability is executable architecture rather than a GitLab-shaped test double.
+
+## Authoritative issue creation
+
+When the canonical project binding advertises GitLab as its authoritative TaskSource, the adapter may create a new issue through the additive CREATE capability. The binding's provider-native `scope` is interpreted as the writable GitLab project path for creation. A group-only or otherwise non-writable scope is not guessed into a project; GitLab/provider failure remains visible and no local Work Item is created.
+
+The create request stays provider-neutral. GitLab maps title and optional body to issue title/description, carries labels as issue labels, and maps the first requested owner to the existing `owner::<agent>` label convention. The returned GitLab issue is normalized back into a `TaskSourceSnapshot`; its full `group/project#iid` reference becomes the authoritative source identity that canonical projection persists.
+
+The transport operation is implemented by `GitLabClient.create_project_issue(...)`, but Goal/core orchestration must not call that transport directly. External-task creation initiated by Goal decomposition or another product flow must first cross the canonical ActionIntent/ActionProvider side-effect boundary and then use the internal provider-neutral WorkItem creation seam.
 
 ## Discovery and read
 
@@ -92,6 +101,6 @@ Non-issue GitLab events remain outside the issue-task adapter boundary until the
 
 ## Conformance
 
-Representative discovery, read, event, projection, and mutation behavior must pass the shared `TaskSourceConformanceSuite` and provider-neutral runtime tests. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate; `ReferenceTaskSource` separately proves that the runtime is not dependent on GitLab semantics.
+Representative create, discovery, read, event, projection, and mutation behavior must pass the shared `TaskSourceConformanceSuite` and provider-neutral runtime tests. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate; `ReferenceTaskSource` separately proves that the runtime is not dependent on GitLab semantics.
 
 Runtime migration must preserve stale-event handling, accepted-handoff protection, canonical transition authority, and existing GitLab-backed work references while callers are switched from special-case GitLab helpers to this adapter.

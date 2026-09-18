@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import uuid
 from typing import Any
 
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
@@ -9,6 +10,7 @@ from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
+    TaskSourceCreateRequest,
     TaskSourceEvent,
     TaskSourceSnapshot,
 )
@@ -47,6 +49,33 @@ class ReferenceTaskSource:
             raise ValueError("Task-source identity does not belong to reference adapter")
         if identity.source_instance != self.source_instance:
             raise ValueError("Task-source identity belongs to another reference instance")
+
+    async def create(
+        self,
+        request: TaskSourceCreateRequest,
+        *,
+        scope: str,
+    ) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.CREATE)
+        if not str(scope or "").strip():
+            raise ValueError("task-source create scope must not be empty")
+        external_id = f"TASK-{uuid.uuid4().hex[:12]}"
+        snapshot = TaskSourceSnapshot(
+            identity=TaskSourceIdentity(
+                source_type=self.source_type,
+                source_instance=self.source_instance,
+                external_id=external_id,
+                revision="1",
+            ),
+            title=request.title,
+            source_state="open",
+            owners=request.owners,
+            labels=request.labels,
+        )
+        self._snapshots[external_id] = snapshot
+        if request.body:
+            self.comments.setdefault(external_id, []).append(request.body)
+        return snapshot
 
     async def discover(self, *, scope: str) -> list[TaskSourceSnapshot]:
         self.capabilities.require(TaskSourceCapability.DISCOVERY)

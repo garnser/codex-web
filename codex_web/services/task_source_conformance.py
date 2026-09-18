@@ -9,6 +9,8 @@ from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
+    TaskSourceCapability,
+    TaskSourceCreateCapable,
     TaskSourceEvent,
     TaskSourceSnapshot,
 )
@@ -51,6 +53,14 @@ class TaskSourceConformanceSuite:
             raise TaskSourceConformanceError(
                 "invalid_capabilities",
                 "Task-source adapter must declare TaskSourceCapabilities.",
+            )
+        if (
+            source.capabilities.supports(TaskSourceCapability.CREATE)
+            and not isinstance(source, TaskSourceCreateCapable)
+        ):
+            raise TaskSourceConformanceError(
+                "create_protocol_mismatch",
+                "Task-source adapter advertises CREATE but does not implement create().",
             )
         return source
 

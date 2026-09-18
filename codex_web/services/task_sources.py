@@ -11,6 +11,7 @@ from codex_web.models import TaskSourceIdentity, WorkItemStage
 class TaskSourceCapability(StrEnum):
     """Capabilities an authoritative task-source adapter may expose."""
 
+    CREATE = "create"
     DISCOVERY = "discovery"
     READ = "read"
     EVENTS = "events"
@@ -50,6 +51,40 @@ class TaskSourceSnapshot:
     owners: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
     artifact_links: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSourceCreateRequest:
+    """Provider-neutral request to create one authoritative task."""
+
+    title: str
+    body: str | None = None
+    owners: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        title = str(self.title or "").strip()
+        if not title:
+            raise ValueError("task-source create title must not be empty")
+        body = str(self.body).strip() if self.body is not None else None
+        owners = tuple(
+            dict.fromkeys(
+                value
+                for value in (str(item or "").strip() for item in self.owners)
+                if value
+            )
+        )
+        labels = tuple(
+            dict.fromkeys(
+                value
+                for value in (str(item or "").strip() for item in self.labels)
+                if value
+            )
+        )
+        object.__setattr__(self, "title", title)
+        object.__setattr__(self, "body", body or None)
+        object.__setattr__(self, "owners", owners)
+        object.__setattr__(self, "labels", labels)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,4 +172,18 @@ class TaskSource(Protocol):
 
     async def attach_artifact(self, identity: TaskSourceIdentity, url: str) -> None:
         """Attach/link an artifact when the source declares artifact support."""
+        ...
+
+
+@runtime_checkable
+class TaskSourceCreateCapable(Protocol):
+    """Optional additive creation contract gated by TaskSourceCapability.CREATE."""
+
+    async def create(
+        self,
+        request: TaskSourceCreateRequest,
+        *,
+        scope: str,
+    ) -> TaskSourceSnapshot:
+        """Create one authoritative task and return normalized provider identity."""
         ...

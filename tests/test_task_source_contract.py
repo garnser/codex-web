@@ -12,6 +12,7 @@ from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
+    TaskSourceCreateRequest,
     TaskSourceEvent,
     TaskSourceIdentity,
     TaskSourceSnapshot,
@@ -120,6 +121,35 @@ class TaskSourceContractTests(unittest.IsolatedAsyncioTestCase):
             TaskSourceIdentity(source_type="jira", source_instance=" ", external_id="1")
         with self.assertRaisesRegex(ValueError, "external_id"):
             TaskSourceIdentity(source_type="jira", source_instance="prod", external_id=" ")
+
+    def test_create_capability_requires_additive_create_protocol(self) -> None:
+        class InvalidCreateSource(_ReferenceTaskSource):
+            capabilities = TaskSourceCapabilities(
+                frozenset(
+                    {
+                        TaskSourceCapability.CREATE,
+                        TaskSourceCapability.DISCOVERY,
+                        TaskSourceCapability.READ,
+                        TaskSourceCapability.EVENTS,
+                    }
+                )
+            )
+
+        with self.assertRaises(TaskSourceConformanceError) as raised:
+            self.conformance.validate_adapter(InvalidCreateSource())
+        self.assertEqual(raised.exception.code, "create_protocol_mismatch")
+
+    def test_create_request_is_normalized_provider_neutrally(self) -> None:
+        request = TaskSourceCreateRequest(
+            title="  Proposed work  ",
+            body="  bounded body  ",
+            owners=(" quinn ", "quinn"),
+            labels=(" priority::P1 ", "priority::P1"),
+        )
+        self.assertEqual(request.title, "Proposed work")
+        self.assertEqual(request.body, "bounded body")
+        self.assertEqual(request.owners, ("quinn",))
+        self.assertEqual(request.labels, ("priority::P1",))
 
     def test_capabilities_are_explicit_and_fail_closed(self) -> None:
         source = _ReferenceTaskSource()

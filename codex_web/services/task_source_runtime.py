@@ -6,7 +6,7 @@ from typing import Any
 
 from codex_web.compatibility import ContractCompatibilityError, TASK_SOURCE_CONTRACT
 from codex_web.identity import TenantScope
-from codex_web.models import WorkItemState
+from codex_web.models import TaskSourceConfiguration, WorkItemState
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
@@ -15,6 +15,10 @@ from codex_web.services.task_sources import (
 
 
 TaskSourceFactory = Callable[[WorkItemState], TaskSource | None]
+TaskSourceProjectFactory = Callable[
+    [TaskSourceConfiguration, str, TenantScope],
+    TaskSource | None,
+]
 
 
 class TaskSourceResolutionError(LookupError):
@@ -30,6 +34,11 @@ class TaskSourceRegistry:
             tuple[str, str, str],
             TaskSourceFactory,
         ] = {}
+        self._project_factories: dict[str, TaskSourceProjectFactory] = {}
+        self._tenant_project_factories: dict[
+            tuple[str, str, str],
+            TaskSourceProjectFactory,
+        ] = {}
 
     @staticmethod
     def _source_key(source_type: str) -> str:
@@ -40,6 +49,14 @@ class TaskSourceRegistry:
 
     def register(self, source_type: str, factory: TaskSourceFactory) -> None:
         self._factories[self._source_key(source_type)] = factory
+
+    def register_project(
+        self,
+        source_type: str,
+        factory: TaskSourceProjectFactory,
+    ) -> None:
+        """Register resolution for project bindings before a Work Item exists."""
+        self._project_factories[self._source_key(source_type)] = factory
 
     def register_tenant(
         self,
@@ -54,18 +71,92 @@ class TaskSourceRegistry:
         )
         self._tenant_factories[key] = factory
 
+    def register_project_tenant(
+        self,
+        scope: TenantScope,
+        source_type: str,
+        factory: TaskSourceProjectFactory,
+    ) -> None:
+        self._tenant_project_factories[
+            (
+                scope.organization_id,
+                scope.workspace_id,
+                self._source_key(source_type),
+            )
+        ] = factory
+
     def unregister_tenant(
         self,
         scope: TenantScope,
         source_type: str,
     ) -> None:
-        self._tenant_factories.pop(
-            (
-                scope.organization_id,
-                scope.workspace_id,
-                self._source_key(source_type),
-            ),
-            None,
+        key = (
+            scope.organization_id,
+            scope.workspace_id,
+            self._source_key(source_type),
+        )
+        self._tenant_factories.pop(key, None)
+        self._tenant_project_factories.pop(key, None)
+
+    @staticmethod
+    def _validate_resolved(
+        source: TaskSource,
+        *,
+        source_type: str,
+        source_instance: str,
+    ) -> TaskSource:
+        if source.source_type.casefold() != source_type.casefold():
+            raise TaskSourceResolutionError(
+                "Resolved task-source type does not match configured identity"
+            )
+        if source.source_instance.rstrip("/") != source_instance.rstrip("/"):
+            raise TaskSourceResolutionError(
+                "Resolved task-source instance does not match configured identity"
+            )
+        version = str(
+            getattr(source, "contract_version", TASK_SOURCE_CONTRACT.current)
+            or TASK_SOURCE_CONTRACT.current
+        ).strip()
+        try:
+            TASK_SOURCE_CONTRACT.require(version)
+        except (ContractCompatibilityError, ValueError) as exc:
+            raise TaskSourceResolutionError(
+                f"Task-source adapter {source_type!r} has incompatible contract version {version!r}"
+            ) from exc
+        return source
+
+    def resolve_project(
+        self,
+        configuration: TaskSourceConfiguration,
+        *,
+        project_id: str,
+        scope: TenantScope,
+        required: bool = False,
+    ) -> TaskSource | None:
+        """Resolve the configured authoritative source before an item exists."""
+        source_key = self._source_key(configuration.source_type)
+        factory = self._tenant_project_factories.get(
+            (scope.organization_id, scope.workspace_id, source_key)
+        )
+        if factory is None:
+            factory = self._project_factories.get(source_key)
+        if factory is None:
+            if required:
+                raise TaskSourceResolutionError(
+                    f"No project task-source adapter is registered for {configuration.source_type!r}"
+                )
+            return None
+        source = factory(configuration, project_id, scope)
+        if source is None:
+            if required:
+                raise TaskSourceResolutionError(
+                    f"Task-source adapter {configuration.source_type!r} is not currently available"
+                )
+            return None
+        return self._validate_resolved(
+            source,
+            source_type=configuration.source_type,
+            source_instance=configuration.source_instance,
         )
 
     def resolve(self, state: WorkItemState, *, required: bool = False) -> TaskSource | None:
@@ -97,25 +188,11 @@ class TaskSourceRegistry:
                     f"Task-source adapter {identity.source_type!r} is not currently available"
                 )
             return None
-        if source.source_type.casefold() != identity.source_type.casefold():
-            raise TaskSourceResolutionError("Resolved task-source type does not match persisted identity")
-        if source.source_instance.rstrip("/") != identity.source_instance.rstrip("/"):
-            raise TaskSourceResolutionError("Resolved task-source instance does not match persisted identity")
-        # Adapters created before this contract was introduced are treated as
-        # task-source 1.0 during the migration window. Once every in-tree and
-        # supported extension adapter declares its version, this fallback can
-        # be deprecated through the normal compatibility policy.
-        version = str(
-            getattr(source, "contract_version", TASK_SOURCE_CONTRACT.current)
-            or TASK_SOURCE_CONTRACT.current
-        ).strip()
-        try:
-            TASK_SOURCE_CONTRACT.require(version)
-        except (ContractCompatibilityError, ValueError) as exc:
-            raise TaskSourceResolutionError(
-                f"Task-source adapter {identity.source_type!r} has incompatible contract version {version!r}"
-            ) from exc
-        return source
+        return self._validate_resolved(
+            source,
+            source_type=identity.source_type,
+            source_instance=identity.source_instance,
+        )
 
 
 class TaskSourceWritebackService:

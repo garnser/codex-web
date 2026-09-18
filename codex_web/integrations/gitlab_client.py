@@ -121,6 +121,23 @@ class GitLabClient:
         )
         return payload if isinstance(payload, dict) else {}
 
+    async def create_project_issue(
+        self,
+        api_base: str,
+        project: str,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self.request_json(
+            "POST",
+            api_base,
+            f"projects/{quote(project, safe='')}/issues",
+            token=token,
+            json_body=payload,
+        )
+        return response if isinstance(response, dict) else {}
+
     async def update_project_issue(
         self,
         api_base: str,

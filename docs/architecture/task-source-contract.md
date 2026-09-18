@@ -45,6 +45,7 @@ Webhook/event provenance moves behind provider adapters as their event paths are
 
 Adapters declare support explicitly using `TaskSourceCapability`:
 
+- `create` — optional additive capability for creating one new authoritative task;
 - `discovery`;
 - `read`;
 - `events`;
@@ -54,6 +55,18 @@ Adapters declare support explicitly using `TaskSourceCapability`:
 - `artifact_links`.
 
 Unsupported behavior must fail deterministically with `UnsupportedTaskSourceCapability`. Core code must not assume that every task provider has GitLab-equivalent labels, assignees, comments, artifact links, or write semantics.
+
+## Authoritative task creation
+
+Task creation is an additive capability rather than a mandatory method on the TaskSource 1.0 base protocol. Adapters that advertise `TaskSourceCapability.CREATE` must also implement `TaskSourceCreateCapable.create(...)`; the shared conformance suite fails closed when capability declaration and implementation disagree. Existing 1.0 adapters that do not advertise CREATE remain protocol-compatible.
+
+`TaskSourceCreateRequest` is deliberately provider-neutral and bounded to creation facts needed across providers: title, optional body, owners, and labels/tags. The adapter chooses provider-native transport and returns a normalized `TaskSourceSnapshot` containing the authoritative external identity. Core code must never invent an external/provider identifier.
+
+Creation is resolved from the canonical project's singular `TaskSourceConfiguration` before any Work Item exists. `TaskSourceRegistry.resolve_project(...)` validates tenant-selected binding, source type, source instance, and contract compatibility. The configured `scope` is the adapter-owned writable container; providers must fail visibly if the configured scope cannot accept creation.
+
+`WorkItemService.create_authoritative(...)` is an internal execution seam: it resolves the configured source, requires CREATE, performs the provider creation, and only then projects the returned snapshot into canonical Work Item state. Missing authority configuration, unsupported creation, source-resolution failure, or provider failure therefore cannot create a local shadow Work Item.
+
+Creating an external task is a privileged side effect. Product flows such as Goal decomposition must not expose `create_authoritative(...)` as a direct user mutation or call provider transports themselves. Once the M3 action primitives exist, the initiating flow must first persist the authorized operation through the canonical ActionIntent/ActionProvider boundary, then use this seam as the bounded provider execution handler. Provider identity/receipt/evidence remains attributable to that action.
 
 ## Normalized facts
 
@@ -140,7 +153,8 @@ The provider-neutral migration is intentionally incremental:
 5. require deterministic provider-to-canonical projection through the shared adapter contract;
 6. implement concrete provider adapters and move discovery/read/event normalization and supported write-back behind declared capabilities;
 7. run the shared conformance suite against every concrete provider and the provider-neutral reference adapter;
-8. expose provenance, synchronization/conflict diagnostics, and permitted reconciliation actions through canonical APIs/UI.
+8. add provider-neutral authoritative creation only as an explicit additive capability, resolving the configured project source before a Work Item exists;
+9. expose provenance, synchronization/conflict diagnostics, and permitted reconciliation actions through canonical APIs/UI.
 
 Each step must preserve the existing canonical work-item, Executive, queue, sandbox, approval, and execution paths.
 
