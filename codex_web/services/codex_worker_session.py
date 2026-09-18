@@ -352,6 +352,13 @@ class AssignmentBoundCodexSession:
             raise AssignmentBoundCodexSessionStaleError(
                 f"assignment-bound Codex assignment is {assignment.status.value}"
             )
+        if (
+            assignment.deadline_at is not None
+            and assignment.deadline_at <= self._clock()
+        ):
+            raise AssignmentBoundCodexSessionStaleError(
+                "assignment-bound Codex assignment deadline expired"
+            )
         delegation_service = self.local_worker.codex_auth_delegation
         if delegation_service is None:
             raise AssignmentBoundCodexSessionStaleError(
