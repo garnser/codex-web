@@ -163,8 +163,29 @@ registrations:
 
 Operators must pin the version actually present in the local `SKILL.md`; an unavailable/mismatched version fails closed. Reference files remain progressive-disclosure material for a future explicit retrieval adapter and are not auto-loaded by this transport.
 
-## Other transports
+## External command / HTTP / MCP transport contracts
 
-Builtin and SKILL.md catalog support establish the registry/runtime contract. Future command, HTTP, and MCP adapters must project only the minimum required input and retain the same timeout/output-size/protected-field constraints. They must not receive secret values or gain authority through transport choice.
+The core now exposes bounded adapters for `command`, `http`, and `mcp` transports, but deliberately does **not** implement direct subprocess or network execution in the model-gateway process.
+
+Each adapter receives a code-owned injected invoker and enforces the same contract before/after that invoker:
+
+- no Organization/Workspace/actor identity crosses the transport;
+- no Work/Goal/Decision/execution IDs, authority/policy/approval refs, sandbox, service scopes or secret refs cross the transport;
+- context blocks are filtered by code-owned classification allowlist (default: `public`);
+- context block `source_ref` is removed from the external projection;
+- non-secret scalar settings reuse the canonical Definition Registry secret-key classification;
+- request bytes, response bytes and timeout are bounded;
+- returned plugin identity/version/phase must exactly match the code-owned adapter;
+- the returned patch still passes through central composable/gated/protected classification, so a transport cannot self-authorize a protected mutation.
+
+The external projection contains only model-input material needed for composition: purpose/model class, optionally system prompt/messages, selected context bodies, output guidance, current reasoning/model budget hints and preferred-provider hints. Gated values remain proposals even if an external plugin sees or changes them.
+
+Actual transport mechanics must be composed outside this wrapper through the applicable canonical boundary:
+
+- command execution: isolated execution worker/workspace and sandbox/process limits;
+- HTTP: explicit network-egress/resource policy and credential references resolved outside plugin-visible payloads;
+- MCP: authenticated connector/service identity and the same tenant/resource/credential boundaries.
+
+The injected-invoker design prevents this core slice from creating a new ambient subprocess/network escape hatch merely to support input composition. A later production adapter may bind these contracts to those canonical execution/network/connector primitives without changing the pipeline security model.
 
 Prompt Master remains a reference integration, not a required dependency and not part of the execution kernel.
