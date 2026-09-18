@@ -7,6 +7,7 @@ from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
+from codex_web.api.resources import build_resources_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.slack import build_slack_router
@@ -48,6 +49,7 @@ from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
+from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.secrets import SecretBroker
@@ -69,6 +71,7 @@ from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
+from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.thread_index import install_thread_index_repository
@@ -121,6 +124,11 @@ thread_index_repository = install_thread_index_repository(
     legacy_path=THREAD_INDEX_FILE,
 )
 project_service = ProjectService(project_repository)
+resource_catalog_store = ResourceCatalogStore(state_store)
+resource_catalog_service = ResourceCatalogService(resource_catalog_store)
+app.include_router(build_resources_router(resource_catalog_service, project_service))
+app.state.resource_catalog_store = resource_catalog_store
+app.state.resource_catalog_service = resource_catalog_service
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
