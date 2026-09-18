@@ -162,6 +162,7 @@
     host.innerHTML = rows.map((item) => `<details class="comm-entry">
       <summary><strong>${escapeHtml(item.name)} · ${escapeHtml(item.status)} · ${duration(item.durationSeconds)}</strong></summary>
       <small>Correlation: ${escapeHtml(item.correlationId)} · causation: ${escapeHtml(item.causationId || "none")} · span: ${escapeHtml(item.spanId)} · parent: ${escapeHtml(item.parentSpanId || "none")}</small>
+      <button type="button" class="ghost-button" data-log-correlation="${escapeHtml(item.correlationId)}">View structured logs</button>
       <small>${timeText(item.startedAt)} → ${timeText(item.endedAt)}</small>
       <pre>${escapeHtml(JSON.stringify(item.attributes || {}, null, 2))}</pre>
     </details>`).join("") || '<div class="comm-entry"><strong>No recent traces match the filter.</strong></div>';
