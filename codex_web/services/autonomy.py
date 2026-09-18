@@ -3,12 +3,62 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.identity import AuthenticationActor
+from codex_web.services.action_providers import ActionExecutionService
+
 
 class AutonomyService:
     """Own autonomous work-item/watchdog cycle decisions outside core.py."""
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        action_execution: ActionExecutionService | None = None,
+    ) -> None:
         self.host = host
+        self.action_execution = action_execution
+
+    def _actions(self) -> ActionExecutionService:
+        if self.action_execution is None:
+            raise RuntimeError("action execution service is not configured")
+        return self.action_execution
+
+    async def prepare_external_action(
+        self,
+        binding_id: str,
+        request: ActionRequest,
+        *,
+        actor: AuthenticationActor,
+    ):
+        return await self._actions().prepare(binding_id, request, actor=actor)
+
+    async def execute_external_action(
+        self,
+        binding_id: str,
+        request: ActionRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionResult:
+        return await self._actions().execute(binding_id, request, actor=actor)
+
+    async def verify_external_action(
+        self,
+        binding_id: str,
+        result: ActionResult,
+        *,
+        actor: AuthenticationActor,
+    ):
+        return await self._actions().verify(binding_id, result, actor=actor)
+
+    async def rollback_external_action(
+        self,
+        binding_id: str,
+        result: ActionResult,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionResult:
+        return await self._actions().rollback(binding_id, result, actor=actor)
 
     async def run_owner_work_cycle(self) -> None:
         h = self.host
@@ -317,14 +367,20 @@ class AutonomyService:
             h._save_work_item_states(states)
 
 
-def install_autonomy_service(app: Any, host: Any) -> AutonomyService:
+def install_autonomy_service(
+    app: Any,
+    host: Any,
+    action_execution: ActionExecutionService | None = None,
+) -> AutonomyService:
     """Install extracted autonomy cycle ownership before worker supervision."""
 
     existing = getattr(app.state, "autonomy_service", None)
     if isinstance(existing, AutonomyService) and existing.host is host:
         service = existing
+        if action_execution is not None:
+            service.action_execution = action_execution
     else:
-        service = AutonomyService(host)
+        service = AutonomyService(host, action_execution=action_execution)
         app.state.autonomy_service = service
 
     host._run_owner_work_watchdog_cycle = service.run_owner_work_cycle
@@ -332,4 +388,8 @@ def install_autonomy_service(app: Any, host: Any) -> AutonomyService:
     host._run_work_item_sla_cycle = service.run_work_item_sla_cycle
     host._run_orchestrator_watchdog_cycle = service.run_orchestrator_cycle
     host._run_split_brain_watchdog_cycle = service.run_split_brain_cycle
+    host._prepare_external_action = service.prepare_external_action
+    host._execute_external_action = service.execute_external_action
+    host._verify_external_action = service.verify_external_action
+    host._rollback_external_action = service.rollback_external_action
     return service

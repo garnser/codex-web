@@ -76,6 +76,35 @@ class AutonomyInstallationTests(unittest.TestCase):
         self.assertIs(host._run_work_item_sla_cycle.__self__, first)
         self.assertIs(host._run_orchestrator_watchdog_cycle.__self__, first)
         self.assertIs(host._run_split_brain_watchdog_cycle.__self__, first)
+        self.assertIs(host._prepare_external_action.__self__, first)
+        self.assertIs(host._execute_external_action.__self__, first)
+        self.assertIs(host._verify_external_action.__self__, first)
+        self.assertIs(host._rollback_external_action.__self__, first)
+
+
+class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_external_action_execution_delegates_to_provider_neutral_service(self) -> None:
+        class Actions:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def execute(self, binding_id, request, *, actor):
+                self.calls.append((binding_id, request, actor))
+                return "provider-neutral-result"
+
+        actions = Actions()
+        service = AutonomyService(_Host(), action_execution=actions)
+        request = object()
+        actor = object()
+
+        result = await service.execute_external_action(
+            "binding-1",
+            request,
+            actor=actor,
+        )
+
+        self.assertEqual(result, "provider-neutral-result")
+        self.assertEqual(actions.calls, [("binding-1", request, actor)])
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
