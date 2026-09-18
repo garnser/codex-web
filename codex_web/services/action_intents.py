@@ -22,6 +22,7 @@ from codex_web.action_intents import (
     TERMINAL_ACTION_INTENT_STATUSES,
 )
 from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.entitlements import UsageEventCreate
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.observability import correlated, current_correlation, new_correlation_id
 from codex_web.security import (
@@ -34,6 +35,7 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
@@ -70,12 +72,14 @@ class ActionIntentService:
         artifact_evidence: ArtifactEvidenceService | None = None,
         work_item_host: Any | None = None,
         security_boundary: SecurityBoundaryService | None = None,
+        entitlements: EntitlementService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
         self.artifact_evidence = artifact_evidence
         self.work_item_host = work_item_host
         self.security_boundary = security_boundary
+        self.entitlements = entitlements
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -345,6 +349,12 @@ class ActionIntentService:
             or request.workspace_id != actor.workspace_id
         ):
             raise TenantIsolationError("cross-tenant action intent denied")
+
+        if self.entitlements is not None:
+            self.entitlements.require_capability(
+                "external_actions",
+                actor=actor,
+            )
 
         binding, provider, definition, request = self.execution.resolve_contract(
             payload.binding_id,
@@ -872,6 +882,29 @@ class ActionIntentService:
                 ActionIntentStatus.CANCELLED,
                 error=reason or "security trust boundary denied action",
             )
+        if self.entitlements is not None:
+            try:
+                self.entitlements.consume(
+                    "external_actions",
+                    UsageEventCreate(
+                        idempotency_key=(
+                            f"action-intent:{pending.id}:attempt:{pending.attempt + 1}"
+                        ),
+                        metric="external_action_attempts",
+                        amount=1.0,
+                        source="action-intent",
+                        project_id=pending.project_id,
+                        work_item_ref=pending.work_item_ref,
+                        action_intent_id=pending.id,
+                    ),
+                    actor=actor,
+                )
+            except EntitlementDeniedError as exc:
+                return self._set_status(
+                    intent_id,
+                    ActionIntentStatus.FAILED,
+                    error=f"entitlement/quota denied before provider execution: {exc}",
+                )
         intent = self._mark_executing(intent_id, worker_id, actor)
         with correlated(
             correlation_id=intent.correlation_id,
