@@ -13,6 +13,7 @@ from codex_web.runtime.execution import TurnExecutionService, install_turn_execu
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
+from codex_web.services.execution_workers import WorkerLeaseError
 
 
 class _Hub:
@@ -178,6 +179,16 @@ class _SessionManager:
         self.session = _Session()
         self.started = []
         self.completed = []
+        self.reconciled = []
+        self.reconcile_error = None
+        self.reconcile_result = SimpleNamespace(
+            id="assignment-1",
+            execution_id="bootstrap-exec",
+            execution_workspace_id="workspace-1",
+            assigned_worker_id="worker-1",
+            fence=7,
+            status=SimpleNamespace(value="lost"),
+        )
 
     async def start(self, assignment_id):
         self.started.append(assignment_id)
@@ -185,6 +196,12 @@ class _SessionManager:
 
     def get(self, assignment_id):
         return self.session if assignment_id == "assignment-1" else None
+
+    def reconcile_missing_session(self, assignment_id):
+        self.reconciled.append(assignment_id)
+        if self.reconcile_error is not None:
+            raise self.reconcile_error
+        return self.reconcile_result
 
     async def complete(self, assignment_id, **kwargs):
         self.completed.append((assignment_id, kwargs))
@@ -289,7 +306,28 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_bootstrap_binding_without_live_session_fails_without_global_fallback(self) -> None:
+    async def test_bootstrap_binding_without_live_session_preserves_still_valid_lease(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = None
+        sessions.reconcile_error = WorkerLeaseError(
+            "assignment lease is still valid and cannot be recovered"
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.request_for_thread(
+                "t1",
+                "thread/read",
+                {"threadId": "t1"},
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("canonical worker lease remains valid", caught.exception.detail)
+        self.assertEqual(sessions.reconciled, ["assignment-1"])
+        host.codex.request.assert_not_awaited()
+
+    async def test_bootstrap_binding_missing_session_reconciles_expired_assignment_lost(self) -> None:
         host, _binding, sessions, service = self._service(
             bootstrap_thread_id="t1"
         )
@@ -303,7 +341,37 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(caught.exception.status_code, 503)
-        self.assertIn("bootstrap binding", caught.exception.detail)
+        self.assertIn("canonical assignment is lost", caught.exception.detail)
+        self.assertEqual(sessions.reconciled, ["assignment-1"])
+        self.assertEqual(host.events[-1]["type"], "codex_session_missing_reconciled")
+        self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
+        self.assertEqual(host.events[-1]["assignment_status"], "lost")
+        self.assertTrue(host.events[-1]["bootstrap"])
+        host.codex.request.assert_not_awaited()
+
+    async def test_active_turn_missing_session_clears_stale_active_state_after_loss(self) -> None:
+        host, _binding, sessions, service = self._service()
+        sessions.session = None
+        service.mark_thread_active(
+            "t1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.request_for_thread(
+                "t1",
+                "turn/interrupt",
+                {"threadId": "t1"},
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(host.events[-1]["assignment_status"], "lost")
+        self.assertFalse(host.events[-1]["bootstrap"])
         host.codex.request.assert_not_awaited()
 
     async def test_turn_on_bootstrap_thread_reuses_original_assignment_and_session(self) -> None:
