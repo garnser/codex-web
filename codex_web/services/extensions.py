@@ -343,19 +343,47 @@ class ExtensionService:
     ) -> ExtensionInstallation:
         return self._installation(self.store.load(), installation_id, actor)
 
-    def install(
+    def _validate_package_verification(
         self,
-        payload: ExtensionInstallRequest,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        deployment_mode: ExtensionDeploymentMode,
+    ) -> ExtensionPackageVerification:
+        if verification.observed_digest != manifest.provenance.digest:
+            raise ExtensionIntegrityError(
+                "server-observed package digest does not match manifest"
+            )
+        if not verification.digest_verified:
+            raise ExtensionIntegrityError(
+                verification.detail or "extension package digest verification failed"
+            )
+        if verification.signature_status == ExtensionSignatureStatus.INVALID:
+            raise ExtensionIntegrityError("extension package signature is invalid")
+        if (
+            deployment_mode == ExtensionDeploymentMode.HOSTED
+            and verification.signature_status != ExtensionSignatureStatus.VERIFIED
+        ):
+            raise ExtensionIntegrityError(
+                "hosted deployment requires a cryptographically verified extension signature"
+            )
+        return verification
+
+    def _persist_installation(
+        self,
         *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        deployment_mode: ExtensionDeploymentMode,
         actor: AuthenticationActor,
+        package_ref: str | None = None,
     ) -> ExtensionInstallation:
         self._require_admin(actor)
-        verification = self._verify_package(
-            payload.manifest,
-            payload.observed_digest,
-            payload.deployment_mode,
+        verification = self._validate_package_verification(
+            manifest,
+            verification,
+            deployment_mode,
         )
-        incompatible_reason = self._compatibility_reason(payload.manifest)
+        incompatible_reason = self._compatibility_reason(manifest)
         created: list[ExtensionInstallation] = []
 
         def apply(state):
@@ -364,7 +392,7 @@ class ExtensionService:
                     item
                     for item in state.installations
                     if self._same_scope(item, actor)
-                    and item.manifest.id == payload.manifest.id
+                    and item.manifest.id == manifest.id
                     and item.lifecycle != ExtensionLifecycleState.REMOVED
                 ),
                 None,
@@ -381,9 +409,9 @@ class ExtensionService:
             item = ExtensionInstallation(
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
-                manifest=payload.manifest,
+                manifest=manifest,
                 package_verification=verification,
-                deployment_mode=payload.deployment_mode,
+                deployment_mode=deployment_mode,
                 lifecycle=lifecycle,
                 installed_by=actor.identity_id,
                 incompatible_reason=incompatible_reason,
@@ -398,12 +426,55 @@ class ExtensionService:
                 lifecycle=item.lifecycle.value,
                 deployment_mode=item.deployment_mode.value,
                 signature_status=item.package_verification.signature_status.value,
+                package_ref=package_ref,
+                verifier=item.package_verification.verifier,
             )
             created.append(item)
             return state
 
         self.store.update(apply)
         return created[0]
+
+    def install_verified_package(
+        self,
+        *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        deployment_mode: ExtensionDeploymentMode,
+        actor: AuthenticationActor,
+        package_ref: str,
+    ) -> ExtensionInstallation:
+        """Install from a server-observed package candidate.
+
+        This seam is intentionally internal/provider-facing: public package
+        installation obtains manifest and verification from a configured
+        package catalog, never from request fields.
+        """
+        return self._persist_installation(
+            manifest=manifest,
+            verification=verification,
+            deployment_mode=deployment_mode,
+            actor=actor,
+            package_ref=package_ref,
+        )
+
+    def install(
+        self,
+        payload: ExtensionInstallRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExtensionInstallation:
+        verification = self._verify_package(
+            payload.manifest,
+            payload.observed_digest,
+            payload.deployment_mode,
+        )
+        return self._persist_installation(
+            manifest=payload.manifest,
+            verification=verification,
+            deployment_mode=payload.deployment_mode,
+            actor=actor,
+        )
 
     def configure(
         self,
