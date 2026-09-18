@@ -10,18 +10,44 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
+from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 
 
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        binding_service: TurnExecutionBindingService | None = None,
+        session_manager: AssignmentBoundCodexSessionManager | None = None,
+    ) -> None:
         self.host = host
+        self.binding_service = binding_service
+        self.session_manager = session_manager
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
+        self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _new_execution_id() -> str:
+        return f"thread-turn-{__import__('uuid').uuid4().hex}"
+
+    def _require_worker_routing(self) -> tuple[
+        TurnExecutionBindingService,
+        AssignmentBoundCodexSessionManager,
+    ]:
+        if self.binding_service is None or self.session_manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="assignment-bound Codex turn execution is unavailable",
+            )
+        return self.binding_service, self.session_manager
 
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
@@ -46,6 +72,7 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
         queues = h._load_turn_queues()
@@ -87,6 +114,7 @@ class TurnExecutionService:
             thread_id=thread_id,
             project_id=project_id,
             message=message,
+            execution_id=execution_id or self._new_execution_id(),
             sandbox=sandbox,
             approval_policy=approval_policy,
             model=model,
@@ -170,6 +198,11 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str | None = None,
         reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
+        assignment_id: str | None = None,
+        execution_workspace_id: str | None = None,
+        worker_id: str | None = None,
+        fence: int | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -192,6 +225,14 @@ class TurnExecutionService:
             ),
             source=source or (current.source if current else None),
             reply_target=reply_target or (current.reply_target if current else None),
+            execution_id=execution_id or (current.execution_id if current else None),
+            assignment_id=assignment_id or (current.assignment_id if current else None),
+            execution_workspace_id=(
+                execution_workspace_id
+                or (current.execution_workspace_id if current else None)
+            ),
+            worker_id=worker_id or (current.worker_id if current else None),
+            fence=fence if fence is not None else (current.fence if current else None),
             started_at=current.started_at if current else now,
             updated_at=now,
             resume_attempts=current.resume_attempts if current else 0,
