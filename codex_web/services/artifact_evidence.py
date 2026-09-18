@@ -113,6 +113,31 @@ class ArtifactEvidenceService:
             raise VerificationNotFoundError("verification not found")
         return item
 
+    def _validate_work_item_ref(
+        self,
+        work_item_ref: str | None,
+        actor: AuthenticationActor,
+    ) -> None:
+        if work_item_ref is None or self.work_item_host is None:
+            return
+        states = self.work_item_host._load_work_item_states()
+        state = states.get(work_item_ref)
+        if state is None or (
+            state.organization_id != actor.organization_id
+            or state.workspace_id != actor.workspace_id
+        ):
+            raise ArtifactNotFoundError("work item not found")
+
+    @classmethod
+    def _require_record_mutation(
+        cls,
+        producer_identity_id: str,
+        actor: AuthenticationActor,
+    ) -> None:
+        if producer_identity_id == actor.identity_id or cls._admin(actor):
+            return
+        raise AuthorizationError("artifact/evidence producer or administrator required")
+
     def _validate_resources(
         self,
         resource_ids: Iterable[str],
@@ -206,10 +231,12 @@ class ArtifactEvidenceService:
 
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor) -> Artifact:
         self._validate_resources(payload.resource_ids, actor)
+        self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
         superseded = None
         if payload.supersedes_artifact_id:
             superseded = self._artifact(state, payload.supersedes_artifact_id, actor)
+            self._require_record_mutation(superseded.producer_identity_id, actor)
             if superseded.lifecycle != ArtifactLifecycle.ACTIVE:
                 raise ArtifactEvidenceConflictError("only an active artifact can be superseded")
         artifact = Artifact(
@@ -262,6 +289,7 @@ class ArtifactEvidenceService:
         return artifact
 
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor) -> Evidence:
+        self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
         artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
         inactive = [item.id for item in artifacts if item.lifecycle != ArtifactLifecycle.ACTIVE]
@@ -270,10 +298,13 @@ class ArtifactEvidenceService:
                 "evidence cannot reference inactive artifacts: " + ", ".join(sorted(inactive))
             )
         work_item_ref = payload.work_item_ref
-        if work_item_ref is None:
-            refs = {item.work_item_ref for item in artifacts if item.work_item_ref}
-            if len(refs) == 1:
-                work_item_ref = next(iter(refs))
+        refs = {item.work_item_ref for item in artifacts if item.work_item_ref}
+        if work_item_ref is not None and refs and refs != {work_item_ref}:
+            raise ArtifactEvidenceConflictError(
+                "evidence work item does not match referenced artifacts"
+            )
+        if work_item_ref is None and len(refs) == 1:
+            work_item_ref = next(iter(refs))
         evidence = Evidence(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -309,6 +340,7 @@ class ArtifactEvidenceService:
         *,
         actor: AuthenticationActor,
     ) -> Verification:
+        self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
         artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
         evidence = [self._evidence(state, evidence_id, actor) for evidence_id in payload.evidence_ids]
@@ -320,14 +352,17 @@ class ArtifactEvidenceService:
         producers.update(item.producer_identity_id for item in evidence)
         independent = bool(producers) and actor.identity_id not in producers
         work_item_ref = payload.work_item_ref
-        if work_item_ref is None:
-            refs = {
-                item.work_item_ref
-                for item in [*artifacts, *evidence]
-                if item.work_item_ref
-            }
-            if len(refs) == 1:
-                work_item_ref = next(iter(refs))
+        refs = {
+            item.work_item_ref
+            for item in [*artifacts, *evidence]
+            if item.work_item_ref
+        }
+        if work_item_ref is not None and refs and refs != {work_item_ref}:
+            raise ArtifactEvidenceConflictError(
+                "verification work item does not match referenced records"
+            )
+        if work_item_ref is None and len(refs) == 1:
+            work_item_ref = next(iter(refs))
         verification = Verification(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -361,6 +396,7 @@ class ArtifactEvidenceService:
     ) -> Artifact:
         state = self.store.load()
         artifact = self._artifact(state, artifact_id, actor)
+        self._require_record_mutation(artifact.producer_identity_id, actor)
         if artifact.lifecycle != ArtifactLifecycle.ACTIVE:
             return artifact
         now = time.time()
@@ -396,6 +432,7 @@ class ArtifactEvidenceService:
     ) -> Evidence:
         state = self.store.load()
         evidence = self._evidence(state, evidence_id, actor)
+        self._require_record_mutation(evidence.producer_identity_id, actor)
         if evidence.lifecycle != EvidenceLifecycle.VALID:
             return evidence
         now = time.time()
