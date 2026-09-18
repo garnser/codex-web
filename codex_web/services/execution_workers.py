@@ -20,7 +20,7 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
-from codex_web.services.identity import AuthorizationError
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 
 
@@ -49,8 +49,14 @@ class WorkerCapabilityError(ExecutionWorkerError):
 
 
 class ExecutionWorkerService:
-    def __init__(self, store: ExecutionWorkerStore) -> None:
+    def __init__(
+        self,
+        store: ExecutionWorkerStore,
+        *,
+        identity: IdentityService | None = None,
+    ) -> None:
         self.store = store
+        self.identity = identity
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -192,6 +198,27 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionWorker:
         self._require_admin(actor)
+        if self.identity is not None:
+            identity_state = self.identity.state()
+            service = next(
+                (
+                    item
+                    for item in identity_state.services
+                    if item.id == payload.service_identity_id
+                    and item.disabled_at is None
+                ),
+                None,
+            )
+            memberships = self.identity._active_memberships(
+                identity_state,
+                payload.service_identity_id,
+                actor.tenant,
+                principal_kind=PrincipalKind.SERVICE,
+            )
+            if service is None or not memberships:
+                raise WorkerConflictError(
+                    "worker service identity must exist and belong to the tenant/workspace"
+                )
         created: list[ExecutionWorker] = []
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
