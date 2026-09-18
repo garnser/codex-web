@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 
+from codex_web.execution_subjects import normalize_execution_subject
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
@@ -468,7 +469,11 @@ class ExecutionWorkerService:
                 raise WorkerConflictError(
                     "assignment execution does not match execution workspace"
                 )
-            if workspace.subject != payload.subject:
+            workspace_subject, _ = normalize_execution_subject(
+                getattr(workspace, "subject", None),
+                getattr(workspace, "work_item_ref", None),
+            )
+            if workspace_subject != payload.subject:
                 raise WorkerConflictError(
                     "assignment execution subject does not match execution workspace"
                 )
