@@ -32,6 +32,8 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn('data-extension-grant-action="revoke"', javascript)
         self.assertIn("resource_ids", javascript)
         self.assertIn("mandatory capability", javascript)
+        self.assertIn("data-extension-config-host", javascript)
+        self.assertIn("codex:extension-state-rendered", javascript)
 
 
 if __name__ == "__main__":

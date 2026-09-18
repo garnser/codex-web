@@ -100,6 +100,9 @@
     status.textContent = `${installations.length} installed extension(s)`;
     if (!installations.length) {
       list.innerHTML = '<div class="comm-entry"><strong>No extensions installed</strong><small>Discovered packages remain available through the canonical extension API.</small></div>';
+      window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
+        detail: { installations: [] },
+      }));
       return;
     }
     list.innerHTML = installations.map((item) => {
@@ -116,9 +119,13 @@
         ${item.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(item.quarantine_reason)}</small>` : ""}
         ${item.disabled_reason ? `<small>Disabled reason: ${escapeHtml(item.disabled_reason)}</small>` : ""}
         ${capabilityAdministration(item, grantsState, resources, resourceError)}
+        <div data-extension-config-host="${escapeHtml(item.id)}"></div>
         ${extensionLifecycleActions(item)}
       </div>`;
     }).join("");
+    window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
+      detail: { installations },
+    }));
   }
 
   async function loadGrantState(installations) {
