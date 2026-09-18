@@ -10,7 +10,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from codex_web.execution_workers import (
     ExecutionAssignment,
@@ -322,6 +322,7 @@ class BubblewrapExecutionBackend:
         argv: Sequence[str],
         workspace_path: Path,
         environment: Mapping[str, str] | None = None,
+        poll_hook: Callable[[], None] | None = None,
     ) -> LocalExecutionResult:
         status = self.probe()
         if not status.ready:
@@ -358,6 +359,8 @@ class BubblewrapExecutionBackend:
                 deadline = started + assignment.limits.wall_seconds
                 disk_bytes = self._workspace_disk_usage(workspace)
                 while process.poll() is None:
+                    if poll_hook is not None:
+                        poll_hook()
                     now = time.monotonic()
                     if now >= deadline:
                         timed_out = True
