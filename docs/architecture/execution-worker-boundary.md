@@ -192,15 +192,60 @@ metadata-only `policy_evaluation` failure Evidence tied to the canonical
 execution/workspace. If the completion fence changes before the assignment can
 commit, that Evidence is invalidated rather than being left as accepted proof.
 
+### Worker-scoped Codex authentication delegation
+
+The worker boundary now includes an explicit Codex authentication delegation
+primitive. It does **not** copy or mount the control-plane `CODEX_HOME`, keyring,
+`auth.json`, or renewable login cache.
+
+A delegated Codex launch is available only when all of these checks succeed:
+
+- the canonical assignment is already `claimed` or `running`;
+- the exact assigned worker ID and monotonic fence still match its live lease;
+- the authenticated caller is the worker service principal with both
+  `execution-worker:run` and `secret:use`;
+- the assignment contains exactly one SecretBroker reference whose provider is
+  `codex`/ `openai` and whose purpose is `codex_access_token`;
+- that secret reference explicitly permits the worker identity, is active, has
+  an expiry, and expires inside both the configured delegation TTL and the
+  assignment deadline;
+- the secret rotation still matches the issued delegation when it is reused.
+
+The credential value exists only inside `SecretBroker.use(...)` while trusted
+worker code launches Codex. The canonical assignment, events, artifacts,
+evidence, logs, UI and delegation metadata contain only the secret reference,
+rotation, expiry, worker ID and fence. SecretBroker's boundary scrubber still
+rejects/scrubs accidental credential escape from the trusted launch callback.
+
+The delegated Codex command forces:
+
+- `cli_auth_credentials_store="ephemeral"`, so the delegated credential stays
+  in the Codex process rather than becoming `auth.json`;
+- the private worker `CODEX_HOME=/tmp/codex-worker-home`;
+- `shell_environment_policy.inherit="none"`;
+- automatic secret-name filtering and explicit exclusion of
+  `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY` and `OPENAI_API_KEY` from repository
+  child commands.
+
+Generic worker command execution does not resolve assignment secret references
+and does not receive this environment. This is a Codex-specific trusted launch
+contract, not a general-purpose way for repository commands to request secrets.
+
+Rotation, expiry, tenant mismatch, missing worker ACL, stale/reassigned fences,
+expired leases and assignment deadline expiry all fail closed before launch or
+when a delegation is revalidated.
+
 ### Current migration boundary
 
 This backend is the concrete execution primitive for local worker command
-execution. Existing long-lived Codex app-server/thread transport is still a
-separate compatibility runtime and must not be treated as proof that arbitrary
-repository commands are isolated merely because a worker registry entry exists.
-Moving Codex turn execution onto assignment-bound worker processes requires
-explicit Codex authentication/state delegation rather than exposing the
-control-plane home directory or ambient credentials. Until that delegation
-exists, new untrusted command/tool execution paths must use this local worker
-backend rather than introducing direct `subprocess` execution in the control
-plane.
+execution. The worker-scoped Codex authentication blocker is now separated from
+the remaining transport migration: the existing long-lived control-plane Codex
+app-server/thread compatibility transport has **not** silently become an
+assignment-bound worker process.
+
+The delegation primitive is the credential/state seam required by that move.
+#166 still owns migrating the long-lived compatibility transport so each worker
+Codex process is associated with canonical assignment/workspace/lease state and
+uses this delegation contract. Until that migration is complete, new untrusted
+command/tool execution paths must use the isolated worker backend rather than
+introducing direct `subprocess` execution in the control plane.
