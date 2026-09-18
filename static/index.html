@@ -710,6 +710,15 @@
                     <button id="refresh-execution-workers" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="execution-worker-status" class="form-result" aria-live="polite">Open to load canonical worker and assignment state.</div>
+                  <details id="execution-worker-management-panel">
+                    <summary>Worker control-plane management</summary>
+                    <div id="execution-worker-management-assurance" class="form-result">Worker control-plane mutation requires canonical admin authority and elevated human assurance.</div>
+                    <div class="route-test">
+                      <button id="recover-stale-workers" type="button" class="ghost-button">Mark stale workers offline</button>
+                      <button id="recover-expired-assignments" type="button" class="ghost-button">Recover expired assignment leases</button>
+                    </div>
+                    <div id="execution-worker-management-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="route-test">
                     <input id="execution-worker-search" type="search" placeholder="Search worker, pool, identity, execution or Work Item" />
                     <select id="execution-worker-lifecycle-filter">
@@ -870,6 +879,7 @@
     <script src="static/configuration_admin.js" type="module"></script>
     <script src="static/configuration_management.js" type="module"></script>
     <script src="static/execution_worker_admin.js" type="module"></script>
+    <script src="static/execution_worker_management.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
