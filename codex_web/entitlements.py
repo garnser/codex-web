@@ -11,6 +11,9 @@ from codex_web.compatibility import ContractSpec
 
 ENTITLEMENT_CONTRACT = ContractSpec("entitlement-state", "1.0", ("1.0",))
 
+CAPABILITY_EXTERNAL_ACTIONS = "external_actions"
+METRIC_EXTERNAL_ACTION_ATTEMPTS = "external_action_attempts"
+
 
 class EntitlementMode(StrEnum):
     SELF_HOSTED_UNLIMITED = "self_hosted_unlimited"
