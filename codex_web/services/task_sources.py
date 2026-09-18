@@ -132,15 +132,6 @@ class TaskSource(Protocol):
     source_instance: str
     capabilities: TaskSourceCapabilities
 
-    async def create(
-        self,
-        request: TaskSourceCreateRequest,
-        *,
-        scope: str,
-    ) -> TaskSourceSnapshot:
-        """Create one task in the authoritative source and return its provider identity."""
-        ...
-
     async def discover(self, *, scope: str) -> list[TaskSourceSnapshot]:
         """Discover authoritative task items within a configured source scope."""
         ...
@@ -181,4 +172,18 @@ class TaskSource(Protocol):
 
     async def attach_artifact(self, identity: TaskSourceIdentity, url: str) -> None:
         """Attach/link an artifact when the source declares artifact support."""
+        ...
+
+
+@runtime_checkable
+class TaskSourceCreateCapable(Protocol):
+    """Optional additive creation contract gated by TaskSourceCapability.CREATE."""
+
+    async def create(
+        self,
+        request: TaskSourceCreateRequest,
+        *,
+        scope: str,
+    ) -> TaskSourceSnapshot:
+        """Create one authoritative task and return normalized provider identity."""
         ...
