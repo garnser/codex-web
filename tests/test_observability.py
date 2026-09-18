@@ -4,10 +4,16 @@ import json
 import logging
 import unittest
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.events import EventHub
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.observability import (
     CORRELATION_HEADER,
     JsonFormatter,
@@ -123,6 +129,19 @@ class RuntimeMetricsTests(unittest.TestCase):
         app = FastAPI()
         host = _Host()
         install_observability(app, host)
+        actor = AuthenticationActor(
+            identity_id="operator",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = actor
+            return await call_next(request)
 
         @app.get("/probe")
         async def probe() -> dict[str, bool]:
@@ -148,6 +167,57 @@ class RuntimeMetricsTests(unittest.TestCase):
             self.assertIn("metrics", snapshot)
             self.assertIn("health", snapshot)
             self.assertGreaterEqual(snapshot["traceCount"], 1)
+
+    def test_observability_endpoints_require_admin_or_scoped_service(self) -> None:
+        app = FastAPI()
+        host = _Host()
+        install_observability(app, host)
+        current = {
+            "actor": AuthenticationActor(
+                identity_id="member",
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id="org-a",
+                workspace_id="ws-a",
+                roles=(MembershipRole.MEMBER,),
+                assurance=AuthenticationAssurance.PRIMARY,
+            )
+        }
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = current["actor"]
+            return await call_next(request)
+
+        with TestClient(app) as client:
+            for path in (
+                "/api/metrics",
+                "/api/health",
+                "/api/traces/recent",
+                "/api/observability",
+            ):
+                self.assertEqual(client.get(path).status_code, 403)
+
+            current["actor"] = current["actor"].model_copy(
+                update={"roles": (MembershipRole.ADMIN,)}
+            )
+            self.assertEqual(client.get("/api/observability").status_code, 200)
+
+            current["actor"] = AuthenticationActor(
+                identity_id="observer-service",
+                principal_kind=PrincipalKind.SERVICE,
+                organization_id="org-a",
+                workspace_id="ws-a",
+                assurance=AuthenticationAssurance.SERVICE_TOKEN,
+                service_scopes=(),
+            )
+            denied = client.get("/api/metrics")
+            self.assertEqual(denied.status_code, 403)
+            self.assertIn("observability:read", denied.json()["detail"])
+
+            current["actor"] = current["actor"].model_copy(
+                update={"service_scopes": ("observability:read",)}
+            )
+            self.assertEqual(client.get("/api/metrics").status_code, 200)
 
 
 class CorrelationAndHealthTests(unittest.TestCase):
