@@ -219,6 +219,12 @@ class ActionIntentRenewRequest(BaseModel):
     lease_seconds: int = Field(default=120, ge=10, le=3600)
 
 
+class ActionIntentExecuteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    worker_id: str = Field(min_length=1)
+
+
 class ActionIntentRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
