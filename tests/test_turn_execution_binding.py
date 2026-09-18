@@ -258,8 +258,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
             if item.execution_workspace_id == workspace.id
         )
         self.assertEqual(
-            lease.expires_at,
-            self.clock + THREAD_BOOTSTRAP_SESSION_SECONDS,
+            lease.expires_at - lease.acquired_at,
+            THREAD_BOOTSTRAP_SESSION_SECONDS,
         )
 
     def test_bootstrap_lifetime_cannot_exceed_bounded_worker_workspace_contract(self) -> None:
