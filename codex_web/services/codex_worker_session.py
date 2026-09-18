@@ -21,6 +21,11 @@ from codex_web.services.codex_auth_delegation import (
     CodexAuthDelegation,
     CodexDelegatedLaunch,
 )
+from codex_web.services.codex_model_egress import (
+    AssignmentBoundModelEgressBroker,
+    CODEX_MODEL_EGRESS_RELAY_SCRIPT,
+    CodexModelEgressEndpoint,
+)
 from codex_web.services.local_execution_worker import (
     LocalExecutionWorkerRuntime,
     LocalExecutionWorkerRuntimeError,
@@ -90,6 +95,7 @@ class AssignmentBoundCodexSession:
         *,
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
+        egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -99,6 +105,7 @@ class AssignmentBoundCodexSession:
         self.assignment_id = assignment_id
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = max(0.05, watchdog_interval_seconds)
+        self.egress_endpoints_resolver = egress_endpoints_resolver
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -112,6 +119,7 @@ class AssignmentBoundCodexSession:
         self.last_heartbeat_monotonic: float | None = None
         self.last_error: str | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
+        self.egress_broker: AssignmentBoundModelEgressBroker | None = None
         self._start_lock = asyncio.Lock()
         self._stopping = False
 
@@ -227,6 +235,7 @@ class AssignmentBoundCodexSession:
         self,
         assignment: ExecutionAssignment,
         workspace_path: Path,
+        broker: AssignmentBoundModelEgressBroker | None,
     ):
         delegation_service = self.local_worker.codex_auth_delegation
         if delegation_service is None:
@@ -240,11 +249,40 @@ class AssignmentBoundCodexSession:
             )
 
         def launch(launch_input: CodexDelegatedLaunch):
+            command = launch_input.command
+            environment = dict(launch_input.environment)
+            trusted_mounts: tuple[tuple[Path, Path], ...] = ()
+            if broker is not None:
+                environment.update(
+                    {
+                        "HTTP_PROXY": broker.proxy_url,
+                        "HTTPS_PROXY": broker.proxy_url,
+                        "ALL_PROXY": "",
+                        "NO_PROXY": "",
+                        "http_proxy": broker.proxy_url,
+                        "https_proxy": broker.proxy_url,
+                        "all_proxy": "",
+                        "no_proxy": "",
+                    }
+                )
+                command = (
+                    "/usr/bin/python3",
+                    "-u",
+                    "-c",
+                    CODEX_MODEL_EGRESS_RELAY_SCRIPT,
+                    str(broker.sandbox_socket_path),
+                    "8787",
+                    *launch_input.command,
+                )
+                trusted_mounts = (
+                    (broker.mount_source, broker.mount_destination),
+                )
             process = self.local_worker.backend.spawn_interactive(
                 assignment,
-                argv=launch_input.command,
+                argv=command,
                 workspace_path=workspace_path,
-                environment=launch_input.environment,
+                environment=environment,
+                trusted_readonly_mounts=trusted_mounts,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -256,7 +294,7 @@ class AssignmentBoundCodexSession:
             return (
                 process,
                 launch_input.delegation,
-                tuple(launch_input.command),
+                tuple(command),
             )
 
         return delegation_service.use(
@@ -267,6 +305,47 @@ class AssignmentBoundCodexSession:
             consumer=launch,
             subcommand=("app-server",),
         )
+
+    def _validate_egress_state(self) -> ExecutionAssignment:
+        self._current_worker()
+        assignment = self._current_assignment()
+        if assignment.status != AssignmentStatus.RUNNING:
+            raise AssignmentBoundCodexSessionStaleError(
+                f"assignment-bound Codex assignment is {assignment.status.value}"
+            )
+        if (
+            assignment.deadline_at is not None
+            and assignment.deadline_at <= self._clock()
+        ):
+            raise AssignmentBoundCodexSessionStaleError(
+                "assignment-bound Codex assignment deadline expired"
+            )
+        if self.delegation is not None:
+            delegation_service = self.local_worker.codex_auth_delegation
+            if delegation_service is None:
+                raise AssignmentBoundCodexSessionStaleError(
+                    "Codex auth delegation is unavailable"
+                )
+            delegation_service.validate_current(
+                self.delegation,
+                assignment,
+                actor=self.local_worker.worker_actor,
+            )
+        return assignment
+
+    async def _start_egress_broker(
+        self,
+    ) -> AssignmentBoundModelEgressBroker | None:
+        resolver = self.egress_endpoints_resolver
+        if resolver is None:
+            return None
+        endpoints = resolver()
+        broker = AssignmentBoundModelEgressBroker(
+            endpoints,
+            validator=self._validate_egress_state,
+        )
+        await broker.start()
+        return broker
 
     async def start(self) -> "AssignmentBoundCodexSession":
         async with self._start_lock:
@@ -285,12 +364,16 @@ class AssignmentBoundCodexSession:
                     "assignment-bound Codex session requires an active lease"
                 )
             process = None
+            broker = None
             try:
+                self.fence = lease.fence
+                broker = await self._start_egress_broker()
+                self.egress_broker = broker
                 process, delegation, command = self._spawn_delegated_process(
                     assignment,
                     workspace_path,
+                    broker,
                 )
-                self.fence = lease.fence
                 self.delegation = delegation
                 self.workspace_path = workspace_path
                 self.git_metadata_path = self.local_worker.backend.discover_git_metadata(
@@ -318,6 +401,11 @@ class AssignmentBoundCodexSession:
                 elif process is not None and process.poll() is None:
                     with contextlib.suppress(Exception):
                         self.local_worker.backend.terminate_process(process)
+                if broker is not None:
+                    with contextlib.suppress(Exception):
+                        await broker.stop()
+                    if self.egress_broker is broker:
+                        self.egress_broker = None
                 raise
 
     def _validate_resource_bounds(self, assignment: ExecutionAssignment) -> None:
@@ -475,6 +563,10 @@ class AssignmentBoundCodexSession:
                 await task
         if self.runtime is not None:
             await self.runtime.stop()
+        broker = self.egress_broker
+        self.egress_broker = None
+        if broker is not None:
+            await broker.stop()
         self._stopping = False
 
 
@@ -488,11 +580,13 @@ class AssignmentBoundCodexSessionManager:
         *,
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
+        egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = watchdog_interval_seconds
+        self.egress_endpoints_resolver = egress_endpoints_resolver
         self.sessions: dict[str, AssignmentBoundCodexSession] = {}
         self._lock = asyncio.Lock()
 
@@ -512,6 +606,7 @@ class AssignmentBoundCodexSessionManager:
                 assignment_id,
                 runtime_factory=self.runtime_factory,
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
+                egress_endpoints_resolver=self.egress_endpoints_resolver,
             )
             await session.start()
             self.sessions[assignment_id] = session
