@@ -51,7 +51,7 @@ class CompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(envelope.schema_version, CANONICAL_EVENT_CONTRACT.current)
 
-        with self.assertRaises(ContractCompatibilityError):
+        with self.assertRaisesRegex(ValueError, "Unsupported canonical-event version '2.0'"):
             CanonicalEventEnvelope(
                 schema_version="2.0",
                 event_id="evt-2",
