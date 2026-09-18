@@ -8,6 +8,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from codex_web.compatibility import (
+    API_CONTRACT,
+    CANONICAL_EVENT_CONTRACT,
+    PERSISTED_RECORD_CONTRACT,
+    TASK_SOURCE_CONTRACT,
+    ContractCompatibilityError,
+)
 from codex_web.models import BotRouteTest
 
 
@@ -45,6 +52,27 @@ def build_system_router(host: Any) -> APIRouter:
             "status": "alive",
             "version": host._static_version(),
             "time": time.time(),
+        }
+
+    @router.get("/api/compatibility")
+    async def compatibility(api_version: str | None = None) -> dict[str, Any]:
+        if api_version is not None:
+            try:
+                API_CONTRACT.require(api_version)
+            except (ContractCompatibilityError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "api_version_unsupported",
+                        "received": api_version,
+                        "supported": list(API_CONTRACT.supported),
+                    },
+                ) from exc
+        return {
+            "api": API_CONTRACT.metadata(),
+            "canonical_event": CANONICAL_EVENT_CONTRACT.metadata(),
+            "task_source": TASK_SOURCE_CONTRACT.metadata(),
+            "persisted_record": PERSISTED_RECORD_CONTRACT.metadata(),
         }
 
     @router.get("/api/auth-verifier")

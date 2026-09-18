@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from codex_web.compatibility import TASK_SOURCE_CONTRACT
 from codex_web.models import TaskSourceIdentity, WorkItemStage
 
 
@@ -53,16 +54,18 @@ class TaskSourceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class TaskSourceEvent:
-    """Provider-neutral event envelope before canonical work-item reconciliation."""
+    """Versioned provider-neutral event envelope before reconciliation."""
 
     identity: TaskSourceIdentity
     event_type: str
     occurred_at: float | None = None
     snapshot: TaskSourceSnapshot | None = None
+    schema_version: str = TASK_SOURCE_CONTRACT.current
 
     def __post_init__(self) -> None:
         if not self.event_type.strip():
             raise ValueError("event_type must not be empty")
+        TASK_SOURCE_CONTRACT.require(self.schema_version)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,11 +83,14 @@ class TaskSourceCanonicalProjection:
 class TaskSource(Protocol):
     """Authoritative external task-system contract.
 
-    Adapters declare capabilities up front. Core work-item code can therefore
-    fail deterministically when a provider does not support an operation rather
-    than assuming GitLab-like behavior. Provider-specific API objects must be
-    normalized into ``TaskSourceSnapshot``/``TaskSourceEvent`` before crossing
-    this boundary.
+    Adapters declare capabilities up front. Adapters may also expose
+    ``contract_version`` for explicit compatibility negotiation; it remains
+    outside the runtime-checkable structural protocol so pre-versioned v1
+    adapters stay protocol-compatible during the documented migration window.
+    Core work-item code can reject declared incompatible versions or unsupported
+    operations deterministically rather than assuming GitLab-like behavior.
+    Provider-specific API objects must be normalized into
+    ``TaskSourceSnapshot``/``TaskSourceEvent`` before crossing this boundary.
     """
 
     source_type: str

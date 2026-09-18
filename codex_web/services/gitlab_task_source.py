@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, get_args
 
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.compatibility import TASK_SOURCE_CONTRACT
 from codex_web.models import TaskSourceIdentity, WorkItemStage
 from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection,
@@ -25,6 +26,7 @@ class GitLabTaskSource:
     """
 
     source_type = "gitlab"
+    contract_version = TASK_SOURCE_CONTRACT.current
     capabilities = TaskSourceCapabilities(
         frozenset(
             {
