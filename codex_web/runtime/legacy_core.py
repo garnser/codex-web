@@ -415,84 +415,6 @@ def _append_bot_event(event: dict[str, Any]) -> None:
     payload = {"created_at": time.time(), **event}
     with BOTS_EVENTS_FILE.open("a") as handle:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _active_turn_stale_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_ACTIVE_TURN_STALE_SECONDS") or "120")
-    except ValueError:
-        return 120.0
-    return max(30.0, seconds)
-
-
 def _queue_recovery_interval_seconds() -> float:
     try:
         seconds = float(os.environ.get("CODEX_WEB_QUEUE_RECOVERY_SECONDS") or "30")
@@ -501,29 +423,6 @@ def _queue_recovery_interval_seconds() -> float:
     if seconds <= 0:
         return 0.0
     return max(10.0, seconds)
-
-
-def _active_turn_is_stale(thread_id: str | None, max_age: float | None = None) -> bool:
-    if not thread_id:
-        return False
-    max_age = _active_turn_stale_seconds() if max_age is None else max_age
-    active = _load_active_turns().get(thread_id)
-    return bool(active and time.time() - active.updated_at > max_age)
-
-
-def _release_stale_active_turn(thread_id: str | None, reason: str) -> None:
-    if not thread_id:
-        return
-    if not _active_turn_is_stale(thread_id):
-        return
-    _append_bot_event({"type": "stale_active_turn_released", "thread_id": thread_id, "reason": reason})
-    _clear_thread_active(thread_id)
-
-
-
-
-
-
 async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str) -> dict[str, Any]:
     project = _project(binding.project_id)
     settings = _thread_run_settings(binding.thread_id)

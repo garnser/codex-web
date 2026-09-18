@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from typing import Any
 
@@ -295,6 +296,28 @@ class ThreadRecoveryService:
         )
         return new_thread_id
 
+    def active_turn_stale_seconds(self) -> float:
+        try:
+            seconds = float(os.environ.get("CODEX_WEB_ACTIVE_TURN_STALE_SECONDS") or "120")
+        except ValueError:
+            return 120.0
+        return max(30.0, seconds)
+
+    def active_turn_is_stale(self, thread_id: str | None, max_age: float | None = None) -> bool:
+        if not thread_id:
+            return False
+        effective_max_age = self.active_turn_stale_seconds() if max_age is None else max_age
+        active = self.host._load_active_turns().get(thread_id)
+        return bool(active and time.time() - active.updated_at > effective_max_age)
+
+    def release_stale_active_turn(self, thread_id: str | None, reason: str) -> None:
+        if not thread_id or not self.active_turn_is_stale(thread_id):
+            return
+        self.host._append_bot_event(
+            {"type": "stale_active_turn_released", "thread_id": thread_id, "reason": reason}
+        )
+        self.host._clear_thread_active(thread_id)
+
     def replacement_thread_id(self, thread_id: str) -> str | None:
         replacement = self.host.THREAD_REPLACEMENTS.get(thread_id)
         seen = {thread_id}
@@ -341,6 +364,9 @@ def install_thread_recovery_service(app: Any, host: Any) -> ThreadRecoveryServic
     host._archive_replaced_bot_thread = service.archive_replaced_bot_thread
     host._replace_stale_bot_thread = service.replace_stale_bot_thread
     host._replace_stale_web_thread = service.replace_stale_web_thread
+    host._active_turn_stale_seconds = service.active_turn_stale_seconds
+    host._active_turn_is_stale = service.active_turn_is_stale
+    host._release_stale_active_turn = service.release_stale_active_turn
     host._replacement_thread_id = service.replacement_thread_id
     host._raise_if_thread_replaced = service.raise_if_thread_replaced
     return service
