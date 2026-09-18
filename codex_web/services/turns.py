@@ -128,6 +128,7 @@ class TurnService:
             reasoning_effort=effective_reasoning_effort,
             developer_instructions=remembered.developer_instructions,
         )
+        execution_id = f"thread-turn-{__import__('uuid').uuid4().hex}"
 
         async def queue_web_turn(event_type: str, reason: str | None = None) -> dict[str, Any]:
             queued = self.host._enqueue_turn(
@@ -138,6 +139,7 @@ class TurnService:
                 approval_policy=effective_approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
+                execution_id=execution_id,
             )
             queue_depth = self.host._thread_queue_depth(thread_id)
             event_payload = {
@@ -176,9 +178,19 @@ class TurnService:
                 approval_policy=effective_approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
+                execution_id=execution_id,
             )
         except Exception as exc:
             if self.host._is_codex_timeout_error(exc):
+                if self.host._thread_is_active(thread_id):
+                    return {
+                        "queued": False,
+                        "resuming": True,
+                        "threadId": thread_id,
+                        "executionId": execution_id,
+                        "timedOut": True,
+                        "error": str(getattr(exc, "detail", exc)),
+                    }
                 result = await queue_web_turn("web_turn_queued_after_timeout", str(exc))
                 result["timedOut"] = True
                 result["error"] = str(getattr(exc, "detail", exc))

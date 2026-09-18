@@ -4,19 +4,61 @@ import time
 from typing import Any
 
 from codex_web.models import ApprovalSlackMessage
+from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 
 
 class ApprovalService:
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        assignment_sessions: AssignmentBoundCodexSessionManager | None = None,
+    ) -> None:
         self.host = host
+        self.assignment_sessions = assignment_sessions
         # ApprovalService is already composed by application.py. Rebind the
         # historical mutation seams here so this extraction does not require a
         # second application-composition edit.
         host._remember_approval_message = self.remember_message
         host._forget_approval_messages = self.forget_messages
+        host._pending_codex_approvals = self.pending
+        host._respond_codex_approval = self.respond
+
+    def _approval_runtimes(self):
+        yield self.host.codex
+        manager = self.assignment_sessions
+        if manager is None:
+            return
+        for session in manager.sessions.values():
+            if session.runtime is not None:
+                yield session.runtime
+
+    def pending(self) -> dict[int | str, dict[str, Any]]:
+        result: dict[int | str, dict[str, Any]] = {}
+        for runtime in self._approval_runtimes():
+            for request_id, request in runtime.pending_approvals.items():
+                if request_id in result:
+                    raise RuntimeError(
+                        f"duplicate canonical approval request id: {request_id}"
+                    )
+                result[request_id] = request
+        return result
+
+    async def respond(
+        self,
+        request_id: int | str,
+        result: dict[str, Any],
+    ) -> None:
+        for runtime in self._approval_runtimes():
+            if request_id in runtime.pending_approvals:
+                await runtime.respond_to_server_request(request_id, result)
+                return
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Approval request not found")
 
     def list(self) -> list[dict[str, Any]]:
-        return list(self.host.codex.pending_approvals.values())
+        return list(self.pending().values())
 
     async def decide(self, request_id: str, decision: str) -> dict[str, bool]:
         normalized_id = self.host._request_id_value(request_id)

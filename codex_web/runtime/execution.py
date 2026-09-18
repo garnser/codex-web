@@ -10,18 +10,45 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
+from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 
 
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        binding_service: TurnExecutionBindingService | None = None,
+        session_manager: AssignmentBoundCodexSessionManager | None = None,
+    ) -> None:
         self.host = host
+        self.binding_service = binding_service
+        self.session_manager = session_manager
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
+        self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
+        self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _new_execution_id() -> str:
+        return f"thread-turn-{__import__('uuid').uuid4().hex}"
+
+    def _require_worker_routing(self) -> tuple[
+        TurnExecutionBindingService,
+        AssignmentBoundCodexSessionManager,
+    ]:
+        if self.binding_service is None or self.session_manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="assignment-bound Codex turn execution is unavailable",
+            )
+        return self.binding_service, self.session_manager
 
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
@@ -46,6 +73,7 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
         queues = h._load_turn_queues()
@@ -87,6 +115,7 @@ class TurnExecutionService:
             thread_id=thread_id,
             project_id=project_id,
             message=message,
+            execution_id=execution_id or self._new_execution_id(),
             sandbox=sandbox,
             approval_policy=approval_policy,
             model=model,
@@ -158,6 +187,36 @@ class TurnExecutionService:
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and thread_id in self.host._load_active_turns())
 
+    def _assignment_session_for_thread(self, thread_id: str):
+        active = self.host._load_active_turns().get(thread_id)
+        if active is None or not active.assignment_id:
+            return None
+        manager = self.session_manager
+        if manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="assignment-bound Codex session manager is unavailable",
+            )
+        session = manager.get(active.assignment_id)
+        if session is None:
+            raise HTTPException(
+                status_code=503,
+                detail="active thread assignment has no live Codex session",
+            )
+        session.validate_current()
+        return session
+
+    async def request_for_thread(
+        self,
+        thread_id: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session = self._assignment_session_for_thread(thread_id)
+        if session is not None:
+            return await session.request(method, params)
+        return await self.host.codex.request(method, params)
+
     def mark_thread_active(
         self,
         thread_id: str | None,
@@ -170,6 +229,11 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str | None = None,
         reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
+        assignment_id: str | None = None,
+        execution_workspace_id: str | None = None,
+        worker_id: str | None = None,
+        fence: int | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -192,6 +256,14 @@ class TurnExecutionService:
             ),
             source=source or (current.source if current else None),
             reply_target=reply_target or (current.reply_target if current else None),
+            execution_id=execution_id or (current.execution_id if current else None),
+            assignment_id=assignment_id or (current.assignment_id if current else None),
+            execution_workspace_id=(
+                execution_workspace_id
+                or (current.execution_workspace_id if current else None)
+            ),
+            worker_id=worker_id or (current.worker_id if current else None),
+            fence=fence if fence is not None else (current.fence if current else None),
             started_at=current.started_at if current else now,
             updated_at=now,
             resume_attempts=current.resume_attempts if current else 0,
@@ -213,6 +285,72 @@ class TurnExecutionService:
             if not h.IS_SHUTTING_DOWN and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
 
+    def _schedule_assignment_completion(
+        self,
+        active: ActiveThreadTurn,
+        *,
+        succeeded: bool,
+        message: dict[str, Any],
+    ) -> None:
+        manager = self.session_manager
+        assignment_id = active.assignment_id
+        if manager is None or not assignment_id:
+            return
+        existing = self.assignment_completion_tasks.get(assignment_id)
+        if existing is not None and not existing.done():
+            return
+
+        async def complete() -> None:
+            try:
+                params = message.get("params") or {}
+                raw_error = params.get("error") or (params.get("turn") or {}).get("error")
+                failure_message = None if succeeded else str(
+                    raw_error or "Codex turn failed"
+                )[:500]
+                completed = await manager.complete(
+                    assignment_id,
+                    succeeded=succeeded,
+                    failure_code=None if succeeded else "codex_turn_failed",
+                    failure_message=failure_message,
+                )
+                self.host._append_bot_event(
+                    {
+                        "type": "turn_assignment_completed",
+                        "thread_id": active.thread_id,
+                        "turn_id": active.turn_id,
+                        "execution_id": active.execution_id,
+                        "assignment_id": completed.id,
+                        "execution_workspace_id": active.execution_workspace_id,
+                        "worker_id": active.worker_id,
+                        "fence": active.fence,
+                        "succeeded": succeeded,
+                    }
+                )
+            except Exception as exc:
+                self.host._append_bot_event(
+                    {
+                        "type": "turn_assignment_completion_failed",
+                        "thread_id": active.thread_id,
+                        "turn_id": active.turn_id,
+                        "execution_id": active.execution_id,
+                        "assignment_id": assignment_id,
+                        "error": str(exc)[:500],
+                    }
+                )
+            finally:
+                current = asyncio.current_task()
+                if self.assignment_completion_tasks.get(assignment_id) is current:
+                    self.assignment_completion_tasks.pop(assignment_id, None)
+                if self.thread_completion_tasks.get(active.thread_id) is current:
+                    self.thread_completion_tasks.pop(active.thread_id, None)
+
+        task = asyncio.create_task(
+            complete(),
+            name=f"turn-assignment-complete-{assignment_id}",
+        )
+        self.assignment_completion_tasks[assignment_id] = task
+        self.thread_completion_tasks[active.thread_id] = task
+
     def record_thread_activity(self, message: dict[str, Any]) -> None:
         h = self.host
         method = message.get("method")
@@ -222,6 +360,13 @@ class TurnExecutionService:
         if method in {"turn/started", "item/started"}:
             self.mark_thread_active(thread_id, turn_id=turn_id)
         elif method in {"turn/completed", "turn/failed"}:
+            active = h._load_active_turns().get(thread_id) if thread_id else None
+            if active is not None:
+                self._schedule_assignment_completion(
+                    active,
+                    succeeded=method == "turn/completed",
+                    message=message,
+                )
             if not h.IS_SHUTTING_DOWN:
                 self.clear_thread_active(thread_id, turn_id=turn_id)
         elif method == "thread/status/changed":
@@ -243,35 +388,90 @@ class TurnExecutionService:
         reasoning_effort: str | None = None,
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
+        binding_service, session_manager = self._require_worker_routing()
         settings = h._thread_run_settings(thread_id)
+        effective_sandbox = sandbox or settings.sandbox or project.sandbox
+        effective_approval_policy = (
+            approval_policy or settings.approval_policy or project.approval_policy
+        )
         effective_model = model or settings.model or project.model
         effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
         effective_developer_instructions = h._effective_developer_instructions(
             thread_id,
             settings.developer_instructions,
         )
+        canonical_execution_id = execution_id or self._new_execution_id()
+
         async with self.turn_start_lock:
-            await h.codex.request(
-                "thread/resume",
-                {
-                    "threadId": thread_id,
-                    **h._project_params(
-                        project,
-                        {
-                            "sandbox": sandbox,
-                            "approvalPolicy": approval_policy,
-                            "model": effective_model,
-                            "developerInstructions": effective_developer_instructions,
-                        },
-                    ),
-                },
+            binding = binding_service.prepare(
+                thread_id=thread_id,
+                execution_id=canonical_execution_id,
+                project_id=project.id,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
             )
+            session = await session_manager.start(binding.assignment_id)
+            status = session.status()
+            workspace_path = session.workspace_path
+            if workspace_path is None or status.fence is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="assignment-bound Codex session lacks canonical workspace/fence",
+                )
+            workspace_cwd = str(workspace_path)
+            resume_params = {
+                "threadId": thread_id,
+                **h._project_params(
+                    project,
+                    {
+                        "sandbox": effective_sandbox,
+                        "approvalPolicy": effective_approval_policy,
+                        "model": effective_model,
+                        "developerInstructions": effective_developer_instructions,
+                    },
+                ),
+            }
+            resume_params["cwd"] = workspace_cwd
+            if effective_sandbox:
+                resume_params["sandboxPolicy"] = h._sandbox_policy(
+                    effective_sandbox,
+                    workspace_cwd,
+                )
+            try:
+                await session.request("thread/resume", resume_params)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    await session_manager.complete(
+                        binding.assignment_id,
+                        succeeded=False,
+                        failure_code="codex_thread_resume_failed",
+                        failure_message=str(exc)[:500],
+                    )
+                raise
+
+            self.mark_thread_active(
+                thread_id,
+                project_id=project.id,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                source=source,
+                reply_target=reply_target,
+                execution_id=canonical_execution_id,
+                assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,
+                worker_id=status.worker_id,
+                fence=status.fence,
+            )
+
             params: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": message, "text_elements": []}],
-                "cwd": project.path,
+                "cwd": workspace_cwd,
             }
             if effective_model:
                 params["model"] = effective_model
@@ -279,42 +479,78 @@ class TurnExecutionService:
                 params["effort"] = effective_reasoning_effort
             if effective_developer_instructions:
                 params["developerInstructions"] = effective_developer_instructions
-            if approval_policy:
-                params["approvalPolicy"] = approval_policy
-            if sandbox:
-                params["sandboxPolicy"] = h._sandbox_policy(sandbox, project.path)
+            if effective_approval_policy:
+                params["approvalPolicy"] = effective_approval_policy
+            if effective_sandbox:
+                params["sandboxPolicy"] = h._sandbox_policy(
+                    effective_sandbox,
+                    workspace_cwd,
+                )
             params["input"][0]["text"] = h._with_relay_guard(
                 params["input"][0]["text"],
                 h._turn_source_for_relay_guard(thread_id, source),
             )
-            response = await h.codex.request("turn/start", params)
+            try:
+                response = await session.request("turn/start", params)
+            except Exception as exc:
+                if not h._is_codex_timeout_error(exc):
+                    self.clear_thread_active(thread_id)
+                    with contextlib.suppress(Exception):
+                        await session_manager.complete(
+                            binding.assignment_id,
+                            succeeded=False,
+                            failure_code="codex_turn_start_failed",
+                            failure_message=str(exc)[:500],
+                        )
+                raise
+            turn_id = (
+                (response.get("turn") or {}).get("id")
+                if isinstance(response, dict)
+                else None
+            )
             self.last_inputs[thread_id] = {
                 "project_id": project.id,
                 "message": message,
-                "sandbox": sandbox,
-                "approval_policy": approval_policy,
+                "sandbox": effective_sandbox,
+                "approval_policy": effective_approval_policy,
                 "model": effective_model,
                 "reasoning_effort": effective_reasoning_effort,
                 "source": source,
                 "reply_target": reply_target,
+                "execution_id": canonical_execution_id,
+                "assignment_id": binding.assignment_id,
+                "execution_workspace_id": binding.workspace_id,
+                "worker_id": status.worker_id,
+                "fence": status.fence,
             }
             self.mark_thread_active(
                 thread_id,
-                turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else None,
+                turn_id=turn_id,
                 project_id=project.id,
-                sandbox=sandbox,
-                approval_policy=approval_policy,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
                 source=source,
                 reply_target=reply_target,
+                execution_id=canonical_execution_id,
+                assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,
+                worker_id=status.worker_id,
+                fence=status.fence,
             )
         h._append_bot_event(
             {
                 "type": "turn_started",
                 "thread_id": thread_id,
+                "turn_id": turn_id,
                 "project_id": project.id,
                 "source": source,
+                "execution_id": canonical_execution_id,
+                "assignment_id": binding.assignment_id,
+                "execution_workspace_id": binding.workspace_id,
+                "worker_id": status.worker_id,
+                "fence": status.fence,
             }
         )
         await self.publish_queue_status(thread_id)
@@ -325,6 +561,10 @@ class TurnExecutionService:
         if not thread_id:
             await self.publish_queue_status(thread_id)
             return
+        completion = self.thread_completion_tasks.get(thread_id)
+        if completion is not None and not completion.done():
+            with contextlib.suppress(Exception):
+                await asyncio.shield(completion)
         if self.thread_is_active(thread_id):
             h._release_stale_active_turn(thread_id, "queue-drain")
             if self.thread_is_active(thread_id):
@@ -348,6 +588,7 @@ class TurnExecutionService:
                 reasoning_effort=queued.reasoning_effort,
                 source=f"queued:{queued.source}",
                 reply_target=queued.reply_target,
+                execution_id=queued.execution_id,
             )
             h._append_bot_event(
                 {
@@ -509,6 +750,7 @@ class TurnExecutionService:
                     reasoning_effort=reasoning_effort,
                     source=f"restart-recovery:{active.source or 'unknown'}",
                     reply_target=active.reply_target,
+                    execution_id=active.execution_id,
                 )
                 self.mark_thread_active(
                     thread_id,
@@ -633,12 +875,24 @@ class TurnExecutionService:
         return threshold_reached and self.schedule_terminal_thread_recovery(thread_id, error)
 
 
-def install_turn_execution_service(app: Any, host: Any) -> TurnExecutionService:
+def install_turn_execution_service(
+    app: Any,
+    host: Any,
+    *,
+    binding_service: TurnExecutionBindingService | None = None,
+    session_manager: AssignmentBoundCodexSessionManager | None = None,
+) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
         service = existing
+        service.binding_service = binding_service or service.binding_service
+        service.session_manager = session_manager or service.session_manager
     else:
-        service = TurnExecutionService(host)
+        service = TurnExecutionService(
+            host,
+            binding_service=binding_service,
+            session_manager=session_manager,
+        )
         app.state.turn_execution_service = service
 
     host._enqueue_turn = service.enqueue_turn
@@ -648,6 +902,7 @@ def install_turn_execution_service(app: Any, host: Any) -> TurnExecutionService:
     host._pop_queued_turn = service.pop_queued_turn
     host._requeue_turn_front = service.requeue_turn_front
     host._thread_is_active = service.thread_is_active
+    host._codex_request_for_thread = service.request_for_thread
     host._mark_thread_active = service.mark_thread_active
     host._clear_thread_active = service.clear_thread_active
     host._record_thread_activity = service.record_thread_activity
@@ -666,4 +921,6 @@ def install_turn_execution_service(app: Any, host: Any) -> TurnExecutionService:
     host.TERMINAL_RECOVERY_TASKS = service.terminal_recovery_tasks
     host.THREAD_TERMINAL_FAILURES = service.terminal_failures
     host.THREAD_LAST_INPUTS = service.last_inputs
+    host.ASSIGNMENT_COMPLETION_TASKS = service.assignment_completion_tasks
+    host.THREAD_ASSIGNMENT_COMPLETION_TASKS = service.thread_completion_tasks
     return service

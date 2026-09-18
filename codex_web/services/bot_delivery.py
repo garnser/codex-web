@@ -265,13 +265,13 @@ class BotDeliveryService:
         actor: str,
     ) -> dict[str, bool]:
         h = self.host
-        request = h.codex.pending_approvals.get(request_id)
+        request = h._pending_codex_approvals().get(request_id)
         if not request:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=404, detail="Approval request not found")
         result = h._approval_result(request["method"], decision)
-        await h.codex.respond_to_server_request(request_id, result)
+        await h._respond_codex_approval(request_id, result)
         await self.update_approval_messages(
             request_id,
             request,
@@ -307,7 +307,7 @@ class BotDeliveryService:
                 continue
             request_id = h._request_id_value(value.get("request_id"))
             decision = value.get("decision")
-            request = h.codex.pending_approvals.get(request_id)
+            request = h._pending_codex_approvals().get(request_id)
             channel = (payload.get("channel") or {}).get("id") or connection.default_external_conversation_id
             message_ts = h._slack_interaction_message_ts(payload)
             user = (

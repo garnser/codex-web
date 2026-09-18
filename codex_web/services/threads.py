@@ -215,7 +215,8 @@ class ThreadService:
                 event_type="web_read_deferred_for_resume",
             )
         try:
-            response = await self.host.codex.request(
+            response = await self.host._codex_request_for_thread(
+                thread_id,
                 "thread/read",
                 {"threadId": thread_id, "includeTurns": True},
             )
@@ -283,10 +284,16 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host.codex.request("thread/archive", {"threadId": thread_id})
+        return await self.host._codex_request_for_thread(
+            thread_id, "thread/archive", {"threadId": thread_id}
+        )
 
     async def unarchive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host.codex.request("thread/unarchive", {"threadId": thread_id})
+        return await self.host._codex_request_for_thread(
+            thread_id, "thread/unarchive", {"threadId": thread_id}
+        )
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
-        return await self.host.codex.request("turn/interrupt", {"threadId": thread_id})
+        return await self.host._codex_request_for_thread(
+            thread_id, "turn/interrupt", {"threadId": thread_id}
+        )

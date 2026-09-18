@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import server
@@ -417,32 +419,47 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
             approval_policy="never",
             developer_instructions="base instructions",
         )
-
-        async def _request(method: str, params: dict[str, object]) -> dict[str, object]:
-            if method == "thread/resume":
-                return {"ok": True}
-            if method == "turn/start":
-                return {"turn": {"id": "turn-1"}}
-            raise AssertionError(f"unexpected method {method}")
+        binding = SimpleNamespace(
+            assignment_id="assignment-dev-instructions",
+            workspace_id="workspace-dev-instructions",
+        )
+        session = SimpleNamespace(
+            workspace_path=Path("/isolated/workspace"),
+            status=lambda: SimpleNamespace(worker_id="worker-1", fence=1),
+            request=AsyncMock(
+                side_effect=[
+                    {"ok": True},
+                    {"turn": {"id": "turn-1"}},
+                ]
+            ),
+        )
+        execution_service = server.app.state.turn_execution_service
 
         with (
             patch.object(server, "_project", return_value=project),
             patch.object(server, "_thread_run_settings", return_value=remembered),
             patch.object(server, "_work_item_contract_instructions", return_value="contract"),
             patch.object(server, "_remember_thread_run_settings") as remember,
-            patch.object(server, "_mark_thread_active"),
+            patch.object(execution_service.binding_service, "prepare", return_value=binding),
+            patch.object(execution_service.session_manager, "start", new=AsyncMock(return_value=session)),
+            patch.object(execution_service, "mark_thread_active"),
             patch.object(server, "_append_bot_event"),
-            patch.object(server.codex, "request", side_effect=_request) as request,
+            patch.object(server.hub, "publish", new=AsyncMock()),
         ):
             asyncio.run(server.start_turn("thread-1", TurnCreate(message="fix it")))
 
         remember.assert_called_once()
         self.assertEqual(remember.call_args.kwargs["developer_instructions"], "base instructions")
-        turn_start_call = request.await_args_list[1]
+        self.assertEqual(
+            [call.args[0] for call in session.request.await_args_list],
+            ["thread/resume", "turn/start"],
+        )
+        turn_start_call = session.request.await_args_list[1]
         self.assertEqual(
             turn_start_call.args[1]["developerInstructions"],
             f"base instructions\n\n{security_boundary_instructions()}\n\ncontract",
         )
+
 
 
 if __name__ == "__main__":

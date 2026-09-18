@@ -227,6 +227,11 @@ class ActiveThreadTurn(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     source: str | None = None
     reply_target: BotReplyTarget | None = None
+    execution_id: str | None = None
+    assignment_id: str | None = None
+    execution_workspace_id: str | None = None
+    worker_id: str | None = None
+    fence: int | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -238,6 +243,7 @@ class QueuedTurn(BaseModel):
     thread_id: str
     project_id: str
     message: str
+    execution_id: str | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None
