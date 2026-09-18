@@ -186,6 +186,7 @@ class CryptoKeyService:
             raise CryptoKeyConflictError("key scope does not match encryption context")
 
     def list_keys(self, actor: AuthenticationActor) -> list[ManagedKey]:
+        self._require_admin(actor)
         return sorted(
             [item for item in self.store.load().keys if self._same_scope(item, actor)],
             key=lambda item: (item.created_at, item.id),
@@ -193,6 +194,7 @@ class CryptoKeyService:
         )
 
     def get_key(self, key_id: str, actor: AuthenticationActor) -> ManagedKey:
+        self._require_admin(actor)
         return self._key(self.store.load(), key_id, actor)
 
     def create_key(
@@ -556,6 +558,7 @@ class CryptoKeyService:
         return self.encrypt(envelope.key_id, plaintext, context, actor=actor)
 
     def manifest(self, actor: AuthenticationActor) -> tuple[KeyManifestEntry, ...]:
+        self._require_admin(actor)
         return tuple(
             KeyManifestEntry(
                 key_id=key.id,
@@ -570,6 +573,7 @@ class CryptoKeyService:
         *,
         actor: AuthenticationActor,
     ) -> KeyManifestValidation:
+        self._require_admin(actor)
         state = self.store.load()
         missing: list[str] = []
         revoked: list[str] = []
@@ -597,7 +601,8 @@ class CryptoKeyService:
             revoked_refs=tuple(sorted(set(revoked))),
         )
 
-    def backend_health(self) -> dict[str, bool]:
+    def backend_health(self, actor: AuthenticationActor) -> dict[str, bool]:
+        self._require_admin(actor)
         return {
             name: bool(backend.healthy())
             for name, backend in sorted(self.backends.items())
