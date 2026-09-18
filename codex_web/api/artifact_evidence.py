@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.artifact_evidence import (
     ArtifactCreate,
     EvidenceCreate,
@@ -47,6 +48,18 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRouter:
     router = APIRouter(tags=["artifact-evidence"])
+
+    def require_artifact_evidence_admin(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if "artifact-evidence:admin" not in actor.service_scopes:
+                raise AuthorizationError(
+                    "artifact-evidence:admin service scope required"
+                )
+            return actor
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
 
     @router.get("/api/artifacts")
     async def list_artifacts(
@@ -222,10 +235,11 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
         request: Request,
     ) -> dict[str, Any]:
         try:
+            actor = require_artifact_evidence_admin(request)
             requirements = service.set_work_item_requirements(
                 ref,
                 payload.requirements,
-                actor=request_actor(request),
+                actor=actor,
             )
             return {
                 "work_item_ref": ref,
@@ -270,9 +284,8 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
 
     @router.post("/api/artifact-evidence/governance/sync")
     async def sync_governance(request: Request) -> dict[str, Any]:
-        actor = request_actor(request)
         try:
-            IdentityService.require_admin(actor)
+            actor = require_artifact_evidence_admin(request)
             return service.sync_governance_records(actor=actor)
         except Exception as exc:
             if isinstance(
@@ -284,9 +297,8 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
 
     @router.post("/api/artifact-evidence/expire-retention")
     async def expire_retention(request: Request) -> dict[str, Any]:
-        actor = request_actor(request)
         try:
-            IdentityService.require_admin(actor)
+            require_artifact_evidence_admin(request)
             return service.expire_retention()
         except Exception as exc:
             if isinstance(
