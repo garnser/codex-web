@@ -128,6 +128,7 @@
         <small>Registered: ${timeText(worker.registered_at)} · last heartbeat: ${timeText(worker.last_heartbeat_at)} · revoked: ${timeText(worker.revoked_at)}</small>
         ${worker.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(worker.quarantine_reason)}</small>` : ""}
         <small>${escapeHtml(trustWarning)}</small>
+        <div data-execution-worker-management-host="${escapeHtml(worker.id)}"></div>
       </details>`;
     }).join("") || '<div class="comm-entry"><strong>No workers match the current filters.</strong></div>';
   }
@@ -157,6 +158,7 @@
         <small>Created by: ${escapeHtml(item.created_by)} · created: ${timeText(item.created_at)} · started: ${timeText(item.started_at)} · completed: ${timeText(item.completed_at)} · fence: ${escapeHtml(item.fence)}</small>
         ${item.failure_code || item.failure_message ? `<small>Failure: ${escapeHtml(item.failure_code || "unknown")} · ${escapeHtml(item.failure_message || "no detail")}</small>` : ""}
         <small>Artifacts: ${listText(item.artifact_ids)} · evidence: ${listText(item.evidence_ids)} · expected artifacts: ${listText(item.expected_artifact_types)} · expected evidence: ${listText(item.expected_evidence_types)}</small>
+        <div data-execution-assignment-management-host="${escapeHtml(item.id)}"></div>
       </details>`;
     }).join("") || '<div class="comm-entry"><strong>No assignments match the current filters.</strong></div>';
   }
