@@ -162,6 +162,37 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             resources=self.resources,
         )
 
+    async def test_legacy_action_intent_migrates_to_fail_closed_security_decision(self) -> None:
+        provider = _PrivilegedProvider()
+        binding = self._bind(provider)
+        intent = self.intents.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=self._request(),
+                authority_decision=self._decision("identity:role-policy"),
+                policy_decision=self._decision("policy:action-policy"),
+            ),
+            actor=self.actor,
+        )
+        raw = self.intents.store.load().model_dump(mode="json")
+        raw["schema_version"] = "1.0"
+        for item in raw["intents"]:
+            item.pop("security_policy", None)
+            item.pop("security_decision", None)
+
+        migrated = self.intents.store._decode(raw)
+
+        self.assertEqual(migrated.schema_version, "1.1")
+        migrated_intent = next(item for item in migrated.intents if item.id == intent.id)
+        self.assertEqual(
+            migrated_intent.security_decision.outcome,
+            SecurityDecisionOutcome.DENY,
+        )
+        self.assertIn(
+            "requires re-evaluation",
+            " ".join(migrated_intent.security_decision.reasons),
+        )
+
     async def test_model_output_cannot_grant_privileged_authority(self) -> None:
         provider = _PrivilegedProvider()
         binding = self._bind(provider)
