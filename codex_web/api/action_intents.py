@@ -17,6 +17,7 @@ from codex_web.action_intents import (
     ActionIntentStatus,
 )
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.action_intents import (
     ActionIntentConflictError,
     ActionIntentError,
@@ -50,6 +51,18 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_action_intents_router(service: ActionIntentService) -> APIRouter:
     router = APIRouter(tags=["action-intents"])
+
+    def require_action_intent_admin(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if "action-intent:admin" not in actor.service_scopes:
+                raise AuthorizationError(
+                    "action-intent:admin service scope required"
+                )
+            return actor
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
 
     @router.get("/api/action-intents")
     async def list_action_intents(
@@ -109,9 +122,8 @@ def build_action_intents_router(service: ActionIntentService) -> APIRouter:
 
     @router.post("/api/action-intents/recover-stale")
     async def recover_stale(request: Request) -> dict[str, Any]:
-        actor = request_actor(request)
         try:
-            IdentityService.require_admin(actor)
+            actor = require_action_intent_admin(request)
             return {
                 "intent_ids": service.recover_stale_claims(
                     organization_id=actor.organization_id,
