@@ -12,6 +12,7 @@ from codex_web.execution_contracts import (
     execution_role_for_work_item,
 )
 from codex_web.models import WorkItemState
+from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content, security_boundary_instructions
 
 
 class WorkItemContractService:
@@ -54,6 +55,13 @@ class WorkItemContractService:
 
     def dispatch_text(self, state: WorkItemState) -> str:
         base = self.base_formatter(state)
+        untrusted_base = render_untrusted_content(
+            envelope_untrusted(
+                TrustZone.TASK_TEXT,
+                f"work-item:{state.ref}",
+                base,
+            )
+        )
         role, findings = self._resolution(state)
         contract = execution_contract_for_work_item(
             state,
@@ -61,7 +69,8 @@ class WorkItemContractService:
             split_brain_findings=findings,
         )
         return (
-            f"{base}\n\n"
+            f"{security_boundary_instructions()}\n\n"
+            f"{untrusted_base}\n\n"
             f"CANONICAL EXECUTION CONTRACT (schema {contract.schema_version})\n"
             "This work item was populated/reconciled from GitLab and codex-web state remains authoritative for "
             "owner, stage, handoff and next action. The versioned contract was validated from that canonical state "
