@@ -184,6 +184,7 @@ class ModelInvocationRequest(BaseModel):
     required_residency_tags: tuple[str, ...] = ()
     required_compliance_tags: tuple[str, ...] = ()
     preferred_provider_ids: tuple[str, ...] = ()
+    max_input_tokens: int | None = Field(default=None, ge=1)
     max_output_tokens: int = Field(default=2048, ge=1)
     timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
     max_cost_usd: float | None = Field(default=None, gt=0.0)
@@ -302,6 +303,16 @@ class ModelInvocationResponse(BaseModel):
 
     text: str
     invocation: ModelInvocationRecord
+
+
+class ModelGoalUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    goal_id: str
+    calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: float = Field(ge=0.0)
 
 
 class ModelGatewayState(BaseModel):
