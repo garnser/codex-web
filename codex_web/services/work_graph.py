@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 from collections import deque
 from collections.abc import Callable, Iterable
 
@@ -390,34 +391,55 @@ class WorkGraphService:
         edges: Iterable[WorkGraphEdge],
     ) -> WorkGraphCriticalPath:
         ref_set = set(refs)
-        adjacency: dict[str, tuple[str, ...]] = {}
-        raw: dict[str, set[str]] = {ref: set() for ref in ref_set}
+        adjacency: dict[str, set[str]] = {ref: set() for ref in ref_set}
+        indegree: dict[str, int] = {ref: 0 for ref in ref_set}
         for edge in edges:
             if (
-                edge.relation == WorkGraphRelation.BLOCKS
-                and edge.source_ref in ref_set
-                and edge.target_ref in ref_set
+                edge.relation != WorkGraphRelation.BLOCKS
+                or edge.source_ref not in ref_set
+                or edge.target_ref not in ref_set
             ):
-                raw.setdefault(edge.source_ref, set()).add(edge.target_ref)
-        adjacency = {
-            ref: tuple(sorted(raw.get(ref, ())))
-            for ref in sorted(ref_set)
+                continue
+            if edge.target_ref in adjacency[edge.source_ref]:
+                continue
+            adjacency[edge.source_ref].add(edge.target_ref)
+            indegree[edge.target_ref] += 1
+
+        queue = [ref for ref in ref_set if indegree[ref] == 0]
+        heapq.heapify(queue)
+        best_path: dict[str, tuple[str, ...]] = {
+            ref: (ref,)
+            for ref in ref_set
         }
-        memo: dict[str, tuple[str, ...]] = {}
+        processed = 0
 
-        def longest(ref: str) -> tuple[str, ...]:
-            if ref in memo:
-                return memo[ref]
-            candidates = [(ref, *longest(child)) for child in adjacency[ref]]
-            best = min(
-                candidates,
-                key=lambda path: (-len(path), path),
-            ) if candidates else (ref,)
-            memo[ref] = best
-            return best
+        while queue:
+            current = heapq.heappop(queue)
+            processed += 1
+            for child in sorted(adjacency[current]):
+                candidate = (*best_path[current], child)
+                existing = best_path[child]
+                if (
+                    len(candidate) > len(existing)
+                    or (
+                        len(candidate) == len(existing)
+                        and candidate < existing
+                    )
+                ):
+                    best_path[child] = candidate
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    heapq.heappush(queue, child)
 
-        candidates = [longest(ref) for ref in sorted(ref_set)]
-        path = min(candidates, key=lambda item: (-len(item), item)) if candidates else ()
+        if processed != len(ref_set):
+            raise WorkGraphCycleError(
+                "stored dependency graph contains a cycle"
+            )
+
+        path = min(
+            best_path.values(),
+            key=lambda item: (-len(item), item),
+        ) if best_path else ()
         return WorkGraphCriticalPath(
             refs=path,
             node_count=len(path),
