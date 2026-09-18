@@ -168,17 +168,37 @@ orchestration must still honor:
 - isolated execution workspace;
 - ActionIntent/provider authority for external side effects.
 
-## UI/API follow-up
+## API and operator surface
 
-Issue #104 owns the canonical graph APIs and interactive graph UI. It should
-consume this service for:
+Issue #104 exposes the graph service through the tenant-scoped
+`/api/work-graph` API:
 
-- dependency creation/removal;
-- cycle/conflict validation;
-- `what can run now?`;
-- `why blocked?`;
-- critical-path and parallel-work highlighting;
-- progress and failure-impact display;
-- deep links to canonical Work Item detail.
+- project snapshots contain canonical nodes, edges, readiness, runnable refs,
+  critical path, progress, and downstream failure impacts;
+- readiness/traversal are deterministic read operations over the canonical
+  graph and Work Item state;
+- graph audit events expose edge mutation provenance;
+- edge add/remove calls are the only UI mutation path and therefore retain
+  server-side cycle, scope, single-parent, duplicate-policy, and corruption
+  checks.
 
-No UI-owned graph state is permitted.
+Graph reads are available to authenticated members inside their canonical
+tenant/project scope. Graph mutation is a high-impact structural operation:
+human callers require tenant admin authority plus MFA/step-up assurance, while
+service automation requires the explicit `work-graph:admin` scope.
+
+The operator UI renders the canonical snapshot as a deterministic SVG. It may
+filter, focus, zoom, and lay out nodes client-side, but it does **not** compute
+readiness or persist graph state. Critical-path, parallel-runnable, blocker,
+failure-impact, and progress displays come directly from the API. Clicking a
+node provides deterministic readiness reasons and a deep link to canonical Work
+Item operator detail.
+
+Focus expansion uses the canonical traversal endpoint in both directions.
+Relationship edits round-trip through the API; cycle/conflict errors are shown
+as rejection rather than being accepted into browser-local state.
+
+Graph-runnable remains only one prerequisite. Neither the API nor UI turns
+readiness into execution authority: M3 identity/policy/approval/resource,
+entitlement, worker capability/fenced lease, isolated execution workspace, and
+ActionIntent/provider boundaries still apply.
