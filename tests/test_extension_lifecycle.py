@@ -355,6 +355,23 @@ class ExtensionLifecycleTests(unittest.TestCase):
         with self.assertRaises(ExtensionConflictError):
             self.service.enable(installation.id, actor=self.actor)
 
+    def test_configure_requires_disable_before_mutating_enabled_extension(self) -> None:
+        installation = self._install()
+        self._grant_and_enable(installation, "extension.read")
+
+        with self.assertRaises(ExtensionConflictError):
+            self.service.configure(
+                installation.id,
+                ExtensionConfigureRequest(),
+                actor=self.actor,
+            )
+
+        current = self.service.get(installation.id, self.actor)
+        self.assertEqual(
+            current.lifecycle,
+            ExtensionLifecycleState.ENABLED,
+        )
+
     def test_three_unhealthy_reports_trip_circuit_breaker(self) -> None:
         installation = self._install()
         self._grant_and_enable(installation, "extension.read")
