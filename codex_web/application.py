@@ -250,6 +250,9 @@ app.state.model_gateway_service = model_gateway_service
 
 security_event_store = SecurityEventStore(state_store)
 security_boundary_service = SecurityBoundaryService(security_event_store)
+input_pipeline_definition_service.set_audit_sink(
+    security_boundary_service.record_input_plugin_event
+)
 app.include_router(build_security_router(security_boundary_service))
 app.state.security_event_store = security_event_store
 app.state.security_boundary_service = security_boundary_service
