@@ -51,6 +51,7 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/resources": "resources",
             "/api/action-providers": "action-providers",
             "/api/action-intents": "action-intents",
+            "/api/security/events": "security",
             "/api/execution-workspaces": "execution-workspaces",
             "/api/artifacts": "artifact-evidence",
             "/api/threads": "threads",
