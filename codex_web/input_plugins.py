@@ -245,6 +245,16 @@ class InputPluginRegistration(BaseModel):
         return self
 
 
+class InputGatedProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plugin_id: str
+    plugin_version: str
+    phase: InputPhase
+    field: str
+    value_sha256: str = Field(min_length=64, max_length=64)
+
+
 class InputPluginProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -275,7 +285,7 @@ class InputPipelineResult(BaseModel):
 
     envelope: InputEnvelope
     provenance: tuple[InputPluginProvenance, ...] = ()
-    gated_proposals: tuple[dict[str, Any], ...] = ()
+    gated_proposals: tuple[InputGatedProposal, ...] = ()
 
 
 GatedValidator = Callable[
@@ -386,7 +396,7 @@ class InputPluginPipeline:
     async def execute(self, envelope: InputEnvelope) -> InputPipelineResult:
         current = envelope
         provenance: list[InputPluginProvenance] = []
-        gated_proposals: list[dict[str, Any]] = []
+        gated_proposals: list[InputGatedProposal] = []
 
         for registration in self.registrations:
             plugin = registration.plugin
@@ -460,13 +470,13 @@ class InputPluginPipeline:
                 rejected_gated: list[str] = []
                 for field, value in gated.items():
                     gated_proposals.append(
-                        {
-                            "plugin_id": str(plugin.id),
-                            "plugin_version": str(plugin.version),
-                            "phase": registration.phase.value,
-                            "field": field,
-                            "value_sha256": _canonical_hash({"value": value}),
-                        }
+                        InputGatedProposal(
+                            plugin_id=str(plugin.id),
+                            plugin_version=str(plugin.version),
+                            phase=registration.phase,
+                            field=field,
+                            value_sha256=_canonical_hash({"value": value}),
+                        )
                     )
                     if await _accepted(
                         self.gated_validator,
