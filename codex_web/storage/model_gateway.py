@@ -12,12 +12,32 @@ MODEL_GATEWAY_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": MODEL_GATEWAY_CONTRACT.current,
+        "schema_version": "1.0",
         "providers": list(payload.get("providers", [])),
         "models": list(payload.get("models", [])),
         "prompt_templates": list(payload.get("prompt_templates", [])),
         "policies": list(payload.get("policies", [])),
         "invocations": list(payload.get("invocations", [])),
+    },
+)
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": MODEL_GATEWAY_CONTRACT.current,
+        "invocations": [
+            {
+                **item,
+                "input_plugin_provenance": list(
+                    item.get("input_plugin_provenance", [])
+                ),
+                "input_gated_proposals": list(
+                    item.get("input_gated_proposals", [])
+                ),
+            }
+            for item in payload.get("invocations", [])
+        ],
     },
 )
 
