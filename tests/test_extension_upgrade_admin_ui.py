@@ -27,6 +27,8 @@ class ExtensionUpgradeAdminUiTests(unittest.TestCase):
         self.assertIn("migration_evidence_id", javascript)
         self.assertIn("server-verified package", javascript)
         self.assertIn("window.confirm", javascript)
+        self.assertIn("canMutateMutation", javascript)
+        self.assertIn("requires tenant admin/owner plus MFA/local-trusted assurance", javascript)
 
 
 if __name__ == "__main__":
