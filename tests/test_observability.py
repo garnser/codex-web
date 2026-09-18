@@ -18,6 +18,7 @@ from codex_web.observability import (
     CORRELATION_HEADER,
     JsonFormatter,
     RuntimeHealth,
+    RuntimeLogStore,
     RuntimeMetrics,
     RuntimeTracer,
     correlated,
@@ -123,6 +124,7 @@ class RuntimeMetricsTests(unittest.TestCase):
         self.assertIn("/api/metrics", paths)
         self.assertIn("/api/health", paths)
         self.assertIn("/api/traces/recent", paths)
+        self.assertIn("/api/logs", paths)
         self.assertIn("/api/observability", paths)
 
     def test_http_correlation_is_propagated_and_observable_without_model_calls(self) -> None:
@@ -193,6 +195,7 @@ class RuntimeMetricsTests(unittest.TestCase):
                 "/api/metrics",
                 "/api/health",
                 "/api/traces/recent",
+                "/api/logs",
                 "/api/observability",
             ):
                 self.assertEqual(client.get(path).status_code, 403)
@@ -218,6 +221,137 @@ class RuntimeMetricsTests(unittest.TestCase):
                 update={"service_scopes": ("observability:read",)}
             )
             self.assertEqual(client.get("/api/metrics").status_code, 200)
+
+
+class RuntimeStructuredLogTests(unittest.TestCase):
+    def _record(self, *, created: float | None = None) -> logging.LogRecord:
+        record = logging.LogRecord(
+            "codex.test.logs",
+            logging.WARNING,
+            __file__,
+            1,
+            "free-form secret must-not-be-returned",
+            (),
+            None,
+        )
+        if created is not None:
+            record.created = created
+        record.structured = {
+            "event": "worker.recovered",
+            "operation": "recover",
+            "provider": "reference",
+            "resource_ids": ["resource-1"],
+            "api_token": "raw-token-must-not-leak",
+            "prompt": "raw-prompt-must-not-leak",
+            "arbitrary_body": "not-on-allowlist",
+        }
+        return record
+
+    def test_store_filters_by_tenant_and_returns_allowlisted_metadata_only(self) -> None:
+        store = RuntimeLogStore(max_entries=10, max_age_seconds=3600)
+        with correlated(
+            correlation_id="corr-a",
+            causation_id="cause-a",
+            tenant_id="org-a",
+            workspace_id="ws-a",
+            work_item_ref="group/app#1",
+            execution_id="exec-1",
+            action_intent_id="intent-1",
+        ):
+            store.append(self._record())
+
+        own = store.query(
+            tenant_id="org-a",
+            workspace_id="ws-a",
+            correlation_id="corr-a",
+        )
+        other = store.query(
+            tenant_id="org-b",
+            workspace_id="ws-b",
+        )
+
+        self.assertEqual(len(own), 1)
+        self.assertEqual(other, [])
+        item = own[0]
+        self.assertEqual(item["event"], "worker.recovered")
+        self.assertEqual(item["correlationId"], "corr-a")
+        self.assertEqual(item["causationId"], "cause-a")
+        self.assertEqual(item["workItemRef"], "group/app#1")
+        self.assertEqual(item["executionId"], "exec-1")
+        self.assertEqual(item["actionIntentId"], "intent-1")
+        self.assertEqual(item["fields"]["operation"], "recover")
+        self.assertEqual(item["fields"]["resource_ids"], ["resource-1"])
+        serialized = json.dumps(item)
+        self.assertNotIn("free-form secret", serialized)
+        self.assertNotIn("raw-token-must-not-leak", serialized)
+        self.assertNotIn("raw-prompt-must-not-leak", serialized)
+        self.assertNotIn("arbitrary_body", serialized)
+
+    def test_store_excludes_unscoped_logs_and_enforces_query_bounds(self) -> None:
+        store = RuntimeLogStore(max_entries=2, max_age_seconds=60)
+        store.append(self._record())
+
+        self.assertEqual(
+            store.query(tenant_id="org-a", workspace_id="ws-a"),
+            [],
+        )
+        with self.assertRaisesRegex(ValueError, "window_seconds"):
+            store.query(
+                tenant_id="org-a",
+                workspace_id="ws-a",
+                window_seconds=61,
+            )
+        with self.assertRaisesRegex(ValueError, "limit"):
+            store.query(
+                tenant_id="org-a",
+                workspace_id="ws-a",
+                limit=201,
+            )
+
+    def test_log_api_supports_deterministic_correlation_filtering(self) -> None:
+        app = FastAPI()
+        host = _Host()
+        install_observability(app, host)
+        actor = AuthenticationActor(
+            identity_id="operator",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-log-api",
+            workspace_id="ws-log-api",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = actor
+            return await call_next(request)
+
+        with correlated(
+            correlation_id="corr-log-api",
+            tenant_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            work_item_ref="group/app#log",
+        ):
+            app.state.runtime_log_store.append(self._record())
+
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/logs",
+                params={
+                    "correlation_id": "corr-log-api",
+                    "limit": 10,
+                    "window_seconds": 60,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["items"][0]["correlationId"], "corr-log-api")
+        self.assertEqual(payload["classification"], "internal")
+        self.assertEqual(payload["retention"]["storage"], "bounded_memory")
+        self.assertLessEqual(payload["retention"]["maxEntries"], 500)
+        self.assertIn("free-form messages", payload["payloadPolicy"])
 
 
 class CorrelationAndHealthTests(unittest.TestCase):
