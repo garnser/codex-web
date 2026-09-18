@@ -8,7 +8,8 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from codex_web.execution_contract_schema import execution_contract_for_work_item
-from codex_web.execution_contracts import ROLE_CONTRACTS
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.models import (
     Project,
     TaskSourceConfiguration,
@@ -22,6 +23,11 @@ from codex_web.services.task_sources import TaskSourceSnapshot
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.work_item_execution_models import WorkItemFailureReason
+
+
+ROLE_CONTRACTS = ExecutionRoleCatalogDefinition.model_validate(
+    execution_role_catalog_seed_payload()
+).role_map
 
 
 class _Hub:
