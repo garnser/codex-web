@@ -268,6 +268,20 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 raise _error(exc) from exc
             raise
 
+    @router.post("/api/artifact-evidence/governance/sync")
+    async def sync_governance(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            IdentityService.require_admin(actor)
+            return service.sync_governance_records(actor=actor)
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (ArtifactEvidenceError, AuthorizationError, TenantIsolationError),
+            ):
+                raise _error(exc) from exc
+            raise
+
     @router.post("/api/artifact-evidence/expire-retention")
     async def expire_retention(request: Request) -> dict[str, Any]:
         actor = request_actor(request)

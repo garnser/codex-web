@@ -177,6 +177,20 @@ class DataGovernanceService:
         actor: AuthenticationActor,
     ) -> GovernedDataRecord:
         self._require_mutation(actor)
+        return self.register_domain_record(payload, actor=actor)
+
+    def register_domain_record(
+        self,
+        payload: GovernedDataCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> GovernedDataRecord:
+        """Register mandatory metadata for an already-authorized domain write.
+
+        Domain services may call this after their own authorization decision.
+        The record is always bound to the caller's exact tenant/workspace and
+        source-derived classification can only become more restrictive.
+        """
         created: list[GovernedDataRecord] = []
 
         def apply(state: DataGovernanceState) -> DataGovernanceState:

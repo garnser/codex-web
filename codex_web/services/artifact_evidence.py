@@ -18,7 +18,15 @@ from codex_web.artifact_evidence import (
     VerificationCreate,
     VerificationResult,
 )
+from codex_web.data_governance import (
+    DataCategory,
+    DataClassification,
+    GovernedDataCreate,
+    GovernedDataRecord,
+    GovernanceAction,
+)
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
@@ -51,10 +59,12 @@ class ArtifactEvidenceService:
         *,
         resources: ResourceCatalogService | None = None,
         work_item_host: Any | None = None,
+        governance: DataGovernanceService | None = None,
     ) -> None:
         self.store = store
         self.resources = resources
         self.work_item_host = work_item_host
+        self.governance = governance
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -261,6 +271,35 @@ class ArtifactEvidenceService:
             produced_at=payload.produced_at or time.time(),
             metadata=payload.metadata,
         )
+        if self.governance is not None:
+            source_record_ids = (
+                (superseded.governance_record_id,)
+                if superseded is not None and superseded.governance_record_id
+                else ()
+            )
+            governance_record = self.governance.register_domain_record(
+                GovernedDataCreate(
+                    project_id=payload.project_id,
+                    object_type="artifact",
+                    object_id=artifact.id,
+                    category=DataCategory.ARTIFACT,
+                    classification=payload.classification,
+                    retention_policy_ref=payload.retention_policy_ref,
+                    retention_expires_at=payload.retention_expires_at,
+                    retention_action=payload.retention_action,
+                    residency_tags=payload.residency_tags,
+                    source_record_ids=source_record_ids,
+                    deny_model_context=payload.deny_model_context,
+                    reason="artifact_created",
+                ),
+                actor=actor,
+            )
+            artifact = artifact.model_copy(
+                update={
+                    "governance_record_id": governance_record.id,
+                    "retention_expires_at": governance_record.retention_expires_at,
+                }
+            )
         now = time.time()
 
         def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
@@ -326,6 +365,35 @@ class ArtifactEvidenceService:
             retention_expires_at=payload.retention_expires_at,
             metadata=payload.metadata,
         )
+        if self.governance is not None:
+            source_record_ids = tuple(
+                item.governance_record_id
+                for item in artifacts
+                if item.governance_record_id is not None
+            )
+            governance_record = self.governance.register_domain_record(
+                GovernedDataCreate(
+                    project_id=payload.project_id,
+                    object_type="evidence",
+                    object_id=evidence.id,
+                    category=DataCategory.EVIDENCE,
+                    classification=payload.classification,
+                    retention_policy_ref=payload.retention_policy_ref,
+                    retention_expires_at=payload.retention_expires_at,
+                    retention_action=payload.retention_action,
+                    residency_tags=payload.residency_tags,
+                    source_record_ids=source_record_ids,
+                    deny_model_context=payload.deny_model_context,
+                    reason="evidence_created",
+                ),
+                actor=actor,
+            )
+            evidence = evidence.model_copy(
+                update={
+                    "governance_record_id": governance_record.id,
+                    "retention_expires_at": governance_record.retention_expires_at,
+                }
+            )
 
         def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
             current.evidence.append(evidence)
@@ -386,6 +454,206 @@ class ArtifactEvidenceService:
 
         self.store.update(apply)
         return verification
+
+    def sync_governance_records(
+        self,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, int]:
+        """Backfill governance metadata for legacy artifact/evidence rows."""
+        if self.governance is None:
+            raise ArtifactEvidenceError("data governance service is not configured")
+        if not self._admin(actor):
+            raise AuthorizationError("artifact/evidence administrator required")
+
+        state = self.store.load()
+        artifact_updates: dict[str, tuple[str, float | None]] = {}
+        for artifact in state.artifacts:
+            if not self._same_scope(artifact, actor) or artifact.governance_record_id:
+                continue
+            record = self.governance.register_domain_record(
+                GovernedDataCreate(
+                    project_id=artifact.project_id,
+                    object_type="artifact",
+                    object_id=artifact.id,
+                    category=DataCategory.ARTIFACT,
+                    classification=DataClassification.CONFIDENTIAL,
+                    retention_expires_at=artifact.retention_expires_at,
+                    reason="legacy_artifact_governance_backfill",
+                ),
+                actor=actor,
+            )
+            artifact_updates[artifact.id] = (record.id, record.retention_expires_at)
+
+        if artifact_updates:
+            def apply_artifacts(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+                for index, item in enumerate(current.artifacts):
+                    update = artifact_updates.get(item.id)
+                    if update is not None and item.governance_record_id is None:
+                        current.artifacts[index] = item.model_copy(
+                            update={
+                                "governance_record_id": update[0],
+                                "retention_expires_at": update[1],
+                            }
+                        )
+                return current
+            state = self.store.update(apply_artifacts)
+        else:
+            state = self.store.load()
+
+        artifact_governance = {
+            item.id: item.governance_record_id
+            for item in state.artifacts
+            if self._same_scope(item, actor) and item.governance_record_id
+        }
+        evidence_updates: dict[str, tuple[str, float | None]] = {}
+        for evidence in state.evidence:
+            if not self._same_scope(evidence, actor) or evidence.governance_record_id:
+                continue
+            source_record_ids = tuple(
+                artifact_governance[artifact_id]
+                for artifact_id in evidence.artifact_ids
+                if artifact_id in artifact_governance
+            )
+            record = self.governance.register_domain_record(
+                GovernedDataCreate(
+                    project_id=evidence.project_id,
+                    object_type="evidence",
+                    object_id=evidence.id,
+                    category=DataCategory.EVIDENCE,
+                    classification=DataClassification.CONFIDENTIAL,
+                    retention_expires_at=evidence.retention_expires_at,
+                    source_record_ids=source_record_ids,
+                    reason="legacy_evidence_governance_backfill",
+                ),
+                actor=actor,
+            )
+            evidence_updates[evidence.id] = (record.id, record.retention_expires_at)
+
+        if evidence_updates:
+            def apply_evidence(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+                for index, item in enumerate(current.evidence):
+                    update = evidence_updates.get(item.id)
+                    if update is not None and item.governance_record_id is None:
+                        current.evidence[index] = item.model_copy(
+                            update={
+                                "governance_record_id": update[0],
+                                "retention_expires_at": update[1],
+                            }
+                        )
+                return current
+            self.store.update(apply_evidence)
+
+        return {
+            "artifacts": len(artifact_updates),
+            "evidence": len(evidence_updates),
+        }
+
+    def apply_governance_action(
+        self,
+        record: GovernedDataRecord,
+        action: GovernanceAction,
+    ) -> str:
+        """Redact codex-web artifact/evidence metadata while preserving tombstone IDs.
+
+        External Git/provider content is outside this handler and is never
+        claimed deleted by this receipt.
+        """
+        now = time.time()
+        changed = False
+
+        def apply(state: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            nonlocal changed
+            if record.object_type == "artifact":
+                for index, artifact in enumerate(state.artifacts):
+                    if (
+                        artifact.id != record.object_id
+                        or artifact.organization_id != record.organization_id
+                        or artifact.workspace_id != record.workspace_id
+                    ):
+                        continue
+                    identity = (
+                        "anonymized"
+                        if action == GovernanceAction.ANONYMIZE
+                        else "deleted"
+                        if action == GovernanceAction.DELETE
+                        else artifact.producer_identity_id
+                    )
+                    state.artifacts[index] = artifact.model_copy(
+                        update={
+                            "name": (
+                                "[deleted]"
+                                if action == GovernanceAction.DELETE
+                                else "[redacted]"
+                            ),
+                            "producer_identity_id": identity,
+                            "provider": None,
+                            "source": None,
+                            "external_id": None,
+                            "external_url": None,
+                            "revision": None,
+                            "digest": None if action == GovernanceAction.DELETE else artifact.digest,
+                            "metadata": {},
+                            "lifecycle": ArtifactLifecycle.INVALIDATED,
+                            "invalidated_at": now,
+                            "invalidation_reason": f"governance {action.value}",
+                        }
+                    )
+                    self._invalidate_dependents(
+                        state,
+                        artifact_ids={artifact.id},
+                        reason=f"governance {action.value}",
+                        now=now,
+                    )
+                    changed = True
+                    break
+            elif record.object_type == "evidence":
+                for index, evidence in enumerate(state.evidence):
+                    if (
+                        evidence.id != record.object_id
+                        or evidence.organization_id != record.organization_id
+                        or evidence.workspace_id != record.workspace_id
+                    ):
+                        continue
+                    identity = (
+                        "anonymized"
+                        if action == GovernanceAction.ANONYMIZE
+                        else "deleted"
+                        if action == GovernanceAction.DELETE
+                        else evidence.producer_identity_id
+                    )
+                    state.evidence[index] = evidence.model_copy(
+                        update={
+                            "producer_identity_id": identity,
+                            "provider": None,
+                            "source": None,
+                            "external_id": None,
+                            "deep_link": None,
+                            "summary": None,
+                            "digest": None if action == GovernanceAction.DELETE else evidence.digest,
+                            "metadata": {},
+                            "lifecycle": EvidenceLifecycle.INVALIDATED,
+                            "invalidated_at": now,
+                            "invalidation_reason": f"governance {action.value}",
+                        }
+                    )
+                    self._invalidate_dependents(
+                        state,
+                        evidence_ids={evidence.id},
+                        reason=f"governance {action.value}",
+                        now=now,
+                    )
+                    changed = True
+                    break
+            else:
+                raise ArtifactEvidenceError(
+                    f"unsupported governance object type: {record.object_type}"
+                )
+            return state
+
+        self.store.update(apply)
+        suffix = "applied" if changed else "already_absent"
+        return f"artifact-evidence:{record.object_type}:{record.object_id}:{action.value}:{suffix}"
 
     def invalidate_artifact(
         self,
