@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from codex_web.identity import AuthenticationActor
+from codex_web.model_gateway import (
+    MODEL_CLASS_STRATEGIC,
+    ModelDefinitionUpsert,
+    ModelInvocationRequest,
+    ModelMessage,
+    ModelProviderResult,
+    ModelProviderUpsert,
+    ModelProviderUsage,
+    PromptTemplateUpsert,
+    TenantModelPolicyUpdate,
+)
+from codex_web.model_providers import (
+    ModelProviderAdapter,
+    ModelProviderTransientError,
+    OpenAIModelProviderAdapter,
+)
+from codex_web.secret_backends import LocalFileSecretBackend
+from codex_web.secrets import SecretCreate
+from codex_web.services.identity import IdentityService
+from codex_web.services.model_gateway import (
+    ModelGatewayService,
+    ModelProviderUnavailableError,
+    ModelRoutingError,
+)
+from codex_web.services.secrets import SecretBroker
+from codex_web.storage.identity_state import IdentityStateStore
+from codex_web.storage.model_gateway import ModelGatewayStore
+from codex_web.storage.secret_state import SecretStateStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+class _FakeAdapter:
+    adapter_type = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.transient_models: set[str] = set()
+
+    async def invoke(self, provider, model, request, *, credential):
+        self.calls.append((model.id, credential))
+        if model.id in self.transient_models:
+            raise ModelProviderTransientError("temporary provider outage")
+        return ModelProviderResult(
+            text=f"reply:{model.id}",
+            usage=ModelProviderUsage(input_tokens=100, output_tokens=20),
+            provider_request_id=f"request:{model.id}",
+        )
+
+
+class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.sqlite = SQLiteStateStore(root / "state.sqlite3")
+        identity = IdentityService(IdentityStateStore(self.sqlite))
+        identity.bootstrap_local()
+        self.actor = identity.local_trusted_actor()
+        self.secret_broker = SecretBroker(
+            SecretStateStore(self.sqlite),
+            {"local": LocalFileSecretBackend(root / "secrets")},
+        )
+        self.service = ModelGatewayService(
+            ModelGatewayStore(self.sqlite),
+            secret_broker=self.secret_broker,
+        )
+        self.adapter = _FakeAdapter()
+        self.service.register_adapter(self.adapter)
+        self.service.upsert_template(
+            PromptTemplateUpsert(
+                template_id="executive.system",
+                version="1.0",
+                content="{{ instructions }}",
+            ),
+            actor=self.actor,
+        )
+
+    async def asyncTearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _provider(self, provider_id: str = "p1", **overrides):
+        payload = {
+            "id": provider_id,
+            "adapter_type": "fake",
+            "display_name": provider_id,
+            "credential_required": False,
+            "residency_tags": ("eu",),
+            "compliance_tags": ("gdpr",),
+        }
+        payload.update(overrides)
+        return self.service.upsert_provider(
+            ModelProviderUpsert(**payload),
+            actor=self.actor,
+        )
+
+    def _model(self, model_id: str, provider_id: str = "p1", **overrides):
+        payload = {
+            "id": model_id,
+            "provider_id": provider_id,
+            "concrete_model": f"concrete-{model_id}",
+            "model_version": "2026-09",
+            "model_classes": (MODEL_CLASS_STRATEGIC,),
+            "capabilities": ("text", "reasoning"),
+            "context_window_tokens": 32000,
+            "max_output_tokens": 4096,
+            "residency_tags": ("eu",),
+            "compliance_tags": ("gdpr",),
+            "input_price_per_million_usd": 1.0,
+            "output_price_per_million_usd": 2.0,
+        }
+        payload.update(overrides)
+        return self.service.upsert_model(
+            ModelDefinitionUpsert(**payload),
+            actor=self.actor,
+        )
+
+    @staticmethod
+    def _request(**overrides):
+        payload = {
+            "model_class": MODEL_CLASS_STRATEGIC,
+            "messages": (ModelMessage(role="user", content="What should we do?"),),
+            "system_prompt": "Sensitive system context",
+            "prompt_template_id": "executive.system",
+            "prompt_template_version": "1.0",
+            "required_capabilities": ("text", "reasoning"),
+            "required_residency_tags": ("eu",),
+            "required_compliance_tags": ("gdpr",),
+            "max_output_tokens": 1000,
+            "purpose": "executive-advice",
+        }
+        payload.update(overrides)
+        return ModelInvocationRequest(**payload)
+
+    async def test_routing_is_deterministic_by_class_policy_health_and_priority(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("slow", "p1", route_priority=50)
+        self._model("fast", "p2", route_priority=10)
+
+        route = self.service.route(self._request(), actor=self.actor)
+
+        self.assertEqual([item.model_id for item in route.candidates], ["fast", "slow"])
+        self.assertEqual(route.policy_max_attempts, 2)
+        self.assertEqual(route.prompt_template_version, "1.0")
+
+    async def test_residency_and_allowlist_fail_before_adapter_invocation(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        self.service.set_policy(
+            TenantModelPolicyUpdate(
+                allowed_provider_ids=("p1",),
+                required_residency_tags=("se",),
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(ModelRoutingError):
+            self.service.route(self._request(), actor=self.actor)
+
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_budget_requires_known_pricing_and_rejects_over_budget(self) -> None:
+        self._provider("p1")
+        self._model(
+            "expensive",
+            input_price_per_million_usd=1000,
+            output_price_per_million_usd=1000,
+        )
+
+        with self.assertRaises(ModelRoutingError):
+            self.service.route(
+                self._request(max_cost_usd=0.0001),
+                actor=self.actor,
+            )
+
+    async def test_transient_failure_falls_back_with_bounded_attempts(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("first", "p1", route_priority=1)
+        self._model("second", "p2", route_priority=2)
+        self.adapter.transient_models.add("first")
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual(result.text, "reply:second")
+        self.assertEqual([item[0] for item in self.adapter.calls], ["first", "second"])
+        self.assertEqual(len(result.invocation.attempts), 2)
+        self.assertEqual(result.invocation.attempts[0].outcome, "transient_failure")
+        self.assertEqual(result.invocation.attempts[1].outcome, "success")
+        self.assertEqual(result.invocation.selected_model_id, "second")
+
+    async def test_policy_bounds_fallback_attempts(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("first", "p1", route_priority=1)
+        self._model("second", "p2", route_priority=2)
+        self.adapter.transient_models.add("first")
+        self.service.set_policy(
+            TenantModelPolicyUpdate(max_attempts=1),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(ModelProviderUnavailableError):
+            await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual([item[0] for item in self.adapter.calls], ["first"])
+        rows = self.service.invocations(self.actor)
+        self.assertEqual(rows[0].status, "failed")
+        self.assertEqual(len(rows[0].attempts), 1)
+
+    async def test_secret_reference_is_resolved_only_at_provider_boundary(self) -> None:
+        secret = self.secret_broker.create(
+            SecretCreate(
+                name="model provider key",
+                value="super-secret-provider-key",
+                provider="fake",
+                purpose="model invocation",
+            ),
+            actor=self.actor,
+        )
+        self._provider(
+            "p1",
+            credential_ref=secret.id,
+            credential_required=True,
+        )
+        self._model("m1")
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual(result.text, "reply:m1")
+        self.assertEqual(self.adapter.calls[-1], ("m1", "super-secret-provider-key"))
+        registry_json = self.service.store.load().model_dump_json()
+        self.assertNotIn("super-secret-provider-key", registry_json)
+        self.assertIn(secret.id, registry_json)
+
+    async def test_invocation_ledger_contains_hashes_not_prompt_or_output_content(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        request = self._request(
+            system_prompt="TOP SECRET SYSTEM TEXT",
+            messages=(ModelMessage(role="user", content="SENSITIVE USER MESSAGE"),),
+        )
+
+        result = await self.service.invoke(request, actor=self.actor)
+        serialized = result.invocation.model_dump_json()
+
+        self.assertNotIn("TOP SECRET SYSTEM TEXT", serialized)
+        self.assertNotIn("SENSITIVE USER MESSAGE", serialized)
+        self.assertNotIn("reply:m1", serialized)
+        self.assertEqual(len(result.invocation.rendered_prompt_sha256), 64)
+        self.assertEqual(result.invocation.prompt_template_version, "1.0")
+        self.assertEqual(result.invocation.selected_concrete_model, "concrete-m1")
+
+    async def test_cross_tenant_actor_cannot_resolve_registry_entries(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        other: AuthenticationActor = self.actor.model_copy(
+            update={
+                "organization_id": "other",
+                "workspace_id": "other",
+            }
+        )
+
+        with self.assertRaises(ModelRoutingError):
+            self.service.route(self._request(), actor=other)
+
+    async def test_reference_openai_adapter_satisfies_provider_protocol_and_classifies_429(self) -> None:
+        adapter = OpenAIModelProviderAdapter()
+        self.assertIsInstance(adapter, ModelProviderAdapter)
+
+        class _RateLimit(Exception):
+            status_code = 429
+
+        classified = adapter._classify(_RateLimit("too many requests"))
+        self.assertIsInstance(classified, ModelProviderTransientError)
+
+
+if __name__ == "__main__":
+    unittest.main()
