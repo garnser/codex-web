@@ -2238,50 +2238,6 @@ async function saveAgentChannelPresence() {
   }
 }
 
-function renderExtensionAdmin(installations, packages) {
-  const list = $("extension-admin-list");
-  const status = $("extension-admin-status");
-  if (!list || !status) return;
-  const packageErrors = packages?.errors || [];
-  status.hidden = false;
-  status.textContent = `${installations.length} installed · ${packages?.items?.length || 0} discovered package(s)${packageErrors.length ? ` · ${packageErrors.length} package error(s)` : ""}`;
-  if (!installations.length) {
-    list.innerHTML = '<div class="comm-entry"><strong>No extensions installed</strong><small>Discovered packages remain available through the canonical extension API.</small></div>';
-    return;
-  }
-  list.innerHTML = installations.map((item) => {
-    const manifest = item.manifest || {};
-    const verification = item.package_verification || {};
-    const capabilities = manifest.capabilities || {};
-    const requested = capabilities.requested || [];
-    return `<div class="comm-entry">
-      <strong>${escapeHtml(manifest.id || item.id)} @ ${escapeHtml(manifest.version || "unknown")}</strong>
-      <small>Lifecycle: ${escapeHtml(item.lifecycle)} · Health: ${escapeHtml(item.health_status)} · Deployment: ${escapeHtml(item.deployment_mode)}</small>
-      <small>Publisher: ${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")} · Digest verified: ${verification.digest_verified ? "yes" : "no"} · Signature: ${escapeHtml(verification.signature_status || "unknown")}</small>
-      <small>Requested capabilities: ${requested.length ? requested.map(escapeHtml).join(", ") : "none"} · Config refs: ${item.configuration_record_ids?.length || 0} · Secret bindings: ${Object.keys(item.secret_bindings || {}).length}</small>
-    </div>`;
-  }).join("");
-}
-
-async function refreshExtensionAdmin() {
-  const status = $("extension-admin-status");
-  if (status) {
-    status.hidden = false;
-    status.textContent = "Loading extension state...";
-  }
-  try {
-    const [extensions, packages] = await Promise.all([
-      api("/api/extensions"),
-      api("/api/extensions/packages"),
-    ]);
-    renderExtensionAdmin(extensions.items || [], packages);
-  } catch (error) {
-    if (status) status.textContent = `Unable to load extensions: ${error.message}`;
-    const list = $("extension-admin-list");
-    if (list) list.innerHTML = "";
-  }
-}
-
 async function refreshDeveloperInfo() {
   const panel = $("developer-panel");
   if (panel && !panel.open) return;
@@ -2294,7 +2250,6 @@ async function refreshDeveloperInfo() {
       api(`/api/diagnostics?project_id=${encodeURIComponent(state.projectId)}`),
       refreshGitLabIntegration(),
       refreshAgentChannelPresence(),
-      refreshExtensionAdmin(),
     ]);
     state.diagnostics = diagnostics;
     const info = {
@@ -2395,7 +2350,6 @@ $("developer-panel").addEventListener("toggle", () => {
   refreshDeveloperInfo().catch(console.error);
 });
 $("refresh-developer").addEventListener("click", refreshDeveloperInfo);
-$("refresh-extensions").addEventListener("click", refreshExtensionAdmin);
 $("recover-daemon").addEventListener("click", recoverDaemon);
 $("run-route-test").addEventListener("click", runRouteTest);
 $("save-gitlab-routing").addEventListener("click", saveGitLabIntegration);
