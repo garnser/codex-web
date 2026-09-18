@@ -186,7 +186,7 @@ class ExternalInputPluginTransportTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(
             InputPluginSecurityError,
-            "secret/credential-like",
+            "credential/secret fields",
         ):
             await plugin.transform(
                 self._envelope(),
