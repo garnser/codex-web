@@ -4,11 +4,18 @@ Every mutable execution owns a canonical execution workspace and resource lease.
 
 ## Workspace identity
 
-An execution workspace is identified deterministically from organization, tenant workspace, Work Item ref, and execution ID. Repeating acquisition for the same live execution is idempotent; a terminal execution ID cannot be silently reused.
+An execution workspace is identified deterministically from organization, tenant workspace, canonical `ExecutionSubject`, and execution ID. Repeating acquisition for the same live execution is idempotent; a terminal execution ID cannot be silently reused.
+
+Supported subject kinds are explicit durable contract values:
+
+- `work_item:<ref>` for canonical Work Item execution;
+- `thread:<thread-id>` for an already-created Codex thread;
+- `thread_bootstrap:<bootstrap-id>` for isolated thread creation before Codex has returned the canonical thread ID.
 
 The canonical record includes:
 
-- Work Item and execution identity;
+- execution subject and execution identity;
+- legacy `work_item_ref` only when the subject kind is `work_item`;
 - Project and canonical Resource IDs;
 - owner identity;
 - workspace kind;
@@ -18,6 +25,16 @@ The canonical record includes:
 - requested/observed resource usage;
 - lifecycle/error state;
 - structured integration outcome.
+
+## Thread bootstrap identity
+
+The pinned Codex app-server generates the canonical thread ID during `thread/start`. Isolated execution therefore cannot honestly use a `thread:<thread-id>` subject before that RPC completes.
+
+A control-plane generated immutable bootstrap ID is used as `thread_bootstrap:<bootstrap-id>` to acquire the workspace and worker assignment first. The returned Codex thread ID is then recorded in a separate immutable, tenant-scoped bootstrap binding that references the existing execution, assignment, and execution workspace.
+
+The original assignment/workspace subject is never rewritten to the returned thread ID. This preserves deterministic IDs and historical provenance. A later lookup may map the thread ID back to the still-live bootstrap assignment/session; conflicting rebinding or cross-tenant lookup fails closed. If the isolated process/session is lost and cannot be safely resumed, recovery must mark/fail the canonical execution rather than falling back to the control-plane Codex runtime.
+
+Bootstrap and ordinary `thread` subjects never synchronize Work Item execution state. Only `work_item` subjects populate or update legacy Work Item execution references.
 
 ## Resource leases
 
@@ -37,7 +54,7 @@ This prevents two agents from accidentally receiving write authority over the sa
 Repository resources use `LocalGitWorkspaceBackend`:
 
 1. resolve and pin an exact base revision;
-2. create a deterministic branch `codex/<work-item>/<execution-hash>`;
+2. create a deterministic branch from the execution subject ref plus execution hash;
 3. create an isolated Git worktree beneath the private execution-workspace root;
 4. record the exact path/base/head revision canonically.
 
