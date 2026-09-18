@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import resource
 import shutil
@@ -55,7 +56,8 @@ class LocalIsolationStatus:
 
 @dataclass(frozen=True, slots=True)
 class LocalExecutionResult:
-    argv: tuple[str, ...]
+    executable: str
+    command_digest: str
     exit_code: int
     stdout: str
     stderr: str
@@ -226,6 +228,9 @@ class BubblewrapExecutionBackend:
                 env[normalized] = str(value)
         return env
 
+    def validate_assignment(self, assignment: ExecutionAssignment) -> None:
+        self.validate_assignment(assignment)
+
     @staticmethod
     def _validate_network(policy: NetworkPolicy) -> None:
         if not policy.enabled:
@@ -390,8 +395,10 @@ class BubblewrapExecutionBackend:
                 stdout_raw = stdout_raw[: self.max_output_bytes]
                 stderr_raw = stderr_raw[: self.max_output_bytes]
 
+        encoded_argv = "\0".join(str(item) for item in argv).encode("utf-8", errors="replace")
         return LocalExecutionResult(
-            argv=tuple(str(item) for item in argv),
+            executable=Path(str(argv[0])).name,
+            command_digest="sha256:" + hashlib.sha256(encoded_argv).hexdigest(),
             exit_code=exit_code,
             stdout=stdout_raw.decode("utf-8", errors="replace"),
             stderr=stderr_raw.decode("utf-8", errors="replace"),
