@@ -85,7 +85,7 @@ Each plugin step records metadata only:
 - outcome;
 - applied fields;
 - gated proposals/rejections;
-- warnings;
+- hashes of plugin-supplied warnings plus readable core-generated rejection codes;
 - character/token estimates;
 - start/completion/duration.
 
