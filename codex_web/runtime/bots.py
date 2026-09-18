@@ -259,7 +259,7 @@ class BotRuntime:
                         message_id=event.get("ts"),
                     )
                 )
-            if result.get("ambiguous") and connection.bot_token:
+            if result.get("ambiguous") and self._credential_identity(connection, "bot_token"):
                 binding = self.host._first_binding_for_connection("slack", channel)
                 async def send_ambiguous(token: str):
                     return await self.slack.post_message(
@@ -273,7 +273,7 @@ class BotRuntime:
                 await self._with_credential(
                     connection, "bot_token", "slack.post_message", send_ambiguous
                 )
-            elif result.get("timedOut") and connection.bot_token:
+            elif result.get("timedOut") and self._credential_identity(connection, "bot_token"):
                 binding = self.host._first_binding_for_connection("slack", channel)
                 async def send_timeout(token: str):
                     return await self.slack.post_message(
@@ -306,7 +306,7 @@ class BotRuntime:
                     "error": str(exc),
                 }
             )
-            if channel and connection.bot_token:
+            if channel and self._credential_identity(connection, "bot_token"):
                 binding = self.host._first_binding_for_connection("slack", channel)
                 async def send_error(token: str):
                     return await self.slack.post_message(
