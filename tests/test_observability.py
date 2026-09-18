@@ -309,6 +309,7 @@ class RuntimeStructuredLogTests(unittest.TestCase):
             store.query(
                 tenant_id="org-a",
                 workspace_id="ws-a",
+                window_seconds=60,
                 limit=201,
             )
 
