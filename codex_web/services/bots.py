@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from codex_web.integrations.slack_client import SlackClient
+from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
 from codex_web.services.bot_details import install_bot_detail_service
 from codex_web.services.bot_routing import BotRoutingService
@@ -85,8 +86,12 @@ class BotService:
             for connection in self.host._load_bot_connections()
         ]
 
-    async def save_connection(self, payload: BotConnectionCreate) -> dict[str, Any]:
-        connection = self.host._upsert_bot_connection(payload)
+    async def save_connection(
+        self,
+        payload: BotConnectionCreate,
+        actor: AuthenticationActor | None = None,
+    ) -> dict[str, Any]:
+        connection = self.host._upsert_bot_connection(payload, actor=actor)
         await self.host.bot_runtime.sync()
         return self.host._bot_connection_public(connection)
 
