@@ -213,6 +213,9 @@ class ModelRouteResult(BaseModel):
     prompt_template_checksum_sha256: str
     candidates: tuple[ModelRouteCandidate, ...]
     policy_max_attempts: int
+    policy_fingerprint_sha256: str
+    effective_required_residency_tags: tuple[str, ...] = ()
+    effective_required_compliance_tags: tuple[str, ...] = ()
     effective_max_cost_usd: float | None = None
 
 
@@ -270,6 +273,7 @@ class ModelInvocationRecord(BaseModel):
     required_residency_tags: tuple[str, ...] = ()
     required_compliance_tags: tuple[str, ...] = ()
     max_cost_usd: float | None = None
+    policy_fingerprint_sha256: str
     route_reason: str
     work_item_ref: str | None = None
     goal_id: str | None = None
