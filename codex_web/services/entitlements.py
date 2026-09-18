@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import time
+import uuid
 
 from codex_web.entitlements import (
     CapabilityEntitlement,
@@ -326,7 +327,7 @@ class EntitlementService:
                 None,
             )
             item = CapabilityEntitlement(
-                id=existing.id if existing else f"entitlement-{__import__('uuid').uuid4().hex}",
+                id=existing.id if existing else f"entitlement-{uuid.uuid4().hex}",
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
                 capability=key,
@@ -371,7 +372,7 @@ class EntitlementService:
                 None,
             )
             item = QuotaPolicy(
-                id=existing.id if existing else f"quota-{__import__('uuid').uuid4().hex}",
+                id=existing.id if existing else f"quota-{uuid.uuid4().hex}",
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
                 metric=key,
