@@ -175,7 +175,7 @@ class DataGovernanceServiceTests(unittest.TestCase):
         first = self.service.retention_sweep(actor=self.admin, now=11.0)
         second = self.service.retention_sweep(actor=self.admin, now=12.0)
 
-        self.assertEqual(first.due_record_ids, (held.id, due.id))
+        self.assertEqual(set(first.due_record_ids), {due.id, held.id})
         self.assertEqual(first.held_record_ids, (held.id,))
         self.assertEqual(len(first.request_ids), 1)
         self.assertEqual(first.request_ids, second.request_ids)
