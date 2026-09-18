@@ -39,6 +39,7 @@ from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.model_providers import OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
+from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.execution_workers import WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
