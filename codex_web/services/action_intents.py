@@ -1,0 +1,1101 @@
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from typing import Any
+
+from codex_web.action_intents import (
+    ActionDecisionOutcome,
+    ActionInboxCreate,
+    ActionInboxMessage,
+    ActionIntent,
+    ActionIntentClaimRequest,
+    ActionIntentCreate,
+    ActionIntentLease,
+    ActionIntentReceipt,
+    ActionIntentReconcileRequest,
+    ActionIntentRetryRequest,
+    ActionIntentRollbackRequest,
+    ActionIntentStatus,
+    ActionIntentVerificationReceipt,
+    TERMINAL_ACTION_INTENT_STATUSES,
+)
+from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.observability import correlated, current_correlation, new_correlation_id
+from codex_web.services.action_providers import (
+    ActionExecutionService,
+    ActionProviderError,
+    ActionRequirementError,
+)
+from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.storage.action_intents import ActionIntentStore
+
+
+class ActionIntentError(RuntimeError):
+    pass
+
+
+class ActionIntentNotFoundError(ActionIntentError):
+    pass
+
+
+class ActionIntentConflictError(ActionIntentError):
+    pass
+
+
+class ActionIntentLeaseError(ActionIntentError):
+    pass
+
+
+class ActionIntentUnsafeRetryError(ActionIntentError):
+    pass
+
+
+class ActionIntentService:
+    """Durable outbox/inbox and reconciliation boundary for external side effects."""
+
+    def __init__(
+        self,
+        store: ActionIntentStore,
+        execution: ActionExecutionService,
+        *,
+        artifact_evidence: ArtifactEvidenceService | None = None,
+        work_item_host: Any | None = None,
+    ) -> None:
+        self.store = store
+        self.execution = execution
+        self.artifact_evidence = artifact_evidence
+        self.work_item_host = work_item_host
+
+    @staticmethod
+    def _admin(actor: AuthenticationActor) -> bool:
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            return "action-intent:admin" in actor.service_scopes
+        return actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+
+    @classmethod
+    def _require_worker(cls, actor: AuthenticationActor) -> None:
+        if cls._admin(actor):
+            return
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:worker", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError(
+            "action intent worker operations require action-intent:worker scope or administrator identity"
+        )
+
+    @classmethod
+    def _require_callback_actor(cls, actor: AuthenticationActor) -> None:
+        if cls._admin(actor):
+            return
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:callback", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError(
+            "provider callback ingestion requires action-intent:callback scope or administrator identity"
+        )
+
+    @classmethod
+    def _require_intent_control(
+        cls,
+        intent: ActionIntent,
+        actor: AuthenticationActor,
+    ) -> None:
+        if intent.requested_by == actor.identity_id or cls._admin(actor):
+            return
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:worker", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError("action intent requester, worker, or administrator required")
+
+    @staticmethod
+    def _same_scope(intent: ActionIntent, actor: AuthenticationActor) -> bool:
+        return (
+            intent.organization_id == actor.organization_id
+            and intent.workspace_id == actor.workspace_id
+        )
+
+    def _intent(self, intent_id: str, actor: AuthenticationActor) -> ActionIntent:
+        intent = next(
+            (
+                item
+                for item in self.store.load().intents
+                if item.id == intent_id and self._same_scope(item, actor)
+            ),
+            None,
+        )
+        if intent is None:
+            raise ActionIntentNotFoundError("action intent not found")
+        return intent
+
+    def list(
+        self,
+        actor: AuthenticationActor,
+        *,
+        work_item_ref: str | None = None,
+        status: ActionIntentStatus | None = None,
+    ) -> list[ActionIntent]:
+        items = [
+            item
+            for item in self.store.load().intents
+            if self._same_scope(item, actor)
+        ]
+        if work_item_ref is not None:
+            items = [item for item in items if item.work_item_ref == work_item_ref]
+        if status is not None:
+            items = [item for item in items if item.status == status]
+        return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def get(self, intent_id: str, actor: AuthenticationActor) -> ActionIntent:
+        return self._intent(intent_id, actor)
+
+    def history(self, intent_id: str, actor: AuthenticationActor) -> dict[str, Any]:
+        intent = self._intent(intent_id, actor)
+        state = self.store.load()
+        return {
+            "intent": intent.model_dump(mode="json"),
+            "receipts": [
+                item.model_dump(mode="json")
+                for item in state.receipts
+                if item.intent_id == intent.id
+            ],
+            "verifications": [
+                item.model_dump(mode="json")
+                for item in state.verifications
+                if item.intent_id == intent.id
+            ],
+            "inbox": [
+                item.model_dump(mode="json")
+                for item in state.inbox
+                if item.intent_id == intent.id
+            ],
+        }
+
+    def _validate_work_item_attribution(
+        self,
+        work_item_ref: str | None,
+        project_id: str | None,
+        actor: AuthenticationActor,
+    ) -> None:
+        if work_item_ref is None:
+            return
+        if self.work_item_host is None:
+            raise ActionIntentConflictError(
+                "work item attribution requires canonical Work Item state"
+            )
+        states = self.work_item_host._load_work_item_states()
+        state = states.get(work_item_ref)
+        if state is None or (
+            state.organization_id != actor.organization_id
+            or state.workspace_id != actor.workspace_id
+        ):
+            raise ActionIntentNotFoundError("work item not found")
+        if (
+            state.project_id is not None
+            and project_id is not None
+            and state.project_id != project_id
+        ):
+            raise ActionIntentConflictError(
+                "action intent project does not match attributed Work Item"
+            )
+
+    def _work_item_requirements(
+        self,
+        work_item_ref: str | None,
+        actor: AuthenticationActor,
+    ):
+        if not work_item_ref or self.artifact_evidence is None:
+            return ()
+        return self.artifact_evidence.work_item_requirements(
+            work_item_ref,
+            actor=actor,
+        )
+
+    def create(
+        self,
+        payload: ActionIntentCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        request = payload.request
+        if (
+            request.organization_id != actor.organization_id
+            or request.workspace_id != actor.workspace_id
+        ):
+            raise TenantIsolationError("cross-tenant action intent denied")
+
+        binding, provider, definition, request = self.execution.resolve_contract(
+            payload.binding_id,
+            request,
+            actor=actor,
+        )
+        self._validate_work_item_attribution(
+            payload.work_item_ref,
+            request.project_id,
+            actor,
+        )
+        if payload.work_item_success is not None and payload.work_item_ref is None:
+            raise ActionIntentConflictError(
+                "work_item_success requires work_item_ref"
+            )
+        if payload.rollback_required and (
+            not definition.capabilities.rollback or not definition.reversible
+        ):
+            raise ActionRequirementError(
+                "rollback-required intent needs a reversible rollback-capable action"
+            )
+
+        # Suppress duplicate creation when the caller supplies a stable provider
+        # idempotency key. Generated per-intent keys intentionally do not dedupe
+        # logically distinct caller requests.
+        if request.idempotency_key:
+            existing = next(
+                (
+                    item
+                    for item in self.store.load().intents
+                    if item.organization_id == actor.organization_id
+                    and item.workspace_id == actor.workspace_id
+                    and item.binding_id == binding.id
+                    and item.action_id == request.action_id
+                    and item.idempotency_key == request.idempotency_key
+                    and item.status != ActionIntentStatus.CANCELLED
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
+
+        now = time.time()
+        context = current_correlation()
+        correlation_id = (
+            request.correlation_id
+            or (context.correlation_id if context else None)
+            or new_correlation_id()
+        )
+        causation_id = context.causation_id if context else None
+        intent_id = f"action-intent-{uuid.uuid4().hex}"
+        provider_idempotency = bool(definition.capabilities.idempotency)
+        idempotency_key = request.idempotency_key or f"codex-intent:{intent_id}"
+        provider_request = request
+        if provider_idempotency and not request.idempotency_key:
+            provider_request = request.model_copy(
+                update={
+                    "idempotency_key": idempotency_key,
+                    "correlation_id": correlation_id,
+                    "requested_by": request.requested_by or actor.identity_id,
+                }
+            )
+        else:
+            provider_request = request.model_copy(
+                update={
+                    "correlation_id": correlation_id,
+                    "requested_by": request.requested_by or actor.identity_id,
+                }
+            )
+
+        expected_evidence = (
+            payload.expected_evidence
+            or self._work_item_requirements(payload.work_item_ref, actor)
+        )
+        verification_required = (
+            bool(definition.capabilities.verification)
+            if payload.verification_required is None
+            else payload.verification_required
+        )
+        if verification_required and not definition.capabilities.verification:
+            raise ActionRequirementError(
+                "verification-required intent needs a verification-capable action"
+            )
+        timeout_seconds = payload.timeout_seconds or definition.timeout_seconds
+        retry_policy = payload.retry_policy.model_copy(
+            update={
+                "max_attempts": min(
+                    payload.retry_policy.max_attempts,
+                    definition.retry_max_attempts,
+                )
+            }
+        )
+        denied = (
+            payload.authority_decision.outcome == ActionDecisionOutcome.DENY
+            or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
+        )
+        intent = ActionIntent(
+            id=intent_id,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            project_id=request.project_id,
+            work_item_ref=payload.work_item_ref,
+            goal_id=payload.goal_id,
+            decision_id=payload.decision_id,
+            execution_id=payload.execution_id,
+            binding_id=binding.id,
+            provider_type=provider.provider_type,
+            provider_instance=provider.provider_instance,
+            action_id=request.action_id,
+            action_definition=definition,
+            request=provider_request,
+            authority_decision=payload.authority_decision,
+            policy_decision=payload.policy_decision,
+            credential_ref=provider_request.credential_ref,
+            resource_ids=provider_request.resource_ids,
+            idempotency_key=idempotency_key,
+            provider_idempotency_supported=provider_idempotency,
+            expected_evidence=tuple(expected_evidence),
+            verification_required=verification_required,
+            rollback_required=payload.rollback_required,
+            timeout_seconds=timeout_seconds,
+            retry_policy=retry_policy,
+            status=ActionIntentStatus.CANCELLED if denied else ActionIntentStatus.PENDING,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            requested_by=actor.identity_id,
+            created_at=now,
+            updated_at=now,
+            completed_at=now if denied else None,
+            last_error="authority or policy denied action" if denied else None,
+            work_item_success=payload.work_item_success,
+        )
+
+        def apply(state):
+            state.intents.append(intent)
+            return state
+
+        self.store.update(apply)
+        return intent
+
+    def recover_stale_claims(
+        self,
+        *,
+        now: float | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[str]:
+        current = time.time() if now is None else now
+        recovered: list[str] = []
+
+        def apply(state):
+            for index, intent in enumerate(state.intents):
+                lease = intent.lease
+                if (
+                    (organization_id is not None and intent.organization_id != organization_id)
+                    or (workspace_id is not None and intent.workspace_id != workspace_id)
+                    or lease is None
+                    or lease.expires_at > current
+                    or intent.status not in {
+                        ActionIntentStatus.CLAIMED,
+                        ActionIntentStatus.EXECUTING,
+                    }
+                ):
+                    continue
+                if intent.status == ActionIntentStatus.CLAIMED:
+                    status = ActionIntentStatus.PENDING
+                    error = "worker claim expired before provider execution"
+                else:
+                    status = ActionIntentStatus.UNCERTAIN
+                    error = "worker lease expired after provider execution started; outcome unknown"
+                state.intents[index] = intent.model_copy(
+                    update={
+                        "status": status,
+                        "lease": None,
+                        "updated_at": current,
+                        "last_error": error,
+                    }
+                )
+                recovered.append(intent.id)
+            return state
+
+        self.store.update(apply)
+        return recovered
+
+    def claim(
+        self,
+        payload: ActionIntentClaimRequest,
+        *,
+        actor: AuthenticationActor,
+        intent_id: str | None = None,
+    ) -> ActionIntent | None:
+        self._require_worker(actor)
+        self.recover_stale_claims(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        now = time.time()
+        claimed: list[ActionIntent] = []
+
+        def apply(state):
+            candidates = [
+                item
+                for item in state.intents
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.status == ActionIntentStatus.PENDING
+                and (item.not_before is None or item.not_before <= now)
+                and item.attempt < item.retry_policy.max_attempts
+                and (intent_id is None or item.id == intent_id)
+            ]
+            candidates.sort(key=lambda item: (item.created_at, item.id))
+            if not candidates:
+                return state
+            target = candidates[0]
+            lease = ActionIntentLease(
+                owner=payload.worker_id,
+                acquired_at=now,
+                expires_at=now + payload.lease_seconds,
+            )
+            updated = target.model_copy(
+                update={
+                    "status": ActionIntentStatus.CLAIMED,
+                    "lease": lease,
+                    "updated_at": now,
+                }
+            )
+            for index, item in enumerate(state.intents):
+                if item.id == target.id:
+                    state.intents[index] = updated
+                    claimed.append(updated)
+                    break
+            return state
+
+        self.store.update(apply)
+        return claimed[0] if claimed else None
+
+    def renew_claim(
+        self,
+        intent_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        self._require_worker(actor)
+        intent = self._intent(intent_id, actor)
+        now = time.time()
+        if (
+            intent.lease is None
+            or intent.lease.owner != worker_id
+            or intent.lease.expires_at <= now
+            or intent.status not in {
+                ActionIntentStatus.CLAIMED,
+                ActionIntentStatus.EXECUTING,
+            }
+        ):
+            raise ActionIntentLeaseError("action intent lease is not active for worker")
+        renewed = intent.lease.model_copy(
+            update={
+                "expires_at": now + lease_seconds,
+                "renewed_at": now,
+            }
+        )
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={"lease": renewed, "updated_at": now}
+                    )
+                    break
+            return state
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent.id)
+
+    def _mark_executing(
+        self,
+        intent_id: str,
+        worker_id: str,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        intent = self._intent(intent_id, actor)
+        now = time.time()
+        if (
+            intent.status != ActionIntentStatus.CLAIMED
+            or intent.lease is None
+            or intent.lease.owner != worker_id
+            or intent.lease.expires_at <= now
+        ):
+            raise ActionIntentLeaseError("action intent must hold an active claim before execution")
+        if intent.attempt >= intent.retry_policy.max_attempts:
+            raise ActionIntentConflictError("action intent retry limit reached")
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "status": ActionIntentStatus.EXECUTING,
+                            "attempt": item.attempt + 1,
+                            "execution_started_at": now,
+                            "updated_at": now,
+                            "last_error": None,
+                        }
+                    )
+                    break
+            return state
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent.id)
+
+    def _append_receipt(
+        self,
+        intent: ActionIntent,
+        *,
+        result: ActionResult | None,
+        outcome: str,
+        details: dict[str, str | int | float | bool | None] | None = None,
+    ) -> ActionIntentReceipt:
+        receipt = ActionIntentReceipt(
+            intent_id=intent.id,
+            attempt=intent.attempt,
+            provider_type=intent.provider_type,
+            provider_instance=intent.provider_instance,
+            action_id=intent.action_id,
+            idempotency_key=intent.idempotency_key,
+            correlation_id=intent.correlation_id,
+            provider_external_id=result.external_id if result else None,
+            result=result,
+            outcome=outcome,
+            details=details or {},
+        )
+
+        def apply(state):
+            state.receipts.append(receipt)
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "last_receipt_id": receipt.id,
+                            "updated_at": time.time(),
+                        }
+                    )
+                    break
+            return state
+
+        self.store.update(apply)
+        return receipt
+
+    def _append_verification(
+        self,
+        intent: ActionIntent,
+        *,
+        provider_verification: Any | None,
+        evidence_evaluation: Any | None,
+        verified: bool,
+        findings: tuple[str, ...] = (),
+    ) -> ActionIntentVerificationReceipt:
+        receipt = ActionIntentVerificationReceipt(
+            intent_id=intent.id,
+            provider_verification=provider_verification,
+            evidence_satisfied=(
+                evidence_evaluation.satisfied if evidence_evaluation is not None else None
+            ),
+            evidence_evaluation=(
+                evidence_evaluation.model_dump(mode="json")
+                if evidence_evaluation is not None
+                else None
+            ),
+            verified=verified,
+            findings=findings,
+        )
+
+        def apply(state):
+            state.verifications.append(receipt)
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "last_verification_id": receipt.id,
+                            "updated_at": time.time(),
+                        }
+                    )
+                    break
+            return state
+
+        self.store.update(apply)
+        return receipt
+
+    def _set_status(
+        self,
+        intent_id: str,
+        status: ActionIntentStatus,
+        *,
+        error: str | None = None,
+        clear_lease: bool = True,
+    ) -> ActionIntent:
+        now = time.time()
+        completed = status in TERMINAL_ACTION_INTENT_STATUSES
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent_id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "status": status,
+                            "lease": None if clear_lease else item.lease,
+                            "updated_at": now,
+                            "completed_at": now if completed else item.completed_at,
+                            "last_error": error,
+                        }
+                    )
+                    break
+            return state
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent_id)
+
+    async def _verify_completion(
+        self,
+        intent: ActionIntent,
+        result: ActionResult,
+        *,
+        actor: AuthenticationActor,
+    ) -> bool:
+        provider_verification = None
+        findings: list[str] = []
+        provider_ok = True
+        if intent.verification_required:
+            try:
+                provider_verification = await self.execution.verify(
+                    intent.binding_id,
+                    result,
+                    actor=actor,
+                )
+                provider_ok = bool(provider_verification.verified)
+                findings.extend(provider_verification.findings)
+            except Exception as exc:
+                provider_ok = False
+                findings.append(f"provider verification failed: {type(exc).__name__}: {exc}")
+
+        evidence_evaluation = None
+        evidence_ok = True
+        if intent.expected_evidence:
+            if self.artifact_evidence is None or not intent.work_item_ref:
+                evidence_ok = False
+                findings.append("required evidence cannot be evaluated")
+            else:
+                evidence_evaluation = self.artifact_evidence.evaluate(
+                    intent.work_item_ref,
+                    intent.expected_evidence,
+                    actor=actor,
+                )
+                evidence_ok = evidence_evaluation.satisfied
+                if not evidence_ok:
+                    findings.extend(
+                        outcome.reason or outcome.requirement_id
+                        for outcome in evidence_evaluation.outcomes
+                        if not outcome.satisfied
+                    )
+
+        verified = provider_ok and evidence_ok
+        self._append_verification(
+            intent,
+            provider_verification=provider_verification,
+            evidence_evaluation=evidence_evaluation,
+            verified=verified,
+            findings=tuple(findings),
+        )
+        return verified
+
+    def _advance_work_item(self, intent: ActionIntent) -> None:
+        if (
+            intent.work_item_success is None
+            or intent.work_item_ref is None
+            or self.work_item_host is None
+        ):
+            return
+        host = self.work_item_host
+        state = host._work_item_state(intent.work_item_ref)
+        update = intent.work_item_success
+        state = host._touch_work_item_progress(
+            state,
+            actor=intent.requested_by,
+            current_stage=update.current_stage,
+            next_action=update.next_action,
+            next_owner=update.next_owner,
+            next_owner_present=update.next_owner is not None,
+            event_type="action_intent_verified",
+            note=update.note,
+        )
+        host._save_work_item_state(state)
+
+    async def execute_claimed(
+        self,
+        intent_id: str,
+        worker_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        self._require_worker(actor)
+        intent = self._mark_executing(intent_id, worker_id, actor)
+        with correlated(
+            correlation_id=intent.correlation_id,
+            causation_id=intent.causation_id,
+            tenant_id=intent.organization_id,
+            workspace_id=intent.workspace_id,
+            work_item_ref=intent.work_item_ref,
+            execution_id=intent.execution_id,
+            action_intent_id=intent.id,
+        ):
+            try:
+                result = await asyncio.wait_for(
+                    self.execution.execute(
+                        intent.binding_id,
+                        intent.request,
+                        actor=actor,
+                    ),
+                    timeout=intent.timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                self._append_receipt(
+                    intent,
+                    result=None,
+                    outcome="unknown",
+                    details={"reason": "timeout"},
+                )
+                return self._set_status(
+                    intent.id,
+                    ActionIntentStatus.UNCERTAIN,
+                    error="provider execution timed out; external outcome unknown",
+                )
+            except Exception as exc:
+                self._append_receipt(
+                    intent,
+                    result=None,
+                    outcome="unknown",
+                    details={"reason": type(exc).__name__},
+                )
+                return self._set_status(
+                    intent.id,
+                    ActionIntentStatus.UNCERTAIN,
+                    error=f"provider execution raised {type(exc).__name__}; external outcome unknown",
+                )
+
+        self._append_receipt(
+            intent,
+            result=result,
+            outcome="failed" if result.status == "failed" else "completed",
+        )
+        current = self._intent(intent.id, actor)
+        if result.status == "failed":
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.FAILED,
+                error=result.error_message or result.error_code or "provider returned failure",
+            )
+        if result.status == "rolled_back":
+            return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+
+        verified = await self._verify_completion(current, result, actor=actor)
+        if not verified:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error="required provider/evidence verification is not satisfied",
+            )
+        current = self._intent(intent.id, actor)
+        try:
+            self._advance_work_item(current)
+        except Exception as exc:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=f"external action verified but canonical state advance failed: {type(exc).__name__}: {exc}",
+            )
+        return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
+
+    def retry(
+        self,
+        intent_id: str,
+        payload: ActionIntentRetryRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        intent = self._intent(intent_id, actor)
+        self._require_intent_control(intent, actor)
+        if intent.attempt >= intent.retry_policy.max_attempts:
+            raise ActionIntentConflictError("action intent retry limit reached")
+        if intent.attempt > 0 and not intent.provider_idempotency_supported:
+            raise ActionIntentUnsafeRetryError(
+                "replaying an executed non-idempotent action is unsafe; reconcile instead"
+            )
+        if intent.status not in {
+            ActionIntentStatus.FAILED,
+            ActionIntentStatus.UNCERTAIN,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        }:
+            raise ActionIntentConflictError("action intent is not retryable from current status")
+        not_before = time.time() + intent.retry_policy.backoff_seconds
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "status": ActionIntentStatus.PENDING,
+                            "lease": None,
+                            "not_before": not_before,
+                            "updated_at": time.time(),
+                            "last_error": payload.reason,
+                        }
+                    )
+                    break
+            return state
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent.id)
+
+    def cancel(
+        self,
+        intent_id: str,
+        reason: str | None,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        intent = self._intent(intent_id, actor)
+        if intent.status in TERMINAL_ACTION_INTENT_STATUSES:
+            return intent
+        if intent.status == ActionIntentStatus.EXECUTING:
+            raise ActionIntentConflictError(
+                "executing action cannot be declared cancelled while external outcome is unknown"
+            )
+        if intent.requested_by != actor.identity_id and not self._admin(actor):
+            raise AuthorizationError("action intent requester or administrator required")
+        return self._set_status(
+            intent.id,
+            ActionIntentStatus.CANCELLED,
+            error=reason or "cancelled",
+        )
+
+    def ingest_callback(
+        self,
+        payload: ActionInboxCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionInboxMessage:
+        self._require_callback_actor(actor)
+        state = self.store.load()
+        existing = next(
+            (
+                item
+                for item in state.inbox
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.provider_type == payload.provider_type
+                and item.provider_instance == payload.provider_instance
+                and item.delivery_id == payload.delivery_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing.model_copy(update={"duplicate": True})
+
+        intent = None
+        if payload.intent_id:
+            intent = next(
+                (
+                    item
+                    for item in state.intents
+                    if item.id == payload.intent_id
+                    and item.organization_id == actor.organization_id
+                    and item.workspace_id == actor.workspace_id
+                ),
+                None,
+            )
+        if intent is not None and (
+            intent.provider_type != payload.provider_type
+            or intent.provider_instance != payload.provider_instance
+        ):
+            raise ActionIntentConflictError(
+                "callback provider does not match action intent provider"
+            )
+        if intent is None and payload.idempotency_key:
+            matches = [
+                item
+                for item in state.intents
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.provider_type == payload.provider_type
+                and item.provider_instance == payload.provider_instance
+                and item.idempotency_key == payload.idempotency_key
+            ]
+            if len(matches) == 1:
+                intent = matches[0]
+
+        message_payload = payload.model_dump()
+        message_payload["intent_id"] = intent.id if intent else payload.intent_id
+        message = ActionInboxMessage(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            **message_payload,
+            processed_at=time.time(),
+        )
+
+        def apply(current):
+            current.inbox.append(message)
+            if intent is not None:
+                receipt = ActionIntentReceipt(
+                    intent_id=intent.id,
+                    attempt=intent.attempt,
+                    provider_type=intent.provider_type,
+                    provider_instance=intent.provider_instance,
+                    action_id=intent.action_id,
+                    idempotency_key=intent.idempotency_key,
+                    correlation_id=intent.correlation_id,
+                    provider_external_id=payload.provider_external_id,
+                    outcome="callback",
+                    details={
+                        "delivery_id": payload.delivery_id,
+                        "event_type": payload.event_type,
+                    },
+                )
+                current.receipts.append(receipt)
+                for index, item in enumerate(current.intents):
+                    if item.id != intent.id:
+                        continue
+                    # A callback is durable acknowledgement, not sufficient proof
+                    # of success when verification/evidence is required.
+                    next_status = item.status
+                    if payload.outcome in {
+                        ActionIntentStatus.SUCCEEDED,
+                        ActionIntentStatus.ROLLED_BACK,
+                    }:
+                        next_status = ActionIntentStatus.REQUIRES_RECONCILIATION
+                    elif payload.outcome == ActionIntentStatus.FAILED:
+                        next_status = ActionIntentStatus.FAILED
+                    elif item.status in {
+                        ActionIntentStatus.UNCERTAIN,
+                        ActionIntentStatus.EXECUTING,
+                    }:
+                        next_status = ActionIntentStatus.REQUIRES_RECONCILIATION
+                    updated_at = time.time()
+                    current.intents[index] = item.model_copy(
+                        update={
+                            "status": next_status,
+                            "last_receipt_id": receipt.id,
+                            "lease": None,
+                            "updated_at": updated_at,
+                            "completed_at": (
+                                updated_at
+                                if next_status in TERMINAL_ACTION_INTENT_STATUSES
+                                else item.completed_at
+                            ),
+                        }
+                    )
+                    break
+            return current
+
+        self.store.update(apply)
+        return message
+
+    async def reconcile(
+        self,
+        intent_id: str,
+        payload: ActionIntentReconcileRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        self._require_worker(actor)
+        intent = self._intent(intent_id, actor)
+        state = self.store.load()
+        results = [
+            receipt.result
+            for receipt in state.receipts
+            if receipt.intent_id == intent.id and receipt.result is not None
+        ]
+        latest_result = results[-1] if results else None
+
+        if latest_result is not None and latest_result.status == "rolled_back":
+            return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+        if latest_result is not None and latest_result.status in {"succeeded", "dry_run"}:
+            verified = await self._verify_completion(
+                intent,
+                latest_result,
+                actor=actor,
+            )
+            if verified:
+                current = self._intent(intent.id, actor)
+                try:
+                    self._advance_work_item(current)
+                except Exception as exc:
+                    return self._set_status(
+                        intent.id,
+                        ActionIntentStatus.REQUIRES_RECONCILIATION,
+                        error=f"verification succeeded but canonical state advance failed: {type(exc).__name__}: {exc}",
+                    )
+                return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error="reconciliation verification is not satisfied",
+            )
+
+        if payload.retry_if_idempotent and intent.provider_idempotency_supported:
+            return self.retry(
+                intent.id,
+                ActionIntentRetryRequest(reason="reconciliation retry using provider idempotency"),
+                actor=actor,
+            )
+
+        return self._set_status(
+            intent.id,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+            error=(
+                "no durable provider result is available; manual/provider reconciliation required"
+            ),
+        )
+
+    async def rollback(
+        self,
+        intent_id: str,
+        payload: ActionIntentRollbackRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        self._require_worker(actor)
+        intent = self._intent(intent_id, actor)
+        if not intent.rollback_required and not intent.action_definition.capabilities.rollback:
+            raise ActionIntentConflictError("action intent does not support rollback")
+        state = self.store.load()
+        results = [
+            receipt.result
+            for receipt in state.receipts
+            if receipt.intent_id == intent.id
+            and receipt.result is not None
+            and receipt.result.status in {"succeeded", "dry_run"}
+        ]
+        if not results:
+            raise ActionIntentConflictError("no completed provider result is available for rollback")
+        result = results[-1]
+        try:
+            rolled_back = await self.execution.rollback(
+                intent.binding_id,
+                result,
+                actor=actor,
+            )
+        except Exception as exc:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=f"rollback failed: {type(exc).__name__}",
+            )
+        self._append_receipt(
+            intent,
+            result=rolled_back,
+            outcome="completed",
+            details={"operation": "rollback", "reason": payload.reason},
+        )
+        if rolled_back.status != "rolled_back":
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error="provider rollback did not return rolled_back outcome",
+            )
+        return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)

@@ -218,6 +218,17 @@ class ActionExecutionService:
             request = request.model_copy(update={"credential_ref": credential_ref})
         return binding, provider, definition, request
 
+    def resolve_contract(
+        self,
+        binding_id: str,
+        request: ActionRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[ActionProviderBinding, ActionProvider, ActionDefinition, ActionRequest]:
+        """Validate and normalize an action without performing a side effect."""
+
+        return self._resolve(binding_id, request, actor)
+
     async def prepare(
         self,
         binding_id: str,

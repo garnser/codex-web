@@ -5,6 +5,7 @@ import unittest
 
 from fastapi import FastAPI
 
+from codex_web.action_providers import ActionRequest
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.autonomy import AutonomyService, install_autonomy_service
 
@@ -83,18 +84,22 @@ class AutonomyInstallationTests(unittest.TestCase):
 
 
 class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_external_action_execution_delegates_to_provider_neutral_service(self) -> None:
-        class Actions:
+    async def test_external_action_execution_queues_durable_intent(self) -> None:
+        class Intents:
             def __init__(self) -> None:
                 self.calls = []
 
-            async def execute(self, binding_id, request, *, actor):
-                self.calls.append((binding_id, request, actor))
-                return "provider-neutral-result"
+            def create(self, payload, *, actor):
+                self.calls.append((payload, actor))
+                return "queued-intent"
 
-        actions = Actions()
-        service = AutonomyService(_Host(), action_execution=actions)
-        request = object()
+        intents = Intents()
+        service = AutonomyService(_Host(), action_intents=intents)
+        request = ActionRequest(
+            action_id="reference.set",
+            organization_id="local",
+            workspace_id="default",
+        )
         actor = object()
 
         result = await service.execute_external_action(
@@ -103,8 +108,11 @@ class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
             actor=actor,
         )
 
-        self.assertEqual(result, "provider-neutral-result")
-        self.assertEqual(actions.calls, [("binding-1", request, actor)])
+        self.assertEqual(result, "queued-intent")
+        self.assertEqual(len(intents.calls), 1)
+        self.assertEqual(intents.calls[0][0].binding_id, "binding-1")
+        self.assertEqual(intents.calls[0][0].request, request)
+        self.assertIs(intents.calls[0][1], actor)
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):

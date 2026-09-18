@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from codex_web.action_providers import ActionResult
+
 from codex_web.api.identity import install_identity_middleware
 from codex_web.api.secrets import build_secrets_router
 from codex_web.identity import (
@@ -182,6 +184,30 @@ class SecretBrokerTests(unittest.TestCase):
                 operation="provider.call",
                 consumer=lambda value: True,
             )
+
+    def test_broker_scrubs_secret_from_pydantic_provider_result(self) -> None:
+        reference = self.broker.create(
+            SecretCreate(name="provider token", value="super-secret"),
+            actor=self.admin,
+        )
+        now = 1.0
+
+        result = self.broker.use(
+            reference.id,
+            actor=self.admin,
+            operation="provider.call",
+            consumer=lambda value: ActionResult(
+                provider_binding_id="binding",
+                action_id="test",
+                status="succeeded",
+                started_at=now,
+                completed_at=now,
+                output={"echo": value},
+            ),
+        )
+
+        self.assertEqual(result.output["echo"], "[REDACTED]")
+        self.assertNotIn("super-secret", result.model_dump_json())
 
     def test_scrubber_redacts_nested_material(self) -> None:
         payload = {
