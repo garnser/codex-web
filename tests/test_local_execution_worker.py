@@ -226,6 +226,49 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
                 )
             )
 
+    def test_interactive_trusted_mount_keeps_network_namespace_private(self) -> None:
+        captured = {}
+
+        class Process:
+            pid = 4322
+
+        def popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return Process()
+
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+            popen=popen,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            broker_root = root / "broker"
+            broker_root.mkdir()
+            destination = Path("/run/codex-model-egress")
+
+            backend.spawn_interactive(
+                _assignment(),
+                argv=("python", "-c", "print('ok')"),
+                workspace_path=workspace,
+                trusted_readonly_mounts=((broker_root, destination),),
+            )
+
+        command = captured["command"]
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn("--unshare-net", command)
+        self.assertNotIn("--share-net", command)
+        self.assertIn(
+            ["--ro-bind", str(broker_root.resolve()), str(destination)],
+            mounts,
+        )
+
     def test_interactive_spawn_reuses_bubblewrap_environment_and_resource_limits(self) -> None:
         captured = {}
 
