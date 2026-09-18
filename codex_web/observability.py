@@ -40,7 +40,17 @@ SENSITIVE_FIELD_FRAGMENTS = (
     "password",
     "prompt",
     "secret",
-    "token",
+)
+SENSITIVE_TOKEN_KEYS = frozenset(
+    {
+        "access_token",
+        "api_token",
+        "bearer_token",
+        "id_token",
+        "refresh_token",
+        "service_token",
+        "token",
+    }
 )
 
 
@@ -127,7 +137,9 @@ def correlated(
 
 
 def _is_sensitive_key(key: str) -> bool:
-    lowered = key.casefold()
+    lowered = key.casefold().replace("-", "_")
+    if lowered in SENSITIVE_TOKEN_KEYS or lowered.endswith("_credential"):
+        return True
     return any(fragment in lowered for fragment in SENSITIVE_FIELD_FRAGMENTS)
 
 
@@ -378,11 +390,14 @@ class RuntimeHealth:
         )
         degraded = any(dep.status == HealthStatus.DEGRADED for dep in dependencies)
         unhealthy = any(dep.status == HealthStatus.UNHEALTHY for dep in dependencies)
+        unknown = any(dep.status == HealthStatus.UNKNOWN for dep in dependencies)
         overall = (
             HealthStatus.UNHEALTHY
             if unhealthy
             else HealthStatus.DEGRADED
             if degraded
+            else HealthStatus.UNKNOWN
+            if unknown
             else HealthStatus.HEALTHY
         )
         return {
@@ -566,6 +581,16 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
     async def recent_traces() -> dict[str, Any]:
         items = tracer.snapshot()
         return {"items": items, "count": len(items)}
+
+    @router.get("/api/observability")
+    async def observability_snapshot() -> dict[str, Any]:
+        spans = tracer.snapshot()
+        return {
+            "metrics": metrics.snapshot(),
+            "health": health.snapshot(),
+            "recentTraces": spans,
+            "traceCount": len(spans),
+        }
 
     app.include_router(router)
     return metrics
