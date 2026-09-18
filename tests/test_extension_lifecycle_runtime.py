@@ -4,6 +4,7 @@ import unittest
 
 from codex_web.extensions import (
     ExtensionInstallation,
+    ExtensionDeploymentMode,
     ExtensionLifecycleState,
     ExtensionManifest,
     ExtensionPackageVerification,
@@ -57,6 +58,7 @@ def installation(lifecycle: ExtensionLifecycleState) -> ExtensionInstallation:
         organization_id="org-1",
         workspace_id="ws-1",
         manifest=manifest,
+        deployment_mode=ExtensionDeploymentMode.SELF_HOSTED,
         package_verification=ExtensionPackageVerification(
             digest_verified=True,
             signature_status=ExtensionSignatureStatus.UNSIGNED,
