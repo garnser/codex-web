@@ -134,8 +134,13 @@ def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
             raise
 
     @router.get("/backend-health")
-    async def backend_health() -> dict[str, bool]:
-        return service.backend_health()
+    async def backend_health(request: Request) -> dict[str, bool]:
+        try:
+            return service.backend_health(request_actor(request))
+        except Exception as exc:
+            if isinstance(exc, (CryptoKeyError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
 
     @router.get("/manifest")
     async def manifest(request: Request) -> dict[str, Any]:
