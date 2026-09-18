@@ -6,6 +6,7 @@ import json
 import math
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from codex_web.entitlements import (
@@ -69,6 +70,12 @@ class ModelProviderUnavailableError(ModelGatewayError):
     pass
 
 
+InputPipelineResolver = Callable[
+    [ModelInvocationRequest, AuthenticationActor],
+    InputPluginPipeline | None,
+]
+
+
 class ModelGatewayService:
     def __init__(
         self,
@@ -77,11 +84,17 @@ class ModelGatewayService:
         secret_broker: SecretBroker | None = None,
         entitlements: EntitlementService | None = None,
         input_pipeline: InputPluginPipeline | None = None,
+        input_pipeline_resolver: InputPipelineResolver | None = None,
     ) -> None:
+        if input_pipeline is not None and input_pipeline_resolver is not None:
+            raise ValueError(
+                "configure either input_pipeline or input_pipeline_resolver, not both"
+            )
         self.store = store
         self.secret_broker = secret_broker
         self.entitlements = entitlements
         self.input_pipeline = input_pipeline
+        self.input_pipeline_resolver = input_pipeline_resolver
         self.adapters: dict[str, ModelProviderAdapter] = {}
 
     @staticmethod
@@ -155,9 +168,12 @@ class ModelGatewayService:
         *,
         actor: AuthenticationActor,
     ) -> tuple[ModelInvocationRequest, InputPipelineResult | None]:
-        if self.input_pipeline is None:
+        pipeline = self.input_pipeline
+        if self.input_pipeline_resolver is not None:
+            pipeline = self.input_pipeline_resolver(request, actor)
+        if pipeline is None:
             return request, None
-        result = await self.input_pipeline.execute(
+        result = await pipeline.execute(
             self._input_envelope(request, actor)
         )
         guidance = self._plugin_guidance(result)
