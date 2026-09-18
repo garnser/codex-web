@@ -315,6 +315,7 @@ class IdentityService:
         new_refresh = _token()
         csrf = _token()
         result: list[SessionRecord] = []
+        replay_detected: list[bool] = []
 
         def apply(state: IdentityState) -> IdentityState:
             for index, item in enumerate(state.sessions):
@@ -327,7 +328,8 @@ class IdentityService:
                     state.sessions[index] = item.model_copy(
                         update={"revoked_at": now, "revoke_reason": "refresh-token-replay"}
                     )
-                    raise TokenReplayError("refresh token replay detected")
+                    replay_detected.append(True)
+                    return state
                 if not hmac.compare_digest(incoming_hash, item.refresh_token_hash):
                     raise AuthenticationError("invalid refresh token")
                 updated = item.model_copy(
@@ -347,6 +349,8 @@ class IdentityService:
             raise AuthenticationError("session not found")
 
         self.store.update(apply)
+        if replay_detected:
+            raise TokenReplayError("refresh token replay detected")
         record = result[0]
         return SessionCredentials(
             session_id=record.id,
