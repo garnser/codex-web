@@ -288,6 +288,49 @@ Rotation, expiry, tenant mismatch, missing worker ACL, stale/reassigned fences,
 expired leases and assignment deadline expiry all fail closed before launch or
 when a delegation is revalidated.
 
+### Canonical thread-turn execution binding
+
+Before any production thread turn can start model RPCs, the control plane now has
+a deterministic binding stage that prepares the canonical execution state for
+that explicit execution ID. It does not launch Codex and it does not resolve a
+credential value.
+
+The binding stage:
+
+- resolves the canonical Project in the authenticated tenant/workspace;
+- resolves all active project Resource bindings and requires exactly one active
+  repository Resource for the local Git execution workspace;
+- creates a typed `thread:<thread-id>` ExecutionSubject rather than fabricating
+  a Work Item reference;
+- resolves `codex.worker.access_token_secret` through the typed Configuration
+  Registry using normal organization → workspace → project precedence;
+- accepts only the `SECRET_REF` value and persists only its SecretBroker
+  reference ID;
+- acquires the canonical ExecutionWorkspace for the explicit execution ID,
+  project/resource set, sandbox-derived lease mode and bounded deadline;
+- creates one ExecutionAssignment with the exact subject, project/resources,
+  provisioned base revision, workspace ID, sandbox, approval policy, resource
+  limits, deadline, command/Git capabilities and configured secret reference;
+- returns canonical IDs/metadata only.
+
+Preparation is idempotent for the same explicit execution ID. An existing
+assignment must still match the thread subject, project, execution controls and
+workspace correlation; conflicting state fails closed. Missing credential
+configuration, no eligible repository, multiple active repositories,
+unsupported `danger-full-access`, invalid deadlines or divergent canonical
+state also fail closed.
+
+Configuration selects which secret reference is attached to the assignment but
+does **not** authorize its use. SecretBroker ACL/expiry plus the worker-scoped
+delegation contract remain the authority boundary that can turn that reference
+into an ephemeral Codex credential. There is no arbitrary-secret scan,
+`CODEX_HOME`/auth.json fallback or control-plane environment fallback.
+
+This stage intentionally stops before `thread/resume`, `thread/start` or
+`turn/start`. Production RPC routing and assignment/session completion belong
+to the #294 migration; the planner only guarantees that those operations can
+begin from one canonical, isolated and auditable execution binding.
+
 ### Assignment-bound Codex app-server session
 
 The local worker now has a concrete interactive Codex session primitive. One
