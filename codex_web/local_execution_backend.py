@@ -195,14 +195,31 @@ class BubblewrapExecutionBackend:
         return self._status
 
     @staticmethod
-    def _workspace_disk_usage(root: Path) -> int:
+    def _tree_disk_usage(root: Path) -> int:
         total = 0
+        if not root.exists():
+            return 0
         for path in root.rglob("*"):
             try:
                 if path.is_file() and not path.is_symlink():
                     total += path.stat().st_size
             except OSError:
                 continue
+        return total
+
+    @classmethod
+    def _execution_disk_usage(
+        cls,
+        workspace: Path,
+        git_metadata: Path | None,
+    ) -> int:
+        total = cls._tree_disk_usage(workspace)
+        if (
+            git_metadata is not None
+            and git_metadata.exists()
+            and not git_metadata.is_relative_to(workspace)
+        ):
+            total += cls._tree_disk_usage(git_metadata)
         return total
 
     @staticmethod
@@ -366,7 +383,7 @@ class BubblewrapExecutionBackend:
                 "/tmp/codex-worker-home",
             )
         )
-        command.extend(self._directory_creation_args(workspace.parent))
+        command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
 
         metadata = (
@@ -375,7 +392,7 @@ class BubblewrapExecutionBackend:
             else self.discover_git_metadata(workspace)
         )
         if metadata is not None and not metadata.is_relative_to(workspace):
-            command.extend(self._directory_creation_args(metadata.parent))
+            command.extend(self._directory_creation_args(metadata))
             # Git worktrees legitimately share target-repository metadata. The
             # canonical repository/workspace lease is what authorizes mutation
             # of that target resource; unrelated control-plane paths stay absent.
@@ -431,11 +448,16 @@ class BubblewrapExecutionBackend:
         started = time.monotonic()
         timed_out = False
         limit_breach: str | None = None
+        resolved_git_metadata = (
+            git_metadata_path.resolve(strict=True)
+            if git_metadata_path is not None
+            else self.discover_git_metadata(workspace)
+        )
         command = self.build_command(
             assignment,
             argv=argv,
             workspace_path=workspace,
-            git_metadata_path=git_metadata_path,
+            git_metadata_path=resolved_git_metadata,
         )
         env = self.minimal_environment(extra=environment)
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
@@ -450,7 +472,10 @@ class BubblewrapExecutionBackend:
                 preexec_fn=self._limits_preexec(assignment.limits),
             )
             deadline = started + assignment.limits.wall_seconds
-            disk_bytes = self._workspace_disk_usage(workspace)
+            disk_bytes = self._execution_disk_usage(
+                workspace,
+                resolved_git_metadata,
+            )
             while process.poll() is None:
                 if poll_hook is not None:
                     poll_hook()
@@ -460,7 +485,10 @@ class BubblewrapExecutionBackend:
                     limit_breach = "wall_seconds"
                     self._kill_process_group(process)
                     break
-                disk_bytes = self._workspace_disk_usage(workspace)
+                disk_bytes = self._execution_disk_usage(
+                    workspace,
+                    resolved_git_metadata,
+                )
                 if disk_bytes > assignment.limits.disk_bytes:
                     limit_breach = "disk_bytes"
                     self._kill_process_group(process)
@@ -472,7 +500,10 @@ class BubblewrapExecutionBackend:
                     )
                 )
             exit_code = process.wait()
-            disk_bytes = self._workspace_disk_usage(workspace)
+            disk_bytes = self._execution_disk_usage(
+                workspace,
+                resolved_git_metadata,
+            )
             if limit_breach is None and exit_code < 0:
                 signum = -exit_code
                 if signum == signal.SIGXCPU:
