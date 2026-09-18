@@ -11,6 +11,7 @@ from codex_web.entitlements import (
     QuotaPolicyUpdate,
     QuotaWindow,
     UsageEventCreate,
+    UsageReconciliationBatch,
 )
 from codex_web.services.entitlements import (
     EntitlementDeniedError,
@@ -193,6 +194,85 @@ class EntitlementServiceTests(unittest.TestCase):
         self.assertTrue(result.decision.allowed)
         self.assertTrue(result.decision.quota.exceeded)
         self.assertEqual(result.decision.reason, "quota_exceeded_grace")
+
+    def test_reconciliation_batch_deduplicates_and_export_is_metadata_only(self) -> None:
+        result = self.service.reconcile_usage(
+            UsageReconciliationBatch(
+                events=[
+                    UsageEventCreate(
+                        idempotency_key="late-1",
+                        metric="model_tokens",
+                        amount=50,
+                        occurred_at=100.0,
+                        source="provider-reconciliation",
+                        project_id="home",
+                        work_item_ref="group/app#1",
+                    ),
+                    UsageEventCreate(
+                        idempotency_key="late-1",
+                        metric="model_tokens",
+                        amount=50,
+                        occurred_at=100.0,
+                        source="provider-reconciliation",
+                        project_id="home",
+                        work_item_ref="group/app#1",
+                    ),
+                    UsageEventCreate(
+                        idempotency_key="late-2",
+                        metric="model_tokens",
+                        amount=25,
+                        occurred_at=200.0,
+                        source="provider-reconciliation",
+                    ),
+                ]
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(result.accepted, 2)
+        self.assertEqual(result.duplicates, 1)
+        self.assertEqual(
+            self.service.usage_total(self.actor, metric="model_tokens"),
+            75,
+        )
+
+        exported = self.service.export_usage(self.actor, limit=10)
+        self.assertEqual(len(exported.records), 2)
+        serialized = " ".join(item.model_dump_json() for item in exported.records)
+        self.assertIn("model_tokens", serialized)
+        self.assertNotIn("prompt", serialized)
+        self.assertNotIn("secret", serialized)
+        self.assertIsNotNone(exported.next_received_after)
+
+    def test_export_cursor_reads_only_newer_received_events(self) -> None:
+        first = self.service.record_usage(
+            UsageEventCreate(
+                idempotency_key="cursor-1",
+                metric="storage_gb",
+                amount=1,
+            ),
+            actor=self.actor,
+        )
+        first_export = self.service.export_usage(self.actor)
+        cursor = first_export.next_received_after
+        self.assertIsNotNone(cursor)
+
+        second = self.service.record_usage(
+            UsageEventCreate(
+                idempotency_key="cursor-2",
+                metric="storage_gb",
+                amount=1,
+            ),
+            actor=self.actor,
+        )
+        second_export = self.service.export_usage(
+            self.actor,
+            received_after=cursor,
+        )
+        self.assertEqual(
+            [item.event_id for item in second_export.records],
+            [second.event.id],
+        )
+        self.assertNotEqual(first.event.id, second.event.id)
 
     def test_entitlement_check_does_not_grant_administration(self) -> None:
         self._enforce()
