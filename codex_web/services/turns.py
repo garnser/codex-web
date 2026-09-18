@@ -181,6 +181,16 @@ class TurnService:
                 execution_id=execution_id,
             )
         except Exception as exc:
+            if (
+                isinstance(exc, HTTPException)
+                and exc.status_code == 409
+                and isinstance(exc.detail, dict)
+                and exc.detail.get("code") == "thread_turn_already_active"
+            ):
+                return await queue_web_turn(
+                    "web_turn_queued_after_concurrent_start",
+                    "thread became active while waiting for isolated start lock",
+                )
             if self.host._is_codex_timeout_error(exc):
                 if self.host._thread_is_active(thread_id):
                     return {

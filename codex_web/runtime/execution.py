@@ -449,6 +449,14 @@ class TurnExecutionService:
         requested_execution_id = execution_id or self._new_execution_id()
 
         async with self.turn_start_lock:
+            if self.thread_is_active(thread_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "thread_turn_already_active",
+                        "threadId": thread_id,
+                    },
+                )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             if bootstrap is not None:
                 session = session_manager.get(bootstrap.assignment_id)
