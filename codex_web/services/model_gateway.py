@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import time
+import uuid
 from typing import Any
 
 from codex_web.entitlements import (
@@ -14,6 +15,12 @@ from codex_web.entitlements import (
     UsageEventCreate,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.input_plugins import (
+    InputEnvelope,
+    InputMessage as PluginInputMessage,
+    InputPipelineResult,
+    InputPluginPipeline,
+)
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
     ModelDefinitionUpsert,
@@ -38,6 +45,7 @@ from codex_web.model_providers import (
     ModelProviderAdapterError,
     ModelProviderTransientError,
 )
+from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.secrets import SecretBroker
@@ -67,11 +75,125 @@ class ModelGatewayService:
         *,
         secret_broker: SecretBroker | None = None,
         entitlements: EntitlementService | None = None,
+        input_pipeline: InputPluginPipeline | None = None,
     ) -> None:
         self.store = store
         self.secret_broker = secret_broker
         self.entitlements = entitlements
+        self.input_pipeline = input_pipeline
         self.adapters: dict[str, ModelProviderAdapter] = {}
+
+    @staticmethod
+    def _input_envelope(
+        request: ModelInvocationRequest,
+        actor: AuthenticationActor,
+    ) -> InputEnvelope:
+        return InputEnvelope(
+            request_id=f"model-input-{uuid.uuid4().hex}",
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            actor_id=actor.identity_id,
+            model_class=request.model_class,
+            messages=tuple(
+                PluginInputMessage(role=item.role, content=item.content)
+                for item in request.messages
+            ),
+            system_prompt=request.system_prompt,
+            text_verbosity=request.text_verbosity,
+            reasoning_effort=request.reasoning_effort,
+            prompt_template_id=request.prompt_template_id,
+            prompt_template_version=request.prompt_template_version,
+            required_capabilities=request.required_capabilities,
+            required_residency_tags=request.required_residency_tags,
+            required_compliance_tags=request.required_compliance_tags,
+            preferred_provider_ids=request.preferred_provider_ids,
+            max_output_tokens=request.max_output_tokens,
+            timeout_seconds=request.timeout_seconds,
+            max_cost_usd=request.max_cost_usd,
+            allow_fallback=request.allow_fallback,
+            work_item_ref=request.work_item_ref,
+            goal_id=request.goal_id,
+            decision_id=request.decision_id,
+            execution_id=request.execution_id,
+            purpose=request.purpose,
+        )
+
+    @staticmethod
+    def _plugin_guidance(result: InputPipelineResult) -> str:
+        sections: list[str] = []
+        for block in result.envelope.context_blocks:
+            sections.append(
+                render_untrusted_content(
+                    envelope_untrusted(
+                        TrustZone.TOOL_OUTPUT,
+                        f"input-plugin-context:{block.source}:{block.id}",
+                        block.content,
+                    )
+                )
+            )
+        if result.envelope.output_contract:
+            sections.append(
+                render_untrusted_content(
+                    envelope_untrusted(
+                        TrustZone.TOOL_OUTPUT,
+                        "input-plugin-output-contract",
+                        json.dumps(
+                            result.envelope.output_contract,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ),
+                    )
+                )
+            )
+        return "\n\n".join(sections)
+
+    async def _compose_input(
+        self,
+        request: ModelInvocationRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[ModelInvocationRequest, InputPipelineResult | None]:
+        if self.input_pipeline is None:
+            return request, None
+        result = await self.input_pipeline.execute(
+            self._input_envelope(request, actor)
+        )
+        guidance = self._plugin_guidance(result)
+        system_prompt = result.envelope.system_prompt
+        if guidance:
+            system_prompt = (
+                f"{system_prompt}\n\n{guidance}" if system_prompt else guidance
+            )
+        effective = request.model_copy(
+            update={
+                "model_class": result.envelope.model_class,
+                "messages": tuple(
+                    type(request.messages[0])(
+                        role=item.role,
+                        content=item.content,
+                    )
+                    for item in result.envelope.messages
+                )
+                if request.messages
+                else tuple(
+                    __import__(
+                        "codex_web.model_gateway",
+                        fromlist=["ModelMessage"],
+                    ).ModelMessage(role=item.role, content=item.content)
+                    for item in result.envelope.messages
+                ),
+                "system_prompt": system_prompt,
+                "text_verbosity": result.envelope.text_verbosity,
+                "reasoning_effort": result.envelope.reasoning_effort,
+                "preferred_provider_ids": result.envelope.preferred_provider_ids,
+                "max_output_tokens": result.envelope.max_output_tokens,
+                "max_cost_usd": result.envelope.max_cost_usd,
+            }
+        )
+        return ModelInvocationRequest.model_validate(
+            effective.model_dump(mode="python")
+        ), result
 
     def register_adapter(self, adapter: ModelProviderAdapter) -> None:
         existing = self.adapters.get(adapter.adapter_type)
