@@ -83,8 +83,11 @@ class TaskSourceCanonicalProjection:
 class TaskSource(Protocol):
     """Authoritative external task-system contract.
 
-    Adapters declare both a contract version and capabilities up front. Core
-    work-item code can therefore reject incompatible adapters or unsupported
+    Adapters declare capabilities up front. Adapters may also expose
+    ``contract_version`` for explicit compatibility negotiation; it remains
+    outside the runtime-checkable structural protocol so pre-versioned v1
+    adapters stay protocol-compatible during the documented migration window.
+    Core work-item code can reject declared incompatible versions or unsupported
     operations deterministically rather than assuming GitLab-like behavior.
     Provider-specific API objects must be normalized into
     ``TaskSourceSnapshot``/``TaskSourceEvent`` before crossing this boundary.
@@ -92,7 +95,6 @@ class TaskSource(Protocol):
 
     source_type: str
     source_instance: str
-    contract_version: str
     capabilities: TaskSourceCapabilities
 
     async def discover(self, *, scope: str) -> list[TaskSourceSnapshot]:
