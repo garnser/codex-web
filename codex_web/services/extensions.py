@@ -5,6 +5,11 @@ import secrets
 import time
 from typing import Protocol
 
+from codex_web.artifact_evidence import (
+    EvidenceLifecycle,
+    EvidenceResult,
+    EvidenceType,
+)
 from codex_web.extensions import (
     EXTENSION_HOST_COMPATIBILITY_VERSION,
     ExtensionAuditEvent,
@@ -25,6 +30,7 @@ from codex_web.extensions import (
     ExtensionUpgradeRequest,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.resources import ResourceCatalogService
@@ -183,6 +189,7 @@ class ExtensionService:
         secrets: SecretBroker | None = None,
         configuration: ConfigurationService | None = None,
         resources: ResourceCatalogService | None = None,
+        artifact_evidence: ArtifactEvidenceService | None = None,
         unhealthy_quarantine_threshold: int = 3,
     ) -> None:
         self.store = store
@@ -191,6 +198,7 @@ class ExtensionService:
         self.secrets = secrets
         self.configuration = configuration
         self.resources = resources
+        self.artifact_evidence = artifact_evidence
         self.unhealthy_quarantine_threshold = max(1, unhealthy_quarantine_threshold)
 
     @staticmethod
@@ -929,13 +937,46 @@ class ExtensionService:
             current.deployment_mode,
         )
         incompatible_reason = self._compatibility_reason(payload.manifest)
-        if (
-            payload.manifest.migrations.entrypoint
-            and not payload.migration_completed
-        ):
-            raise ExtensionConflictError(
-                "extension declares a migration entrypoint; migration must complete before activation"
+        migration_evidence_id = None
+        if payload.manifest.migrations.entrypoint:
+            if payload.migration_evidence_id is None:
+                raise ExtensionConflictError(
+                    "extension declares a migration entrypoint; canonical migration evidence is required"
+                )
+            if self.artifact_evidence is None:
+                raise ExtensionConflictError(
+                    "artifact/evidence service is unavailable for extension migration verification"
+                )
+            evidence = next(
+                (
+                    item
+                    for item in self.artifact_evidence.list_evidence(
+                        actor,
+                        include_inactive=False,
+                    )
+                    if item.id == payload.migration_evidence_id
+                ),
+                None,
             )
+            if evidence is None:
+                raise ExtensionConflictError("extension migration evidence not found")
+            if (
+                evidence.lifecycle != EvidenceLifecycle.VALID
+                or evidence.result != EvidenceResult.PASS
+                or evidence.evidence_type
+                not in {
+                    EvidenceType.POLICY_EVALUATION,
+                    EvidenceType.ARTIFACT_VERIFICATION,
+                    EvidenceType.TEST_RESULT,
+                    EvidenceType.CI_CHECK,
+                }
+                or evidence.metadata.get("extension_id") != current.manifest.id
+                or evidence.metadata.get("to_version") != payload.manifest.version
+            ):
+                raise ExtensionConflictError(
+                    "extension migration evidence does not verify this target version"
+                )
+            migration_evidence_id = evidence.id
         updated: list[ExtensionInstallation] = []
 
         def apply(state):
@@ -994,6 +1035,7 @@ class ExtensionService:
                 from_version=item.manifest.version,
                 to_version=payload.manifest.version,
                 lifecycle=replacement.lifecycle.value,
+                migration_evidence_id=migration_evidence_id,
             )
             updated.append(replacement)
             return state
