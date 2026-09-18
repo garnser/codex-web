@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
@@ -7,6 +9,7 @@ from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
+from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
@@ -61,6 +64,8 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
@@ -98,6 +103,7 @@ from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
@@ -124,6 +130,46 @@ state_store = SQLiteStateStore(STATE_DB_FILE)
 configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
 app.state.configuration_service = configuration_service
+
+def _definition_change_notifier(event: dict[str, object]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(core.hub.publish(event))
+
+definition_registry_store = DefinitionRegistryStore(state_store)
+definition_registry_service = DefinitionRegistryService(
+    definition_registry_store,
+    notifier=_definition_change_notifier,
+)
+execution_role_definition_service = install_execution_role_definitions(
+    definition_registry_service
+)
+app.state.definition_registry_service = definition_registry_service
+app.state.execution_role_definition_service = execution_role_definition_service
+core._execution_role_definition_service = execution_role_definition_service
+
+def _work_item_definition_usage(reference):
+    items = []
+    try:
+        states = core._load_work_item_states()
+    except Exception:
+        return items
+    for state in states.values():
+        refs = getattr(getattr(state, "execution", None), "definition_refs", []) or []
+        if any(item.record_id == reference.record_id for item in refs):
+            items.append(
+                {
+                    "object_type": "work_item",
+                    "object_id": state.ref,
+                    "project_id": state.project_id,
+                    "stage": state.current_stage,
+                }
+            )
+    return items
+
+definition_registry_service.register_usage_provider(_work_item_definition_usage)
 
 identity_state_store = IdentityStateStore(state_store)
 identity_service = IdentityService(identity_state_store)
@@ -265,7 +311,11 @@ thread_service = ThreadService(core)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(app, core, gitlab_client)
-work_item_contract_service = install_work_item_contract_service(app, core)
+work_item_contract_service = install_work_item_contract_service(
+    app,
+    core,
+    execution_role_definition_service,
+)
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
 gitlab_service = install_gitlab_service(app, core, gitlab_client)
 
@@ -375,6 +425,12 @@ core.hub.subscribe(context_service.observe)
 app.state.context_compaction_service = context_service
 
 EXTRACTED_ROUTE_COUNTS = {
+    "definitions": replace_routes(
+        app,
+        build_definitions_router(definition_registry_service),
+        paths=set(),
+        key="definitions",
+    ),
     "configuration": replace_routes(
         app,
         build_configuration_router(configuration_service),
