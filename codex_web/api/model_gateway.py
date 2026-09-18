@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.model_gateway import (
     ModelDefinitionUpsert,
     ModelInvocationRequest,
@@ -12,7 +13,7 @@ from codex_web.model_gateway import (
     PromptTemplateUpsert,
     TenantModelPolicyUpdate,
 )
-from codex_web.services.identity import AuthorizationError
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.model_gateway import (
     ModelGatewayError,
     ModelGatewayService,
@@ -36,6 +37,12 @@ def _error(exc: Exception) -> HTTPException:
 def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
     router = APIRouter(prefix="/api/model-gateway", tags=["model-gateway"])
 
+    def mutation_actor(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
+
     @router.get("/providers")
     async def providers(request: Request) -> dict[str, Any]:
         items = service.list_providers(request_actor(request))
@@ -50,7 +57,7 @@ def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
         if provider_id != payload.id:
             raise HTTPException(status_code=422, detail="provider id mismatch")
         try:
-            item = service.upsert_provider(payload, actor=request_actor(request))
+            item = service.upsert_provider(payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
@@ -71,7 +78,7 @@ def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
         if model_id != payload.id:
             raise HTTPException(status_code=422, detail="model id mismatch")
         try:
-            item = service.upsert_model(payload, actor=request_actor(request))
+            item = service.upsert_model(payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
@@ -93,7 +100,7 @@ def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
         if template_id != payload.template_id or version != payload.version:
             raise HTTPException(status_code=422, detail="prompt template identity mismatch")
         try:
-            item = service.upsert_template(payload, actor=request_actor(request))
+            item = service.upsert_template(payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
@@ -111,7 +118,7 @@ def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.set_policy(payload, actor=request_actor(request))
+            item = service.set_policy(payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
