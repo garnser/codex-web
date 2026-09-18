@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 
 from codex_web.extensions import (
-    ExtensionInstallation,
     ExtensionDeploymentMode,
+    ExtensionInstallation,
     ExtensionLifecycleState,
     ExtensionManifest,
     ExtensionPackageVerification,
