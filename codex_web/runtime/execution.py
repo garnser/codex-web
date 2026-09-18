@@ -978,17 +978,25 @@ def install_turn_execution_service(
     *,
     binding_service: TurnExecutionBindingService | None = None,
     session_manager: AssignmentBoundCodexSessionManager | None = None,
+    bootstrap_bindings: ThreadBootstrapBindingService | None = None,
+    control_actor: AuthenticationActor | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
         service = existing
         service.binding_service = binding_service or service.binding_service
         service.session_manager = session_manager or service.session_manager
+        service.bootstrap_bindings = (
+            bootstrap_bindings or service.bootstrap_bindings
+        )
+        service.control_actor = control_actor or service.control_actor
     else:
         service = TurnExecutionService(
             host,
             binding_service=binding_service,
             session_manager=session_manager,
+            bootstrap_bindings=bootstrap_bindings,
+            control_actor=control_actor,
         )
         app.state.turn_execution_service = service
 
