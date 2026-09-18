@@ -236,6 +236,35 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
 
+    async def test_thread_resume_failure_completes_assignment_before_turn_start(self) -> None:
+        host, _binding, sessions, service = self._service()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        sessions.session.request = AsyncMock(side_effect=RuntimeError("resume failed"))
+
+        with self.assertRaisesRegex(RuntimeError, "resume failed"):
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="do work",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="exec-1",
+            )
+
+        host.codex.request.assert_not_awaited()
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        assignment_id, kwargs = sessions.completed[0]
+        self.assertEqual(assignment_id, "assignment-1")
+        self.assertFalse(kwargs["succeeded"])
+        self.assertEqual(kwargs["failure_code"], "codex_thread_resume_failed")
+
     async def test_active_thread_request_never_falls_back_when_session_missing(self) -> None:
         host, _binding, _sessions, service = self._service()
         service.mark_thread_active(
@@ -329,6 +358,10 @@ class TurnExecutionInstallationTests(unittest.TestCase):
         self.assertIs(host.THREAD_TERMINAL_FAILURES, first.terminal_failures)
         self.assertIs(host.THREAD_LAST_INPUTS, first.last_inputs)
         self.assertIs(host.ASSIGNMENT_COMPLETION_TASKS, first.assignment_completion_tasks)
+        self.assertIs(
+            host.THREAD_ASSIGNMENT_COMPLETION_TASKS,
+            first.thread_completion_tasks,
+        )
 
 
 if __name__ == "__main__":
