@@ -140,6 +140,16 @@ Retention-policy and residency-policy definitions are expected to be versioned m
 
 Classification ordering, credential/secret model-context exclusions, tenant isolation, and the requirement that source-domain deletion actually succeed before completion are code-owned structural controls.
 
+## Artifact and evidence adoption
+
+Artifact/evidence metadata is the first durable domain integrated with this boundary.
+
+New artifacts register an `artifact` governance record and new evidence registers an `evidence` record. Evidence references the governance records of its source artifacts, so its effective classification, retention ceiling, residency constraints, and model-context restrictions cannot be weaker than the artifacts used to produce it.
+
+Existing artifact/evidence rows predate governance metadata. The administrator-only `POST /api/artifact-evidence/governance/sync` migration endpoint links them to canonical governance records. Because historical sensitivity was not recorded, legacy rows are conservatively backfilled as `confidential`.
+
+Governed redaction/anonymization/deletion for these object types scrubs the payload-bearing metadata stored by codex-web, invalidates dependent evidence/verifications, and preserves canonical IDs as tombstones for referential/audit integrity. A `delete` receipt from this adapter **does not claim that an external Git commit, CI job, deployment, or provider object was deleted**. External side effects require their own canonical ActionProvider/ActionIntent path.
+
 ## Adoption path
 
 This foundation is intentionally domain-neutral. Existing domains should adopt it incrementally:
