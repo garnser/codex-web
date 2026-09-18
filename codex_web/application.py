@@ -84,6 +84,7 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
@@ -163,8 +164,12 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+input_pipeline_definition_service = install_input_plugin_definitions(
+    definition_registry_service
+)
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.input_pipeline_definition_service = input_pipeline_definition_service
 core._execution_role_definition_service = execution_role_definition_service
 
 def _work_item_definition_usage(reference):
@@ -232,6 +237,7 @@ model_gateway_service = ModelGatewayService(
     model_gateway_store,
     secret_broker=secret_broker,
     entitlements=entitlement_service,
+    input_pipeline_resolver=input_pipeline_definition_service.pipeline_for,
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
 app.include_router(build_model_gateway_router(model_gateway_service))
