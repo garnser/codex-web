@@ -113,6 +113,7 @@
       ${links.length ? `<small>Revision links: ${escapeHtml(links.join(" · "))}</small>` : ""}
       <button type="button" class="ghost-button" data-configuration-impact="${escapeHtml(record.id)}">Load impact preview</button>
       <div id="configuration-impact-${escapeHtml(record.id)}"></div>
+      <div data-configuration-management-host="${escapeHtml(record.id)}"></div>
     </details>`;
   }
 
