@@ -185,6 +185,37 @@ can enforce the requested egress policy.
 This is deliberately fail-closed: codex-web never converts
 `allowed_hosts=(...)` into unrestricted network access.
 
+#### Trusted Codex model-provider egress
+
+Assignment-bound Codex app-server sessions need model-provider transport, but
+that transport is **not** the worker's generic `network` capability and is not
+shared with repository commands.
+
+The local implementation keeps Bubblewrap under `--unshare-net` and adds a
+separate assignment-bound broker:
+
+- a host-side Unix-socket CONNECT broker accepts only HTTPS destinations derived
+  from active canonical Model Gateway provider metadata plus the exact
+  code-owned first-party Codex/OpenAI endpoints when applicable;
+- every CONNECT requires a random per-session proxy capability and revalidates
+  the current assignment, worker, fence, deadline and delegated credential
+  authority before opening provider transport;
+- a tiny loopback relay inside the private network namespace bridges only the
+  trusted Codex parent process to that Unix socket; the broker directory is
+  mounted read-only and outside the repository workspace;
+- the proxy capability exists only in the trusted Codex launch environment.
+  Codex child-command policy uses `inherit="none"` and explicitly excludes
+  upper- and lower-case HTTP(S)/ALL/NO proxy variables;
+- repository/tool execution still receives `networkAccess: false` and generic
+  Bubblewrap assignments still reject `network.enabled=true`;
+- non-HTTPS custom model-provider endpoints do not receive a worker egress
+  exception.
+
+This means model transport does not imply repository network authority. There is
+no host-network fallback, wildcard provider domain, or second model-routing
+authority store. Stale worker/fence/delegation state denies new broker
+connections and the session watchdog terminates the bound app-server.
+
 ### Environment and secrets
 
 The execution process receives a minimal environment containing only ordinary
