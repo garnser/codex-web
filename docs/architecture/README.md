@@ -88,6 +88,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
 - [Runtime supervision](runtime-supervision.md)
+- [Typed configuration and feature rollout](configuration.md) — deterministic scope precedence, versioned publication/rollback, feature targeting, reference values, and configuration-vs-policy/definition boundaries.
 - [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
 - [Storage scaling](storage-scaling.md)
 
