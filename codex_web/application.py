@@ -7,6 +7,7 @@ from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
+from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
@@ -57,6 +58,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
@@ -89,6 +91,7 @@ from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.resource_catalog import ResourceCatalogStore
@@ -122,6 +125,12 @@ install_identity_middleware(app, identity_service)
 app.include_router(build_identity_router(identity_service))
 app.state.identity_state_store = identity_state_store
 app.state.identity_service = identity_service
+
+data_governance_store = DataGovernanceStore(state_store)
+data_governance_service = DataGovernanceService(data_governance_store)
+app.include_router(build_data_governance_router(data_governance_service))
+app.state.data_governance_store = data_governance_store
+app.state.data_governance_service = data_governance_service
 
 secret_state_store = SecretStateStore(state_store)
 local_secret_backend = LocalFileSecretBackend(SECRET_MATERIAL_DIR)
