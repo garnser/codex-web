@@ -148,6 +148,16 @@ class BotConnectionService:
             current_ref = getattr(existing, ref_field) if existing else None
 
             if explicit_ref:
+                if actor is None or self.secret_broker is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Explicit secret references require an authenticated secret broker",
+                    )
+                self.secret_broker.metadata(
+                    explicit_ref,
+                    actor=actor,
+                    require_use=True,
+                )
                 values[raw_field] = None
                 values[ref_field] = explicit_ref
                 continue
