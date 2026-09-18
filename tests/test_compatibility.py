@@ -40,6 +40,15 @@ class CompatibilityTests(unittest.TestCase):
         with self.assertRaises(ContractCompatibilityError):
             spec.require("2.0")
 
+    def test_action_provider_1_1_keeps_legacy_1_0_migration_window(self) -> None:
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.1")
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.supported, ("1.0", "1.1"))
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.deprecated, ("1.0",))
+        self.assertEqual(str(ACTION_PROVIDER_CONTRACT.require("1.0")), "1.0")
+        self.assertEqual(str(ACTION_PROVIDER_CONTRACT.require("1.1")), "1.1")
+        with self.assertRaises(ContractCompatibilityError):
+            ACTION_PROVIDER_CONTRACT.require("1.2")
+
     def test_version_parser_normalizes_and_orders(self) -> None:
         self.assertEqual(str(ContractVersion.parse("1")), "1.0")
         self.assertLess(ContractVersion.parse("1.9"), ContractVersion.parse("2.0"))
