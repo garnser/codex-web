@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from codex_web.execution_workers import (
+    AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
     AssignmentStatus,
@@ -614,6 +615,44 @@ class AssignmentBoundCodexSessionManager:
 
     def get(self, assignment_id: str) -> AssignmentBoundCodexSession | None:
         return self.sessions.get(assignment_id)
+
+    async def complete(
+        self,
+        assignment_id: str,
+        *,
+        succeeded: bool,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+        artifact_ids: tuple[str, ...] = (),
+        evidence_ids: tuple[str, ...] = (),
+    ) -> ExecutionAssignment:
+        session = self.sessions.get(assignment_id)
+        if session is None:
+            raise AssignmentBoundCodexSessionStaleError(
+                "assignment-bound Codex session is not registered"
+            )
+        assignment = session.validate_current()
+        lease = assignment.lease
+        if lease is None or session.fence is None:
+            raise AssignmentBoundCodexSessionStaleError(
+                "assignment-bound Codex session has no completable fenced lease"
+            )
+        completed = self.local_worker.worker_service.complete(
+            session.worker_id,
+            assignment.id,
+            AssignmentCompleteRequest(
+                lease_token=lease.lease_token,
+                fence=session.fence,
+                succeeded=succeeded,
+                failure_code=failure_code,
+                failure_message=failure_message,
+                artifact_ids=artifact_ids,
+                evidence_ids=evidence_ids,
+            ),
+            actor=self.local_worker.worker_actor,
+        )
+        await self.stop(assignment_id)
+        return completed
 
     async def stop(self, assignment_id: str) -> None:
         async with self._lock:
