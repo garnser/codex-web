@@ -90,6 +90,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Runtime supervision](runtime-supervision.md)
 - [Definition Registry](definition-registry.md) — versioned database-backed mutable definitions, lifecycle, compatibility, exact runtime attribution, bootstrap and recovery.
 - [Typed configuration and feature rollout](configuration.md) — deterministic scope precedence, versioned publication/rollback, feature targeting, reference values, and configuration-vs-policy/definition boundaries.
+- [Input plugin composition pipeline](input-plugin-pipeline.md) — deterministic pluggable request composition, field security classes, bounded provenance, and model-gateway integration.
 - [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
 - [Data governance](data-governance.md) — canonical classification, retention, legal-hold, governed deletion/redaction, export authorization, residency propagation, and model-context filtering boundary.
 - [Entitlements, quotas, and usage metering](entitlements.md) — hosted/service capability access, deterministic quota enforcement, idempotent metering, reconciliation, and provider-neutral usage export.
