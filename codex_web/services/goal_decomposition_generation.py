@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import math
 from typing import Any
 
 from codex_web.goal_decomposition import (
     MAX_GOAL_DECOMPOSITION_CONTEXT_ITEMS,
     MAX_GOAL_DECOMPOSITION_OUTPUT_TOKENS,
+    MAX_GOAL_DECOMPOSITION_PROJECTS,
     GoalDecompositionGenerationRequest,
     GoalDecompositionModelOutput,
     GoalDecompositionProposal,
@@ -30,7 +30,7 @@ from codex_web.services.goal_decompositions import (
     GoalDecompositionService,
 )
 from codex_web.services.goals import GoalNotFoundError, GoalService
-from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.model_gateway import ModelGatewayError, ModelGatewayService
 from codex_web.services.projects import ProjectNotFoundError, ProjectService
 from codex_web.services.work_graph import WorkGraphService
 
@@ -127,6 +127,11 @@ class GoalDecompositionGenerationService:
             item.project_id for item in goal.work_graph_bindings
         )
         project_ids = tuple(dict.fromkeys(project_ids))
+        if len(project_ids) > MAX_GOAL_DECOMPOSITION_PROJECTS:
+            raise GoalDecompositionGenerationError(
+                "Goal decomposition project selection exceeds "
+                f"{MAX_GOAL_DECOMPOSITION_PROJECTS}"
+            )
         if not project_ids:
             raise GoalDecompositionGenerationError(
                 "Goal decomposition requires explicit project_ids or existing Goal project bindings"
@@ -325,10 +330,15 @@ class GoalDecompositionGenerationService:
             goal_id=goal.id,
             purpose="goal-decomposition",
         )
-        response = await self.model_gateway.invoke(
-            request,
-            actor=actor,
-        )
+        try:
+            response = await self.model_gateway.invoke(
+                request,
+                actor=actor,
+            )
+        except ModelGatewayError as exc:
+            raise GoalDecompositionGenerationError(
+                f"Goal decomposition model invocation failed: {exc}"
+            ) from exc
         output = self._parse_output(response.text)
 
         allowed_projects = {item.id for item in projects}
