@@ -10,6 +10,7 @@ from codex_web.entitlements import (
     QuotaPolicyUpdate,
     TenantModeUpdate,
     UsageEventCreate,
+    UsageReconciliationBatch,
 )
 from codex_web.services.entitlements import (
     EntitlementDeniedError,
@@ -141,6 +142,38 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         try:
             result = service.record_usage(payload, actor=request_actor(request))
             return result.model_dump(mode="json")
+        except Exception as exc:
+            if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/usage/reconcile")
+    async def reconcile_usage(
+        payload: UsageReconciliationBatch,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.reconcile_usage(
+                payload,
+                actor=request_actor(request),
+            ).model_dump(mode="json")
+        except Exception as exc:
+            if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/usage/export")
+    async def export_usage(
+        request: Request,
+        received_after: float | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        try:
+            return service.export_usage(
+                request_actor(request),
+                received_after=received_after,
+                limit=limit,
+            ).model_dump(mode="json")
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
                 raise _error(exc) from exc
