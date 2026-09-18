@@ -21,6 +21,7 @@ from codex_web.execution_workers import (
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 
 
@@ -54,9 +55,11 @@ class ExecutionWorkerService:
         store: ExecutionWorkerStore,
         *,
         identity: IdentityService | None = None,
+        workspaces: ExecutionWorkspaceService | None = None,
     ) -> None:
         self.store = store
         self.identity = identity
+        self.workspaces = workspaces
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -411,6 +414,36 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         self._require_admin(actor)
+        if payload.execution_workspace_id is not None:
+            if self.workspaces is None:
+                raise WorkerConflictError(
+                    "execution workspace validation service is unavailable"
+                )
+            workspace = self.workspaces.get(payload.execution_workspace_id, actor)
+            if workspace.execution_id != payload.execution_id:
+                raise WorkerConflictError(
+                    "assignment execution does not match execution workspace"
+                )
+            if workspace.work_item_ref != payload.work_item_ref:
+                raise WorkerConflictError(
+                    "assignment Work Item does not match execution workspace"
+                )
+            if payload.project_id is not None and workspace.project_id != payload.project_id:
+                raise WorkerConflictError(
+                    "assignment project does not match execution workspace"
+                )
+            if set(payload.resource_ids) - set(workspace.resource_ids):
+                raise WorkerConflictError(
+                    "assignment resources exceed execution workspace lease"
+                )
+            if (
+                payload.base_revision is not None
+                and workspace.base_revision is not None
+                and payload.base_revision != workspace.base_revision
+            ):
+                raise WorkerConflictError(
+                    "assignment base revision does not match execution workspace"
+                )
         created: list[ExecutionAssignment] = []
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
@@ -711,6 +744,42 @@ class ExecutionWorkerService:
 
         self.store.update(apply)
         return updated[0]
+
+    def mark_stale_workers_offline(
+        self,
+        *,
+        actor: AuthenticationActor,
+        stale_after_seconds: int = 120,
+        now: float | None = None,
+    ) -> list[str]:
+        self._require_admin(actor)
+        current = time.time() if now is None else now
+        cutoff = current - max(10, stale_after_seconds)
+        changed: list[str] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            for index, worker in enumerate(state.workers):
+                if (
+                    not self._same_scope(worker, actor)
+                    or worker.lifecycle != WorkerLifecycle.ACTIVE
+                    or worker.last_heartbeat_at > cutoff
+                ):
+                    continue
+                state.workers[index] = worker.model_copy(
+                    update={"lifecycle": WorkerLifecycle.OFFLINE}
+                )
+                changed.append(worker.id)
+                self._event(
+                    state,
+                    actor=actor,
+                    event_type="worker_offline",
+                    worker_id=worker.id,
+                    details={"last_heartbeat_at": worker.last_heartbeat_at},
+                )
+            return state
+
+        self.store.update(apply)
+        return changed
 
     def recover_expired(
         self,
