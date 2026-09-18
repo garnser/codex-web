@@ -20,6 +20,7 @@ from codex_web.input_plugin_definitions import (
 )
 from codex_web.input_plugins import (
     GatedValidator,
+    InputPluginAuditSink,
     InputPluginPipeline,
     InputPluginRegistration,
     NormalizeWhitespaceInputPlugin,
@@ -86,10 +87,15 @@ class InputPipelineDefinitionService:
         catalog: InputPluginCatalog,
         *,
         gated_validator: GatedValidator | None = None,
+        audit_sink: InputPluginAuditSink | None = None,
     ) -> None:
         self.registry = registry
         self.catalog = catalog
         self.gated_validator = gated_validator
+        self.audit_sink = audit_sink
+
+    def set_audit_sink(self, audit_sink: InputPluginAuditSink | None) -> None:
+        self.audit_sink = audit_sink
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -191,6 +197,7 @@ class InputPipelineDefinitionService:
         return InputPluginPipeline(
             registrations,
             gated_validator=self.gated_validator,
+            audit_sink=self.audit_sink,
         )
 
 
@@ -212,6 +219,7 @@ def install_input_plugin_definitions(
     *,
     catalog: InputPluginCatalog | None = None,
     gated_validator: GatedValidator | None = None,
+    audit_sink: InputPluginAuditSink | None = None,
 ) -> InputPipelineDefinitionService:
     if not any(
         item["kind"] == INPUT_PIPELINE_DEFINITION_KIND
@@ -229,6 +237,7 @@ def install_input_plugin_definitions(
         registry,
         catalog or default_input_plugin_catalog(),
         gated_validator=gated_validator,
+        audit_sink=audit_sink,
     )
     service.bootstrap()
     return service

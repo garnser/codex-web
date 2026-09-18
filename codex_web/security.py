@@ -70,6 +70,7 @@ class SecurityViolationKind(StrEnum):
     SUPPLY_CHAIN = "supply_chain"
     SANDBOX_MISMATCH = "sandbox_mismatch"
     ACTION_TRUST_BOUNDARY = "action_trust_boundary"
+    INPUT_PLUGIN_BOUNDARY = "input_plugin_boundary"
 
 
 class UntrustedContentEnvelope(BaseModel):
