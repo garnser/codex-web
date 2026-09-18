@@ -389,6 +389,30 @@ class ResourceCatalogService:
         self.store.update(apply)
         return binding
 
+    def resource_ids_for_project(
+        self,
+        project: Project,
+    ) -> list[str]:
+        """Internal projection helper; caller must supply canonical Project scope."""
+
+        state = self.store.load()
+        ids = {
+            item.resource_id
+            for item in state.project_bindings
+            if item.project_id == project.id
+            and item.organization_id == project.organization_id
+            and item.workspace_id == project.workspace_id
+        }
+        valid = {
+            item.id
+            for item in state.resources
+            if item.id in ids
+            and item.organization_id == project.organization_id
+            and item.workspace_id == project.workspace_id
+            and item.lifecycle not in {ResourceLifecycle.DISABLED, ResourceLifecycle.DELETED}
+        }
+        return sorted(valid)
+
     def project_resources(
         self,
         project: Project,
