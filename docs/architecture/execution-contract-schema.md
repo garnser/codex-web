@@ -20,15 +20,15 @@ The contract follows the repository architecture policy:
 - future authority controls must extend the versioned contract rather than bypass it;
 - the prompt path receives only the schema version in addition to the existing role contract, avoiding duplicated structured payload tokens.
 
-## Version 1.2
+## Version 1.3
 
-Schema `1.2` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
+Schema `1.3` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
 
 `ExecutionContractV1` contains:
 
 | Field | Purpose |
 | --- | --- |
-| `schema_version` | Exact schema version, currently `1.2`. |
+| `schema_version` | Exact schema version, currently `1.3`. |
 | `work_item_ref` | Canonical work-item identity. |
 | `role_id` | Resolved execution-role contract. |
 | `agent_id` | Current canonical owner, or pending handoff recipient when applicable. |
@@ -44,7 +44,7 @@ The Pydantic models use `extra="forbid"` so unknown fields cannot silently chang
 
 ### Resume inputs
 
-The v1.2 input envelope adds:
+The v1.3 input envelope adds:
 
 ```yaml
 retry_attempt: 0
@@ -61,7 +61,7 @@ Only the latest checkpoint id and summary are copied into the contract. Full che
 
 ### Accounting envelope
 
-Every v1.2 contract includes:
+Every v1.3 contract includes:
 
 ```yaml
 accounting:
@@ -94,7 +94,7 @@ Before a canonical work-item wake-up is formatted for an agent, `WorkItemContrac
 
 1. resolves split-brain findings deterministically;
 2. resolves the execution role from canonical state;
-3. constructs and validates `ExecutionContractV1` schema 1.2;
+3. constructs and validates `ExecutionContractV1` schema 1.3;
 4. carries only the compact latest-checkpoint resume hint into the structured contract;
 5. continues through the existing role-prompt path.
 
@@ -110,3 +110,8 @@ A future schema change must:
 4. include migration or compatibility handling for persisted contracts if persistence is introduced;
 5. keep resume context bounded rather than replaying full history;
 6. add focused validation tests before becoming a dispatch dependency.
+
+
+## Execution workspace target
+
+Schema 1.3 adds the optional `target.workspace` projection. It carries canonical execution-workspace and lease identity, resource IDs, isolated path/branch, pinned base/head revision, lifecycle status, and lease expiry. The field is derived from canonical Work Item execution state; prompts do not invent workspace ownership.
