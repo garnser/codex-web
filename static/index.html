@@ -750,6 +750,43 @@
                   </details>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Operations & Observability</h2>
+                    <button id="refresh-operations" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="operations-status" class="form-result" aria-live="polite">Open to load operator health and telemetry.</div>
+                  <div class="route-test">
+                    <label>Window <select id="operations-window">
+                      <option value="300">5 minutes</option>
+                      <option value="900" selected>15 minutes</option>
+                      <option value="3600">1 hour</option>
+                      <option value="86400">24 hours</option>
+                    </select></label>
+                    <button id="resume-runtime-recovery" type="button" class="ghost-button">Resume stale/queued runtime work</button>
+                  </div>
+                  <div class="section-title"><span>Service health & dependencies</span></div>
+                  <div id="operations-health" class="comm-log"></div>
+                  <div class="section-title"><span>Queues, scheduler & lease health</span></div>
+                  <div id="operations-runtime" class="comm-log"></div>
+                  <div class="section-title"><span>Provider & activity health</span></div>
+                  <div id="operations-providers" class="comm-log"></div>
+                  <details>
+                    <summary>Metrics</summary>
+                    <div id="operations-metrics" class="comm-log"></div>
+                  </details>
+                  <details>
+                    <summary>Recent traces / correlation IDs</summary>
+                    <input id="operations-trace-search" type="search" placeholder="Filter correlation, causation, span or attribute" />
+                    <div id="operations-traces" class="comm-log"></div>
+                  </details>
+                  <details>
+                    <summary>Diagnostics snapshot</summary>
+                    <select id="operations-diagnostic-project"><option value="">All/current runtime</option></select>
+                    <button id="load-diagnostics" type="button" class="ghost-button">Load diagnostics</button>
+                    <div id="operations-diagnostics" class="comm-log"></div>
+                  </details>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -880,6 +917,7 @@
     <script src="static/configuration_management.js" type="module"></script>
     <script src="static/execution_worker_admin.js" type="module"></script>
     <script src="static/execution_worker_management.js" type="module"></script>
+    <script src="static/operations_observability.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
