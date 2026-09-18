@@ -13,6 +13,9 @@ ENTITLEMENT_CONTRACT = ContractSpec("entitlement-state", "1.0", ("1.0",))
 
 CAPABILITY_EXTERNAL_ACTIONS = "external_actions"
 METRIC_EXTERNAL_ACTION_ATTEMPTS = "external_action_attempts"
+METRIC_MODEL_INPUT_TOKENS = "model_input_tokens"
+METRIC_MODEL_OUTPUT_TOKENS = "model_output_tokens"
+METRIC_MODEL_COST_USD = "model_cost_usd"
 
 
 class EntitlementMode(StrEnum):
