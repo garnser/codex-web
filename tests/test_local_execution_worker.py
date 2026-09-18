@@ -16,6 +16,7 @@ from codex_web.execution_workers import (
     ExecutionWorkerRegister,
     NetworkPolicy,
     WorkerCapability,
+    WorkerLifecycle,
     WorkerResourceLimits,
 )
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus
@@ -297,6 +298,32 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             renew_margin_seconds=200,
         )
         return runtime, backend
+
+    def test_local_bootstrap_reactivates_offline_worker_and_drops_stale_command_capability(self) -> None:
+        self.worker_service.set_lifecycle(
+            self.worker.id,
+            WorkerLifecycle.OFFLINE,
+            actor=self.admin,
+            reason="simulated restart gap",
+        )
+
+        refreshed = self.worker_service.ensure_local_worker(
+            service_identity_id=self.worker_actor.identity_id,
+            version="test-v2",
+            capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.ARTIFACT_UPLOAD,
+            ),
+            actor=self.admin,
+        )
+
+        self.assertEqual(refreshed.id, self.worker.id)
+        self.assertEqual(refreshed.lifecycle, WorkerLifecycle.ACTIVE)
+        self.assertNotIn(
+            WorkerCapability.COMMAND_EXECUTION,
+            refreshed.capabilities,
+        )
+        self.assertEqual(refreshed.version, "test-v2")
 
     def test_runtime_claims_starts_renews_and_completes_exact_assignment(self) -> None:
         assignment = self._create_assignment()
