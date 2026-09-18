@@ -171,6 +171,37 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("--chdir", command)
         self.assertEqual(command[-3:], ["python", "-m", "pytest"])
 
+    def test_read_only_assignment_mounts_workspace_and_git_metadata_read_only(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            metadata = root / "repo.git"
+            workspace.mkdir()
+            metadata.mkdir()
+            command = backend.build_command(
+                _assignment(sandbox="read-only"),
+                argv=("git", "status"),
+                workspace_path=workspace,
+                git_metadata_path=metadata,
+            )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--ro-bind", str(workspace.resolve()), str(workspace.resolve())],
+            mounts,
+        )
+        self.assertIn(
+            ["--ro-bind", str(metadata.resolve()), str(metadata.resolve())],
+            mounts,
+        )
+
     def test_danger_full_access_and_network_requests_fail_closed(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
