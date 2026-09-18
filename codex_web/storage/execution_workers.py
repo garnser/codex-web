@@ -12,12 +12,32 @@ EXECUTION_WORKER_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": EXECUTION_WORKER_CONTRACT.current,
+        "schema_version": "1.0",
         "workers": list(payload.get("workers", [])),
         "assignments": list(payload.get("assignments", [])),
         "events": list(payload.get("events", [])),
     },
 )
+
+
+def _migrate_1_0_to_1_1(payload: dict[str, Any]) -> dict[str, Any]:
+    assignments = []
+    for raw in payload.get("assignments", []):
+        item = dict(raw)
+        if item.get("subject") is None and item.get("work_item_ref"):
+            item["subject"] = {
+                "kind": "work_item",
+                "ref": item["work_item_ref"],
+            }
+        assignments.append(item)
+    return {
+        **payload,
+        "schema_version": "1.1",
+        "assignments": assignments,
+    }
+
+
+EXECUTION_WORKER_MIGRATIONS.register("1.0", "1.1", _migrate_1_0_to_1_1)
 
 
 class ExecutionWorkerStore:
