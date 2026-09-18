@@ -184,12 +184,12 @@ class ExtensionPackageCatalogTests(unittest.TestCase):
         self.assertIn("symbolic links", discovery.errors[0].error)
 
     def test_oversized_manifest_and_payload_are_discovery_errors(self) -> None:
-        payload = b"x" * 32
+        payload = b"x" * 2048
         _write_package(self.root, "too-large-payload", payload)
         catalog = LocalExtensionPackageCatalog(
             self.root,
             max_manifest_bytes=4096,
-            max_payload_bytes=16,
+            max_payload_bytes=1024,
         )
 
         discovery = catalog.discover()
