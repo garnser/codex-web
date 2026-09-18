@@ -7,7 +7,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
-from codex_web.data_governance import DataClassification
+from codex_web.data_governance import CLASSIFICATION_RANK, DataClassification
 
 
 CRYPTO_STATE_CONTRACT = ContractSpec("crypto-key-state", "1.0", ("1.0",))
@@ -173,11 +173,7 @@ ENCRYPTION_REQUIRED_AT_OR_ABOVE = DataClassification.CONFIDENTIAL
 
 
 def encryption_required(classification: DataClassification) -> bool:
-    ranks = {
-        DataClassification.PUBLIC: 0,
-        DataClassification.INTERNAL: 1,
-        DataClassification.CONFIDENTIAL: 2,
-        DataClassification.RESTRICTED: 3,
-        DataClassification.SECRET: 4,
-    }
-    return ranks[classification] >= ranks[ENCRYPTION_REQUIRED_AT_OR_ABOVE]
+    return (
+        CLASSIFICATION_RANK[classification]
+        >= CLASSIFICATION_RANK[ENCRYPTION_REQUIRED_AT_OR_ABOVE]
+    )
