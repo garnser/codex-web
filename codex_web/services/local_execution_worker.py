@@ -175,16 +175,16 @@ class LocalExecutionWorkerRuntime:
         workspace_path = self._workspace_path(assignment)
         self.backend.validate_assignment(assignment)
 
-        assignment = self._claim_or_resume(assignment)
-        lease = assignment.lease
-        if lease is None:
-            raise LocalExecutionWorkerRuntimeError("claimed assignment has no worker lease")
-
         self.worker_service.heartbeat(
             self.worker.id,
             WorkerHeartbeatRequest(version=self.worker.version),
             actor=self.worker_actor,
         )
+        assignment = self._claim_or_resume(assignment)
+        lease = assignment.lease
+        if lease is None:
+            raise LocalExecutionWorkerRuntimeError("claimed assignment has no worker lease")
+
         if assignment.status == AssignmentStatus.CLAIMED:
             assignment = self.worker_service.start(
                 self.worker.id,
