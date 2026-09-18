@@ -7,6 +7,7 @@ from typing import Any
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.identity import TenantScope
 from codex_web.models import (
+    TaskSourceConfiguration,
     WorkItemAckCreate,
     WorkItemHandoffCreate,
     WorkItemProgressUpdate,
@@ -23,7 +24,12 @@ from codex_web.services.task_source_runtime import (
     TaskSourceWritebackService,
 )
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
-from codex_web.services.task_sources import TaskSource, TaskSourceEvent
+from codex_web.services.task_sources import (
+    TaskSource,
+    TaskSourceCapability,
+    TaskSourceCreateRequest,
+    TaskSourceEvent,
+)
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
@@ -60,6 +66,10 @@ class WorkItemService:
         else:
             self.task_source_writeback = task_source_writeback
             self.task_source_registry = task_source_registry or task_source_writeback.registry
+        self.task_source_registry.register_project(
+            "gitlab",
+            self._gitlab_source_for_project,
+        )
         self.gitlab_artifact_events = gitlab_artifact_events or GitLabArtifactEventProjector(
             host,
             self.state_machine,
@@ -91,6 +101,77 @@ class WorkItemService:
             self.host.GITLAB_API_BASE,
             token,
             client=self.gitlab,
+        )
+
+    def _gitlab_source_for_project(
+        self,
+        configuration: TaskSourceConfiguration,
+        project_id: str,
+        scope: TenantScope,
+    ) -> TaskSource | None:
+        del scope  # tenant selection is enforced before registry resolution.
+        if configuration.source_type.casefold() != "gitlab":
+            return None
+        token = self.host._gitlab_token_for_project(project_id)
+        if not token:
+            return None
+        return GitLabTaskSource(
+            configuration.source_instance,
+            token,
+            client=self.gitlab,
+        )
+
+    def _project_for_scope(
+        self,
+        project_id: str,
+        scope: TenantScope,
+    ) -> Any:
+        project = next(
+            (
+                item
+                for item in self.host._load_projects()
+                if getattr(item, "id", None) == project_id
+                and getattr(item, "organization_id", None) == scope.organization_id
+                and getattr(item, "workspace_id", None) == scope.workspace_id
+            ),
+            None,
+        )
+        if project is None:
+            raise LookupError("Project not found")
+        return project
+
+    async def create_authoritative(
+        self,
+        project_id: str,
+        payload: TaskSourceCreateRequest,
+        *,
+        scope: TenantScope,
+    ) -> Any:
+        """Create through the project's authoritative source, then project state.
+
+        This is an internal execution seam. Callers that originate a new external
+        side effect must place it behind the canonical ActionIntent/ActionProvider
+        boundary rather than exposing this method directly as an HTTP mutation.
+        """
+        project = self._project_for_scope(project_id, scope)
+        configuration = getattr(project, "authoritative_task_source", None)
+        if configuration is None:
+            raise TaskSourceResolutionError(
+                "Project has no authoritative task source configured"
+            )
+        source = self.task_source_registry.resolve_project(
+            configuration,
+            project_id=project_id,
+            scope=scope,
+            required=True,
+        )
+        assert source is not None
+        source.capabilities.require(TaskSourceCapability.CREATE)
+        snapshot = await source.create(payload, scope=configuration.scope)
+        return self.task_source_projector.upsert(
+            source,
+            snapshot,
+            project_id=project_id,
         )
 
     def schedule_task_source_writeback(self, state: Any) -> Any:
