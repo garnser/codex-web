@@ -163,6 +163,132 @@ class ExtensionPackageCatalogTests(unittest.TestCase):
         )
         self.assertEqual(event.details["package_ref"], candidate.package_ref)
 
+    def test_server_verified_package_upgrade_replaces_package_provenance(self) -> None:
+        payload_v1 = b"package version one"
+        payload_v2 = b"package version two"
+        _write_package(
+            self.root,
+            "v1",
+            payload_v1,
+            manifest=_manifest_payload(
+                payload_v1,
+                version="1.0.0",
+            ),
+        )
+        _write_package(
+            self.root,
+            "v2",
+            payload_v2,
+            manifest=_manifest_payload(
+                payload_v2,
+                version="2.0.0",
+            ),
+        )
+        catalog = LocalExtensionPackageCatalog(self.root)
+        candidates = {
+            item.manifest.version: item
+            for item in catalog.discover().candidates
+        }
+
+        sqlite = SQLiteStateStore(Path(self.temp.name) / "upgrade-state.sqlite3")
+        identity = IdentityService(IdentityStateStore(sqlite))
+        identity.bootstrap_local()
+        actor = identity.local_trusted_actor()
+        service = ExtensionService(ExtensionStateStore(sqlite))
+
+        installed = service.install_verified_package(
+            manifest=candidates["1.0.0"].manifest,
+            verification=candidates["1.0.0"].verification,
+            deployment_mode=ExtensionDeploymentMode.SELF_HOSTED,
+            actor=actor,
+            package_ref=candidates["1.0.0"].package_ref,
+        )
+        upgraded = service.upgrade_verified_package(
+            installed.id,
+            manifest=candidates["2.0.0"].manifest,
+            verification=candidates["2.0.0"].verification,
+            package_ref=candidates["2.0.0"].package_ref,
+            migration_evidence_id=None,
+            actor=actor,
+        )
+
+        self.assertEqual(upgraded.version, "2.0.0")
+        self.assertEqual(
+            upgraded.package_ref,
+            candidates["2.0.0"].package_ref,
+        )
+        self.assertEqual(
+            upgraded.package_verification.observed_digest,
+            candidates["2.0.0"].verification.observed_digest,
+        )
+        self.assertEqual(
+            tuple(item.version for item in upgraded.manifest_history),
+            ("1.0.0",),
+        )
+        self.assertEqual(
+            upgraded.lifecycle,
+            ExtensionLifecycleState.DISABLED,
+        )
+
+    def test_package_upgrade_rejects_server_observed_digest_mismatch(self) -> None:
+        payload_v1 = b"upgrade base"
+        payload_v2 = b"tampered upgrade"
+        _write_package(
+            self.root,
+            "v1",
+            payload_v1,
+            manifest=_manifest_payload(
+                payload_v1,
+                version="1.0.0",
+            ),
+        )
+        wrong_digest = "sha256:" + hashlib.sha256(b"expected bytes").hexdigest()
+        _write_package(
+            self.root,
+            "v2",
+            payload_v2,
+            manifest=_manifest_payload(
+                payload_v2,
+                version="2.0.0",
+                declared_digest=wrong_digest,
+            ),
+        )
+        catalog = LocalExtensionPackageCatalog(self.root)
+        candidates = {
+            item.manifest.version: item
+            for item in catalog.discover().candidates
+        }
+
+        sqlite = SQLiteStateStore(Path(self.temp.name) / "upgrade-mismatch.sqlite3")
+        identity = IdentityService(IdentityStateStore(sqlite))
+        identity.bootstrap_local()
+        actor = identity.local_trusted_actor()
+        service = ExtensionService(ExtensionStateStore(sqlite))
+        installed = service.install_verified_package(
+            manifest=candidates["1.0.0"].manifest,
+            verification=candidates["1.0.0"].verification,
+            deployment_mode=ExtensionDeploymentMode.SELF_HOSTED,
+            actor=actor,
+            package_ref=candidates["1.0.0"].package_ref,
+        )
+
+        with self.assertRaises(ExtensionIntegrityError):
+            service.upgrade_verified_package(
+                installed.id,
+                manifest=candidates["2.0.0"].manifest,
+                verification=candidates["2.0.0"].verification,
+                package_ref=candidates["2.0.0"].package_ref,
+                migration_evidence_id=None,
+                actor=actor,
+            )
+
+        current = service.get(installed.id, actor)
+        self.assertEqual(current.version, "1.0.0")
+        self.assertEqual(
+            current.package_ref,
+            candidates["1.0.0"].package_ref,
+        )
+
     def test_payload_symlink_is_rejected_without_following_target(self) -> None:
         self.root.mkdir(parents=True)
         outside = Path(self.temp.name) / "outside.bin"
