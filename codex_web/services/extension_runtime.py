@@ -15,7 +15,10 @@ from codex_web.models import WorkItemState
 from codex_web.services.action_provider_conformance import (
     ActionProviderConformanceSuite,
 )
-from codex_web.services.action_providers import ActionProviderRegistry
+from codex_web.services.action_providers import (
+    ActionProviderRegistry,
+    ActionResolutionError,
+)
 from codex_web.services.extension_conformance import (
     ExtensionConformanceSuite,
     ExtensionRuntimeDescriptor,
@@ -29,6 +32,7 @@ from codex_web.services.task_source_conformance import TaskSourceConformanceSuit
 from codex_web.services.task_source_runtime import (
     TaskSourceFactory,
     TaskSourceRegistry,
+    TaskSourceResolutionError,
 )
 from codex_web.services.task_sources import TaskSource
 
@@ -100,13 +104,18 @@ class AuthorizedExtensionActionProvider:
         return set(self._descriptor.capabilities).issubset(active)
 
     def _authorize(self, resource_ids: tuple[str, ...]) -> None:
-        ExtensionConformanceSuite().authorize_runtime(
-            self._extensions,
-            self._installation_id,
-            self._descriptor,
-            actor=self._actor,
-            resource_ids=resource_ids,
-        )
+        try:
+            ExtensionConformanceSuite().authorize_runtime(
+                self._extensions,
+                self._installation_id,
+                self._descriptor,
+                actor=self._actor,
+                resource_ids=resource_ids,
+            )
+        except ExtensionAuthorizationError as exc:
+            raise ActionResolutionError(
+                f"extension action provider authority unavailable: {exc}"
+            ) from exc
 
     def actions(self):
         if not self._registration_available():
@@ -273,13 +282,18 @@ class ExtensionRuntimeRegistry:
                 or state.workspace_id != actor.workspace_id
             ):
                 return None
-            self.conformance.authorize_runtime(
-                self.extensions,
-                installation_id,
-                descriptor,
-                actor=actor,
-                resource_ids=tuple(state.resource_ids),
-            )
+            try:
+                self.conformance.authorize_runtime(
+                    self.extensions,
+                    installation_id,
+                    descriptor,
+                    actor=actor,
+                    resource_ids=tuple(state.resource_ids),
+                )
+            except ExtensionAuthorizationError as exc:
+                raise TaskSourceResolutionError(
+                    f"extension task-source authority unavailable: {exc}"
+                ) from exc
             source = factory(state)
             if source is None:
                 return None
