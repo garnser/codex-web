@@ -34,6 +34,7 @@ class DefinitionRegistryAdminUiTests(unittest.TestCase):
         self.assertIn("record.payload", javascript)
         self.assertIn("changed_paths", javascript)
         self.assertIn("codex:definition-registry-rendered", javascript)
+        self.assertIn("data-definition-management-host", javascript)
         self.assertIn("schema/interpreter/security engines remain code-owned", javascript)
         self.assertNotIn("/publish", javascript)
         self.assertNotIn("/rollback", javascript)
