@@ -618,7 +618,7 @@ class DataGovernanceService:
 
         def apply(current: DataGovernanceState) -> DataGovernanceState:
             for record_id in payload.record_ids:
-                record = self._record_from_state(state, record_id, actor)
+                record = self._record_from_state(current, record_id, actor)
                 if record.lifecycle == GovernedDataLifecycle.DELETED:
                     decision = ContextFilterDecision(
                         record_id=record.id,
