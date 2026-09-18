@@ -106,6 +106,7 @@ from codex_web.services.work_item_watchdog_candidates import install_work_item_w
 from codex_web.services.work_item_watchdog_prompts import install_work_item_watchdog_prompt_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
+from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
@@ -127,6 +128,7 @@ from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.thread_index import install_thread_index_repository
 from codex_web.secret_backends import LocalFileSecretBackend
 
@@ -402,6 +404,13 @@ work_item_contract_service = install_work_item_contract_service(
     execution_role_definition_service,
 )
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
+work_graph_store = WorkGraphStore(state_store)
+work_graph_service = WorkGraphService(
+    work_graph_store,
+    runtime_state.work_item_states.load,
+)
+app.state.work_graph_store = work_graph_store
+app.state.work_graph_service = work_graph_service
 extension_runtime_registry = ExtensionRuntimeRegistry(
     extension_service,
     work_item_service.task_source_registry,
