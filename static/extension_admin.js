@@ -92,14 +92,12 @@
     </div>`;
   }
 
-  function renderExtensionAdmin(installations, packages, grantsByInstallation, resources, resourceError) {
+  function renderExtensionAdmin(installations, grantsByInstallation, resources, resourceError) {
     const list = document.getElementById("extension-admin-list");
     const status = document.getElementById("extension-admin-status");
     if (!list || !status) return;
-    const packageErrors = packages?.errors || [];
-    const packageCount = packages?.items?.length || 0;
     status.hidden = false;
-    status.textContent = `${installations.length} installed · ${packageCount} discovered package(s)${packageErrors.length ? ` · ${packageErrors.length} package error(s)` : ""}`;
+    status.textContent = `${installations.length} installed extension(s)`;
     if (!installations.length) {
       list.innerHTML = '<div class="comm-entry"><strong>No extensions installed</strong><small>Discovered packages remain available through the canonical extension API.</small></div>';
       return;
@@ -146,21 +144,16 @@
     try {
       const extensions = await apiRequest("/api/extensions");
       const installations = extensions.items || [];
-      let packages = { items: [], errors: [] };
       let resources = [];
       let resourceError = null;
       const [grantsByInstallation] = await Promise.all([
         loadGrantState(installations),
-        apiRequest("/api/extensions/packages")
-          .then((value) => { packages = value; })
-          .catch((error) => { packages = { items: [], errors: [{ detail: error.message }] }; }),
         apiRequest("/api/resources")
           .then((value) => { resources = value.items || []; })
           .catch((error) => { resourceError = error.message; }),
       ]);
       renderExtensionAdmin(
         installations,
-        packages,
         grantsByInstallation,
         resources,
         resourceError,

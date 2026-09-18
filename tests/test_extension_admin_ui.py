@@ -15,7 +15,6 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn('id="extension-admin-list"', html)
         self.assertIn('id="refresh-extensions"', html)
         self.assertIn('apiRequest("/api/extensions")', javascript)
-        self.assertIn('apiRequest("/api/extensions/packages")', javascript)
         self.assertIn("package_verification", javascript)
         self.assertIn("configuration_record_ids", javascript)
         self.assertIn("secret_bindings", javascript)
