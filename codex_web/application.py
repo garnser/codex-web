@@ -129,6 +129,12 @@ resource_catalog_service = ResourceCatalogService(resource_catalog_store)
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
+
+def _resource_ids_for_project(project_id: str) -> list[str]:
+    project = project_service.get(project_id)
+    return resource_catalog_service.resource_ids_for_project(project)
+
+core._resource_ids_for_project = _resource_ids_for_project
 runtime_service = RuntimeService(core)
 approval_service = ApprovalService(core)
 thread_service = ThreadService(core)
