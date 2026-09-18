@@ -229,6 +229,35 @@ class InputPluginPipelineTests(unittest.IsolatedAsyncioTestCase):
             ("reasoning_effort", "system_prompt"),
         )
 
+    async def test_plugin_warning_content_is_hashed_before_provenance(self) -> None:
+        class _WarningPlugin:
+            id = "warning-plugin"
+            version = "1.0.0"
+            transport = "builtin"
+
+            async def transform(self, current, context):
+                del context
+                return InputPatch(
+                    plugin_id=self.id,
+                    plugin_version=self.version,
+                    phase=InputPhase.COMPOSE,
+                    changes={"system_prompt": current.system_prompt},
+                    warnings=("TOP SECRET WARNING BODY",),
+                )
+
+        result = await InputPluginPipeline(
+            [
+                InputPluginRegistration(
+                    plugin=_WarningPlugin(),
+                    phase=InputPhase.COMPOSE,
+                )
+            ]
+        ).execute(envelope())
+
+        serialized = result.provenance[0].model_dump_json()
+        self.assertNotIn("TOP SECRET WARNING BODY", serialized)
+        self.assertIn("plugin_warning_sha256:", serialized)
+
     async def test_failure_policy_never_persists_exception_message(self) -> None:
         fail_open = await InputPluginPipeline(
             [
