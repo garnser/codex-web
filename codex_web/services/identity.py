@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 import time
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -53,6 +54,43 @@ class TenantIsolationError(AuthorizationError):
 
 class TokenReplayError(AuthenticationError):
     pass
+
+
+class AuthenticationRateLimiter:
+    """Small deterministic brute-force guard for authentication adapters.
+
+    Provider-specific login/OIDC handlers can share this boundary. Successful
+    authentication clears failures; failure state is deliberately not authority.
+    """
+
+    def __init__(self, *, max_failures: int = 8, window_seconds: int = 300) -> None:
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self._lock = threading.Lock()
+        self._failures: dict[str, list[float]] = {}
+
+    def _active(self, key: str, now: float) -> list[float]:
+        cutoff = now - self.window_seconds
+        return [value for value in self._failures.get(key, []) if value >= cutoff]
+
+    def check(self, key: str) -> None:
+        now = time.time()
+        with self._lock:
+            active = self._active(key, now)
+            self._failures[key] = active
+            if len(active) >= self.max_failures:
+                raise AuthenticationError("authentication temporarily rate limited")
+
+    def failure(self, key: str) -> None:
+        now = time.time()
+        with self._lock:
+            active = self._active(key, now)
+            active.append(now)
+            self._failures[key] = active
+
+    def success(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
 
 
 def _token() -> str:
