@@ -26,7 +26,8 @@ from codex_web.data_governance import (
     GovernanceRequestStatus,
 )
 from codex_web.execution_contract_schema import execution_contract_for_work_item
-from codex_web.execution_contracts import ROLE_CONTRACTS
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -44,6 +45,11 @@ from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+ROLE_CONTRACTS = ExecutionRoleCatalogDefinition.model_validate(
+    execution_role_catalog_seed_payload()
+).role_map
 
 
 class _WorkItemHost:
