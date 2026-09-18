@@ -117,8 +117,54 @@ Definition settings are not a secret store. Secret/credential-like setting keys 
 
 The engine, field classification, gated-field validation, schema enforcement, security invariants, and plugin implementation catalog remain code.
 
-## Transports
+## SKILL.md transport
 
-Current built-in catalog support establishes the registry/runtime contract. Future adapters may include SKILL.md, command, HTTP, and MCP transports. External transports must project only the minimum required input and retain the same timeout/output-size/protected-field constraints. They must not receive secret values or gain authority through transport choice.
+The first non-builtin adapter accepts declarative `SKILL.md` documents from an **explicitly configured local skill root**. There is no ambient repository scan and no runtime network fetch.
 
-Prompt Master is a reference integration target, not a required dependency and not part of the execution kernel.
+The loader:
+
+- requires UTF-8 `SKILL.md` with bounded scalar frontmatter;
+- requires stable `name`, semantic `version`, and `description`;
+- caps the complete skill document at 128 KiB;
+- resolves the path and rejects escape from the configured skill root;
+- registers the exact skill name/version in the code-owned implementation catalog;
+- does not execute code from the skill package;
+- does not automatically read sibling/reference files;
+- does not receive SecretBroker values or other credential material.
+
+A skill runs in the `compose` phase and contributes its instruction body as an `untrusted` context block. It does **not** become a system/authority prompt. The normal pipeline patch-size and added-context budgets still apply; oversized skill instructions fail rather than being silently truncated.
+
+Skill discovery is opt-in through:
+
+```python
+catalog = default_input_plugin_catalog(
+    skill_root="/opt/codex-web/input-skills",
+)
+```
+
+A directory such as `/opt/codex-web/input-skills/prompt-master/SKILL.md` therefore becomes an exact-version catalog implementation only when that root is explicitly supplied. Publishing a Definition Registry registration remains a separate action; loading a skill does not enable it.
+
+A Prompt Master-shaped fixture is covered by the adapter tests to prove compatibility with its `name: prompt-master` / semantic-version metadata without vendoring Prompt Master or making it a required dependency. A typical scoped registration is:
+
+```yaml
+registrations:
+  - plugin_id: prompt-master
+    plugin_version: 1.8.0
+    phase: compose
+    order: 100
+    failure_policy: fail_closed
+    max_added_characters: 40000
+    conditions:
+      purposes:
+        - prompt-engineering
+    settings:
+      max_skill_characters: 40000
+```
+
+Operators must pin the version actually present in the local `SKILL.md`; an unavailable/mismatched version fails closed. Reference files remain progressive-disclosure material for a future explicit retrieval adapter and are not auto-loaded by this transport.
+
+## Other transports
+
+Builtin and SKILL.md catalog support establish the registry/runtime contract. Future command, HTTP, and MCP adapters must project only the minimum required input and retain the same timeout/output-size/protected-field constraints. They must not receive secret values or gain authority through transport choice.
+
+Prompt Master remains a reference integration, not a required dependency and not part of the execution kernel.
