@@ -95,11 +95,15 @@
         <small>Discovered: ${timeText(provenance?.discovered_at)} · Last seen: ${timeText(provenance?.last_seen_at)} · Updated: ${timeText(item.updated_at)}</small>
         <button type="button" class="ghost-button" data-resource-relationships="${escapeHtml(item.id)}">Relationships</button>
         <div data-resource-relationship-host="${escapeHtml(item.id)}"></div>
+        <div data-resource-mutation-host="${escapeHtml(item.id)}"></div>
       </div>`;
     }).join("") || '<div class="comm-entry"><strong>No resources match the current filters.</strong></div>';
     relationshipCache.forEach((relationships, resourceId) => {
       renderRelationships(resourceId, relationships);
     });
+    window.dispatchEvent(new CustomEvent("codex:resource-catalog-rendered", {
+      detail: { resources },
+    }));
   }
 
   async function refreshResources() {
