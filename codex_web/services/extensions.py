@@ -411,6 +411,7 @@ class ExtensionService:
                 workspace_id=actor.workspace_id,
                 manifest=manifest,
                 package_verification=verification,
+                package_ref=package_ref,
                 deployment_mode=deployment_mode,
                 lifecycle=lifecycle,
                 installed_by=actor.identity_id,
