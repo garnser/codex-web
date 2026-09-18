@@ -267,6 +267,35 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         with self.assertRaises(ExecutionWorkspaceQuotaError):
             self._acquire("quota-2", self.repo2.id)
 
+    def test_provisioning_failure_releases_reserved_resource_lease(self) -> None:
+        failing = _FakeBackend(Path(self.temp.name) / "failing-workspaces", fail_provision=True)
+        service = ExecutionWorkspaceService(
+            ExecutionWorkspaceStateStore(self.sqlite),
+            failing,
+            self.resources,
+            lambda project_id: self.project,
+            work_item_host=self.host,
+        )
+        with self.assertRaises(RuntimeError):
+            service.acquire(
+                ExecutionWorkspaceAcquire(
+                    work_item_ref=self.work_item.ref,
+                    execution_id="failed-exec",
+                    project_id="home",
+                    resource_ids=(self.repo.id,),
+                    repository_resource_id=self.repo.id,
+                    ttl_seconds=30,
+                ),
+                actor=self.actor,
+            )
+
+        state = ExecutionWorkspaceStateStore(self.sqlite).load()
+        failed = next(item for item in state.workspaces if item.execution_id == "failed-exec")
+        lease = next(item for item in state.leases if item.execution_workspace_id == failed.id)
+        self.assertEqual(failed.status, ExecutionWorkspaceStatus.ERROR)
+        self.assertIsNotNone(lease.released_at)
+        self.assertEqual(lease.release_reason, "provisioning-failed")
+
     def test_workspace_reference_is_projected_into_execution_contract(self) -> None:
         workspace = self._acquire("contract-exec", self.repo.id)
         state = self.host.states[self.work_item.ref]
