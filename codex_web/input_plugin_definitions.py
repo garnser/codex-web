@@ -62,6 +62,25 @@ class InputPluginRegistrationDefinition(BaseModel):
             raise ValueError(
                 f"input plugin settings cannot exceed {MAX_INPUT_PLUGIN_SETTINGS} keys"
             )
+        forbidden_fragments = (
+            "password",
+            "secret",
+            "credential",
+            "api_key",
+            "access_token",
+            "refresh_token",
+            "private_key",
+        )
+        forbidden = [
+            key
+            for key in self.settings
+            if any(fragment in key.casefold() for fragment in forbidden_fragments)
+        ]
+        if forbidden:
+            raise ValueError(
+                "input plugin settings cannot contain credential/secret fields: "
+                + ", ".join(sorted(forbidden))
+            )
         return self
 
 
