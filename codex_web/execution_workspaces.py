@@ -151,7 +151,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)
