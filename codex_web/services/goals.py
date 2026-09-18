@@ -402,6 +402,23 @@ class GoalService:
                 refs.update((binding.project_id, ref) for ref in descendants)
         return tuple(sorted(refs))
 
+    def goals_for_work_item(
+        self,
+        work_item_ref: str,
+        *,
+        scope: TenantScope,
+    ) -> tuple[GoalRecord, ...]:
+        """Return Goals whose canonical graph/subgraph contains one Work Item."""
+        rows: list[GoalRecord] = []
+        for goal in self.list(scope=scope):
+            if any(
+                ref == work_item_ref
+                for _project_id, ref in self._bound_refs(goal, scope=scope)
+            ):
+                rows.append(goal)
+        rows.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
+        return tuple(rows)
+
     def progress(self, goal_id: str, *, scope: TenantScope) -> GoalProgress:
         goal = self.get(goal_id, scope=scope)
         bound_refs = set(self._bound_refs(goal, scope=scope))
