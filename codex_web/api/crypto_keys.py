@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
 from codex_web.crypto import KeyManifestEntry, ManagedKeyCreate
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.crypto_keys import (
     CryptoDecryptError,
     CryptoKeyConflictError,
@@ -14,7 +15,7 @@ from codex_web.services.crypto_keys import (
     CryptoKeyNotFoundError,
     CryptoKeyService,
 )
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError, IdentityService, TenantIsolationError
 
 
 class RevokeRequest(BaseModel):
@@ -44,6 +45,12 @@ def _error(exc: Exception) -> HTTPException:
 def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
     router = APIRouter(prefix="/api/crypto", tags=["crypto"])
 
+    def mutation_actor(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
+
     @router.get("/keys")
     async def list_keys(request: Request) -> dict[str, Any]:
         return {
@@ -56,7 +63,7 @@ def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
     @router.post("/keys")
     async def create_key(payload: ManagedKeyCreate, request: Request) -> dict[str, Any]:
         try:
-            item = service.create_key(payload, actor=request_actor(request))
+            item = service.create_key(payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (CryptoKeyError, AuthorizationError, ValueError)):
@@ -79,7 +86,7 @@ def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
     @router.post("/keys/{key_id}/rotate")
     async def rotate_key(key_id: str, request: Request) -> dict[str, Any]:
         try:
-            result = service.rotate(key_id, actor=request_actor(request))
+            result = service.rotate(key_id, actor=mutation_actor(request))
             return result.model_dump(mode="json")
         except Exception as exc:
             if isinstance(
@@ -99,7 +106,7 @@ def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
             item = service.revoke_key(
                 key_id,
                 payload.reason,
-                actor=request_actor(request),
+                actor=mutation_actor(request),
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
@@ -122,7 +129,7 @@ def build_crypto_keys_router(service: CryptoKeyService) -> APIRouter:
                 key_id,
                 version,
                 payload.reason,
-                actor=request_actor(request),
+                actor=mutation_actor(request),
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
