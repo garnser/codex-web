@@ -441,10 +441,16 @@ def install_executive_integrated(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             provider = service.provider_status()
-            raise HTTPException(
-                status_code=502,
-                detail=f"Executive LLM request failed via {provider['provider']} ({provider['model']}): {exc}",
-            ) from exc
+            detail = (
+                f"Executive model gateway request failed for class "
+                f"{provider['modelClass']}: {exc}"
+                if provider["modelGateway"]
+                else (
+                    f"Executive LLM request failed via {provider['provider']} "
+                    f"({provider['model']}): {exc}"
+                )
+            )
+            raise HTTPException(status_code=502, detail=detail) from exc
 
     @router.post("/api/executive/delegate")
     async def executive_delegate(payload: DelegateRequest) -> dict[str, Any]:
