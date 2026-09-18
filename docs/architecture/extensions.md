@@ -57,6 +57,37 @@ Unknown range syntaxes are rejected rather than guessed. An incompatible
 package may be persisted in the incompatible lifecycle so an operator can
 inspect why it cannot run, but it cannot be enabled.
 
+## Local package discovery
+
+Self-hosted package discovery uses a configured local package root. Each
+immediate package directory has two files:
+
+- manifest.json contains only the immutable ExtensionManifest declaration;
+- payload.cwext contains opaque package bytes.
+
+The manifest declares the SHA-256 digest of payload.cwext. Because the manifest
+is outside the hashed payload, the control plane can parse metadata first and
+then independently stream/hash the opaque payload.
+
+Discovery is deliberately metadata-only:
+
+- package count, manifest size and payload size are bounded;
+- package directories and required files may not be symbolic links;
+- resolved paths must remain below the configured package root;
+- manifest JSON is validated before any runtime registration;
+- payload.cwext is never extracted, imported or executed by discovery;
+- the payload digest is computed server-side and compared with the manifest;
+- malformed packages are returned as per-package discovery errors.
+
+Package installation by package_ref re-runs discovery/hash verification before
+persisting the installation, so a stale client-provided digest is never trusted
+on that path. The canonical installation retains package_ref, manifest digest
+and verifier result as provenance.
+
+The older explicit manifest/observed-digest install API remains a self-hosted
+administrative compatibility path; it does not satisfy hosted signature policy
+and is not equivalent to server-observed package verification.
+
 ## Package integrity and signature policy
 
 The package verifier is a code-owned boundary. The default self-hosted verifier
@@ -106,6 +137,31 @@ Enablement requires all of the following:
 
 No extension may add a grant to itself. Human owners/admins or service actors
 with extensions:admin own installation and authorization changes.
+
+## Runtime registration
+
+Package discovery does not load executable code. A separate trusted runtime
+loader may register an already-loaded adapter through ExtensionRuntimeRegistry.
+
+Registration is tenant-scoped and writes into the existing canonical
+TaskSourceRegistry or ActionProviderRegistry rather than a shadow extension
+dispatch table. The bridge validates exact extension ID, package version,
+declared extension category and declared runtime capabilities before
+registration.
+
+TaskSource and ActionProvider registries support tenant-specific adapters while
+retaining the existing global built-in fallback. This prevents one tenant's
+extension from overwriting an identically named provider in another tenant.
+
+Registration is process-local by design. After process restart, a trusted
+loader must recreate runtime registrations from its executable/runtime source.
+Canonical installation state, package provenance, grants, configuration,
+health and audit remain persisted and authoritative.
+
+Every actual dispatch re-checks current lifecycle and grants. A grant revoked
+after registration therefore takes effect without restarting the process.
+TaskSource dispatch uses the Work Item tenant/resource scope; ActionProvider
+dispatch uses the authenticated binding/request tenant and target resources.
 
 ## Runtime authorization
 

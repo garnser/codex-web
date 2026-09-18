@@ -5,6 +5,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.extension_packages import (
+    ExtensionPackageCatalogError,
+    ExtensionPackageNotFoundError,
+    LocalExtensionPackageCatalog,
+)
 from codex_web.extensions import (
     ExtensionConfigureRequest,
     ExtensionGrantRequest,
@@ -12,6 +17,7 @@ from codex_web.extensions import (
     ExtensionHealthReport,
     ExtensionInstallRequest,
     ExtensionLifecycleRequest,
+    ExtensionPackageInstallRequest,
     ExtensionRemoveRequest,
     ExtensionUpgradeRequest,
 )
@@ -43,13 +49,72 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_extensions_router(service: ExtensionService) -> APIRouter:
+def build_extensions_router(
+    service: ExtensionService,
+    package_catalog: LocalExtensionPackageCatalog | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/extensions", tags=["extensions"])
 
     @router.get("")
     async def list_extensions(request: Request) -> dict[str, Any]:
         items = service.list(request_actor(request))
         return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @router.get("/packages")
+    async def discover_packages(request: Request) -> dict[str, Any]:
+        if package_catalog is None:
+            raise HTTPException(
+                status_code=503,
+                detail="extension package catalog is unavailable",
+            )
+        try:
+            service._require_admin(request_actor(request))
+            discovery = package_catalog.discover()
+            return {
+                "items": [item.metadata() for item in discovery.candidates],
+                "errors": [item.metadata() for item in discovery.errors],
+            }
+        except AuthorizationError as exc:
+            raise _error(exc) from exc
+
+    @router.post("/packages/{package_ref}/install")
+    async def install_package(
+        package_ref: str,
+        payload: ExtensionPackageInstallRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        if package_catalog is None:
+            raise HTTPException(
+                status_code=503,
+                detail="extension package catalog is unavailable",
+            )
+        actor = request_actor(request)
+        try:
+            service._require_admin(actor)
+            candidate = package_catalog.get(package_ref)
+            item = service.install_verified_package(
+                manifest=candidate.manifest,
+                verification=candidate.verification,
+                deployment_mode=payload.deployment_mode,
+                actor=actor,
+                package_ref=candidate.package_ref,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except ExtensionPackageNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ExtensionPackageCatalogError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ExtensionError,
+                    AuthorizationError,
+                    ValueError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
 
     @router.post("")
     async def install_extension(

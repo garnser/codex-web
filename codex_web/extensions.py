@@ -252,6 +252,7 @@ class ExtensionInstallation(BaseModel):
     manifest: ExtensionManifest
     manifest_history: tuple[ExtensionManifest, ...] = ()
     package_verification: ExtensionPackageVerification
+    package_ref: str | None = None
     deployment_mode: ExtensionDeploymentMode
     lifecycle: ExtensionLifecycleState = ExtensionLifecycleState.INSTALLED
     installed_by: str = Field(min_length=1)
@@ -315,6 +316,12 @@ class ExtensionInstallRequest(BaseModel):
 
     manifest: ExtensionManifest
     observed_digest: str = Field(pattern=_DIGEST_RE.pattern)
+    deployment_mode: ExtensionDeploymentMode = ExtensionDeploymentMode.SELF_HOSTED
+
+
+class ExtensionPackageInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     deployment_mode: ExtensionDeploymentMode = ExtensionDeploymentMode.SELF_HOSTED
 
 
