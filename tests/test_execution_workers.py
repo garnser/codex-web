@@ -116,7 +116,6 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             "secret_refs": ("secret-ref-1",),
             "expected_artifact_types": ("patch",),
             "expected_evidence_types": ("test_result",),
-            "execution_workspace_id": "execws-1",
         }
         payload.update(overrides)
         return self.service.create_assignment(
@@ -302,6 +301,28 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 ),
                 actor=self.worker_actor,
             )
+
+    def test_stale_worker_transitions_offline_and_cannot_claim(self) -> None:
+        assignment = self._assignment()
+        stale_at = self.worker.last_heartbeat_at + 121
+        changed = self.service.mark_stale_workers_offline(
+            actor=self.admin,
+            stale_after_seconds=120,
+            now=stale_at,
+        )
+        self.assertEqual(changed, [self.worker.id])
+        self.assertIsNone(
+            self.service.claim(
+                self.worker.id,
+                AssignmentClaimRequest(),
+                actor=self.worker_actor,
+            )
+        )
+        current = next(
+            item for item in self.service.store.load().assignments
+            if item.id == assignment.id
+        )
+        self.assertEqual(current.status, AssignmentStatus.PENDING)
 
     def test_wrong_service_identity_cannot_act_as_worker(self) -> None:
         assignment = self._assignment()
