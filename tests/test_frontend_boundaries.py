@@ -133,6 +133,14 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
+    def test_input_plugin_admin_has_its_own_budget_and_api_client(self) -> None:
+        source_path = STATIC / "input_plugin_admin.js"
+        source = source_path.read_text()
+        self.assertLessEqual(source_path.stat().st_size, 17_000)
+        self.assertIn("api_client.js", source)
+        self.assertIn("apiRequest", source)
+        self.assertNotIn("fetch(", source)
+
     def test_action_provider_admin_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "action_provider_admin.js"
         source = source_path.read_text()
