@@ -380,6 +380,38 @@
                   <div id="secret-audit-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Encryption Keys</h2>
+                    <button id="refresh-crypto-keys" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="crypto-key-status" class="form-result" aria-live="polite">Open to load key metadata.</div>
+                  <div class="section-title"><span>Backend health</span></div>
+                  <div id="crypto-backend-health" class="comm-log"></div>
+                  <details id="crypto-key-create-panel">
+                    <summary>Create managed key</summary>
+                    <div class="route-test">
+                      <select id="crypto-key-purpose">
+                        <option value="application_data">Application data</option>
+                        <option value="backup">Backup</option>
+                        <option value="integration_payload">Integration payload</option>
+                        <option value="memory">Memory</option>
+                        <option value="decision">Decision</option>
+                        <option value="artifact">Artifact</option>
+                      </select>
+                      <select id="crypto-key-backend"></select>
+                      <input id="crypto-key-project-id" placeholder="Optional project ID scope" />
+                      <select id="crypto-key-resource-id"><option value="">No resource scope</option></select>
+                      <button id="create-crypto-key" type="button" class="ghost-button">Create key reference</button>
+                    </div>
+                  </details>
+                  <div class="section-title"><span>Managed keys</span></div>
+                  <div id="crypto-key-list" class="comm-log"></div>
+                  <div class="section-title"><span>Backup/restore key manifest</span></div>
+                  <div id="crypto-key-manifest" class="comm-log"></div>
+                  <div class="section-title"><span>Key audit</span></div>
+                  <div id="crypto-key-audit" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -501,6 +533,7 @@
     <script src="static/identity_admin.js" type="module"></script>
     <script src="static/identity_authority_admin.js" type="module"></script>
     <script src="static/secret_admin.js" type="module"></script>
+    <script src="static/crypto_key_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
