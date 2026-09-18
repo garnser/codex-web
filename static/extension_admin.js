@@ -122,6 +122,7 @@
         ${item.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(item.quarantine_reason)}</small>` : ""}
         ${item.disabled_reason ? `<small>Disabled reason: ${escapeHtml(item.disabled_reason)}</small>` : ""}
         ${capabilityAdministration(item, grantsState, resources, resourceError)}
+        <div data-extension-details-host="${escapeHtml(item.id)}"></div>
         <div data-extension-config-host="${escapeHtml(item.id)}"></div>
         ${extensionLifecycleActions(item)}
       </div>`;

@@ -36,6 +36,7 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("codex:extension-state-rendered", javascript)
         self.assertIn("preserve_tombstone", javascript)
         self.assertIn("hard deletion is not supported", javascript)
+        self.assertIn("data-extension-details-host", javascript)
 
 
 if __name__ == "__main__":
