@@ -210,22 +210,21 @@
 
   async function hydrate(detail) {
     snapshot = detail;
+    actor = null;
+    secrets = [];
     secretError = null;
-    try {
-      const [currentActor, secretState] = await Promise.all([
-        apiRequest("/api/identity/me"),
-        apiRequest("/api/secrets"),
-      ]);
-      actor = currentActor;
-      secrets = secretState.items || [];
-    } catch (error) {
-      actor = actor || null;
-      secrets = [];
-      secretError = error.message;
-    }
+    let actorError = null;
+    await Promise.all([
+      apiRequest("/api/identity/me")
+        .then((value) => { actor = value; })
+        .catch((error) => { actorError = error.message; }),
+      apiRequest("/api/secrets")
+        .then((value) => { secrets = value.items || []; })
+        .catch((error) => { secretError = error.message; }),
+    ]);
     const assurance = document.getElementById("model-gateway-management-assurance");
     if (assurance) {
-      assurance.textContent = `Sensitive routing administration requires canonical admin authority and MFA/step-up assurance. Current assurance: ${actor?.assurance || "unknown"}.${secretError ? ` Secret metadata unavailable: ${secretError}.` : ""}`;
+      assurance.textContent = `Sensitive routing administration requires canonical admin authority and MFA/step-up assurance. Current assurance: ${actor?.assurance || "unknown"}.${actorError ? ` Identity metadata unavailable: ${actorError}.` : ""}${secretError ? ` Secret metadata unavailable: ${secretError}.` : ""}`;
     }
     populateProviderControls();
     populateModelControls();
