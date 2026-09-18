@@ -12,10 +12,11 @@ EXECUTION_CONTRACT_SCHEMA_VERSION = "1.1"
 
 
 class ExecutionTargetV1(BaseModel):
-    """Repository/environment target known at work-item dispatch time."""
+    """Canonical plus compatibility targets known at work-item dispatch time."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    resource_ids: tuple[str, ...] = ()
     repository: str | None = None
     branch: str | None = None
     environment: str | None = None
@@ -119,7 +120,10 @@ def execution_contract_for_work_item(
         work_item_ref=state.ref,
         role_id=role.id,
         agent_id=agent_id,
-        target=ExecutionTargetV1(repository=state.project_path),
+        target=ExecutionTargetV1(
+            resource_ids=tuple(dict.fromkeys(state.resource_ids)),
+            repository=state.project_path,
+        ),
         inputs=CanonicalWorkItemInputV1(
             current_stage=state.current_stage,
             artifact_state=state.artifact_state,
