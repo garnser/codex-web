@@ -42,6 +42,10 @@ class QuotaExceededError(EntitlementDeniedError):
     pass
 
 
+class UsageIdempotencyConflictError(EntitlementError):
+    pass
+
+
 class EntitlementService:
     """Commercial/service entitlement boundary, separate from authorization."""
 
@@ -445,6 +449,34 @@ class EntitlementService:
         return decision
 
     @staticmethod
+    def _assert_idempotent_match(
+        existing: UsageEvent,
+        payload: UsageEventCreate,
+    ) -> None:
+        expected = (
+            existing.metric,
+            existing.amount,
+            existing.source,
+            existing.project_id,
+            existing.resource_id,
+            existing.work_item_ref,
+            existing.action_intent_id,
+        )
+        incoming = (
+            payload.metric,
+            payload.amount,
+            payload.source,
+            payload.project_id,
+            payload.resource_id,
+            payload.work_item_ref,
+            payload.action_intent_id,
+        )
+        if expected != incoming:
+            raise UsageIdempotencyConflictError(
+                "usage idempotency key already exists with different attribution"
+            )
+
+    @staticmethod
     def _event_from_payload(
         payload: UsageEventCreate,
         actor: AuthenticationActor,
@@ -484,6 +516,7 @@ class EntitlementService:
                 None,
             )
             if duplicate is not None:
+                self._assert_idempotent_match(duplicate, payload)
                 result.append(UsageRecordResult(event=duplicate, duplicate=True))
                 return state
             event = self._event_from_payload(payload, actor)
@@ -514,28 +547,28 @@ class EntitlementService:
                 ),
                 None,
             )
-            projected = 0.0 if duplicate is not None else payload.amount
+            if duplicate is not None:
+                self._assert_idempotent_match(duplicate, payload)
+                result.append(
+                    UsageRecordResult(
+                        event=duplicate,
+                        duplicate=True,
+                        decision=None,
+                    )
+                )
+                return state
             decision = self._decision(
                 state,
                 actor,
                 capability,
                 metric=payload.metric,
-                projected_amount=projected,
+                projected_amount=payload.amount,
                 at=payload.occurred_at,
             )
             if not decision.allowed:
                 if decision.reason == "quota_exceeded_hard_stop":
                     raise QuotaExceededError(decision.reason)
                 raise EntitlementDeniedError(decision.reason)
-            if duplicate is not None:
-                result.append(
-                    UsageRecordResult(
-                        event=duplicate,
-                        duplicate=True,
-                        decision=decision,
-                    )
-                )
-                return state
             event = self._event_from_payload(payload, actor)
             state.usage.append(event)
             result.append(
@@ -573,6 +606,7 @@ class EntitlementService:
             for incoming in payload.events:
                 existing = known.get(incoming.idempotency_key)
                 if existing is not None:
+                    self._assert_idempotent_match(existing, incoming)
                     duplicates += 1
                     event_ids.append(existing.id)
                     continue
