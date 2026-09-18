@@ -117,7 +117,18 @@ class OpenAIModelProviderAdapter:
         try:
             response = await client.chat.completions.create(**kwargs)
         except Exception as exc:
-            if "reasoning_effort" in kwargs:
+            status = getattr(exc, "status_code", None)
+            message = str(exc).lower()
+            unsupported_reasoning = (
+                "reasoning_effort" in kwargs
+                and status in {400, 422}
+                and (
+                    "reasoning" in message
+                    or "unsupported" in message
+                    or "unknown parameter" in message
+                )
+            )
+            if unsupported_reasoning:
                 kwargs.pop("reasoning_effort", None)
                 try:
                     response = await client.chat.completions.create(**kwargs)
