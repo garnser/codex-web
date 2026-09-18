@@ -18,6 +18,9 @@ GOAL_DECOMPOSITION_CONTRACT = ContractSpec(
 
 MAX_GOAL_DECOMPOSITION_DEPTH = 8
 MAX_GOAL_DECOMPOSITION_ITEMS = 100
+MAX_GOAL_DECOMPOSITION_PROJECTS = 8
+MAX_GOAL_DECOMPOSITION_CONTEXT_ITEMS = 30
+MAX_GOAL_DECOMPOSITION_OUTPUT_TOKENS = 4096
 
 
 class GoalDecompositionStatus(StrEnum):
@@ -82,6 +85,35 @@ class GoalDecompositionProposalCreate(BaseModel):
     limits: GoalDecompositionLimits = Field(default_factory=GoalDecompositionLimits)
     reason: str = Field(min_length=1)
     model_invocation_id: str | None = None
+    expected_goal_revision: int | None = Field(default=None, ge=1)
+
+
+class GoalDecompositionGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_ids: tuple[str, ...] = ()
+    limits: GoalDecompositionLimits = Field(default_factory=GoalDecompositionLimits)
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_projects(self) -> "GoalDecompositionGenerationRequest":
+        object.__setattr__(
+            self,
+            "project_ids",
+            tuple(dict.fromkeys(value for value in self.project_ids if value)),
+        )
+        if len(self.project_ids) > MAX_GOAL_DECOMPOSITION_PROJECTS:
+            raise ValueError(
+                "goal decomposition project selection exceeds "
+                f"{MAX_GOAL_DECOMPOSITION_PROJECTS}"
+            )
+        return self
+
+
+class GoalDecompositionModelOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: tuple[GoalProposedWorkItem, ...]
 
 
 class GoalDecompositionProposalRevise(BaseModel):
