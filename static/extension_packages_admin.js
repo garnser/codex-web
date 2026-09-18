@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -17,14 +18,15 @@
     return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
   }
 
-  function renderPackages(discovery, installations) {
+  function renderPackages(discovery, installations, actor) {
     const status = document.getElementById("extension-package-status");
     const list = document.getElementById("extension-package-list");
     if (!status || !list) return;
     const items = discovery?.items || [];
     const errors = discovery?.errors || [];
     status.hidden = false;
-    status.textContent = `${items.length} verified candidate(s)${errors.length ? ` · ${errors.length} discovery error(s)` : ""}`;
+    const canMutate = canMutateExtensions(actor);
+    status.textContent = `${items.length} verified candidate(s)${errors.length ? ` · ${errors.length} discovery error(s)` : ""} · ${extensionMutationAuthorityText(actor)}`;
 
     const packageCards = items.map((candidate) => {
       const manifest = candidate.manifest || {};
@@ -35,7 +37,7 @@
       const requested = manifest.capabilities?.requested || [];
       const sameVersion = installed?.manifest?.version === manifest.version;
       const installationState = !installed
-        ? `<button type="button" class="ghost-button" data-extension-package-install data-package-ref="${escapeHtml(candidate.package_ref)}" data-package-id="${escapeHtml(manifest.id)}" data-package-version="${escapeHtml(manifest.version)}" data-package-publisher="${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")}" data-package-signature="${escapeHtml(verification.signature_status || "unknown")}" data-package-digest-verified="${verification.digest_verified ? "true" : "false"}">Install package</button>`
+        ? `<button type="button" class="ghost-button" data-extension-package-install data-package-ref="${escapeHtml(candidate.package_ref)}" data-package-id="${escapeHtml(manifest.id)}" data-package-version="${escapeHtml(manifest.version)}" data-package-publisher="${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")}" data-package-signature="${escapeHtml(verification.signature_status || "unknown")}" data-package-digest-verified="${verification.digest_verified ? "true" : "false"}" ${canMutate ? "" : "disabled title=\"MFA/step-up or extensions:admin service authority required\""}>Install package</button>`
         : sameVersion
           ? `<small>Installed version ${escapeHtml(installed.manifest?.version || "unknown")} matches this candidate.</small>`
           : `<div data-extension-upgrade-host="${escapeHtml(candidate.package_ref)}"></div>`;
@@ -56,7 +58,7 @@
     list.innerHTML = [...packageCards, ...errorCards].join("")
       || '<div class="comm-entry"><strong>No packages discovered</strong><small>Add a canonical manifest.json + payload.cwext package to the configured catalog root.</small></div>';
     window.dispatchEvent(new CustomEvent("codex:extension-packages-rendered", {
-      detail: { discovery, installations },
+      detail: { discovery, installations, actor, canMutateMutation: canMutate },
     }));
   }
 
@@ -67,11 +69,12 @@
       status.textContent = "Loading package catalog...";
     }
     try {
-      const [discovery, extensions] = await Promise.all([
+      const [discovery, extensions, actor] = await Promise.all([
         apiRequest("/api/extensions/packages"),
         apiRequest("/api/extensions"),
+        apiRequest("/api/identity/me"),
       ]);
-      renderPackages(discovery, extensions.items || []);
+      renderPackages(discovery, extensions.items || [], actor);
     } catch (error) {
       if (status) status.textContent = `Package catalog unavailable: ${error.message}`;
       const list = document.getElementById("extension-package-list");
@@ -86,7 +89,7 @@
     const publisher = button.dataset.packagePublisher || "unknown";
     const signature = button.dataset.packageSignature || "unknown";
     const digestVerified = button.dataset.packageDigestVerified === "true";
-    if (!packageRef) return;
+    if (!packageRef || button.disabled) return;
 
     const confirmation = `Install ${extensionId}@${version} from ${publisher}? Digest verified: ${digestVerified ? "yes" : "no"}; signature: ${signature}. Installation does not authorize capabilities and does not enable the extension.`;
     if (!window.confirm(confirmation)) return;

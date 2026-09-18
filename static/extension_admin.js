@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -10,7 +11,7 @@
       .replaceAll('"', "&quot;");
   }
 
-  function extensionLifecycleActions(item) {
+  function extensionLifecycleActions(item, canMutate) {
     const lifecycle = String(item.lifecycle || "");
     const actions = [];
     if (["installed", "configured", "disabled"].includes(lifecycle)) {
@@ -33,7 +34,7 @@
     const label = escapeHtml(item.manifest?.id || item.id);
     const state = escapeHtml(lifecycle);
     return `<div class="developer-toolbar">${actions.map(([action, title]) => (
-      `<button type="button" class="ghost-button" data-extension-action="${action}" data-extension-id="${id}" data-extension-label="${label}" data-extension-lifecycle="${state}">${title}</button>`
+      `<button type="button" class="ghost-button" data-extension-action="${action}" data-extension-id="${id}" data-extension-label="${label}" data-extension-lifecycle="${state}" ${canMutate ? "" : "disabled title=\"MFA/step-up or extensions:admin service authority required\""}>${title}</button>`
     )).join("")}</div>`;
   }
 
@@ -46,7 +47,7 @@
     }).join(", ");
   }
 
-  function capabilityAdministration(item, grantsState, resources, resourceError) {
+  function capabilityAdministration(item, grantsState, resources, resourceError, canMutate) {
     const capabilities = item.manifest?.capabilities || {};
     const requested = capabilities.requested || [];
     if (!requested.length) return '<small>Authorization: no capabilities requested.</small>';
@@ -74,14 +75,14 @@
           return `<div class="comm-entry" data-extension-capability-row data-extension-id="${id}" data-capability="${capabilityText}">
             <strong>${capabilityText}</strong>
             <small>Granted${requiredText} · Scope: ${escapeHtml(resourceScopeText(grant.resource_ids, resources))}</small>
-            ${removed ? "" : `<button type="button" class="ghost-button" data-extension-grant-action="revoke" data-grant-id="${escapeHtml(grant.id)}" data-mandatory="${mandatory.has(capability) ? "true" : "false"}" data-extension-lifecycle="${escapeHtml(item.lifecycle)}" title="${escapeHtml(warning.trim())}">Revoke</button>`}
+            ${removed ? "" : `<button type="button" class="ghost-button" data-extension-grant-action="revoke" data-grant-id="${escapeHtml(grant.id)}" data-mandatory="${mandatory.has(capability) ? "true" : "false"}" data-extension-lifecycle="${escapeHtml(item.lifecycle)}" title="${escapeHtml(warning.trim() || (!canMutate ? "MFA/step-up or extensions:admin service authority required" : ""))}" ${canMutate ? "" : "disabled"}>Revoke</button>`}
           </div>`;
         }
 
         const resourceOptions = resources.map((resource) => (
           `<option value="${escapeHtml(resource.id)}">${escapeHtml(resource.name)} · ${escapeHtml(resource.resource_type)} · ${escapeHtml(resource.id)}</option>`
         )).join("");
-        const grantDisabled = removed || Boolean(resourceError);
+        const grantDisabled = removed || Boolean(resourceError) || !canMutate;
         return `<div class="comm-entry" data-extension-capability-row data-extension-id="${id}" data-capability="${capabilityText}">
           <strong>${capabilityText}</strong>
           <small>Not granted${requiredText}. No selected resources means an explicit workspace-wide grant.</small>
@@ -95,16 +96,17 @@
     </div>`;
   }
 
-  function renderExtensionAdmin(installations, grantsByInstallation, resources, resourceError) {
+  function renderExtensionAdmin(installations, grantsByInstallation, resources, resourceError, actor) {
     const list = document.getElementById("extension-admin-list");
     const status = document.getElementById("extension-admin-status");
     if (!list || !status) return;
     status.hidden = false;
-    status.textContent = `${installations.length} installed extension(s)`;
+    const canMutate = canMutateExtensions(actor);
+    status.textContent = `${installations.length} installed extension(s) · ${extensionMutationAuthorityText(actor)}`;
     if (!installations.length) {
       list.innerHTML = '<div class="comm-entry"><strong>No extensions installed</strong><small>Discovered packages remain available through the canonical extension API.</small></div>';
       window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
-        detail: { installations: [] },
+        detail: { installations: [], actor, canMutateMutation: canMutate },
       }));
       return;
     }
@@ -121,14 +123,14 @@
         <small>Requested capabilities: ${requested.length ? requested.map(escapeHtml).join(", ") : "none"} · Config refs: ${item.configuration_record_ids?.length || 0} · Secret bindings: ${Object.keys(item.secret_bindings || {}).length}</small>
         ${item.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(item.quarantine_reason)}</small>` : ""}
         ${item.disabled_reason ? `<small>Disabled reason: ${escapeHtml(item.disabled_reason)}</small>` : ""}
-        ${capabilityAdministration(item, grantsState, resources, resourceError)}
+        ${capabilityAdministration(item, grantsState, resources, resourceError, canMutate)}
         <div data-extension-details-host="${escapeHtml(item.id)}"></div>
         <div data-extension-config-host="${escapeHtml(item.id)}"></div>
-        ${extensionLifecycleActions(item)}
+        ${extensionLifecycleActions(item, canMutate)}
       </div>`;
     }).join("");
     window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
-      detail: { installations },
+      detail: { installations, actor, canMutateMutation: canMutate },
     }));
   }
 
@@ -153,7 +155,10 @@
       status.textContent = "Loading extension state...";
     }
     try {
-      const extensions = await apiRequest("/api/extensions");
+      const [extensions, actor] = await Promise.all([
+        apiRequest("/api/extensions"),
+        apiRequest("/api/identity/me"),
+      ]);
       const installations = extensions.items || [];
       let resources = [];
       let resourceError = null;
@@ -168,6 +173,7 @@
         grantsByInstallation,
         resources,
         resourceError,
+        actor,
       );
     } catch (error) {
       if (status) status.textContent = `Unable to load extensions: ${error.message}`;

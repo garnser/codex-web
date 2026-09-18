@@ -15,6 +15,15 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn('id="extension-admin-list"', html)
         self.assertIn('id="refresh-extensions"', html)
         self.assertIn('apiRequest("/api/extensions")', javascript)
+        self.assertIn('apiRequest("/api/identity/me")', javascript)
+        self.assertIn("extension_authority.js", javascript)
+        self.assertIn("canMutateExtensions", javascript)
+        self.assertIn("extensionMutationAuthorityText", javascript)
+        self.assertIn("MFA/step-up or extensions:admin service authority required", javascript)
+        self.assertIn('apiRequest("/api/identity/me")', javascript)
+        self.assertIn("extension_authority.js", javascript)
+        self.assertIn("canMutateExtensions", javascript)
+        self.assertIn("extensionMutationAuthorityText", javascript)
         self.assertIn("package_verification", javascript)
         self.assertIn("configuration_record_ids", javascript)
         self.assertIn("secret_bindings", javascript)
@@ -37,6 +46,8 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("preserve_tombstone", javascript)
         self.assertIn("hard deletion is not supported", javascript)
         self.assertIn("data-extension-details-host", javascript)
+        self.assertIn("MFA/step-up or extensions:admin service authority required", javascript)
+        self.assertIn("canMutateMutation", javascript)
 
 
 if __name__ == "__main__":

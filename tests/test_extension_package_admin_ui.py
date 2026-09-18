@@ -16,6 +16,14 @@ class ExtensionPackageAdminUiTests(unittest.TestCase):
         self.assertIn('id="extension-package-list"', html)
         self.assertIn('apiRequest("/api/extensions/packages")', javascript)
         self.assertIn('apiRequest("/api/extensions")', javascript)
+        self.assertIn('apiRequest("/api/identity/me")', javascript)
+        self.assertIn("extension_authority.js", javascript)
+        self.assertIn("canMutateExtensions", javascript)
+        self.assertIn("MFA/step-up or extensions:admin service authority required", javascript)
+        self.assertIn("button.disabled", javascript)
+        self.assertIn('apiRequest("/api/identity/me")', javascript)
+        self.assertIn("extension_authority.js", javascript)
+        self.assertIn("canMutateExtensions", javascript)
         self.assertIn("verification.signature_status", javascript)
         self.assertIn("verification.digest_verified", javascript)
         self.assertIn("Installation does not authorize capabilities", javascript)
@@ -27,6 +35,8 @@ class ExtensionPackageAdminUiTests(unittest.TestCase):
         self.assertIn("window.confirm", javascript)
         self.assertIn("data-extension-upgrade-host", javascript)
         self.assertIn("codex:extension-packages-rendered", javascript)
+        self.assertIn("canMutateMutation", javascript)
+        self.assertIn("MFA/step-up or extensions:admin service authority required", javascript)
 
 
 if __name__ == "__main__":

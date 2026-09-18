@@ -52,7 +52,7 @@
     return options.join("");
   }
 
-  function renderConfiguration(item, secrets, records, secretError, configError) {
+  function renderConfiguration(item, secrets, records, secretError, configError, canMutate) {
     const host = hostFor(item.id);
     if (!host) return;
     const declaration = item.manifest?.configuration || {};
@@ -65,12 +65,16 @@
     }
 
     const canConfigure = configurable(item.lifecycle);
-    const blockedReason = canConfigure
-      ? ""
-      : `Configuration is blocked while lifecycle is ${escapeHtml(item.lifecycle)}.`;
+    const blockedReasons = [];
+    if (!canConfigure) {
+      blockedReasons.push(`Configuration is blocked while lifecycle is ${escapeHtml(item.lifecycle)}.`);
+    }
+    if (!canMutate) {
+      blockedReasons.push("Configuration mutation requires tenant admin/owner plus MFA/local-trusted assurance or extensions:admin service authority.");
+    }
     const configUnavailable = Boolean(schemaPath && configError);
     const secretsUnavailable = Boolean(slots.length && secretError);
-    const disabled = !canConfigure || configUnavailable || secretsUnavailable;
+    const disabled = !canConfigure || !canMutate || configUnavailable || secretsUnavailable;
 
     const configRecords = schemaPath
       ? `<div class="comm-entry">
@@ -94,14 +98,14 @@
 
     host.innerHTML = `<div class="extension-configuration" data-extension-configuration data-extension-id="${escapeHtml(item.id)}" data-extension-label="${escapeHtml(item.manifest?.id || item.id)}">
       <small>Configuration (separate from authorization and enablement):</small>
-      ${blockedReason ? `<small>${blockedReason}</small>` : ""}
+      ${blockedReasons.map((reason) => `<small>${reason}</small>`).join("")}
       ${configRecords}
       ${secretSlots}
       <button type="button" class="ghost-button" data-extension-config-save ${disabled ? "disabled" : ""}>Save configuration references</button>
     </div>`;
   }
 
-  async function hydrateConfiguration(installations) {
+  async function hydrateConfiguration(installations, canMutate) {
     const currentGeneration = ++generation;
     if (!installations.length) return;
 
@@ -119,7 +123,7 @@
     ]);
     if (currentGeneration !== generation) return;
     installations.forEach((item) => {
-      renderConfiguration(item, secrets, records, secretError, configError);
+      renderConfiguration(item, secrets, records, secretError, configError, canMutate);
     });
   }
 
@@ -127,7 +131,7 @@
     const root = button.closest("[data-extension-configuration]");
     const installationId = root?.dataset.extensionId;
     const label = root?.dataset.extensionLabel || installationId;
-    if (!root || !installationId) return;
+    if (!root || !installationId || button.disabled) return;
 
     const configSelect = root.querySelector("[data-extension-config-records]");
     const configurationRecordIds = Array.from(configSelect?.selectedOptions || [])
@@ -160,7 +164,10 @@
   }
 
   window.addEventListener("codex:extension-state-rendered", (event) => {
-    hydrateConfiguration(event.detail?.installations || []).catch(console.error);
+    hydrateConfiguration(
+      event.detail?.installations || [],
+      Boolean(event.detail?.canMutateMutation),
+    ).catch(console.error);
   });
 
   window.addEventListener("DOMContentLoaded", () => {
