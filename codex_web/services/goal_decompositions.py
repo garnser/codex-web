@@ -230,6 +230,13 @@ class GoalDecompositionService:
         except GoalNotFoundError as exc:
             raise GoalDecompositionNotFoundError("goal not found") from exc
         self._assert_nonterminal_goal(goal.status)
+        if (
+            payload.expected_goal_revision is not None
+            and payload.expected_goal_revision != goal.revision
+        ):
+            raise GoalDecompositionConflictError(
+                "goal changed while decomposition proposal was being generated"
+            )
         self._validate_items(
             payload.items,
             max_items=payload.limits.max_items,
