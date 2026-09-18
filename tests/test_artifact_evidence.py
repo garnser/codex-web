@@ -278,6 +278,63 @@ class ArtifactEvidenceTests(unittest.TestCase):
         with self.assertRaises(ArtifactEvidenceConflictError):
             self._evidence(artifact.id)
 
+    def test_non_owner_cannot_invalidate_or_supersede_producer_artifact(self) -> None:
+        artifact = self._artifact()
+        outsider = AuthenticationActor(
+            identity_id="human-outsider",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.MEMBER,),
+            assurance=AuthenticationAssurance.MFA,
+        )
+
+        with self.assertRaises(Exception):
+            self.service.invalidate_artifact(
+                artifact.id,
+                "not my artifact",
+                actor=outsider,
+            )
+
+        with self.assertRaises(Exception):
+            self.service.create_artifact(
+                ArtifactCreate(
+                    work_item_ref=self.work_item.ref,
+                    artifact_type=ArtifactType.COMMIT,
+                    name="unauthorised replacement",
+                    supersedes_artifact_id=artifact.id,
+                ),
+                actor=outsider,
+            )
+
+    def test_evidence_cannot_claim_different_work_item_than_artifact(self) -> None:
+        artifact = self._artifact()
+        other = WorkItemState(
+            ref="group/app#99",
+            organization_id="local",
+            workspace_id="default",
+            project_id="home",
+            project_path="group/app",
+            current_owner="james",
+            current_stage="implementation_active",
+            artifact_state="branch",
+            last_meaningful_update_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+        self.host.states[other.ref] = other
+
+        with self.assertRaises(ArtifactEvidenceConflictError):
+            self.service.create_evidence(
+                EvidenceCreate(
+                    work_item_ref=other.ref,
+                    evidence_type=EvidenceType.TEST_RESULT,
+                    artifact_ids=(artifact.id,),
+                    result=EvidenceResult.PASS,
+                ),
+                actor=self.producer,
+            )
+
     def test_retention_expiry_invalidates_dependent_verification(self) -> None:
         expires = time.time() + 5
         artifact = self._artifact(retention_expires_at=expires)
