@@ -268,6 +268,18 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
                 raise _error(exc) from exc
             raise
 
+    @router.post("/recover-stale-workers")
+    async def recover_stale_workers(request: Request) -> dict[str, Any]:
+        try:
+            ids = service.mark_stale_workers_offline(
+                actor=request_actor(request),
+            )
+            return {"worker_ids": ids}
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
     @router.post("/assignments/recover-expired")
     async def recover_expired(request: Request) -> dict[str, Any]:
         try:
