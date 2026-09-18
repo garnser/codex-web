@@ -30,6 +30,7 @@ from codex_web.model_gateway import (
     ModelInvocationRequest,
     ModelInvocationResponse,
     ModelLifecycle,
+    ModelMessage,
     ModelProviderRecord,
     ModelProviderStatus,
     ModelProviderUpsert,
@@ -169,18 +170,7 @@ class ModelGatewayService:
             update={
                 "model_class": result.envelope.model_class,
                 "messages": tuple(
-                    type(request.messages[0])(
-                        role=item.role,
-                        content=item.content,
-                    )
-                    for item in result.envelope.messages
-                )
-                if request.messages
-                else tuple(
-                    __import__(
-                        "codex_web.model_gateway",
-                        fromlist=["ModelMessage"],
-                    ).ModelMessage(role=item.role, content=item.content)
+                    ModelMessage(role=item.role, content=item.content)
                     for item in result.envelope.messages
                 ),
                 "system_prompt": system_prompt,
