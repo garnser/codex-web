@@ -23,6 +23,7 @@ from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.codex_auth_delegation import (
     CODEX_AUTH_PURPOSE,
     CODEX_WORKER_HOME,
+    CodexAuthDelegationError,
     CodexAuthDelegationService,
     CodexAuthDelegationStaleError,
     CodexAuthDelegationUnavailableError,
