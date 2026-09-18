@@ -130,12 +130,20 @@ class BubblewrapExecutionBackend:
             "--unshare-ipc",
             "--unshare-net",
             "--ro-bind",
-            "/",
-            "/",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
             "--proc",
             "/proc",
             "--dev",
             "/dev",
+            "--tmpfs",
+            "/tmp",
             "--",
             "/bin/true",
         ]
@@ -256,20 +264,73 @@ class BubblewrapExecutionBackend:
             "local worker does not advertise unrestricted network execution"
         )
 
+    @staticmethod
+    def _directory_creation_args(path: Path) -> list[str]:
+        resolved = path.resolve()
+        current = Path("/")
+        args: list[str] = []
+        for part in resolved.parts[1:]:
+            current = current / part
+            if current in {
+                Path("/usr"),
+                Path("/bin"),
+                Path("/lib"),
+                Path("/lib64"),
+                Path("/proc"),
+                Path("/dev"),
+                Path("/tmp"),
+            }:
+                continue
+            args.extend(("--dir", str(current)))
+        return args
+
+    @staticmethod
+    def discover_git_metadata(workspace_path: Path) -> Path | None:
+        dot_git = workspace_path.resolve() / ".git"
+        if dot_git.is_dir():
+            return None
+        if not dot_git.is_file():
+            return None
+        try:
+            value = dot_git.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not value.lower().startswith("gitdir:"):
+            return None
+        target = value.split(":", 1)[1].strip()
+        gitdir = Path(target)
+        if not gitdir.is_absolute():
+            gitdir = (workspace_path / gitdir).resolve()
+        else:
+            gitdir = gitdir.resolve()
+        common_marker = gitdir / "commondir"
+        if common_marker.is_file():
+            try:
+                common_value = common_marker.read_text(encoding="utf-8").strip()
+            except OSError:
+                common_value = ""
+            if common_value:
+                common = Path(common_value)
+                if not common.is_absolute():
+                    common = (gitdir / common).resolve()
+                else:
+                    common = common.resolve()
+                return common
+        return gitdir
+
     def build_command(
         self,
         assignment: ExecutionAssignment,
         *,
         argv: Sequence[str],
         workspace_path: Path,
-        home_path: Path,
+        git_metadata_path: Path | None = None,
     ) -> list[str]:
         self.validate_assignment(assignment)
         if not argv or not str(argv[0]).strip():
             raise LocalExecutionPolicyError("execution command is empty")
 
         workspace = workspace_path.resolve(strict=True)
-        home = home_path.resolve(strict=True)
         mount_flag = "--bind" if assignment.sandbox == "workspace-write" else "--ro-bind"
         command = [
             self.executable,
@@ -281,28 +342,55 @@ class BubblewrapExecutionBackend:
             "--unshare-ipc",
             "--unshare-net",
             "--ro-bind",
-            "/",
-            "/",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            mount_flag,
-            str(workspace),
-            str(workspace),
-            "--bind",
-            str(home),
-            str(home),
-            "--chdir",
-            str(workspace),
-            "--setenv",
-            "HOME",
-            str(home),
-            "--",
-            *[str(item) for item in argv],
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
         ]
+        if Path("/usr/lib64").exists():
+            command.extend(("--symlink", "usr/lib64", "/lib64"))
+        command.extend(
+            (
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+                "--dir",
+                "/tmp/codex-worker-home",
+            )
+        )
+        command.extend(self._directory_creation_args(workspace.parent))
+        command.extend((mount_flag, str(workspace), str(workspace)))
+
+        metadata = (
+            git_metadata_path.resolve(strict=True)
+            if git_metadata_path is not None
+            else self.discover_git_metadata(workspace)
+        )
+        if metadata is not None and not metadata.is_relative_to(workspace):
+            command.extend(self._directory_creation_args(metadata.parent))
+            # Git worktrees legitimately share target-repository metadata. The
+            # canonical repository/workspace lease is what authorizes mutation
+            # of that target resource; unrelated control-plane paths stay absent.
+            command.extend(("--bind", str(metadata), str(metadata)))
+
+        command.extend(
+            (
+                "--chdir",
+                str(workspace),
+                "--setenv",
+                "HOME",
+                "/tmp/codex-worker-home",
+                "--",
+                *[str(item) for item in argv],
+            )
+        )
         return command
 
     @staticmethod
@@ -323,6 +411,7 @@ class BubblewrapExecutionBackend:
         workspace_path: Path,
         environment: Mapping[str, str] | None = None,
         poll_hook: Callable[[], None] | None = None,
+        git_metadata_path: Path | None = None,
     ) -> LocalExecutionResult:
         status = self.probe()
         if not status.ready:
@@ -336,67 +425,65 @@ class BubblewrapExecutionBackend:
         started = time.monotonic()
         timed_out = False
         limit_breach: str | None = None
-        with tempfile.TemporaryDirectory(prefix="codex-worker-home-") as raw_home:
-            home = Path(raw_home)
-            command = self.build_command(
-                assignment,
-                argv=argv,
-                workspace_path=workspace,
-                home_path=home,
+        command = self.build_command(
+            assignment,
+            argv=argv,
+            workspace_path=workspace,
+            git_metadata_path=git_metadata_path,
+        )
+        env = self.minimal_environment(extra=environment)
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            process = self._popen(
+                command,
+                cwd=str(workspace),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+                preexec_fn=self._limits_preexec(assignment.limits),
             )
-            env = self.minimal_environment(extra=environment)
-            with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-                process = self._popen(
-                    command,
-                    cwd=str(workspace),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    start_new_session=True,
-                    preexec_fn=self._limits_preexec(assignment.limits),
-                )
-                deadline = started + assignment.limits.wall_seconds
+            deadline = started + assignment.limits.wall_seconds
+            disk_bytes = self._workspace_disk_usage(workspace)
+            while process.poll() is None:
+                if poll_hook is not None:
+                    poll_hook()
+                now = time.monotonic()
+                if now >= deadline:
+                    timed_out = True
+                    limit_breach = "wall_seconds"
+                    self._kill_process_group(process)
+                    break
                 disk_bytes = self._workspace_disk_usage(workspace)
-                while process.poll() is None:
-                    if poll_hook is not None:
-                        poll_hook()
-                    now = time.monotonic()
-                    if now >= deadline:
-                        timed_out = True
-                        limit_breach = "wall_seconds"
-                        self._kill_process_group(process)
-                        break
-                    disk_bytes = self._workspace_disk_usage(workspace)
-                    if disk_bytes > assignment.limits.disk_bytes:
-                        limit_breach = "disk_bytes"
-                        self._kill_process_group(process)
-                        break
-                    time.sleep(
-                        min(
-                            self.poll_interval_seconds,
-                            max(0.0, deadline - now),
-                        )
+                if disk_bytes > assignment.limits.disk_bytes:
+                    limit_breach = "disk_bytes"
+                    self._kill_process_group(process)
+                    break
+                time.sleep(
+                    min(
+                        self.poll_interval_seconds,
+                        max(0.0, deadline - now),
                     )
-                exit_code = process.wait()
-                disk_bytes = self._workspace_disk_usage(workspace)
-                if limit_breach is None and exit_code < 0:
-                    signum = -exit_code
-                    if signum == signal.SIGXCPU:
-                        limit_breach = "cpu_seconds"
-                    elif signum == signal.SIGXFSZ:
-                        limit_breach = "disk_bytes"
-
-                stdout_file.seek(0)
-                stdout_raw = stdout_file.read(self.max_output_bytes + 1)
-                stderr_file.seek(0)
-                stderr_raw = stderr_file.read(self.max_output_bytes + 1)
-                truncated = (
-                    len(stdout_raw) > self.max_output_bytes
-                    or len(stderr_raw) > self.max_output_bytes
                 )
-                stdout_raw = stdout_raw[: self.max_output_bytes]
-                stderr_raw = stderr_raw[: self.max_output_bytes]
+            exit_code = process.wait()
+            disk_bytes = self._workspace_disk_usage(workspace)
+            if limit_breach is None and exit_code < 0:
+                signum = -exit_code
+                if signum == signal.SIGXCPU:
+                    limit_breach = "cpu_seconds"
+                elif signum == signal.SIGXFSZ:
+                    limit_breach = "disk_bytes"
+
+            stdout_file.seek(0)
+            stdout_raw = stdout_file.read(self.max_output_bytes + 1)
+            stderr_file.seek(0)
+            stderr_raw = stderr_file.read(self.max_output_bytes + 1)
+            truncated = (
+                len(stdout_raw) > self.max_output_bytes
+                or len(stderr_raw) > self.max_output_bytes
+            )
+            stdout_raw = stdout_raw[: self.max_output_bytes]
+            stderr_raw = stderr_raw[: self.max_output_bytes]
 
         encoded_argv = "\0".join(str(item) for item in argv).encode("utf-8", errors="replace")
         return LocalExecutionResult(
