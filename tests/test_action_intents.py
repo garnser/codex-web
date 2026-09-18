@@ -16,7 +16,6 @@ from codex_web.action_intents import (
     ActionIntentRetryRequest,
     ActionIntentRollbackRequest,
     ActionIntentStatus,
-    ActionIntentUnsafeRetryError,
     ActionIntentWorkItemSuccess,
 )
 from codex_web.action_providers import (
@@ -35,7 +34,7 @@ from codex_web.artifact_evidence import (
 )
 from codex_web.models import WorkItemState
 from codex_web.resources import ResourceCreate, ResourceType
-from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.action_intents import ActionIntentService, ActionIntentUnsafeRetryError
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.identity import IdentityService
