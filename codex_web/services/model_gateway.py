@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import time
 from typing import Any
@@ -91,8 +92,32 @@ class ModelGatewayService:
             raise AuthorizationError("tenant administrator required")
 
     @staticmethod
-    def _estimate_tokens(request: ModelInvocationRequest) -> int:
-        chars = len(request.system_prompt) + sum(len(item.content) for item in request.messages)
+    def _render_system_prompt(
+        template: PromptTemplateRecord,
+        request: ModelInvocationRequest,
+    ) -> str:
+        content = template.content
+        markers = ("{{ instructions }}", "{{instructions}}")
+        if any(marker in content for marker in markers):
+            for marker in markers:
+                content = content.replace(marker, request.system_prompt)
+            return content
+        if request.system_prompt:
+            return f"{content}\n\n{request.system_prompt}"
+        return content
+
+    @staticmethod
+    def _estimate_tokens(
+        request: ModelInvocationRequest,
+        *,
+        rendered_system_prompt: str | None = None,
+    ) -> int:
+        system_prompt = (
+            request.system_prompt
+            if rendered_system_prompt is None
+            else rendered_system_prompt
+        )
+        chars = len(system_prompt) + sum(len(item.content) for item in request.messages)
         return max(1, math.ceil(chars / 4))
 
     @staticmethod
@@ -101,6 +126,15 @@ class ModelGatewayService:
             f"{item.role}:{item.content}" for item in request.messages
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _policy_hash(policy: TenantModelPolicy) -> str:
+        payload = policy.model_dump(
+            mode="json",
+            exclude={"updated_by", "updated_at"},
+        )
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _price(
@@ -305,12 +339,17 @@ class ModelGatewayService:
                 ),
                 None,
             )
+            checksum = PromptTemplateRecord.checksum(payload.content)
+            if existing is not None and existing.checksum_sha256 != checksum:
+                raise ModelRegistryConflictError(
+                    "prompt template version content is immutable; publish a new version"
+                )
             now = time.time()
             item = PromptTemplateRecord(
                 **payload.model_dump(mode="python"),
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
-                checksum_sha256=PromptTemplateRecord.checksum(payload.content),
+                checksum_sha256=checksum,
                 updated_by=actor.identity_id,
                 created_at=existing.created_at if existing else now,
                 updated_at=now,
@@ -366,7 +405,11 @@ class ModelGatewayService:
         state = self.store.load()
         template = self._template(state, request, actor)
         policy = self._policy(state, actor)
-        input_tokens = self._estimate_tokens(request)
+        rendered_system_prompt = self._render_system_prompt(template, request)
+        input_tokens = self._estimate_tokens(
+            request,
+            rendered_system_prompt=rendered_system_prompt,
+        )
         requested_residency = set(policy.required_residency_tags) | set(
             request.required_residency_tags
         )
@@ -487,6 +530,9 @@ class ModelGatewayService:
             prompt_template_checksum_sha256=template.checksum_sha256,
             candidates=routed,
             policy_max_attempts=max_attempts,
+            policy_fingerprint_sha256=self._policy_hash(policy),
+            effective_required_residency_tags=tuple(sorted(requested_residency)),
+            effective_required_compliance_tags=tuple(sorted(requested_compliance)),
             effective_max_cost_usd=effective_max_cost,
         )
 
@@ -506,6 +552,17 @@ class ModelGatewayService:
     ) -> ModelInvocationResponse:
         route = self.route(request, actor=actor)
         state = self.store.load()
+        template = next(
+            item
+            for item in state.prompt_templates
+            if item.template_id == route.prompt_template_id
+            and item.version == route.prompt_template_version
+            and item.checksum_sha256 == route.prompt_template_checksum_sha256
+            and self._same_scope(item, actor)
+        )
+        rendered_request = request.model_copy(
+            update={"system_prompt": self._render_system_prompt(template, request)}
+        )
         attempts: list[ModelInvocationAttempt] = []
         budget_remaining = route.effective_max_cost_usd
         final_error: Exception | None = None
@@ -537,7 +594,7 @@ class ModelGatewayService:
                         adapter.invoke(
                             provider,
                             model,
-                            request,
+                            rendered_request,
                             credential=credential,
                         ),
                         timeout=request.timeout_seconds,
@@ -641,14 +698,15 @@ class ModelGatewayService:
                 prompt_template_id=route.prompt_template_id,
                 prompt_template_version=route.prompt_template_version,
                 prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
-                rendered_prompt_sha256=self._rendered_prompt_hash(request),
+                rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
                 message_count=len(request.messages),
-                input_character_count=len(request.system_prompt)
-                + sum(len(item.content) for item in request.messages),
+                input_character_count=len(rendered_request.system_prompt)
+                + sum(len(item.content) for item in rendered_request.messages),
                 required_capabilities=request.required_capabilities,
-                required_residency_tags=request.required_residency_tags,
-                required_compliance_tags=request.required_compliance_tags,
+                required_residency_tags=route.effective_required_residency_tags,
+                required_compliance_tags=route.effective_required_compliance_tags,
                 max_cost_usd=route.effective_max_cost_usd,
+                policy_fingerprint_sha256=route.policy_fingerprint_sha256,
                 route_reason=candidate.routing_reason,
                 work_item_ref=request.work_item_ref,
                 goal_id=request.goal_id,
@@ -675,14 +733,15 @@ class ModelGatewayService:
             prompt_template_id=route.prompt_template_id,
             prompt_template_version=route.prompt_template_version,
             prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
-            rendered_prompt_sha256=self._rendered_prompt_hash(request),
+            rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
             message_count=len(request.messages),
-            input_character_count=len(request.system_prompt)
-            + sum(len(item.content) for item in request.messages),
+            input_character_count=len(rendered_request.system_prompt)
+            + sum(len(item.content) for item in rendered_request.messages),
             required_capabilities=request.required_capabilities,
-            required_residency_tags=request.required_residency_tags,
-            required_compliance_tags=request.required_compliance_tags,
+            required_residency_tags=route.effective_required_residency_tags,
+            required_compliance_tags=route.effective_required_compliance_tags,
             max_cost_usd=route.effective_max_cost_usd,
+            policy_fingerprint_sha256=route.policy_fingerprint_sha256,
             route_reason="all eligible attempts exhausted",
             work_item_ref=request.work_item_ref,
             goal_id=request.goal_id,
