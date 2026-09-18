@@ -43,7 +43,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(contract.schema_version, EXECUTION_CONTRACT_SCHEMA_VERSION)
-        self.assertEqual(contract.schema_version, "1.2")
+        self.assertEqual(contract.schema_version, "1.3")
         self.assertEqual(contract.work_item_ref, "group/app#42")
         self.assertEqual(contract.role_id, "james")
         self.assertEqual(contract.agent_id, "james")
@@ -158,7 +158,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
 
         public = contract.compact_public()
 
-        self.assertEqual(public["schema_version"], "1.2")
+        self.assertEqual(public["schema_version"], "1.3")
         self.assertEqual(public["target"], {})
         self.assertNotIn("branch", public["target"])
         self.assertNotIn("environment", public["target"])
@@ -176,7 +176,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         text = service.dispatch_text(state)
 
         self.assertEqual(contract.role_id, "james")
-        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.2)", text)
+        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.3)", text)
         self.assertIn("WORK ITEM group/app#42", text)
         self.assertNotIn('"expected_outputs"', text)
 
