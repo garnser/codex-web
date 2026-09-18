@@ -435,6 +435,22 @@ class TurnExecutionService:
                 )
             await session.request("thread/resume", resume_params)
 
+            self.mark_thread_active(
+                thread_id,
+                project_id=project.id,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                source=source,
+                reply_target=reply_target,
+                execution_id=canonical_execution_id,
+                assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,
+                worker_id=status.worker_id,
+                fence=status.fence,
+            )
+
             params: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": message, "text_elements": []}],
@@ -457,7 +473,19 @@ class TurnExecutionService:
                 params["input"][0]["text"],
                 h._turn_source_for_relay_guard(thread_id, source),
             )
-            response = await session.request("turn/start", params)
+            try:
+                response = await session.request("turn/start", params)
+            except Exception as exc:
+                if not h._is_codex_timeout_error(exc):
+                    self.clear_thread_active(thread_id)
+                    with contextlib.suppress(Exception):
+                        await session_manager.complete(
+                            binding.assignment_id,
+                            succeeded=False,
+                            failure_code="codex_turn_start_failed",
+                            failure_message=str(exc)[:500],
+                        )
+                raise
             turn_id = (
                 (response.get("turn") or {}).get("id")
                 if isinstance(response, dict)
