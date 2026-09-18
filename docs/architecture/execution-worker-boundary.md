@@ -139,11 +139,15 @@ A local command execution requires all of the following:
 - bounded CPU, address-space, process-count, file-size/disk and wall-clock
   limits.
 
-The local backend uses a read-only bind of the host filesystem as its outer
-view, overlays only the assigned execution workspace writable for
-`workspace-write` assignments (read-only otherwise), provides private
-`/tmp`, unshares process/user/IPC/UTS/network namespaces and starts the command
-in a new process session. POSIX rlimits constrain CPU time, address space,
+The local backend builds a minimal filesystem namespace rather than exposing
+the host root. It mounts the runtime toolchain from `/usr` read-only, provides
+`/proc`, `/dev`, private `/tmp` and a private HOME, and mounts only the
+assigned execution workspace writable for `workspace-write` assignments
+(read-only otherwise). Git worktrees may additionally receive the canonical
+target repository's shared Git metadata directory required by that worktree;
+unrelated control-plane data, application state, key/secret directories and
+the operator's home are absent. The backend unshares process/user/IPC/UTS/network
+namespaces and starts the command in a new process session. POSIX rlimits constrain CPU time, address space,
 processes and individual file size. The parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
