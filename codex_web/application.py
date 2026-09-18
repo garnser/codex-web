@@ -11,6 +11,7 @@ from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.integrations import build_integrations_router
+from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.resources import build_resources_router
@@ -30,6 +31,7 @@ from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.integrations.webhook_security import install_webhook_security
+from codex_web.model_providers import OpenAIModelProviderAdapter
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
@@ -63,6 +65,7 @@ from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
@@ -91,6 +94,7 @@ from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
+from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
@@ -148,6 +152,16 @@ app.include_router(build_secrets_router(secret_broker))
 app.state.secret_state_store = secret_state_store
 app.state.secret_broker = secret_broker
 app.state.local_secret_backend = local_secret_backend
+
+model_gateway_store = ModelGatewayStore(state_store)
+model_gateway_service = ModelGatewayService(
+    model_gateway_store,
+    secret_broker=secret_broker,
+)
+model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
+app.include_router(build_model_gateway_router(model_gateway_service))
+app.state.model_gateway_store = model_gateway_store
+app.state.model_gateway_service = model_gateway_service
 
 security_event_store = SecurityEventStore(state_store)
 security_boundary_service = SecurityBoundaryService(security_event_store)
