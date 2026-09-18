@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.definitions import DefinitionReference
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_contracts import ExecutionRoleContract
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
@@ -86,6 +87,7 @@ class ExecutionContractV1(BaseModel):
     work_item_ref: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
     agent_id: str | None = None
+    definition_refs: tuple[DefinitionReference, ...] = ()
     target: ExecutionTargetV1
     permissions: ExecutionPermissionsV1 = Field(default_factory=ExecutionPermissionsV1)
     inputs: CanonicalWorkItemInputV1
@@ -110,6 +112,7 @@ def execution_contract_for_work_item(
     role: ExecutionRoleContract,
     *,
     split_brain_findings: list[str] | tuple[str, ...] = (),
+    definition_refs: tuple[DefinitionReference, ...] = (),
 ) -> ExecutionContractV1:
     """Build and validate the canonical v1 contract before work is dispatched."""
 
@@ -128,6 +131,7 @@ def execution_contract_for_work_item(
         work_item_ref=state.ref,
         role_id=role.id,
         agent_id=agent_id,
+        definition_refs=definition_refs,
         target=ExecutionTargetV1(
             resource_ids=tuple(dict.fromkeys(state.resource_ids)),
             workspace=lifecycle.workspace,

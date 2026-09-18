@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.definitions import DefinitionReference
+
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
 
@@ -82,6 +84,7 @@ class WorkItemExecutionLifecycle(BaseModel):
     failure_reason: WorkItemFailureReason | None = None
     latest_checkpoint: WorkItemExecutionCheckpoint | None = None
     checkpoint_history: list[WorkItemExecutionCheckpoint] = Field(default_factory=list)
+    definition_refs: list[DefinitionReference] = Field(default_factory=list)
     usage: WorkItemUsageAttribution = Field(default_factory=WorkItemUsageAttribution)
     workspace: ExecutionWorkspaceReference | None = None
     evidence_requirements: list[EvidenceRequirement] = Field(default_factory=list)

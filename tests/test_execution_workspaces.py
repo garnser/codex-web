@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 from codex_web.execution_contract_schema import execution_contract_for_work_item
-from codex_web.execution_contracts import ROLE_CONTRACTS
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
 from codex_web.execution_workspaces import (
     ExecutionWorkspaceAcquire,
@@ -32,6 +33,11 @@ from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+ROLE_CONTRACTS = ExecutionRoleCatalogDefinition.model_validate(
+    execution_role_catalog_seed_payload()
+).role_map
 
 
 class _FakeBackend:

@@ -8,10 +8,36 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI, HTTPException
 
-from codex_web.execution_contracts import execution_role_for_work_item
+from codex_web.definitions import DefinitionReference
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_contracts import (
+    execution_role_for_work_item,
+    install_execution_role_catalog_provider,
+)
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.executive import DelegateRequest, ExecutiveService
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.work_item_contracts import install_work_item_contract_service
+
+
+CATALOG = ExecutionRoleCatalogDefinition.model_validate(execution_role_catalog_seed_payload())
+DEFINITION_REF = DefinitionReference(
+    definition_id="execution-roles.default",
+    kind="execution-role-catalog",
+    revision=1,
+    record_id="definition-record-1",
+    checksum="0" * 64,
+    definition_schema_version="1.0",
+)
+install_execution_role_catalog_provider(lambda: CATALOG)
+
+
+class _ExecutionRoles:
+    def catalog(self, **kwargs):
+        return CATALOG
+
+    def reference(self, **kwargs):
+        return DEFINITION_REF
 
 
 def _state(**overrides) -> WorkItemState:
@@ -192,7 +218,7 @@ class GitLabContractInjectionTests(unittest.TestCase):
             artifact_state="merge_request",
         )
 
-        service = install_work_item_contract_service(app, host)
+        service = install_work_item_contract_service(app, host, _ExecutionRoles())
         text = host._work_item_dispatch_text(state)
 
         self.assertIs(service, app.state.work_item_contract_service)
@@ -200,7 +226,8 @@ class GitLabContractInjectionTests(unittest.TestCase):
         self.assertIn("CANONICAL EXECUTION CONTRACT", text)
         self.assertIn("Name: Quinn", text)
         self.assertIn("Lane: validation", text)
-        self.assertIn("do not create a parallel ownership model", text)
+        self.assertIn("do not create parallel ownership", text)
+        self.assertIn("execution-roles.default@1", text)
 
 
 if __name__ == "__main__":

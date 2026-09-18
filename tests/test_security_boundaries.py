@@ -23,6 +23,9 @@ from codex_web.action_providers import (
     ActionRiskClass,
     ActionVerification,
 )
+from codex_web.definitions import DefinitionReference
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.security import (
     ExecutionSecurityPolicy,
@@ -55,6 +58,27 @@ from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+_TEST_ROLE_CATALOG = ExecutionRoleCatalogDefinition.model_validate(
+    execution_role_catalog_seed_payload()
+)
+_TEST_DEFINITION_REF = DefinitionReference(
+    definition_id="execution-roles.default",
+    kind="execution-role-catalog",
+    revision=1,
+    record_id="security-test-definition",
+    checksum="0" * 64,
+    definition_schema_version="1.0",
+)
+
+
+class _ExecutionRoles:
+    def catalog(self, **_kwargs):
+        return _TEST_ROLE_CATALOG
+
+    def reference(self, **_kwargs):
+        return _TEST_DEFINITION_REF
 
 
 class _PrivilegedProvider:
@@ -462,7 +486,7 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             updated_at=1.0,
             created_at=1.0,
         )
-        service = WorkItemContractService(Host(), lambda _state: malicious)
+        service = WorkItemContractService(Host(), lambda _state: malicious, _ExecutionRoles())
         dispatch = service.dispatch_text(state)
 
         self.assertLess(dispatch.index("SECURITY TRUST BOUNDARY"), dispatch.index(malicious))

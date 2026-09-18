@@ -10,7 +10,9 @@ from codex_web.execution_contract_schema import (
     ExecutionContractV1,
     execution_contract_for_work_item,
 )
-from codex_web.execution_contracts import ROLE_CONTRACTS
+from codex_web.definitions import DefinitionReference
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.work_item_contracts import WorkItemContractService
 from codex_web.work_item_execution_models import (
@@ -18,6 +20,26 @@ from codex_web.work_item_execution_models import (
     WorkItemExecutionLifecycle,
     WorkItemUsageAttribution,
 )
+
+
+CATALOG = ExecutionRoleCatalogDefinition.model_validate(execution_role_catalog_seed_payload())
+ROLE_CONTRACTS = CATALOG.role_map
+DEFINITION_REF = DefinitionReference(
+    definition_id="execution-roles.default",
+    kind="execution-role-catalog",
+    revision=1,
+    record_id="definition-record-1",
+    checksum="0" * 64,
+    definition_schema_version="1.0",
+)
+
+
+class _ExecutionRoles:
+    def catalog(self, **kwargs):
+        return CATALOG
+
+    def reference(self, **kwargs):
+        return DEFINITION_REF
 
 
 class ExecutionContractSchemaTests(unittest.TestCase):
@@ -189,13 +211,19 @@ class ExecutionContractSchemaTests(unittest.TestCase):
             def _work_item_split_brain_findings(state):
                 return []
 
-        service = WorkItemContractService(Host(), lambda state: f"WORK ITEM {state.ref}")
+        service = WorkItemContractService(
+            Host(),
+            lambda state: f"WORK ITEM {state.ref}",
+            _ExecutionRoles(),
+        )
         state = self._state()
 
         contract = service.contract_for_state(state)
         text = service.dispatch_text(state)
 
         self.assertEqual(contract.role_id, "james")
+        self.assertEqual(contract.definition_refs, (DEFINITION_REF,))
+        self.assertIn("execution-roles.default@1", text)
         self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.4)", text)
         self.assertIn("WORK ITEM group/app#42", text)
         self.assertNotIn('"expected_outputs"', text)
@@ -206,7 +234,11 @@ class ExecutionContractSchemaTests(unittest.TestCase):
             def _work_item_split_brain_findings(state):
                 return ["owner drift"]
 
-        service = WorkItemContractService(Host(), lambda state: state.ref)
+        service = WorkItemContractService(
+            Host(),
+            lambda state: state.ref,
+            _ExecutionRoles(),
+        )
         contract = service.contract_for_state(self._state())
 
         self.assertEqual(contract.inputs.split_brain_findings, ("owner drift",))
