@@ -4,7 +4,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_web.identity import AuthenticationActor
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.model_gateway import build_model_gateway_router
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.model_gateway import (
     MODEL_CLASS_STRATEGIC,
     ModelDefinitionUpsert,
@@ -310,6 +319,127 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         classified = adapter._classify(_RateLimit("too many requests"))
         self.assertIsInstance(classified, ModelProviderTransientError)
+
+
+class ModelGatewayApiAssuranceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.service = ModelGatewayService(ModelGatewayStore(SQLiteStateStore(root / "state.sqlite3")))
+        self.actor = AuthenticationActor(
+            identity_id="admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_model_gateway_router(self.service))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    def test_low_assurance_human_can_read_and_route_but_cannot_mutate_registry(self) -> None:
+        self.assertEqual(self.client.get("/api/model-gateway/providers").status_code, 200)
+
+        provider = self.client.put(
+            "/api/model-gateway/providers/p1",
+            json={
+                "id": "p1",
+                "adapter_type": "fake",
+                "display_name": "Provider",
+                "credential_required": False,
+            },
+        )
+        policy = self.client.put(
+            "/api/model-gateway/policy",
+            json={"max_attempts": 1},
+        )
+
+        self.assertEqual(provider.status_code, 403)
+        self.assertEqual(policy.status_code, 403)
+        self.assertIn("mfa", provider.json()["detail"].lower())
+
+    def test_mfa_human_can_mutate_provider_model_prompt_and_policy(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        provider = self.client.put(
+            "/api/model-gateway/providers/p1",
+            json={
+                "id": "p1",
+                "adapter_type": "fake",
+                "display_name": "Provider",
+                "credential_required": False,
+                "residency_tags": ["eu"],
+                "compliance_tags": ["gdpr"],
+            },
+        )
+        self.assertEqual(provider.status_code, 200)
+
+        model = self.client.put(
+            "/api/model-gateway/models/m1",
+            json={
+                "id": "m1",
+                "provider_id": "p1",
+                "concrete_model": "concrete-m1",
+                "model_classes": ["primary-coding"],
+                "capabilities": ["text"],
+                "modalities": ["text"],
+            },
+        )
+        prompt = self.client.put(
+            "/api/model-gateway/prompts/generic.system/1.0",
+            json={
+                "template_id": "generic.system",
+                "version": "1.0",
+                "content": "{{ instructions }}",
+                "active": True,
+            },
+        )
+        policy = self.client.put(
+            "/api/model-gateway/policy",
+            json={
+                "allowed_provider_ids": ["p1"],
+                "allowed_model_ids": ["m1"],
+                "max_attempts": 1,
+            },
+        )
+
+        self.assertEqual(model.status_code, 200)
+        self.assertEqual(prompt.status_code, 200)
+        self.assertEqual(policy.status_code, 200)
+
+    def test_model_gateway_admin_service_scope_remains_supported(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="model-admin-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("model-gateway:admin",),
+        )
+
+        response = self.client.put(
+            "/api/model-gateway/providers/p1",
+            json={
+                "id": "p1",
+                "adapter_type": "fake",
+                "display_name": "Provider",
+                "credential_required": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":
