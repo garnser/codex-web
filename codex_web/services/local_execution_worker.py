@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence, TypeVar
 
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -24,6 +24,10 @@ from codex_web.local_execution_backend import (
     LocalExecutionResult,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.codex_auth_delegation import (
+    CodexAuthDelegationService,
+    CodexDelegatedLaunch,
+)
 from codex_web.services.execution_workers import (
     ExecutionWorkerService,
     WorkerConflictError,
@@ -33,6 +37,9 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 
 class LocalExecutionWorkerRuntimeError(RuntimeError):
     pass
+
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,7 @@ class LocalExecutionWorkerRuntime:
         worker_actor: AuthenticationActor,
         control_actor: AuthenticationActor,
         artifact_evidence: ArtifactEvidenceService | None = None,
+        codex_auth_delegation: CodexAuthDelegationService | None = None,
         heartbeat_interval_seconds: float = 30.0,
         renew_margin_seconds: float = 45.0,
     ) -> None:
@@ -65,6 +73,7 @@ class LocalExecutionWorkerRuntime:
         self.worker_actor = worker_actor
         self.control_actor = control_actor
         self.artifact_evidence = artifact_evidence
+        self.codex_auth_delegation = codex_auth_delegation
         self.heartbeat_interval_seconds = max(5.0, heartbeat_interval_seconds)
         self.renew_margin_seconds = max(10.0, renew_margin_seconds)
 
@@ -82,6 +91,54 @@ class LocalExecutionWorkerRuntime:
         if item is None:
             raise LocalExecutionWorkerRuntimeError("execution assignment not found")
         return item
+
+    def codex_auth_status(
+        self,
+        assignment_id: str,
+    ) -> dict[str, str | int | float | bool | None]:
+        assignment = self._pending_assignment(assignment_id)
+        if self.codex_auth_delegation is None:
+            return {
+                "ready": False,
+                "assignment_id": assignment.id,
+                "worker_id": self.worker.id,
+                "fence": assignment.fence,
+                "reason": "Codex auth delegation is not configured",
+                "credential_store": "ephemeral",
+                "worker_home": "/tmp/codex-worker-home",
+                "child_environment_filtered": True,
+            }
+        return self.codex_auth_delegation.status(
+            assignment,
+            worker_id=self.worker.id,
+            fence=assignment.fence,
+            actor=self.worker_actor,
+        )
+
+    def use_codex_auth(
+        self,
+        assignment_id: str,
+        consumer: Callable[[CodexDelegatedLaunch], T],
+        *,
+        subcommand: tuple[str, ...] = ("app-server",),
+    ) -> T:
+        if self.codex_auth_delegation is None:
+            raise LocalExecutionWorkerRuntimeError(
+                "Codex auth delegation is not configured"
+            )
+        assignment = self._pending_assignment(assignment_id)
+        if assignment.lease is None:
+            raise LocalExecutionWorkerRuntimeError(
+                "Codex auth delegation requires an active worker lease"
+            )
+        return self.codex_auth_delegation.use(
+            assignment,
+            worker_id=self.worker.id,
+            fence=assignment.fence,
+            actor=self.worker_actor,
+            consumer=consumer,
+            subcommand=subcommand,
+        )
 
     def _workspace_path(self, assignment: ExecutionAssignment) -> Path:
         if not assignment.execution_workspace_id:
