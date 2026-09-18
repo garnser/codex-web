@@ -39,13 +39,18 @@ from codex_web.artifact_evidence import (
     EvidenceResult,
     EvidenceType,
 )
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    PrincipalKind,
+)
 from codex_web.models import WorkItemState
 from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.services.action_intents import ActionIntentService, ActionIntentUnsafeRetryError
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
-from codex_web.services.identity import IdentityService
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.action_intents import ActionIntentStore
@@ -199,6 +204,30 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.identity = IdentityService(IdentityStateStore(self.sqlite))
         self.identity.bootstrap_local()
         self.actor = self.identity.local_trusted_actor()
+        self.worker_actor = AuthenticationActor(
+            identity_id="action-worker",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-intent:worker",),
+        )
+        self.callback_actor = AuthenticationActor(
+            identity_id="provider-callback",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-intent:callback",),
+        )
+        self.admin_service_actor = AuthenticationActor(
+            identity_id="action-admin-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-intent:admin",),
+        )
 
         self.resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
         self.resource = self.resources.create(
@@ -274,14 +303,14 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
     async def _execute(self, intent):
         claim = self.service.claim(
             ActionIntentClaimRequest(worker_id="worker-1", lease_seconds=30),
-            actor=self.actor,
+            actor=self.worker_actor,
             intent_id=intent.id,
         )
         self.assertIsNotNone(claim)
         return await self.service.execute_claimed(
             intent.id,
             "worker-1",
-            actor=self.actor,
+            actor=self.worker_actor,
         )
 
     async def test_enforced_entitlement_denies_intent_creation_without_capability(self) -> None:
@@ -438,7 +467,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         reconciled = await self.service.reconcile(
             intent.id,
             ActionIntentReconcileRequest(retry_if_idempotent=False),
-            actor=self.actor,
+            actor=self.worker_actor,
         )
 
         self.assertEqual(reconciled.status, ActionIntentStatus.SUCCEEDED)
@@ -482,10 +511,14 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         intent = self._create()
         self.service.claim(
             ActionIntentClaimRequest(worker_id="worker-1", lease_seconds=10),
-            actor=self.actor,
+            actor=self.worker_actor,
             intent_id=intent.id,
         )
-        executing = self.service._mark_executing(intent.id, "worker-1", self.actor)
+        executing = self.service._mark_executing(
+            intent.id,
+            "worker-1",
+            self.worker_actor,
+        )
 
         recovered = self.service.recover_stale_claims(
             now=executing.lease.expires_at + 1,
@@ -516,8 +549,8 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             event_type="completed",
             outcome=ActionIntentStatus.SUCCEEDED,
         )
-        one = self.service.ingest_callback(callback, actor=self.actor)
-        two = self.service.ingest_callback(callback, actor=self.actor)
+        one = self.service.ingest_callback(callback, actor=self.callback_actor)
+        two = self.service.ingest_callback(callback, actor=self.callback_actor)
 
         self.assertFalse(one.duplicate)
         self.assertTrue(two.duplicate)
@@ -540,7 +573,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
                     event_type="completed",
                     outcome=ActionIntentStatus.SUCCEEDED,
                 ),
-                actor=self.actor,
+                actor=self.callback_actor,
             )
 
         history = self.service.history(intent.id, self.actor)
@@ -557,7 +590,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
                 event_type="failed",
                 outcome=ActionIntentStatus.FAILED,
             ),
-            actor=self.actor,
+            actor=self.callback_actor,
         )
 
         current = self.service.get(intent.id, self.actor)
@@ -642,11 +675,62 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         rolled_back = await self.service.rollback(
             intent.id,
             ActionIntentRollbackRequest(reason="operator rollback"),
-            actor=self.actor,
+            actor=self.worker_actor,
         )
         self.assertEqual(rolled_back.status, ActionIntentStatus.ROLLED_BACK)
         history = self.service.history(intent.id, self.actor)
         self.assertEqual(history["receipts"][-1]["result"]["status"], "rolled_back")
+
+    async def test_human_admin_cannot_impersonate_action_worker(self) -> None:
+        intent = self._create()
+
+        with self.assertRaisesRegex(
+            AuthorizationError,
+            "service principal.*action-intent:worker",
+        ):
+            self.service.claim(
+                ActionIntentClaimRequest(worker_id="human-worker"),
+                actor=self.actor,
+                intent_id=intent.id,
+            )
+
+    async def test_action_intent_admin_service_cannot_execute_worker_plane(self) -> None:
+        intent = self._create()
+
+        with self.assertRaisesRegex(
+            AuthorizationError,
+            "action-intent:worker",
+        ):
+            self.service.claim(
+                ActionIntentClaimRequest(worker_id="admin-service"),
+                actor=self.admin_service_actor,
+                intent_id=intent.id,
+            )
+
+    async def test_callback_ingestion_requires_explicit_callback_service_scope(self) -> None:
+        intent = self._create()
+        callback = ActionInboxCreate(
+            provider_type=intent.provider_type,
+            provider_instance=intent.provider_instance,
+            delivery_id="delivery-authority-test",
+            intent_id=intent.id,
+            event_type="completed",
+            outcome=ActionIntentStatus.SUCCEEDED,
+        )
+
+        for actor in (self.actor, self.admin_service_actor):
+            with self.subTest(actor=actor.identity_id):
+                with self.assertRaisesRegex(
+                    AuthorizationError,
+                    "action-intent:callback",
+                ):
+                    self.service.ingest_callback(callback, actor=actor)
+
+        accepted = self.service.ingest_callback(
+            callback,
+            actor=self.callback_actor,
+        )
+        self.assertFalse(accepted.duplicate)
 
     async def test_denied_authority_is_persisted_but_never_claimable(self) -> None:
         intent = self._create(
@@ -662,7 +746,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.reference.values, {})
         claim = self.service.claim(
             ActionIntentClaimRequest(worker_id="worker-1"),
-            actor=self.actor,
+            actor=self.worker_actor,
             intent_id=intent.id,
         )
         self.assertIsNone(claim)
