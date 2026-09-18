@@ -16,8 +16,8 @@ from codex_web.models import ApprovalPolicy, SandboxMode
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.1",
-    ("1.0", "1.1"),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
 )
 
 

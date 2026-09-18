@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ExecutionSubjectKind(StrEnum):
     WORK_ITEM = "work_item"
     THREAD = "thread"
+    THREAD_BOOTSTRAP = "thread_bootstrap"
 
 
 class ExecutionSubject(BaseModel):

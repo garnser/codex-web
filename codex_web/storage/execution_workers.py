@@ -38,6 +38,14 @@ def _migrate_1_0_to_1_1(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 EXECUTION_WORKER_MIGRATIONS.register("1.0", "1.1", _migrate_1_0_to_1_1)
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.2",
+    },
+)
 
 
 class ExecutionWorkerStore:

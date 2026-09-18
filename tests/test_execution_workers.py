@@ -144,6 +144,23 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertEqual(assignment.subject.ref, "thread-abc")
         self.assertIsNone(assignment.work_item_ref)
 
+    def test_thread_bootstrap_subject_assignment_never_sets_work_item_ref(self) -> None:
+        assignment = self._assignment(
+            work_item_ref=None,
+            subject=ExecutionSubject(
+                kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+                ref="bootstrap-abc",
+            ),
+            execution_id="exec-bootstrap",
+        )
+
+        self.assertEqual(
+            assignment.subject.kind,
+            ExecutionSubjectKind.THREAD_BOOTSTRAP,
+        )
+        self.assertEqual(assignment.subject.ref, "bootstrap-abc")
+        self.assertIsNone(assignment.work_item_ref)
+
     def test_conflicting_legacy_work_item_ref_and_subject_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "conflicts with execution subject"):
             ExecutionAssignmentCreate(
@@ -170,7 +187,7 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.1")
+        self.assertEqual(state.schema_version, "1.2")
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
