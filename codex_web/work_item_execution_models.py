@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.execution_workspaces import ExecutionWorkspaceReference
+
 
 class WorkItemRetryPolicy(BaseModel):
     """Deterministic retry bounds for one canonical work item."""
@@ -80,6 +82,7 @@ class WorkItemExecutionLifecycle(BaseModel):
     latest_checkpoint: WorkItemExecutionCheckpoint | None = None
     checkpoint_history: list[WorkItemExecutionCheckpoint] = Field(default_factory=list)
     usage: WorkItemUsageAttribution = Field(default_factory=WorkItemUsageAttribution)
+    workspace: ExecutionWorkspaceReference | None = None
 
 
 class WorkItemExecutionUpdate(BaseModel):
