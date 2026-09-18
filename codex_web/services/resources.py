@@ -154,6 +154,9 @@ class ResourceCatalogService:
         self._require_admin(actor)
         current = self.get(resource_id, actor)
         changes = payload.model_dump(exclude_unset=True)
+        for key in ("name", "sensitivity", "risk", "lifecycle", "aliases"):
+            if changes.get(key) is None:
+                changes.pop(key, None)
         changes["updated_at"] = time.time()
         updated = Resource.model_validate(
             {**current.model_dump(mode="json"), **changes}
