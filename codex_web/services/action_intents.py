@@ -24,6 +24,10 @@ from codex_web.action_intents import (
 from codex_web.action_providers import ActionRequest, ActionResult
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.observability import correlated, current_correlation, new_correlation_id
+from codex_web.security import (
+    SecurityDecisionOutcome,
+    SecurityTrustDecision,
+)
 from codex_web.services.action_providers import (
     ActionExecutionService,
     ActionProviderError,
@@ -31,6 +35,7 @@ from codex_web.services.action_providers import (
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
 
 
@@ -64,11 +69,13 @@ class ActionIntentService:
         *,
         artifact_evidence: ArtifactEvidenceService | None = None,
         work_item_host: Any | None = None,
+        security_boundary: SecurityBoundaryService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
         self.artifact_evidence = artifact_evidence
         self.work_item_host = work_item_host
+        self.security_boundary = security_boundary
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -208,6 +215,106 @@ class ActionIntentService:
                 "action intent project does not match attributed Work Item"
             )
 
+    def _security_decision(
+        self,
+        *,
+        binding,
+        definition,
+        request,
+        payload: ActionIntentCreate,
+        actor: AuthenticationActor,
+        intent_id: str | None,
+    ) -> SecurityTrustDecision:
+        if self.security_boundary is not None:
+            return self.security_boundary.evaluate_action(
+                binding=binding,
+                definition=definition,
+                request=request,
+                authority_outcome=payload.authority_decision.outcome.value,
+                authority_source=payload.authority_decision.source,
+                policy_outcome=payload.policy_decision.outcome.value,
+                policy_source=payload.policy_decision.source,
+                actor=actor,
+                action_intent_id=intent_id,
+                work_item_ref=payload.work_item_ref,
+                execution_id=payload.execution_id,
+            )
+        privileged = definition.risk_class.value in {"high", "critical"}
+        trusted = (
+            payload.authority_decision.outcome == ActionDecisionOutcome.ALLOW
+            and payload.policy_decision.outcome == ActionDecisionOutcome.ALLOW
+        )
+        reasons = (
+            ("security boundary service unavailable for privileged action",)
+            if privileged and not trusted
+            else ()
+        )
+        return SecurityTrustDecision(
+            outcome=(
+                SecurityDecisionOutcome.DENY
+                if reasons
+                else SecurityDecisionOutcome.ALLOW
+            ),
+            source="security:fallback",
+            risk_class=definition.risk_class.value,
+            resource_ids=request.resource_ids,
+            sandbox=binding.security_policy.sandbox,
+            network_enabled=binding.security_policy.network.enabled,
+            authority_source=payload.authority_decision.source,
+            policy_source=payload.policy_decision.source,
+            reasons=reasons,
+        )
+
+    def _recheck_security(
+        self,
+        intent: ActionIntent,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[bool, str | None]:
+        binding, _, definition, request = self.execution.resolve_contract(
+            intent.binding_id,
+            intent.request,
+            actor=actor,
+        )
+        if self.security_boundary is None:
+            return (
+                intent.security_decision.outcome == SecurityDecisionOutcome.ALLOW,
+                "persisted security trust decision denied action"
+                if intent.security_decision.outcome != SecurityDecisionOutcome.ALLOW
+                else None,
+            )
+        decision = self.security_boundary.evaluate_action(
+            binding=binding,
+            definition=definition,
+            request=request,
+            authority_outcome=intent.authority_decision.outcome.value,
+            authority_source=intent.authority_decision.source,
+            policy_outcome=intent.policy_decision.outcome.value,
+            policy_source=intent.policy_decision.source,
+            actor=actor,
+            action_intent_id=intent.id,
+            work_item_ref=intent.work_item_ref,
+            execution_id=intent.execution_id,
+        )
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "security_policy": binding.security_policy,
+                            "security_decision": decision,
+                            "updated_at": time.time(),
+                        }
+                    )
+                    break
+            return state
+
+        self.store.update(apply)
+        if decision.outcome != SecurityDecisionOutcome.ALLOW:
+            return False, "; ".join(decision.reasons) or "security trust boundary denied action"
+        return True, None
+
     def _work_item_requirements(
         self,
         work_item_ref: str | None,
@@ -283,6 +390,14 @@ class ActionIntentService:
         )
         causation_id = context.causation_id if context else None
         intent_id = f"action-intent-{uuid.uuid4().hex}"
+        security_decision = self._security_decision(
+            binding=binding,
+            definition=definition,
+            request=request,
+            payload=payload,
+            actor=actor,
+            intent_id=intent_id,
+        )
         provider_idempotency = bool(definition.capabilities.idempotency)
         idempotency_key = request.idempotency_key or f"codex-intent:{intent_id}"
         provider_request = request
@@ -327,6 +442,7 @@ class ActionIntentService:
         denied = (
             payload.authority_decision.outcome == ActionDecisionOutcome.DENY
             or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
+            or security_decision.outcome == SecurityDecisionOutcome.DENY
         )
         intent = ActionIntent(
             id=intent_id,
@@ -345,6 +461,8 @@ class ActionIntentService:
             request=provider_request,
             authority_decision=payload.authority_decision,
             policy_decision=payload.policy_decision,
+            security_policy=binding.security_policy,
+            security_decision=security_decision,
             credential_ref=provider_request.credential_ref,
             resource_ids=provider_request.resource_ids,
             idempotency_key=idempotency_key,
@@ -361,7 +479,13 @@ class ActionIntentService:
             created_at=now,
             updated_at=now,
             completed_at=now if denied else None,
-            last_error="authority or policy denied action" if denied else None,
+            last_error=(
+                "; ".join(security_decision.reasons)
+                if security_decision.outcome == SecurityDecisionOutcome.DENY
+                else "authority or policy denied action"
+                if denied
+                else None
+            ),
             work_item_success=payload.work_item_success,
         )
 
@@ -734,6 +858,14 @@ class ActionIntentService:
         actor: AuthenticationActor,
     ) -> ActionIntent:
         self._require_worker(actor)
+        pending = self._intent(intent_id, actor)
+        allowed, reason = self._recheck_security(pending, actor=actor)
+        if not allowed:
+            return self._set_status(
+                intent_id,
+                ActionIntentStatus.CANCELLED,
+                error=reason or "security trust boundary denied action",
+            )
         intent = self._mark_executing(intent_id, worker_id, actor)
         with correlated(
             correlation_id=intent.correlation_id,
