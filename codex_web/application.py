@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.bots import build_bots_router
+from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.projects import build_projects_router
@@ -40,6 +41,7 @@ from codex_web.services.bot_connections import install_bot_connection_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
+from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
@@ -57,6 +59,7 @@ from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
+from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.runtime_state import RuntimeStateRepositories
@@ -77,6 +80,10 @@ core._atomic_write_text = atomic_write_text
 
 project_repository = ProjectRepository(PROJECTS_FILE)
 state_store = SQLiteStateStore(STATE_DB_FILE)
+configuration_registry_store = ConfigurationRegistryStore(state_store)
+configuration_service = ConfigurationService(configuration_registry_store)
+app.state.configuration_service = configuration_service
+
 runtime_state = RuntimeStateRepositories(
     state_store,
     thread_settings_file=THREAD_SETTINGS_FILE,
@@ -189,6 +196,12 @@ core.hub.subscribe(context_service.observe)
 app.state.context_compaction_service = context_service
 
 EXTRACTED_ROUTE_COUNTS = {
+    "configuration": replace_routes(
+        app,
+        build_configuration_router(configuration_service),
+        paths=set(),
+        key="configuration",
+    ),
     "projects": replace_routes(
         app,
         build_projects_router(project_service),
