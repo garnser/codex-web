@@ -23,10 +23,10 @@ from codex_web.services.identity import AuthorizationError, TenantIsolationError
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, AuthorizationError):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, EntitlementDeniedError):
-        return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, QuotaExceededError):
         return HTTPException(status_code=429, detail=str(exc))
+    if isinstance(exc, EntitlementDeniedError):
+        return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, (EntitlementError, ValueError)):
         return HTTPException(status_code=422, detail=str(exc))
     if isinstance(exc, TenantIsolationError):
