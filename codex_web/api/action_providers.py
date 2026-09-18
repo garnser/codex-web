@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.action_providers import ActionProviderBindingCreate, ActionRequest
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.action_providers import (
     ActionBindingNotFoundError,
     ActionExecutionService,
@@ -15,7 +16,7 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
     ActionResolutionError,
 )
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError, IdentityService, TenantIsolationError
 from codex_web.services.resources import ResourceNotFoundError
 
 
@@ -60,6 +61,9 @@ def build_action_providers_router(
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            if actor.principal_kind != PrincipalKind.SERVICE:
+                IdentityService.require_admin(actor)
+                IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
             binding = registry.bind(
                 payload,
                 actor=actor,
