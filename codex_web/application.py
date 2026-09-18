@@ -208,6 +208,7 @@ bot_service = BotService(
     core,
     slack_client=slack_client,
     routing_service=bot_routing_service,
+    secret_broker=secret_broker,
 )
 app.state.slack_client = slack_client
 app.state.telegram_client = telegram_client
