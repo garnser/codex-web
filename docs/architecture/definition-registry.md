@@ -113,6 +113,23 @@ The canonical administration API is under `/api/definitions`:
 
 The Platform Foundation UI (#141) should build browse/search, history, draft/validate/publish/supersede/rollback, diff, provenance, compatibility, usage/reference and impact experiences on these APIs. Raw SQLite editing is not a supported administration path.
 
+## API authorization and tenant visibility
+
+Definition Registry HTTP mutations are attributed to the canonical authenticated
+identity; legacy caller-supplied actor fields are never authoritative. Human
+mutations require tenant admin authority plus MFA/step-up. Service automation
+uses explicit `definitions:admin` scope, while platform-global service
+mutation requires `definitions:global-admin`. Global human mutation is limited
+to the local-trusted self-hosted platform context.
+
+Organization/workspace records are fenced to the actor tenant, project scope is
+resolved through canonical ProjectService ownership, and the same visibility
+rules protect history, resolve, diff, export and usage. Usage providers must
+supply canonical organization/workspace/project attribution; unscoped usage is
+not exposed through the tenant admin API, and project-backed usage is filtered
+through the actor's canonical project tenancy even when the referenced
+definition itself is global.
+
 ## Security boundary
 
 A database definition cannot:
