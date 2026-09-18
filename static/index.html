@@ -560,6 +560,15 @@
                       <label>Definition payload <textarea id="definition-draft-payload" rows="10" placeholder='{"key":"value"}'></textarea></label>
                       <button id="create-definition-draft" type="button" class="ghost-button">Create validated-schema draft</button>
                     </div>
+                    <details id="definition-transfer-panel">
+                      <summary>Export / import versioned definitions</summary>
+                      <div class="route-test">
+                        <button id="export-definitions" type="button" class="ghost-button">Load tenant-visible export</button>
+                        <textarea id="definition-transfer-document" rows="10" spellcheck="false" placeholder="Export document or import document"></textarea>
+                        <button id="import-definitions" type="button" class="ghost-button">Import as inactive drafts</button>
+                      </div>
+                      <small>Import revalidates every record against the running code-owned schema and authorization boundary. Imported records are never activated automatically.</small>
+                    </details>
                     <div id="definition-lifecycle-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="route-test">
