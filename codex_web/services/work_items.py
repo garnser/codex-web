@@ -68,10 +68,16 @@ class WorkItemService:
         else:
             self.task_source_writeback = task_source_writeback
             self.task_source_registry = task_source_registry or task_source_writeback.registry
-        self.task_source_registry.register_project(
-            "gitlab",
-            self._gitlab_source_for_project,
+        register_project = getattr(
+            self.task_source_registry,
+            "register_project",
+            None,
         )
+        if callable(register_project):
+            register_project(
+                "gitlab",
+                self._gitlab_source_for_project,
+            )
         self.gitlab_artifact_events = gitlab_artifact_events or GitLabArtifactEventProjector(
             host,
             self.state_machine,
