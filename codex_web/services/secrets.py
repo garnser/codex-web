@@ -159,6 +159,26 @@ class SecretBroker:
 
         self.store.update(apply)
 
+    def metadata(
+        self,
+        secret_id: str,
+        *,
+        actor: AuthenticationActor,
+        require_use: bool = False,
+    ) -> SecretReference:
+        reference = self._reference(secret_id)
+        self._scope(actor, reference)
+        if require_use and not self._can_use(actor, reference):
+            raise SecretUseDeniedError("secret use authority denied")
+        if not require_use and not (
+            self._admin(actor)
+            or actor.identity_id == reference.owner_identity_id
+            or actor.identity_id in reference.allowed_identity_ids
+            or actor.identity_id in reference.reveal_identity_ids
+        ):
+            raise SecretUseDeniedError("secret metadata authority denied")
+        return reference.model_copy(deep=True)
+
     def list(self, actor: AuthenticationActor) -> list[SecretReference]:
         state = self.store.load()
         return [
