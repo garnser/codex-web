@@ -47,7 +47,10 @@ class NetworkPolicy(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "NetworkPolicy":
-        self.allowed_hosts = tuple(sorted({value.strip().lower() for value in self.allowed_hosts if value.strip()}))
+        normalized = tuple(
+            sorted({value.strip().lower() for value in self.allowed_hosts if value.strip()})
+        )
+        object.__setattr__(self, "allowed_hosts", normalized)
         if not self.enabled and self.allowed_hosts:
             raise ValueError("network allowlist requires network enabled")
         return self
