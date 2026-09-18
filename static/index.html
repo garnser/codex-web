@@ -892,6 +892,35 @@
                     <div id="operations-traces" class="comm-log"></div>
                   </details>
                   <details>
+                    <summary>Structured logs / correlation drill-down</summary>
+                    <div id="operations-log-status" class="form-result" aria-live="polite">Load bounded tenant-scoped runtime logs.</div>
+                    <div class="route-test">
+                      <label>Window <select id="operations-log-window">
+                        <option value="300">5 minutes</option>
+                        <option value="900" selected>15 minutes</option>
+                        <option value="3600">1 hour</option>
+                      </select></label>
+                      <label>Level <select id="operations-log-level">
+                        <option value="">All levels</option>
+                        <option value="DEBUG">DEBUG</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                      </select></label>
+                      <input id="operations-log-logger" placeholder="Exact logger" />
+                      <input id="operations-log-event" placeholder="Exact event" />
+                      <input id="operations-log-correlation" placeholder="Correlation ID" />
+                      <input id="operations-log-causation" placeholder="Causation ID" />
+                      <input id="operations-log-work-item" placeholder="Work Item ref" />
+                      <input id="operations-log-execution" placeholder="Execution ID" />
+                      <input id="operations-log-action-intent" placeholder="ActionIntent ID" />
+                      <button id="load-structured-logs" type="button" class="ghost-button">Load logs</button>
+                      <button id="clear-structured-log-filters" type="button" class="ghost-button">Clear filters</button>
+                    </div>
+                    <div id="operations-logs" class="comm-log"></div>
+                  </details>
+                  <details>
                     <summary>Diagnostics snapshot</summary>
                     <select id="operations-diagnostic-project"><option value="">All/current runtime</option></select>
                     <button id="load-diagnostics" type="button" class="ghost-button">Load diagnostics</button>
@@ -1034,6 +1063,7 @@
     <script src="static/action_intent_admin.js" type="module"></script>
     <script src="static/security_trust_diagnostics.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
+    <script src="static/operations_logs.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
