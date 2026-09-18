@@ -32,7 +32,7 @@ class OperationsObservabilityUiTests(unittest.TestCase):
         self.assertIn("requiredForAutonomy", javascript)
         self.assertIn("supervisorTasks", javascript)
         self.assertIn("oldestQueueAgeSeconds", javascript)
-        self.assertIn("lease.expires_at", javascript)
+        self.assertIn("lease?.expires_at", javascript)
         self.assertIn("gitlabSyncConsecutiveFailures", javascript)
         self.assertIn("correlationId", javascript)
         self.assertIn("causationId", javascript)
