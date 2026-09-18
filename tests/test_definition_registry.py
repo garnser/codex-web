@@ -591,6 +591,91 @@ class DefinitionRegistryApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("local-trusted", response.json()["detail"])
 
+    def test_resolve_defaults_to_authenticated_tenant_context(self) -> None:
+        global_record = self.service.publish(
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="execution-roles.scoped",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    payload=execution_role_catalog_seed_payload(),
+                    actor="bootstrap",
+                )
+            ).record_id,
+            DefinitionPublishRequest(actor="bootstrap"),
+        )
+        workspace_payload = execution_role_catalog_seed_payload()
+        workspace_payload["roles"][0]["description"] = "Workspace-specific definition."
+        workspace_record = self.service.publish(
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="execution-roles.scoped",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    scope_type="workspace",
+                    scope_id="ws-a",
+                    payload=workspace_payload,
+                    actor="bootstrap",
+                )
+            ).record_id,
+            DefinitionPublishRequest(actor="bootstrap"),
+        )
+
+        response = self.client.post(
+            "/api/definitions/resolve",
+            json={
+                "definition_id": "execution-roles.scoped",
+                "kind": EXECUTION_ROLE_CATALOG_KIND,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(global_record.record_id, workspace_record.record_id)
+        self.assertEqual(
+            response.json()["record"]["record_id"],
+            workspace_record.record_id,
+        )
+
+    def test_usage_filters_cross_tenant_and_unscoped_references(self) -> None:
+        record = self.service.publish(
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="execution-roles.shared",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    payload=execution_role_catalog_seed_payload(),
+                    actor="bootstrap",
+                )
+            ).record_id,
+            DefinitionPublishRequest(actor="bootstrap"),
+        )
+        self.service.register_usage_provider(
+            lambda reference: [
+                {
+                    "object_type": "work_item",
+                    "object_id": "own",
+                    "project_id": "project-a",
+                },
+                {
+                    "object_type": "work_item",
+                    "object_id": "other",
+                    "project_id": "project-b",
+                },
+                {
+                    "object_type": "unknown",
+                    "object_id": "unscoped",
+                },
+            ]
+        )
+
+        response = self.client.get(
+            f"/api/definitions/{record.record_id}/usage"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(response.json()["items"][0]["object_id"], "own")
+
 
 if __name__ == "__main__":
     unittest.main()
