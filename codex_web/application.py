@@ -7,6 +7,7 @@ from codex_web.api.context import build_context_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
+from codex_web.api.secrets import build_secrets_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
@@ -24,6 +25,7 @@ from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     PROJECTS_FILE,
+    SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
@@ -48,6 +50,7 @@ from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.projects import ProjectService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.secrets import SecretBroker
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.thread_recovery import install_thread_recovery_service
@@ -62,12 +65,14 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.identity_state import IdentityStateStore
+from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.thread_index import install_thread_index_repository
+from codex_web.secret_backends import LocalFileSecretBackend
 
 
 # Keep one FastAPI application and one runtime lifecycle while domains are
@@ -94,6 +99,14 @@ install_identity_middleware(app, identity_service)
 app.include_router(build_identity_router(identity_service))
 app.state.identity_state_store = identity_state_store
 app.state.identity_service = identity_service
+
+secret_state_store = SecretStateStore(state_store)
+local_secret_backend = LocalFileSecretBackend(SECRET_MATERIAL_DIR)
+secret_broker = SecretBroker(secret_state_store, {"local": local_secret_backend})
+app.include_router(build_secrets_router(secret_broker))
+app.state.secret_state_store = secret_state_store
+app.state.secret_broker = secret_broker
+app.state.local_secret_backend = local_secret_backend
 
 runtime_state = RuntimeStateRepositories(
     state_store,
