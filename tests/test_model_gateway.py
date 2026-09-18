@@ -27,6 +27,7 @@ from codex_web.services.identity import IdentityService
 from codex_web.services.model_gateway import (
     ModelGatewayService,
     ModelProviderUnavailableError,
+    ModelRegistryConflictError,
     ModelRoutingError,
 )
 from codex_web.services.secrets import SecretBroker
@@ -178,6 +179,36 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
                 self._request(max_cost_usd=0.0001),
                 actor=self.actor,
             )
+
+    async def test_prompt_template_revision_is_immutable_and_policy_is_pinned(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        first_route = self.service.route(self._request(), actor=self.actor)
+
+        with self.assertRaises(ModelRegistryConflictError):
+            self.service.upsert_template(
+                PromptTemplateUpsert(
+                    template_id="executive.system",
+                    version="1.0",
+                    content="changed content for same version",
+                ),
+                actor=self.actor,
+            )
+
+        self.service.set_policy(
+            TenantModelPolicyUpdate(
+                allowed_provider_ids=("p1",),
+                max_attempts=1,
+            ),
+            actor=self.actor,
+        )
+        second_route = self.service.route(self._request(), actor=self.actor)
+
+        self.assertNotEqual(
+            first_route.policy_fingerprint_sha256,
+            second_route.policy_fingerprint_sha256,
+        )
+        self.assertEqual(len(second_route.policy_fingerprint_sha256), 64)
 
     async def test_transient_failure_falls_back_with_bounded_attempts(self) -> None:
         self._provider("p1")
