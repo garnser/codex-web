@@ -270,6 +270,12 @@ class InvalidationRequest(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class EvidenceRequirementsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirements: tuple[EvidenceRequirement, ...] = ()
+
+
 class EvidenceEvaluationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
