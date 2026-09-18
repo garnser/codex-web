@@ -161,7 +161,11 @@ class ExtensionLifecycleTests(unittest.TestCase):
             with self.subTest(extension_type=extension_type):
                 installation = self._install(
                     extension_type,
-                    extension_id=f"com.example.{extension_type.value}-shared-lifecycle",
+                    extension_id=(
+                        "com.example."
+                        + extension_type.value.replace("_", "-")
+                        + "-shared-lifecycle"
+                    ),
                 )
                 self.assertEqual(
                     installation.lifecycle,
