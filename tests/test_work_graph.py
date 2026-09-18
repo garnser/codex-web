@@ -18,6 +18,7 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.work_graph import (
     DependencyFailureBehavior,
+    WorkGraphEdge,
     WorkGraphEdgeCreate,
     WorkGraphRelation,
     WorkReadinessStatus,
@@ -216,18 +217,26 @@ class WorkGraphServiceTests(unittest.TestCase):
             self.add("A", "E")
 
     def test_deep_dependency_chain_uses_iterative_critical_path(self) -> None:
-        for index in range(1200):
-            ref = f"N{index:04d}"
-            self.items[ref] = item(ref)
-        for index in range(1199):
-            self.add(f"N{index:04d}", f"N{index + 1:04d}")
+        refs = tuple(f"N{index:04d}" for index in range(1200))
+        edges = tuple(
+            WorkGraphEdge(
+                organization_id="org-a",
+                workspace_id="ws-a",
+                project_id="project-a",
+                relation=WorkGraphRelation.BLOCKS,
+                source_ref=refs[index],
+                target_ref=refs[index + 1],
+                created_by="test",
+            )
+            for index in range(len(refs) - 1)
+        )
 
-        graph = self.service.snapshot("project-a", scope=self.scope)
+        critical = self.service._critical_path(refs, edges)
 
-        self.assertEqual(graph.critical_path.node_count, 1200)
-        self.assertEqual(graph.critical_path.edge_count, 1199)
-        self.assertEqual(graph.critical_path.refs[0], "N0000")
-        self.assertEqual(graph.critical_path.refs[-1], "N1199")
+        self.assertEqual(critical.node_count, 1200)
+        self.assertEqual(critical.edge_count, 1199)
+        self.assertEqual(critical.refs[0], "N0000")
+        self.assertEqual(critical.refs[-1], "N1199")
 
     def test_all_failure_behaviors_are_reported_without_llm_reasoning(self) -> None:
         behaviors = (
