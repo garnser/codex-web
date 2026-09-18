@@ -102,6 +102,9 @@ from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
+from codex_web.services.thread_bootstrap_bindings import (
+    ThreadBootstrapBindingService,
+)
 from codex_web.services.threads import ThreadService
 from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
@@ -123,6 +126,7 @@ from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -354,6 +358,13 @@ turn_execution_binding_service = TurnExecutionBindingService(
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
+thread_bootstrap_binding_store = ThreadBootstrapBindingStore(state_store)
+thread_bootstrap_binding_service = ThreadBootstrapBindingService(
+    thread_bootstrap_binding_store
+)
+app.state.thread_bootstrap_binding_store = thread_bootstrap_binding_store
+app.state.thread_bootstrap_binding_service = thread_bootstrap_binding_service
+
 artifact_evidence_store = ArtifactEvidenceStore(state_store)
 artifact_evidence_service = ArtifactEvidenceService(
     artifact_evidence_store,
@@ -459,7 +470,13 @@ approval_service = ApprovalService(
     core,
     assignment_sessions=assignment_bound_codex_session_manager,
 )
-thread_service = ThreadService(core)
+thread_service = ThreadService(
+    core,
+    binding_service=turn_execution_binding_service,
+    session_manager=assignment_bound_codex_session_manager,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+    control_actor=identity_service.local_trusted_actor(),
+)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(app, core, gitlab_client)
@@ -522,6 +539,8 @@ turn_execution_service = install_turn_execution_service(
     core,
     binding_service=turn_execution_binding_service,
     session_manager=assignment_bound_codex_session_manager,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+    control_actor=identity_service.local_trusted_actor(),
 )
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)

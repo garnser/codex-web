@@ -36,6 +36,12 @@ The original assignment/workspace subject is never rewritten to the returned thr
 
 Bootstrap and ordinary `thread` subjects never synchronize Work Item execution state. Only `work_item` subjects populate or update legacy Work Item execution references.
 
+The bootstrap assignment is a bounded **thread-session execution**, not a per-turn execution. The current local implementation caps its assignment deadline, workspace lease, CPU budget and wall-clock budget at 86,400 seconds (24 hours), matching the existing worker/workspace contract maxima. Its worker lease is still renewed and its fence, delegated auth, worker trust and resource bounds are revalidated before every Codex RPC.
+
+Normal terminal turn events clear only the active-turn record for a bootstrap-bound thread; they do not complete the bootstrap assignment or stop its isolated app-server. Later turns and inactive thread RPCs resolve the returned thread ID back to that same live bootstrap assignment/session. Ordinary pre-existing threads without a bootstrap binding retain the bounded compatibility metadata path until their next independent `thread:<thread-id>` execution.
+
+If the process/session disappears, the durable binding remains evidence that the thread belongs to an isolated bootstrap execution. Requests fail explicitly rather than starting a fresh private CODEX_HOME or falling back to the control-plane Codex runtime. Safe process restart/resume of that private CODEX_HOME is intentionally outside this contract.
+
 ## Resource leases
 
 Leases are reserved transactionally in SQLite before provisioning.

@@ -36,7 +36,9 @@ from codex_web.services.resources import ResourceCatalogService
 
 
 THREAD_TURN_EXECUTION_CONTRACT_VERSION = "thread-turn/1.0"
+THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION = "thread-bootstrap/1.0"
 DEFAULT_TURN_DEADLINE_SECONDS = 15 * 60
+THREAD_BOOTSTRAP_SESSION_SECONDS = 24 * 60 * 60
 
 
 class TurnExecutionBindingError(RuntimeError):
@@ -45,7 +47,7 @@ class TurnExecutionBindingError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class TurnExecutionBinding:
-    thread_id: str
+    thread_id: str | None
     execution_id: str
     project_id: str
     subject: ExecutionSubject
@@ -111,6 +113,18 @@ class TurnExecutionBindingService:
         if not normalized:
             raise TurnExecutionBindingError("thread execution requires a canonical thread id")
         return ExecutionSubject(kind=ExecutionSubjectKind.THREAD, ref=normalized)
+
+    @staticmethod
+    def _bootstrap_subject(bootstrap_id: str) -> ExecutionSubject:
+        normalized = str(bootstrap_id or "").strip()
+        if not normalized:
+            raise TurnExecutionBindingError(
+                "thread bootstrap execution requires an immutable bootstrap id"
+            )
+        return ExecutionSubject(
+            kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+            ref=normalized,
+        )
 
     def _project(self, project_id: str) -> Project:
         normalized = str(project_id or "").strip()
@@ -203,9 +217,11 @@ class TurnExecutionBindingService:
         assignment: ExecutionAssignment,
         *,
         subject: ExecutionSubject,
+        thread_id: str | None,
         project: Project,
         sandbox: SandboxMode,
         approval_policy: ApprovalPolicy,
+        execution_contract_version: str,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -215,9 +231,16 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different project"
             )
-        if assignment.sandbox != sandbox or assignment.approval_policy != approval_policy:
+        if (
+            assignment.sandbox != sandbox
+            or assignment.approval_policy != approval_policy
+        ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to different execution controls"
+            )
+        if assignment.execution_contract_version != execution_contract_version:
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different execution contract"
             )
         if not assignment.execution_workspace_id:
             raise TurnExecutionBindingError(
@@ -244,7 +267,7 @@ class TurnExecutionBindingService:
                 "existing thread assignment does not have exactly one credential reference"
             )
         return TurnExecutionBinding(
-            thread_id=subject.ref,
+            thread_id=thread_id,
             execution_id=assignment.execution_id,
             project_id=project.id,
             subject=subject,
@@ -259,44 +282,49 @@ class TurnExecutionBindingService:
             deadline_at=assignment.deadline_at,
         )
 
-    def prepare(
+    def _prepare_subject(
         self,
         *,
-        thread_id: str,
+        subject: ExecutionSubject,
+        thread_id: str | None,
         execution_id: str,
         project_id: str,
         sandbox: SandboxMode,
         approval_policy: ApprovalPolicy,
-        limits: WorkerResourceLimits | None = None,
-        deadline_seconds: int = DEFAULT_TURN_DEADLINE_SECONDS,
+        execution_contract_version: str,
+        session_seconds: int,
+        max_session_seconds: int,
+        limits: WorkerResourceLimits | None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
             raise TurnExecutionBindingError("thread execution requires an execution id")
-        if deadline_seconds < 30 or deadline_seconds > DEFAULT_TURN_DEADLINE_SECONDS:
+        if session_seconds < 30 or session_seconds > max_session_seconds:
             raise TurnExecutionBindingError(
-                "thread execution deadline must be between 30 and 900 seconds"
+                "thread execution session lifetime must be between "
+                f"30 and {max_session_seconds} seconds"
             )
 
-        subject = self._subject(thread_id)
         project = self._project(project_id)
         existing = self._existing_assignment(execution_id=normalized_execution_id)
         if existing is not None:
             return self._binding_from_existing(
                 existing,
                 subject=subject,
+                thread_id=thread_id,
                 project=project,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
+                execution_contract_version=execution_contract_version,
             )
 
         project_resources, repository = self._project_resources(project)
         secret_ref = self._secret_ref(project, subject)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
-            wall_seconds=DEFAULT_TURN_DEADLINE_SECONDS
+            wall_seconds=session_seconds
         )
-        deadline_at = self._clock() + deadline_seconds
+        deadline_at = self._clock() + session_seconds
 
         workspace = self.workspaces.acquire(
             ExecutionWorkspaceAcquire(
@@ -306,7 +334,7 @@ class TurnExecutionBindingService:
                 resource_ids=tuple(item.id for item in project_resources),
                 repository_resource_id=repository.id,
                 lease_mode=lease_mode,
-                ttl_seconds=deadline_seconds,
+                ttl_seconds=session_seconds,
                 requested_disk_bytes=effective_limits.disk_bytes,
             ),
             actor=self.control_actor,
@@ -319,7 +347,7 @@ class TurnExecutionBindingService:
                 project_id=project.id,
                 resource_ids=workspace.resource_ids,
                 base_revision=workspace.base_revision,
-                execution_contract_version=THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                execution_contract_version=execution_contract_version,
                 required_capabilities=(
                     WorkerCapability.GIT,
                     WorkerCapability.COMMAND_EXECUTION,
@@ -336,7 +364,7 @@ class TurnExecutionBindingService:
         )
 
         return TurnExecutionBinding(
-            thread_id=subject.ref,
+            thread_id=thread_id,
             execution_id=normalized_execution_id,
             project_id=project.id,
             subject=subject,
@@ -349,4 +377,66 @@ class TurnExecutionBindingService:
             approval_policy=assignment.approval_policy,
             secret_ref=secret_ref,
             deadline_at=assignment.deadline_at,
+        )
+
+    def prepare(
+        self,
+        *,
+        thread_id: str,
+        execution_id: str,
+        project_id: str,
+        sandbox: SandboxMode,
+        approval_policy: ApprovalPolicy,
+        limits: WorkerResourceLimits | None = None,
+        deadline_seconds: int = DEFAULT_TURN_DEADLINE_SECONDS,
+    ) -> TurnExecutionBinding:
+        subject = self._subject(thread_id)
+        return self._prepare_subject(
+            subject=subject,
+            thread_id=subject.ref,
+            execution_id=execution_id,
+            project_id=project_id,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            execution_contract_version=THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+            session_seconds=deadline_seconds,
+            max_session_seconds=DEFAULT_TURN_DEADLINE_SECONDS,
+            limits=limits,
+        )
+
+    def prepare_bootstrap(
+        self,
+        *,
+        bootstrap_id: str,
+        execution_id: str,
+        project_id: str,
+        sandbox: SandboxMode,
+        approval_policy: ApprovalPolicy,
+        limits: WorkerResourceLimits | None = None,
+        session_seconds: int = THREAD_BOOTSTRAP_SESSION_SECONDS,
+    ) -> TurnExecutionBinding:
+        subject = self._bootstrap_subject(bootstrap_id)
+        if (
+            session_seconds < 30
+            or session_seconds > THREAD_BOOTSTRAP_SESSION_SECONDS
+        ):
+            raise TurnExecutionBindingError(
+                "thread execution session lifetime must be between "
+                f"30 and {THREAD_BOOTSTRAP_SESSION_SECONDS} seconds"
+            )
+        effective_limits = limits or WorkerResourceLimits(
+            cpu_seconds=session_seconds,
+            wall_seconds=session_seconds,
+        )
+        return self._prepare_subject(
+            subject=subject,
+            thread_id=None,
+            execution_id=execution_id,
+            project_id=project_id,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            execution_contract_version=THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+            session_seconds=session_seconds,
+            max_session_seconds=THREAD_BOOTSTRAP_SESSION_SECONDS,
+            limits=effective_limits,
         )

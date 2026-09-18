@@ -9,8 +9,13 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.thread_bootstrap_bindings import (
+    ThreadBootstrapBindingNotFoundError,
+    ThreadBootstrapBindingService,
+)
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 
 
@@ -23,10 +28,14 @@ class TurnExecutionService:
         *,
         binding_service: TurnExecutionBindingService | None = None,
         session_manager: AssignmentBoundCodexSessionManager | None = None,
+        bootstrap_bindings: ThreadBootstrapBindingService | None = None,
+        control_actor: AuthenticationActor | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
         self.session_manager = session_manager
+        self.bootstrap_bindings = bootstrap_bindings
+        self.control_actor = control_actor
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -187,9 +196,24 @@ class TurnExecutionService:
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and thread_id in self.host._load_active_turns())
 
+    def _bootstrap_binding_for_thread(self, thread_id: str):
+        service = self.bootstrap_bindings
+        actor = self.control_actor
+        if service is None or actor is None:
+            return None
+        try:
+            return service.get_by_thread(thread_id, actor)
+        except ThreadBootstrapBindingNotFoundError:
+            return None
+
     def _assignment_session_for_thread(self, thread_id: str):
         active = self.host._load_active_turns().get(thread_id)
-        if active is None or not active.assignment_id:
+        assignment_id = active.assignment_id if active is not None else None
+        bootstrap = None
+        if not assignment_id:
+            bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            assignment_id = bootstrap.assignment_id if bootstrap is not None else None
+        if not assignment_id:
             return None
         manager = self.session_manager
         if manager is None:
@@ -197,12 +221,14 @@ class TurnExecutionService:
                 status_code=503,
                 detail="assignment-bound Codex session manager is unavailable",
             )
-        session = manager.get(active.assignment_id)
+        session = manager.get(assignment_id)
         if session is None:
-            raise HTTPException(
-                status_code=503,
-                detail="active thread assignment has no live Codex session",
+            detail = (
+                "thread bootstrap binding has no live Codex session"
+                if bootstrap is not None
+                else "active thread assignment has no live Codex session"
             )
+            raise HTTPException(status_code=503, detail=detail)
         session.validate_current()
         return session
 
@@ -295,6 +321,23 @@ class TurnExecutionService:
         manager = self.session_manager
         assignment_id = active.assignment_id
         if manager is None or not assignment_id:
+            return
+        bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
+        if bootstrap is not None and bootstrap.assignment_id == assignment_id:
+            self.host._append_bot_event(
+                {
+                    "type": "thread_bootstrap_turn_completed",
+                    "thread_id": active.thread_id,
+                    "turn_id": active.turn_id,
+                    "execution_id": bootstrap.execution_id,
+                    "assignment_id": bootstrap.assignment_id,
+                    "execution_workspace_id": bootstrap.execution_workspace_id,
+                    "worker_id": active.worker_id,
+                    "fence": active.fence,
+                    "succeeded": succeeded,
+                    "session_retained": True,
+                }
+            )
             return
         existing = self.assignment_completion_tasks.get(assignment_id)
         if existing is not None and not existing.done():
@@ -403,17 +446,63 @@ class TurnExecutionService:
             thread_id,
             settings.developer_instructions,
         )
-        canonical_execution_id = execution_id or self._new_execution_id()
+        requested_execution_id = execution_id or self._new_execution_id()
 
         async with self.turn_start_lock:
-            binding = binding_service.prepare(
-                thread_id=thread_id,
-                execution_id=canonical_execution_id,
-                project_id=project.id,
-                sandbox=effective_sandbox,
-                approval_policy=effective_approval_policy,
-            )
-            session = await session_manager.start(binding.assignment_id)
+            bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            if bootstrap is not None:
+                session = session_manager.get(bootstrap.assignment_id)
+                if session is None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="thread bootstrap binding has no live Codex session",
+                    )
+                assignment = session.validate_current()
+                if (
+                    assignment.id != bootstrap.assignment_id
+                    or assignment.execution_id != bootstrap.execution_id
+                    or assignment.execution_workspace_id
+                    != bootstrap.execution_workspace_id
+                ):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "thread bootstrap binding no longer matches "
+                            "canonical assignment state"
+                        ),
+                    )
+                if assignment.project_id != project.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="thread bootstrap project cannot change",
+                    )
+                if (
+                    assignment.sandbox != effective_sandbox
+                    or assignment.approval_policy != effective_approval_policy
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "thread bootstrap sandbox/approval controls are "
+                            "immutable for the live isolated session"
+                        ),
+                    )
+                canonical_execution_id = bootstrap.execution_id
+                assignment_id = bootstrap.assignment_id
+                workspace_id = bootstrap.execution_workspace_id
+            else:
+                canonical_execution_id = requested_execution_id
+                binding = binding_service.prepare(
+                    thread_id=thread_id,
+                    execution_id=canonical_execution_id,
+                    project_id=project.id,
+                    sandbox=effective_sandbox,
+                    approval_policy=effective_approval_policy,
+                )
+                session = await session_manager.start(binding.assignment_id)
+                assignment_id = binding.assignment_id
+                workspace_id = binding.workspace_id
+
             status = session.status()
             workspace_path = session.workspace_path
             if workspace_path is None or status.fence is None:
@@ -445,7 +534,7 @@ class TurnExecutionService:
             except Exception as exc:
                 with contextlib.suppress(Exception):
                     await session_manager.complete(
-                        binding.assignment_id,
+                        assignment_id,
                         succeeded=False,
                         failure_code="codex_thread_resume_failed",
                         failure_message=str(exc)[:500],
@@ -462,8 +551,8 @@ class TurnExecutionService:
                 source=source,
                 reply_target=reply_target,
                 execution_id=canonical_execution_id,
-                assignment_id=binding.assignment_id,
-                execution_workspace_id=binding.workspace_id,
+                assignment_id=assignment_id,
+                execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
             )
@@ -497,7 +586,7 @@ class TurnExecutionService:
                     self.clear_thread_active(thread_id)
                     with contextlib.suppress(Exception):
                         await session_manager.complete(
-                            binding.assignment_id,
+                            assignment_id,
                             succeeded=False,
                             failure_code="codex_turn_start_failed",
                             failure_message=str(exc)[:500],
@@ -518,10 +607,17 @@ class TurnExecutionService:
                 "source": source,
                 "reply_target": reply_target,
                 "execution_id": canonical_execution_id,
-                "assignment_id": binding.assignment_id,
-                "execution_workspace_id": binding.workspace_id,
+                "assignment_id": assignment_id,
+                "execution_workspace_id": workspace_id,
                 "worker_id": status.worker_id,
                 "fence": status.fence,
+                "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
+                "requested_execution_id": (
+                    requested_execution_id
+                    if bootstrap is not None
+                    and requested_execution_id != canonical_execution_id
+                    else None
+                ),
             }
             self.mark_thread_active(
                 thread_id,
@@ -534,8 +630,8 @@ class TurnExecutionService:
                 source=source,
                 reply_target=reply_target,
                 execution_id=canonical_execution_id,
-                assignment_id=binding.assignment_id,
-                execution_workspace_id=binding.workspace_id,
+                assignment_id=assignment_id,
+                execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
             )
@@ -547,10 +643,11 @@ class TurnExecutionService:
                 "project_id": project.id,
                 "source": source,
                 "execution_id": canonical_execution_id,
-                "assignment_id": binding.assignment_id,
-                "execution_workspace_id": binding.workspace_id,
+                "assignment_id": assignment_id,
+                "execution_workspace_id": workspace_id,
                 "worker_id": status.worker_id,
                 "fence": status.fence,
+                "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
             }
         )
         await self.publish_queue_status(thread_id)
@@ -881,17 +978,25 @@ def install_turn_execution_service(
     *,
     binding_service: TurnExecutionBindingService | None = None,
     session_manager: AssignmentBoundCodexSessionManager | None = None,
+    bootstrap_bindings: ThreadBootstrapBindingService | None = None,
+    control_actor: AuthenticationActor | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
         service = existing
         service.binding_service = binding_service or service.binding_service
         service.session_manager = session_manager or service.session_manager
+        service.bootstrap_bindings = (
+            bootstrap_bindings or service.bootstrap_bindings
+        )
+        service.control_actor = control_actor or service.control_actor
     else:
         service = TurnExecutionService(
             host,
             binding_service=binding_service,
             session_manager=session_manager,
+            bootstrap_bindings=bootstrap_bindings,
+            control_actor=control_actor,
         )
         app.state.turn_execution_service = service
 
