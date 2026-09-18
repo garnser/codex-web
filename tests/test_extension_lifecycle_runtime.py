@@ -9,7 +9,7 @@ from codex_web.extensions import (
     ExtensionPackageVerification,
     ExtensionSignatureStatus,
 )
-from codex_web.identity import AuthenticationActor, PrincipalKind, TenantScope
+from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
 from codex_web.services.extension_lifecycle_runtime import reconcile_extension_runtime
 
 
@@ -30,7 +30,9 @@ def actor() -> AuthenticationActor:
     return AuthenticationActor(
         identity_id="identity-admin",
         principal_kind=PrincipalKind.SERVICE,
-        tenant=TenantScope(organization_id="org-1", workspace_id="ws-1"),
+        organization_id="org-1",
+        workspace_id="ws-1",
+        assurance=AuthenticationAssurance.SERVICE_TOKEN,
         service_scopes=("extensions:admin",),
     )
 
