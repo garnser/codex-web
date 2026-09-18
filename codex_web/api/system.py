@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.action_providers import ACTION_PROVIDER_CONTRACT
+from codex_web.api.identity import request_actor
 from codex_web.compatibility import (
     API_CONTRACT,
     CANONICAL_EVENT_CONTRACT,
@@ -16,7 +17,9 @@ from codex_web.compatibility import (
     TASK_SOURCE_CONTRACT,
     ContractCompatibilityError,
 )
+from codex_web.identity import PrincipalKind
 from codex_web.models import BotRouteTest
+from codex_web.services.identity import AuthorizationError, IdentityService
 
 
 def _codex_verifier_credentials() -> tuple[str, str] | None:
@@ -45,6 +48,23 @@ def _basic_auth_credentials(header_value: str | None) -> tuple[str, str] | None:
 
 def build_system_router(host: Any) -> APIRouter:
     router = APIRouter(tags=["system"])
+
+    def require_runtime_reader(request: Request) -> None:
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if not any(
+                scope in actor.service_scopes
+                for scope in ("runtime:read", "runtime:admin")
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="runtime:read or runtime:admin service scope required",
+                )
+            return
+        try:
+            IdentityService.require_admin(actor)
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     @router.get("/api/livez")
     async def livez() -> dict[str, Any]:
@@ -102,11 +122,19 @@ def build_system_router(host: Any) -> APIRouter:
         }
 
     @router.get("/api/diagnostics")
-    async def diagnostics(project_id: str | None = None) -> dict[str, Any]:
+    async def diagnostics(
+        request: Request,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        require_runtime_reader(request)
         return host._diagnostic_snapshot(project_id)
 
     @router.post("/api/diagnostics/route-test")
-    async def diagnostics_route_test(payload: BotRouteTest) -> dict[str, Any]:
+    async def diagnostics_route_test(
+        payload: BotRouteTest,
+        request: Request,
+    ) -> dict[str, Any]:
+        require_runtime_reader(request)
         return host._preview_bot_route(payload)
 
     return router
