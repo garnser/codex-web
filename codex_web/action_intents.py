@@ -161,6 +161,8 @@ class ActionInboxMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(default_factory=lambda: f"action-inbox-{uuid.uuid4().hex}")
+    organization_id: str
+    workspace_id: str
     provider_type: str
     provider_instance: str
     delivery_id: str
