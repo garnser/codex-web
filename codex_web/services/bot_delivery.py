@@ -6,6 +6,7 @@ from typing import Any
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.models import BotBinding, BotConnection
+from codex_web.services.secrets import SecretBroker
 from codex_web.services.bot_targets import install_bot_target_service
 
 
@@ -18,10 +19,38 @@ class BotDeliveryService:
         *,
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
+        secret_broker: SecretBroker | None = None,
     ) -> None:
         self.host = host
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
+        self.secret_broker = secret_broker
+
+    @staticmethod
+    def _credential_identity(connection: BotConnection, field: str) -> str | None:
+        return getattr(connection, f"{field}_secret_id", None) or getattr(connection, field, None)
+
+    async def _with_credential(
+        self,
+        connection: BotConnection,
+        field: str,
+        operation: str,
+        consumer: Any,
+    ) -> Any:
+        secret_id = getattr(connection, f"{field}_secret_id", None)
+        if secret_id and self.secret_broker is not None:
+            actor = self.host._bot_runtime_actor(connection.project_id)
+            return await self.secret_broker.use_async(
+                secret_id,
+                actor=actor,
+                operation=operation,
+                consumer=consumer,
+                context={"connection_id": connection.id, "provider": connection.provider},
+            )
+        raw = getattr(connection, field, None)
+        if raw:
+            return await consumer(raw)
+        raise RuntimeError(f"Bot connection is missing {field}")
 
     async def send_outbound(
         self,
@@ -34,7 +63,7 @@ class BotDeliveryService:
     ) -> dict[str, Any]:
         h = self.host
         connection = h._bot_connection(binding.connection_id) if binding.connection_id else None
-        if not connection or not connection.bot_token:
+        if not connection or not self._credential_identity(connection, "bot_token"):
             return {"sent": False, "reason": "missing_bot_token"}
         try:
             if binding.provider == "slack":
@@ -44,19 +73,27 @@ class BotDeliveryService:
                     if (should_thread and target)
                     else None
                 )
-                return await self.slack.post_message(
-                    connection.bot_token,
-                    binding.external_conversation_id,
-                    text,
-                    username=username or h._slack_reply_username(binding),
-                    icon_emoji=icon_emoji or h._slack_reply_icon(binding),
-                    thread_ts=thread_ts,
+                async def send_slack(token: str):
+                    return await self.slack.post_message(
+                        token,
+                        binding.external_conversation_id,
+                        text,
+                        username=username or h._slack_reply_username(binding),
+                        icon_emoji=icon_emoji or h._slack_reply_icon(binding),
+                        thread_ts=thread_ts,
+                    )
+                return await self._with_credential(
+                    connection, "bot_token", "slack.post_message", send_slack
                 )
             if binding.provider == "telegram":
-                return await self.telegram.send_message(
-                    connection.bot_token,
-                    binding.external_conversation_id,
-                    text,
+                async def send_telegram(token: str):
+                    return await self.telegram.send_message(
+                        token,
+                        binding.external_conversation_id,
+                        text,
+                    )
+                return await self._with_credential(
+                    connection, "bot_token", "telegram.send_message", send_telegram
                 )
         except Exception as exc:
             return {"sent": False, "reason": str(exc)}
@@ -148,7 +185,7 @@ class BotDeliveryService:
             if binding.provider != "slack" or not binding.connection_id:
                 continue
             connection = h._bot_connection(binding.connection_id)
-            if not connection.bot_token:
+            if not self._credential_identity(connection, "bot_token"):
                 continue
             text = f"Approval requested for {h._binding_prefix(binding) or thread_id}"
             target = h._active_reply_target_for_binding(binding) or h._reply_target_for_binding(binding)
@@ -157,14 +194,18 @@ class BotDeliveryService:
                 if (h._should_reply_in_external_thread(binding) and target)
                 else None
             )
-            delivery = await self.slack.post_message(
-                connection.bot_token,
-                binding.external_conversation_id,
-                text,
-                username=h._slack_reply_username(binding),
-                icon_emoji=h._slack_reply_icon(binding),
-                thread_ts=thread_ts,
-                blocks=h._approval_blocks(request, binding),
+            async def send_approval(token: str):
+                return await self.slack.post_message(
+                    token,
+                    binding.external_conversation_id,
+                    text,
+                    username=h._slack_reply_username(binding),
+                    icon_emoji=h._slack_reply_icon(binding),
+                    thread_ts=thread_ts,
+                    blocks=h._approval_blocks(request, binding),
+                )
+            delivery = await self._with_credential(
+                connection, "bot_token", "slack.approval_request", send_approval
             )
             response = delivery.get("providerResponse") or {}
             if delivery.get("sent") and response.get("ts"):
@@ -201,14 +242,18 @@ class BotDeliveryService:
         for message in messages:
             with contextlib.suppress(Exception):
                 connection = h._bot_connection(message.connection_id)
-                if not connection.bot_token:
+                if not self._credential_identity(connection, "bot_token"):
                     continue
-                await self.slack.update_message(
-                    connection.bot_token,
-                    message.channel,
-                    message.message_ts,
-                    f"{actor} selected {decision} for approval request {request_id}.",
-                    blocks=h._approval_resolved_blocks(request, message.context, status),
+                async def update_message(token: str):
+                    return await self.slack.update_message(
+                        token,
+                        message.channel,
+                        message.message_ts,
+                        f"{actor} selected {decision} for approval request {request_id}.",
+                        blocks=h._approval_resolved_blocks(request, message.context, status),
+                    )
+                await self._with_credential(
+                    connection, "bot_token", "slack.approval_update", update_message
                 )
         h._forget_approval_messages(request_id)
 
@@ -272,13 +317,17 @@ class BotDeliveryService:
             )
             context = h._slack_interaction_context(payload, str(request_id))
             if not request or not decision:
-                if channel and message_ts and connection.bot_token:
-                    await self.slack.update_message(
-                        connection.bot_token,
-                        channel,
-                        message_ts,
-                        "That approval request is no longer pending.",
-                        blocks=h._approval_resolved_blocks(None, context, "Already resolved."),
+                if channel and message_ts and self._credential_identity(connection, "bot_token"):
+                    async def update_expired(token: str):
+                        return await self.slack.update_message(
+                            token,
+                            channel,
+                            message_ts,
+                            "That approval request is no longer pending.",
+                            blocks=h._approval_resolved_blocks(None, context, "Already resolved."),
+                        )
+                    await self._with_credential(
+                        connection, "bot_token", "slack.approval_expired", update_expired
                     )
                 return
             await self.resolve_approval_request(request_id, decision, actor=user)
@@ -314,6 +363,7 @@ def install_bot_delivery_service(
             host,
             slack_client=slack_client,
             telegram_client=telegram_client,
+            secret_broker=getattr(app.state, "secret_broker", None),
         )
         app.state.bot_delivery_service = service
 
