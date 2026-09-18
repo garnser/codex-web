@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.action_providers import ActionDefinition, ActionRequest, ActionResult, ActionVerification
 from codex_web.artifact_evidence import EvidenceRequirement
+from codex_web.security import ExecutionSecurityPolicy, SecurityTrustDecision
 
 
 class ActionIntentStatus(StrEnum):
@@ -95,6 +96,8 @@ class ActionIntent(BaseModel):
     request: ActionRequest
     authority_decision: ActionDecisionSnapshot
     policy_decision: ActionDecisionSnapshot
+    security_policy: ExecutionSecurityPolicy
+    security_decision: SecurityTrustDecision
     credential_ref: str | None = None
     resource_ids: tuple[str, ...] = ()
     idempotency_key: str
