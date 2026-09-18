@@ -318,6 +318,12 @@ class ExtensionInstallRequest(BaseModel):
     deployment_mode: ExtensionDeploymentMode = ExtensionDeploymentMode.SELF_HOSTED
 
 
+class ExtensionPackageInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deployment_mode: ExtensionDeploymentMode = ExtensionDeploymentMode.SELF_HOSTED
+
+
 class ExtensionConfigureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
