@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codex_web.api.execution_workers import _operator_assignment
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
@@ -323,6 +324,20 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             if item.id == assignment.id
         )
         self.assertEqual(current.status, AssignmentStatus.PENDING)
+
+    def test_operator_assignment_view_redacts_lease_bearer_token(self) -> None:
+        assignment = self._assignment()
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(),
+            actor=self.worker_actor,
+        )
+        view = _operator_assignment(claimed)
+        self.assertEqual(view["lease"]["lease_token"], "[redacted]")
+        self.assertNotEqual(
+            view["lease"]["lease_token"],
+            claimed.lease.lease_token,
+        )
 
     def test_wrong_service_identity_cannot_act_as_worker(self) -> None:
         assignment = self._assignment()
