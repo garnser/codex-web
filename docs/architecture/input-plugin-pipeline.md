@@ -99,10 +99,26 @@ The asynchronous model invocation path composes input before deterministic routi
 
 Provider credentials remain SecretBroker references until the provider boundary. The pipeline never receives provider secret material.
 
-## Definition Registry and transports
+## Definition Registry configuration
 
-This core slice intentionally keeps the **engine and security invariants in code**. Registration/order/conditions/settings belong in versioned Definition Registry data in the next slice.
+Plugin registration is versioned Definition Registry data under:
 
-Future adapters may include built-in, SKILL.md, command, HTTP, and MCP transports. External transports must project only the minimum required input and retain the same timeout/output-size/protected-field constraints. They must not receive secret values or gain authority through transport choice.
+- definition ID: `input-pipeline.default`
+- kind: `input_pipeline`
+- schema: `1.0`
+
+The global bootstrap definition is deliberately empty, preserving existing model behavior until an operator publishes plugin registrations. Organization/workspace-scoped published revisions override the global definition through normal Definition Registry precedence.
+
+Each registration contains an exact plugin ID/version, phase, deterministic order, enabled state, failure policy, patch/context-growth bounds, purpose/model-class conditions, and non-secret scalar settings. The runtime resolves the definition for every model invocation and pins the exact `DefinitionReference` into plugin provenance.
+
+Plugin implementations remain code-owned and must exist in the exact-version catalog. An enabled definition that references an unavailable implementation fails closed rather than silently falling back to another version.
+
+Definition settings are not a secret store. Secret/credential-like setting keys are rejected. Future transport authentication must remain behind canonical secret references/brokers and must not be copied into plugin-visible settings.
+
+The engine, field classification, gated-field validation, schema enforcement, security invariants, and plugin implementation catalog remain code.
+
+## Transports
+
+Current built-in catalog support establishes the registry/runtime contract. Future adapters may include SKILL.md, command, HTTP, and MCP transports. External transports must project only the minimum required input and retain the same timeout/output-size/protected-field constraints. They must not receive secret values or gain authority through transport choice.
 
 Prompt Master is a reference integration target, not a required dependency and not part of the execution kernel.
