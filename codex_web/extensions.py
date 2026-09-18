@@ -376,6 +376,12 @@ class ExtensionUpgradeRequest(BaseModel):
     migration_evidence_id: str | None = None
 
 
+class ExtensionPackageUpgradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    migration_evidence_id: str | None = None
+
+
 class ExtensionRemoveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 

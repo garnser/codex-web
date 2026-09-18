@@ -8,7 +8,7 @@ from codex_web.action_providers import (
     ActionVerification,
 )
 from codex_web.extensions import ExtensionLifecycleState, ExtensionType
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import WorkItemState
 from codex_web.services.action_provider_conformance import (
     ActionProviderConformanceSuite,
@@ -210,6 +210,15 @@ class ExtensionRuntimeRegistry:
             tuple[str, str, str, str],
             str,
         ] = {}
+        self.extensions.add_lifecycle_listener(self._on_extension_lifecycle)
+
+    def _on_extension_lifecycle(
+        self,
+        installation,
+        event_type: str,
+    ) -> None:
+        if installation.lifecycle != ExtensionLifecycleState.ENABLED:
+            self.unregister_installation(installation.id)
 
     def _assert_registration_ready(
         self,
@@ -352,30 +361,28 @@ class ExtensionRuntimeRegistry:
     def unregister_installation(
         self,
         installation_id: str,
-        *,
-        actor: AuthenticationActor,
     ) -> None:
         for key, owner in list(self._task_source_registrations.items()):
-            if (
-                owner == installation_id
-                and key[0] == actor.organization_id
-                and key[1] == actor.workspace_id
-            ):
+            if owner == installation_id:
+                scope = TenantScope(
+                    organization_id=key[0],
+                    workspace_id=key[1],
+                )
                 self.task_sources.unregister_tenant(
-                    actor.tenant,
+                    scope,
                     key[2],
                 )
                 self._task_source_registrations.pop(key, None)
 
         for key, owner in list(self._action_provider_registrations.items()):
-            if (
-                owner == installation_id
-                and key[0] == actor.organization_id
-                and key[1] == actor.workspace_id
-            ):
+            if owner == installation_id:
+                scope = TenantScope(
+                    organization_id=key[0],
+                    workspace_id=key[1],
+                )
                 self.action_providers.unregister_tenant(
                     key[2],
                     key[3],
-                    tenant_scope=actor.tenant,
+                    tenant_scope=scope,
                 )
                 self._action_provider_registrations.pop(key, None)

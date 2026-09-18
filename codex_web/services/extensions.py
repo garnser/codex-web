@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 from codex_web.artifact_evidence import (
     EvidenceLifecycle,
@@ -200,6 +200,31 @@ class ExtensionService:
         self.resources = resources
         self.artifact_evidence = artifact_evidence
         self.unhealthy_quarantine_threshold = max(1, unhealthy_quarantine_threshold)
+        self._lifecycle_listeners: list[
+            Callable[[ExtensionInstallation, str], None]
+        ] = []
+        self.lifecycle_listener_errors: list[str] = []
+
+    def add_lifecycle_listener(
+        self,
+        listener: Callable[[ExtensionInstallation, str], None],
+    ) -> None:
+        if listener not in self._lifecycle_listeners:
+            self._lifecycle_listeners.append(listener)
+
+    def _notify_lifecycle(
+        self,
+        installation: ExtensionInstallation,
+        event_type: str,
+    ) -> None:
+        for listener in tuple(self._lifecycle_listeners):
+            try:
+                listener(installation, event_type)
+            except Exception as exc:
+                self.lifecycle_listener_errors.append(
+                    f"{event_type}:{installation.id}:{type(exc).__name__}"
+                )
+                self.lifecycle_listener_errors = self.lifecycle_listener_errors[-100:]
 
     @staticmethod
     def _same_scope(item, actor: AuthenticationActor) -> bool:
@@ -490,6 +515,7 @@ class ExtensionService:
         def apply(state):
             item = self._installation(state, installation_id, actor)
             if item.lifecycle in {
+                ExtensionLifecycleState.ENABLED,
                 ExtensionLifecycleState.REMOVED,
                 ExtensionLifecycleState.INCOMPATIBLE,
                 ExtensionLifecycleState.UPGRADING,
@@ -637,6 +663,7 @@ class ExtensionService:
     ) -> ExtensionCapabilityGrant:
         self._require_admin(actor)
         updated: list[ExtensionCapabilityGrant] = []
+        quarantined_installations: list[ExtensionInstallation] = []
 
         def apply(state):
             item = self._installation(state, installation_id, actor)
@@ -697,10 +724,13 @@ class ExtensionService:
                     "extension_quarantined",
                     reason=quarantined.quarantine_reason,
                 )
+                quarantined_installations.append(quarantined)
             updated.append(replacement)
             return state
 
         self.store.update(apply)
+        for installation in quarantined_installations:
+            self._notify_lifecycle(installation, "quarantined")
         return updated[0]
 
     def grants(
@@ -804,6 +834,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "enabled")
         return updated[0]
 
     def disable(
@@ -844,6 +875,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "disabled")
         return updated[0]
 
     def quarantine(
@@ -879,6 +911,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "quarantined")
         return updated[0]
 
     def clear_quarantine(
@@ -916,6 +949,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "disabled")
         return updated[0]
 
     def report_health(
@@ -927,6 +961,7 @@ class ExtensionService:
     ) -> ExtensionInstallation:
         self._require_health_reporter(actor)
         updated: list[ExtensionInstallation] = []
+        newly_quarantined: list[ExtensionInstallation] = []
 
         def apply(state):
             item = self._installation(state, installation_id, actor)
@@ -980,17 +1015,23 @@ class ExtensionService:
                     "extension_quarantined",
                     reason=quarantine_reason,
                 )
+                newly_quarantined.append(replacement)
             updated.append(replacement)
             return state
 
         self.store.update(apply)
+        for installation in newly_quarantined:
+            self._notify_lifecycle(installation, "quarantined")
         return updated[0]
 
-    def upgrade(
+    def _upgrade_with_verification(
         self,
         installation_id: str,
-        payload: ExtensionUpgradeRequest,
         *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        package_ref: str | None,
+        migration_evidence_id: str | None,
         actor: AuthenticationActor,
     ) -> ExtensionInstallation:
         self._require_admin(actor)
@@ -999,19 +1040,19 @@ class ExtensionService:
             raise ExtensionConflictError("disable extension before upgrade")
         if current.lifecycle == ExtensionLifecycleState.REMOVED:
             raise ExtensionConflictError("removed extension cannot be upgraded")
-        if payload.manifest.id != current.manifest.id:
+        if manifest.id != current.manifest.id:
             raise ExtensionConflictError("upgrade manifest extension id changed")
-        if payload.manifest.version == current.manifest.version:
+        if manifest.version == current.manifest.version:
             raise ExtensionConflictError("upgrade version must change")
-        verification = self._verify_package(
-            payload.manifest,
-            payload.observed_digest,
+        verification = self._validate_package_verification(
+            manifest,
+            verification,
             current.deployment_mode,
         )
-        incompatible_reason = self._compatibility_reason(payload.manifest)
-        migration_evidence_id = None
-        if payload.manifest.migrations.entrypoint:
-            if payload.migration_evidence_id is None:
+        incompatible_reason = self._compatibility_reason(manifest)
+        verified_migration_evidence_id = None
+        if manifest.migrations.entrypoint:
+            if migration_evidence_id is None:
                 raise ExtensionConflictError(
                     "extension declares a migration entrypoint; canonical migration evidence is required"
                 )
@@ -1026,7 +1067,7 @@ class ExtensionService:
                         actor,
                         include_inactive=False,
                     )
-                    if item.id == payload.migration_evidence_id
+                    if item.id == migration_evidence_id
                 ),
                 None,
             )
@@ -1043,12 +1084,17 @@ class ExtensionService:
                     EvidenceType.CI_CHECK,
                 }
                 or evidence.metadata.get("extension_id") != current.manifest.id
-                or evidence.metadata.get("to_version") != payload.manifest.version
+                or evidence.metadata.get("to_version") != manifest.version
             ):
                 raise ExtensionConflictError(
                     "extension migration evidence does not verify this target version"
                 )
-            migration_evidence_id = evidence.id
+            verified_migration_evidence_id = evidence.id
+        elif migration_evidence_id is not None:
+            raise ExtensionConflictError(
+                "migration evidence supplied but target manifest declares no migration"
+            )
+
         updated: list[ExtensionInstallation] = []
 
         def apply(state):
@@ -1057,7 +1103,7 @@ class ExtensionService:
                 raise ExtensionConflictError(
                     "extension changed while upgrade was being prepared"
                 )
-            requested = set(payload.manifest.capabilities.requested)
+            requested = set(manifest.capabilities.requested)
             now = time.time()
             state.grants = [
                 grant.model_copy(
@@ -1075,12 +1121,13 @@ class ExtensionService:
                 else grant
                 for grant in state.grants
             ]
-            allowed_slots = set(payload.manifest.configuration.secret_refs)
+            allowed_slots = set(manifest.configuration.secret_refs)
             replacement = item.model_copy(
                 update={
                     "manifest_history": (*item.manifest_history, item.manifest),
-                    "manifest": payload.manifest,
+                    "manifest": manifest,
                     "package_verification": verification,
+                    "package_ref": package_ref,
                     "lifecycle": (
                         ExtensionLifecycleState.INCOMPATIBLE
                         if incompatible_reason
@@ -1105,15 +1152,61 @@ class ExtensionService:
                 actor,
                 "extension_upgraded",
                 from_version=item.manifest.version,
-                to_version=payload.manifest.version,
+                to_version=manifest.version,
                 lifecycle=replacement.lifecycle.value,
-                migration_evidence_id=migration_evidence_id,
+                migration_evidence_id=verified_migration_evidence_id,
+                package_ref=package_ref,
+                verifier=verification.verifier,
             )
             updated.append(replacement)
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "upgraded")
         return updated[0]
+
+    def upgrade(
+        self,
+        installation_id: str,
+        payload: ExtensionUpgradeRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExtensionInstallation:
+        self._require_admin(actor)
+        current = self.get(installation_id, actor)
+        verification = self._verify_package(
+            payload.manifest,
+            payload.observed_digest,
+            current.deployment_mode,
+        )
+        return self._upgrade_with_verification(
+            installation_id,
+            manifest=payload.manifest,
+            verification=verification,
+            package_ref=None,
+            migration_evidence_id=payload.migration_evidence_id,
+            actor=actor,
+        )
+
+    def upgrade_verified_package(
+        self,
+        installation_id: str,
+        *,
+        manifest: ExtensionManifest,
+        verification: ExtensionPackageVerification,
+        package_ref: str,
+        migration_evidence_id: str | None,
+        actor: AuthenticationActor,
+    ) -> ExtensionInstallation:
+        """Upgrade from server-observed package metadata and digest."""
+        return self._upgrade_with_verification(
+            installation_id,
+            manifest=manifest,
+            verification=verification,
+            package_ref=package_ref,
+            migration_evidence_id=migration_evidence_id,
+            actor=actor,
+        )
 
     def remove(
         self,
@@ -1169,6 +1262,7 @@ class ExtensionService:
             return state
 
         self.store.update(apply)
+        self._notify_lifecycle(updated[0], "removed")
         return updated[0]
 
     def require_runtime_capability(

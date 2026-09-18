@@ -81,8 +81,11 @@ Discovery is deliberately metadata-only:
 
 Package installation by package_ref re-runs discovery/hash verification before
 persisting the installation, so a stale client-provided digest is never trusted
-on that path. The canonical installation retains package_ref, manifest digest
-and verifier result as provenance.
+on that path. Package-based upgrades do the same and feed the freshly observed
+manifest, digest result and package_ref into the same atomic upgrade lifecycle
+used by the compatibility/manual path. The canonical installation retains the
+package_ref for its current version, exact manifest history, manifest digest and
+verifier result as provenance.
 
 The older explicit manifest/observed-digest install API remains a self-hosted
 administrative compatibility path; it does not satisfy hosted signature policy
@@ -207,6 +210,18 @@ capability resolution.
 
 Clearing quarantine is a separate administrator operation and leaves the
 extension disabled; it must pass normal enablement gates again.
+
+Reconfiguration also requires disable-first. Configuration changes cannot
+silently move a live extension out of enabled state while its process-local
+runtime registration remains attached.
+
+ExtensionService emits post-commit lifecycle notifications. ExtensionRuntimeRegistry
+subscribes to those notifications and removes TaskSource/ActionProvider runtime
+registrations whenever an installation leaves enabled state through disable,
+quarantine, upgrade or removal. Dispatch wrappers still re-check canonical
+lifecycle/grants themselves, so listener cleanup is defense-in-depth rather than
+the authorization source. Listener failures cannot roll back committed lifecycle
+state and are retained as bounded in-memory diagnostics.
 
 Revoking a mandatory capability grant from an enabled extension immediately
 quarantines it, preventing code from continuing with authority that no longer

@@ -20,7 +20,6 @@ from codex_web.services.action_providers import (
     ActionExecutionService,
     ActionProviderNotFoundError,
     ActionProviderRegistry,
-    ActionResolutionError,
 )
 from codex_web.services.extension_conformance import ExtensionRuntimeDescriptor
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
@@ -340,7 +339,7 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
             reason="runtime authority revoked",
         )
-        with self.assertRaises(ActionResolutionError):
+        with self.assertRaises(ActionProviderNotFoundError):
             await self.action_execution.prepare(
                 binding.id,
                 request,
@@ -373,6 +372,63 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 actor=foreign_actor,
             )
 
+    async def test_disable_automatically_unregisters_task_source_runtime(self) -> None:
+        installation, _, descriptor = self._install_enabled(
+            ExtensionType.TASK_SOURCE,
+            extension_id="com.example.disable-task-source",
+        )
+        source = ReferenceTaskSource("disable-instance")
+        self.runtime.register_task_source(
+            installation.id,
+            source_type="reference",
+            factory=lambda state: source,
+            descriptor=descriptor,
+            actor=self.actor,
+        )
+        state = WorkItemState(
+            ref="disable-task",
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            source_identity=TaskSourceIdentity(
+                source_type="reference",
+                source_instance="disable-instance",
+                external_id="T",
+            ),
+            last_meaningful_update_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+        self.assertIs(
+            self.task_sources.resolve(state, required=True),
+            source,
+        )
+
+        self.extensions.disable(
+            installation.id,
+            actor=self.actor,
+            reason="maintenance",
+        )
+        with self.assertRaises(TaskSourceResolutionError):
+            self.task_sources.resolve(state, required=True)
+
+        reenabled = self.extensions.enable(
+            installation.id,
+            actor=self.actor,
+        )
+        self.assertEqual(reenabled.lifecycle.value, "enabled")
+        replacement = ReferenceTaskSource("disable-instance")
+        self.runtime.register_task_source(
+            installation.id,
+            source_type="reference",
+            factory=lambda item: replacement,
+            descriptor=descriptor,
+            actor=self.actor,
+        )
+        self.assertIs(
+            self.task_sources.resolve(state, required=True),
+            replacement,
+        )
+
     async def test_unregister_removes_process_local_runtime_registration(self) -> None:
         task_installation, _, task_descriptor = self._install_enabled(
             ExtensionType.TASK_SOURCE,
@@ -401,10 +457,7 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(self.task_sources.resolve(state, required=True))
 
-        self.runtime.unregister_installation(
-            task_installation.id,
-            actor=self.actor,
-        )
+        self.runtime.unregister_installation(task_installation.id)
         with self.assertRaises(TaskSourceResolutionError):
             self.task_sources.resolve(state, required=True)
 
