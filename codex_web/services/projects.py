@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from codex_web.identity import TenantScope
 from codex_web.models import Project, ProjectCreate, TaskSourceConfiguration
 from codex_web.storage.projects import ProjectRepository
 from codex_web.workspaces import WorkspacePathError
@@ -23,11 +24,19 @@ class ProjectService:
     def __init__(self, repository: ProjectRepository) -> None:
         self.repository = repository
 
-    def list(self) -> list[Project]:
-        return self.repository.load()
-
-    def get(self, project_id: str | None) -> Project:
+    def list(self, scope: TenantScope | None = None) -> list[Project]:
         projects = self.repository.load()
+        if scope is None:
+            return projects
+        return [
+            project
+            for project in projects
+            if project.organization_id == scope.organization_id
+            and project.workspace_id == scope.workspace_id
+        ]
+
+    def get(self, project_id: str | None, scope: TenantScope | None = None) -> Project:
+        projects = self.list(scope)
         if project_id is None:
             if not projects:
                 raise ProjectNotFoundError("Project not found")
@@ -37,7 +46,7 @@ class ProjectService:
                 return project
         raise ProjectNotFoundError("Project not found")
 
-    def create(self, payload: ProjectCreate) -> Project:
+    def create(self, payload: ProjectCreate, scope: TenantScope | None = None) -> Project:
         try:
             path = self.repository.resolve_path(payload.path)
         except WorkspacePathError as exc:
@@ -45,8 +54,11 @@ class ProjectService:
         if not path.exists() or not path.is_dir():
             raise InvalidProjectPathError("Project path must be an existing directory")
         projects = self.repository.load()
+        scope = scope or TenantScope()
         project = Project(
             id=uuid.uuid4().hex[:12],
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
             name=payload.name,
             path=str(path),
             model=payload.model,
@@ -62,6 +74,7 @@ class ProjectService:
         self,
         project_id: str,
         source: TaskSourceConfiguration | None,
+        scope: TenantScope | None = None,
     ) -> Project:
         """Set or clear the one authoritative external task source for a project.
 
@@ -74,17 +87,37 @@ class ProjectService:
         for index, project in enumerate(projects):
             if project.id != project_id:
                 continue
+            if scope is not None and (
+                project.organization_id != scope.organization_id
+                or project.workspace_id != scope.workspace_id
+            ):
+                raise ProjectNotFoundError("Project not found")
             updated = project.model_copy(update={"authoritative_task_source": source})
             projects[index] = updated
             self.repository.save(projects)
             return updated
         raise ProjectNotFoundError("Project not found")
 
-    def delete(self, project_id: str) -> None:
+    def delete(self, project_id: str, scope: TenantScope | None = None) -> None:
         projects = self.repository.load()
-        kept = [project for project in projects if project.id != project_id]
-        if len(kept) == len(projects):
+        target = next((project for project in projects if project.id == project_id), None)
+        if target is None:
             raise ProjectNotFoundError("Project not found")
-        if not kept:
-            raise LastProjectDeletionError("At least one project is required")
+        if scope is not None and (
+            target.organization_id != scope.organization_id
+            or target.workspace_id != scope.workspace_id
+        ):
+            raise ProjectNotFoundError("Project not found")
+        kept = [project for project in projects if project.id != project_id]
+        scoped_kept = [
+            project
+            for project in kept
+            if scope is None
+            or (
+                project.organization_id == scope.organization_id
+                and project.workspace_id == scope.workspace_id
+            )
+        ]
+        if not scoped_kept:
+            raise LastProjectDeletionError("At least one project is required in the workspace")
         self.repository.save(kept)
