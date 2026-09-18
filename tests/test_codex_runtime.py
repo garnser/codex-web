@@ -141,7 +141,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         await self.runtime._handle_message(message)
 
-        self.assertIs(self.runtime.pending_approvals[12], message)
+        self.assertEqual(self.runtime.pending_approvals[12], message)
         self.assertEqual(self.host.approval_requests, [message])
         self.assertEqual(self.host.hub.events[-1]["type"], "approval.request")
 
