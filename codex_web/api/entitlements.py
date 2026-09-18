@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.entitlements import (
     CapabilityEntitlementUpdate,
     QuotaPolicyUpdate,
@@ -19,7 +20,7 @@ from codex_web.services.entitlements import (
     QuotaExceededError,
     UsageIdempotencyConflictError,
 )
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError, IdentityService, TenantIsolationError
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -40,6 +41,13 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_entitlements_router(service: EntitlementService) -> APIRouter:
     router = APIRouter(prefix="/api/entitlements", tags=["entitlements"])
+
+    def mutation_actor(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
 
     @router.get("/status")
     async def status(
@@ -66,7 +74,7 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.set_mode(payload.mode, actor=request_actor(request))
+            item = service.set_mode(payload.mode, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
@@ -92,7 +100,7 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
             item = service.set_capability(
                 capability,
                 payload,
-                actor=request_actor(request),
+                actor=mutation_actor(request),
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
@@ -116,7 +124,7 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.set_quota(metric, payload, actor=request_actor(request))
+            item = service.set_quota(metric, payload, actor=mutation_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
@@ -143,7 +151,7 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            result = service.record_usage(payload, actor=request_actor(request))
+            result = service.record_usage(payload, actor=mutation_actor(request))
             return result.model_dump(mode="json")
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
@@ -158,7 +166,7 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         try:
             return service.reconcile_usage(
                 payload,
-                actor=request_actor(request),
+                actor=mutation_actor(request),
             ).model_dump(mode="json")
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
