@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.api.definitions import build_definitions_router
@@ -19,6 +19,12 @@ from codex_web.execution_contract_seed import execution_role_catalog_seed_payloa
 from codex_web.execution_contracts import (
     execution_role,
     route_execution_role,
+)
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
 )
 from codex_web.models import WorkItemState
 from codex_web.services.work_item_contracts import WorkItemContractService
@@ -37,6 +43,7 @@ from codex_web.services.definitions import (
     DefinitionRegistryService,
 )
 from codex_web.services.execution_role_definitions import ExecutionRoleDefinitionService
+from codex_web.services.projects import ProjectNotFoundError
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -345,23 +352,74 @@ class ExecutionRoleDefinitionTests(unittest.TestCase):
         self.assertEqual(execution_role("james", catalog=catalog).lane, "implementation")
 
 
+class _DefinitionProjectScope:
+    _scopes = {
+        "project-a": ("org-a", "ws-a"),
+        "project-b": ("org-b", "ws-b"),
+    }
+
+    def get(self, project_id, scope):
+        expected = self._scopes.get(project_id)
+        if expected != (scope.organization_id, scope.workspace_id):
+            raise ProjectNotFoundError("Project not found")
+        return object()
+
+
 class DefinitionRegistryApiTests(unittest.TestCase):
+    def _service(self, root: Path) -> DefinitionRegistryService:
+        service = DefinitionRegistryService(
+            DefinitionRegistryStore(SQLiteStateStore(root / "state.db"))
+        )
+        service.register_schema(
+            DefinitionKindSchema(
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                validate=validate_execution_role_catalog,
+            )
+        )
+        return service
+
+    @staticmethod
+    def _human(
+        *,
+        identity_id: str = "admin",
+        organization_id: str = "org-a",
+        workspace_id: str = "ws-a",
+        assurance: AuthenticationAssurance = AuthenticationAssurance.MFA,
+    ) -> AuthenticationActor:
+        return AuthenticationActor(
+            identity_id=identity_id,
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            roles=(MembershipRole.ADMIN,),
+            assurance=assurance,
+        )
+
+    def _client(self, service, actor_box, *, projects=None) -> TestClient:
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            actor = actor_box["actor"]
+            request.state.identity_actor = actor
+            request.state.tenant_scope = actor.tenant
+            return await call_next(request)
+
+        app.include_router(build_definitions_router(service, projects))
+        return TestClient(app)
+
     def test_api_and_runtime_resolve_the_same_published_record(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
-            state = SQLiteStateStore(Path(tempdir) / "state.db")
-            service = DefinitionRegistryService(DefinitionRegistryStore(state))
-            service.register_schema(
-                DefinitionKindSchema(
-                    kind=EXECUTION_ROLE_CATALOG_KIND,
-                    schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
-                    validate=validate_execution_role_catalog,
+            service = self._service(Path(tempdir))
+            actor_box = {
+                "actor": self._human(
+                    assurance=AuthenticationAssurance.LOCAL_TRUSTED,
                 )
-            )
-            app = FastAPI()
-            app.include_router(build_definitions_router(service))
+            }
             payload = execution_role_catalog_seed_payload()
 
-            with TestClient(app) as client:
+            with self._client(service, actor_box) as client:
                 draft = client.post(
                     "/api/definitions/drafts",
                     json={
@@ -369,23 +427,38 @@ class DefinitionRegistryApiTests(unittest.TestCase):
                         "kind": EXECUTION_ROLE_CATALOG_KIND,
                         "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
                         "payload": payload,
-                        "actor": "admin",
+                        "actor": "forged-admin",
                     },
                 )
                 self.assertEqual(draft.status_code, 200)
+                self.assertEqual(
+                    draft.json()["record"]["created_by"],
+                    actor_box["actor"].identity_id,
+                )
                 record_id = draft.json()["record"]["record_id"]
 
                 validated = client.post(
                     f"/api/definitions/{record_id}/validate",
-                    json={"actor": "reviewer"},
+                    json={"actor": "forged-reviewer"},
                 )
                 self.assertEqual(validated.status_code, 200)
+                self.assertEqual(
+                    validated.json()["record"]["validated_by"],
+                    actor_box["actor"].identity_id,
+                )
 
                 published = client.post(
                     f"/api/definitions/{record_id}/publish",
-                    json={"actor": "publisher", "approval_metadata": {"ticket": "A-1"}},
+                    json={
+                        "actor": "forged-publisher",
+                        "approval_metadata": {"ticket": "A-1"},
+                    },
                 )
                 self.assertEqual(published.status_code, 200)
+                self.assertEqual(
+                    published.json()["record"]["published_by"],
+                    actor_box["actor"].identity_id,
+                )
 
                 resolved_api = client.post(
                     "/api/definitions/resolve",
@@ -405,6 +478,163 @@ class DefinitionRegistryApiTests(unittest.TestCase):
                 resolved_runtime.record_id,
             )
             self.assertEqual(resolved_runtime.approval_metadata["ticket"], "A-1")
+
+    def test_low_assurance_and_cross_tenant_definition_mutations_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            service = self._service(Path(tempdir))
+            actor_box = {
+                "actor": self._human(
+                    assurance=AuthenticationAssurance.PRIMARY,
+                )
+            }
+            payload = execution_role_catalog_seed_payload()
+
+            with self._client(
+                service,
+                actor_box,
+                projects=_DefinitionProjectScope(),
+            ) as client:
+                low_assurance = client.post(
+                    "/api/definitions/drafts",
+                    json={
+                        "definition_id": "roles.org-a",
+                        "kind": EXECUTION_ROLE_CATALOG_KIND,
+                        "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                        "scope_type": "organization",
+                        "scope_id": "org-a",
+                        "payload": payload,
+                    },
+                )
+                self.assertEqual(low_assurance.status_code, 403)
+                self.assertIn("mfa", low_assurance.json()["detail"].lower())
+
+                actor_box["actor"] = self._human()
+                for scope_type, scope_id in (
+                    ("organization", "org-b"),
+                    ("workspace", "ws-b"),
+                    ("project", "project-b"),
+                ):
+                    denied = client.post(
+                        "/api/definitions/drafts",
+                        json={
+                            "definition_id": f"roles.{scope_id}",
+                            "kind": EXECUTION_ROLE_CATALOG_KIND,
+                            "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                            "scope_type": scope_type,
+                            "scope_id": scope_id,
+                            "payload": payload,
+                        },
+                    )
+                    self.assertEqual(denied.status_code, 403)
+
+                global_denied = client.post(
+                    "/api/definitions/drafts",
+                    json={
+                        "definition_id": "roles.global",
+                        "kind": EXECUTION_ROLE_CATALOG_KIND,
+                        "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                        "payload": payload,
+                    },
+                )
+                self.assertEqual(global_denied.status_code, 403)
+                self.assertIn("platform-global", global_denied.json()["detail"])
+
+    def test_visible_history_and_resolve_context_are_tenant_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            service = self._service(Path(tempdir))
+            payload = execution_role_catalog_seed_payload()
+            service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="roles.global",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    payload=payload,
+                    actor="bootstrap",
+                )
+            )
+            service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="roles.org-b",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    scope_type="organization",
+                    scope_id="org-b",
+                    payload=payload,
+                    actor="other",
+                )
+            )
+            service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id="roles.project-a",
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    scope_type="project",
+                    scope_id="project-a",
+                    payload=payload,
+                    actor="admin",
+                )
+            )
+            actor_box = {"actor": self._human()}
+
+            with self._client(
+                service,
+                actor_box,
+                projects=_DefinitionProjectScope(),
+            ) as client:
+                listed = client.get("/api/definitions/records")
+                self.assertEqual(listed.status_code, 200)
+                ids = {item["definition_id"] for item in listed.json()["items"]}
+                self.assertIn("roles.global", ids)
+                self.assertIn("roles.project-a", ids)
+                self.assertNotIn("roles.org-b", ids)
+
+                denied_filter = client.get(
+                    "/api/definitions/records",
+                    params={"scope_type": "organization", "scope_id": "org-b"},
+                )
+                self.assertEqual(denied_filter.status_code, 403)
+
+                denied_context = client.post(
+                    "/api/definitions/resolve",
+                    json={
+                        "definition_id": "roles.global",
+                        "kind": EXECUTION_ROLE_CATALOG_KIND,
+                        "context": {"organization_id": "org-b"},
+                    },
+                )
+                self.assertEqual(denied_context.status_code, 403)
+
+    def test_definitions_admin_service_scope_can_manage_global_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            service = self._service(Path(tempdir))
+            actor_box = {
+                "actor": AuthenticationActor(
+                    identity_id="definition-admin-service",
+                    principal_kind=PrincipalKind.SERVICE,
+                    organization_id="org-a",
+                    workspace_id="ws-a",
+                    assurance=AuthenticationAssurance.SERVICE_TOKEN,
+                    service_scopes=("definitions:admin",),
+                )
+            }
+
+            with self._client(service, actor_box) as client:
+                response = client.post(
+                    "/api/definitions/drafts",
+                    json={
+                        "definition_id": "roles.global",
+                        "kind": EXECUTION_ROLE_CATALOG_KIND,
+                        "definition_schema_version": EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                        "payload": execution_role_catalog_seed_payload(),
+                        "actor": "forged-human",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    response.json()["record"]["created_by"],
+                    "definition-admin-service",
+                )
 
 
 if __name__ == "__main__":
