@@ -30,6 +30,8 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.identity import IdentityService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.turn_execution_binding import (
+    THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+    THREAD_BOOTSTRAP_SESSION_SECONDS,
     THREAD_TURN_EXECUTION_CONTRACT_VERSION,
     TurnExecutionBindingError,
     TurnExecutionBindingService,
@@ -212,6 +214,68 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertFalse(assignment.network.enabled)
         self.assertEqual(binding.deadline_at, self.clock + 900)
         self.assertEqual(len(self.backend.provisioned), 1)
+
+    def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:
+        self._publish_secret()
+
+        binding = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-123",
+            execution_id="bootstrap-exec-1",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        workspace = self.workspaces.get(binding.workspace_id, self.actor)
+        assignment = self.workers.list_assignments(self.actor)[0]
+
+        self.assertIsNone(binding.thread_id)
+        self.assertEqual(
+            binding.subject.kind,
+            ExecutionSubjectKind.THREAD_BOOTSTRAP,
+        )
+        self.assertEqual(binding.subject.ref, "bootstrap-123")
+        self.assertIsNone(assignment.work_item_ref)
+        self.assertIsNone(workspace.work_item_ref)
+        self.assertEqual(
+            assignment.execution_contract_version,
+            THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+        )
+        self.assertEqual(
+            assignment.limits.wall_seconds,
+            THREAD_BOOTSTRAP_SESSION_SECONDS,
+        )
+        self.assertEqual(
+            binding.deadline_at,
+            self.clock + THREAD_BOOTSTRAP_SESSION_SECONDS,
+        )
+        lease = next(
+            item
+            for item in self.workspaces.store.load().leases
+            if item.execution_workspace_id == workspace.id
+        )
+        self.assertEqual(
+            lease.expires_at,
+            self.clock + THREAD_BOOTSTRAP_SESSION_SECONDS,
+        )
+
+    def test_bootstrap_lifetime_cannot_exceed_bounded_worker_workspace_contract(self) -> None:
+        self._publish_secret()
+
+        with self.assertRaisesRegex(
+            TurnExecutionBindingError,
+            "session lifetime",
+        ):
+            self.service.prepare_bootstrap(
+                bootstrap_id="bootstrap-123",
+                execution_id="bootstrap-exec-1",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                session_seconds=THREAD_BOOTSTRAP_SESSION_SECONDS + 1,
+            )
+
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
 
     def test_project_secret_overrides_workspace_secret_by_scope_precedence(self) -> None:
         self._publish_secret(
