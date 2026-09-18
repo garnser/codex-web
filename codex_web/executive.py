@@ -14,13 +14,15 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.execution_contracts import (
-    ROLE_CONTRACTS,
     ExecutionRoleContract,
+    current_execution_role_catalog,
     execution_agent_key,
     execution_contract_prompt,
     execution_role,
     execution_role_catalog_prompt,
+    execution_roles,
     execution_role_for_work_item,
     route_execution_role,
 )
@@ -287,6 +289,8 @@ def _codex_execution_instructions(
     company: CompanyContext,
     execution_role_contract: ExecutionRoleContract,
     change_classification: str | None = None,
+    *,
+    catalog: ExecutionRoleCatalogDefinition | None = None,
 ) -> str:
     return f"""You are the Codex execution counterpart for the {agent.title} executive advisor in a SaaS/software-development company.
 
@@ -295,7 +299,7 @@ EXECUTIVE CONTEXT
 
 The executive persona is advisory. Your operational authority and lane are defined by the execution contract below. When the executive recommendation conflicts with the execution contract, do not silently cross lanes: preserve the objective, refuse/reroute the incompatible action, and record the exact owner or Orchestrator decision needed.
 
-{execution_contract_prompt(execution_role_contract, change_classification)}
+{execution_contract_prompt(execution_role_contract, change_classification, catalog=catalog)}
 
 CODEX-WEB EXECUTION RULES
 - Inspect the actual workspace and canonical work-item state before changing anything.
@@ -381,6 +385,12 @@ class ExecutiveService:
         self.text_verbosity = os.environ.get("CODEX_WEB_EXECUTIVE_TEXT_VERBOSITY", "medium")
         self.board_specialists = min(5, max(2, int(os.environ.get("CODEX_WEB_EXECUTIVE_BOARD_SPECIALISTS", "3"))))
         self._openai_client: Any = None
+
+    def _execution_catalog(self, project_id: str | None = None) -> ExecutionRoleCatalogDefinition:
+        service = getattr(self.host, "_execution_role_definition_service", None)
+        if service is not None:
+            return service.catalog(project_id=project_id)
+        return current_execution_role_catalog()
 
     def _client(self) -> Any:
         if self._openai_client is not None:
@@ -515,8 +525,9 @@ class ExecutiveService:
         execution_role_contract: ExecutionRoleContract,
         state: Any,
         project: Any,
+        catalog: ExecutionRoleCatalogDefinition,
     ) -> dict[str, Any]:
-        agent_key = execution_agent_key(execution_role_contract)
+        agent_key = execution_agent_key(execution_role_contract, catalog=catalog)
         binding = self.host._binding_for_agent(
             agent_key,
             project.id,
@@ -570,20 +581,25 @@ class ExecutiveService:
 
     async def delegate(self, request: DelegateRequest) -> dict[str, Any]:
         agent = _agent(request.agent_id)
-        requested_role = execution_role(request.execution_role_id)
-        if request.execution_role_id and requested_role is None:
-            raise HTTPException(status_code=422, detail=f"Unknown execution role: {request.execution_role_id}")
 
         work_item_state = None
-        execution_role_contract = requested_role
         project_id = request.project_id
         if request.work_item_ref:
             work_item_state = self.host._work_item_state(request.work_item_ref)
+            project_id = work_item_state.project_id or request.project_id
+
+        catalog = self._execution_catalog(project_id)
+        requested_role = execution_role(request.execution_role_id, catalog=catalog)
+        if request.execution_role_id and requested_role is None:
+            raise HTTPException(status_code=422, detail=f"Unknown execution role: {request.execution_role_id}")
+
+        execution_role_contract = requested_role
+        if work_item_state is not None:
             split_brain = False
             split_brain_finder = getattr(self.host, "_work_item_split_brain_findings", None)
             if split_brain_finder:
                 split_brain = bool(split_brain_finder(work_item_state))
-            canonical_role = execution_role_for_work_item(work_item_state, split_brain=split_brain)
+            canonical_role = execution_role_for_work_item(work_item_state, split_brain=split_brain, catalog=catalog)
             if requested_role is not None and requested_role.id != canonical_role.id:
                 owner = getattr(work_item_state, "current_owner", None) or getattr(work_item_state, "next_owner", None) or "unowned"
                 raise HTTPException(
@@ -596,10 +612,9 @@ class ExecutiveService:
                     ),
                 )
             execution_role_contract = canonical_role
-            project_id = work_item_state.project_id or request.project_id
 
         if execution_role_contract is None:
-            execution_role_contract = route_execution_role(request.task, agent.id)
+            execution_role_contract = route_execution_role(request.task, agent.id, catalog=catalog)
         company = self.store.company()
         project = self.host._project(project_id)
         if work_item_state is not None:
@@ -609,6 +624,7 @@ class ExecutiveService:
                 execution_role_contract,
                 work_item_state,
                 project,
+                catalog,
             )
 
         sandbox = request.sandbox or project.sandbox
@@ -651,6 +667,7 @@ class ExecutiveService:
                     company,
                     execution_role_contract,
                     request.change_classification,
+                    catalog=catalog,
                 ),
             )
 
@@ -715,7 +732,7 @@ def install_executive(app: FastAPI, host: Any) -> ExecutiveService:
                 }
                 for agent in AGENTS.values()
             ],
-            "executionRoles": [role.public() for role in ROLE_CONTRACTS.values()],
+            "executionRoles": [role.public() for role in execution_roles()],
             "model": service.model,
         }
 
