@@ -157,15 +157,34 @@
         )).join("");
     }
 
-    const revisionOptions = records.map((record) => (
+    const left = document.getElementById("definition-diff-left");
+    if (left) {
+      const previous = left.value;
+      left.innerHTML = records.map((record) => (
+        `<option value="${escapeHtml(record.record_id)}">${escapeHtml(record.kind)} · ${escapeHtml(record.definition_id)} · r${escapeHtml(record.revision)} · ${escapeHtml(scopeText(record))} · ${escapeHtml(record.lifecycle)}</option>`
+      )).join("");
+      if (records.some((record) => record.record_id === previous)) left.value = previous;
+    }
+    populateDiffRight();
+  }
+
+  function populateDiffRight() {
+    const left = document.getElementById("definition-diff-left");
+    const right = document.getElementById("definition-diff-right");
+    if (!left || !right) return;
+    const selected = records.find((record) => record.record_id === left.value);
+    const previous = right.value;
+    const candidates = selected
+      ? records.filter((record) => (
+          record.kind === selected.kind
+          && record.definition_id === selected.definition_id
+          && record.record_id !== selected.record_id
+        ))
+      : [];
+    right.innerHTML = candidates.map((record) => (
       `<option value="${escapeHtml(record.record_id)}">${escapeHtml(record.kind)} · ${escapeHtml(record.definition_id)} · r${escapeHtml(record.revision)} · ${escapeHtml(scopeText(record))} · ${escapeHtml(record.lifecycle)}</option>`
     )).join("");
-    for (const id of ["definition-diff-left", "definition-diff-right"]) {
-      const select = document.getElementById(id);
-      if (select) select.innerHTML = revisionOptions;
-    }
-    const right = document.getElementById("definition-diff-right");
-    if (right && right.options.length > 1) right.selectedIndex = 1;
+    if (candidates.some((record) => record.record_id === previous)) right.value = previous;
   }
 
   function renderResolved(record) {
@@ -282,6 +301,7 @@
     document.getElementById("definition-kind-filter")?.addEventListener("change", renderRecords);
     document.getElementById("definition-scope-filter")?.addEventListener("change", renderRecords);
     document.getElementById("definition-lifecycle-filter")?.addEventListener("change", renderRecords);
+    document.getElementById("definition-diff-left")?.addEventListener("change", populateDiffRight);
     document.getElementById("resolve-definition")?.addEventListener("click", () => resolveEffective().catch(console.error));
     document.getElementById("diff-definitions")?.addEventListener("click", () => compareRevisions().catch(console.error));
     document.getElementById("definition-registry-list")?.addEventListener("click", (event) => {
