@@ -317,7 +317,7 @@ class AssignmentBoundCodexSession:
                         await self.runtime.stop()
                 elif process is not None and process.poll() is None:
                     with contextlib.suppress(Exception):
-                        self.local_worker.backend._kill_process_group(process)
+                        self.local_worker.backend.terminate_process(process)
                 raise
 
     def _validate_resource_bounds(self, assignment: ExecutionAssignment) -> None:
@@ -332,7 +332,7 @@ class AssignmentBoundCodexSession:
             raise AssignmentBoundCodexSessionStaleError(
                 "assignment-bound Codex session exceeded wall_seconds"
             )
-        disk_bytes = self.local_worker.backend._execution_disk_usage(
+        disk_bytes = self.local_worker.backend.execution_disk_usage(
             self.workspace_path,
             self.git_metadata_path,
         )
