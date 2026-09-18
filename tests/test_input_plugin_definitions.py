@@ -37,7 +37,9 @@ from codex_web.services.input_plugin_definitions import (
     default_input_plugin_catalog,
     install_input_plugin_definitions,
 )
+from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -239,6 +241,41 @@ class InputPluginDefinitionTests(unittest.IsolatedAsyncioTestCase):
         ).execute(self._envelope(other))
         self.assertEqual(skipped.envelope.system_prompt, "  system  ")
         self.assertEqual(skipped.provenance, ())
+
+    async def test_model_gateway_resolves_scoped_definition_for_each_request(self) -> None:
+        published = self._publish_workspace(
+            {
+                "registrations": [
+                    {
+                        "plugin_id": "builtin.settings-test",
+                        "plugin_version": "1.0.0",
+                        "phase": "compose",
+                        "settings": {"prefix": "DEFINED: "},
+                    }
+                ]
+            }
+        )
+        gateway = ModelGatewayService(
+            ModelGatewayStore(self.state),
+            input_pipeline_resolver=self.service.pipeline_for,
+        )
+
+        effective, result = await gateway._compose_input(
+            self._request(system_prompt="request body"),
+            actor=self.actor,
+        )
+
+        self.assertEqual(effective.system_prompt, "DEFINED: request body")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.provenance), 1)
+        self.assertEqual(
+            result.provenance[0].definition_ref.record_id,
+            published.record_id,
+        )
+        self.assertEqual(
+            result.provenance[0].definition_ref.revision,
+            published.revision,
+        )
 
     async def test_enabled_unknown_plugin_fails_closed_at_resolution(self) -> None:
         self._publish_workspace(
