@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.input_plugin_definitions import forbidden_input_plugin_setting_keys
 from codex_web.input_plugins import (
     InputEnvelope,
     InputPatch,
@@ -22,12 +22,6 @@ from codex_web.input_plugins import (
 DEFAULT_EXTERNAL_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_EXTERNAL_REQUEST_BYTES = 128 * 1024
 DEFAULT_MAX_EXTERNAL_RESPONSE_BYTES = 32 * 1024
-_SENSITIVE_SETTING_RE = re.compile(
-    r"(secret|password|passwd|token|api[_-]?key|credential|private[_-]?key)",
-    re.IGNORECASE,
-)
-
-
 class ExternalInputTransportError(InputPluginExecutionError):
     pass
 
@@ -101,11 +95,12 @@ def _json_size(value: BaseModel | Mapping[str, Any]) -> int:
 def _safe_settings(
     settings: Mapping[str, str | int | float | bool | None],
 ) -> dict[str, str | int | float | bool | None]:
-    for key in settings:
-        if _SENSITIVE_SETTING_RE.search(str(key)):
-            raise InputPluginSecurityError(
-                "external input plugin settings cannot contain secret/credential-like keys"
-            )
+    forbidden = forbidden_input_plugin_setting_keys(settings)
+    if forbidden:
+        raise InputPluginSecurityError(
+            "external input plugin settings cannot contain credential/secret fields: "
+            + ", ".join(forbidden)
+        )
     return dict(settings)
 
 
