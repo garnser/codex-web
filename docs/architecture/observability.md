@@ -26,6 +26,10 @@ Telemetry sanitization redacts secret-bearing keys such as authorization headers
 
 Do not emit prompt bodies, task/repository content, cookies, credentials, encryption keys, secret values, or provider response bodies merely to improve diagnostics. Later data-governance rules may further restrict export/retention of otherwise safe fields.
 
+The built-in structured-log query path is intentionally stricter than stdout JSON logging. It stores at most 500 entries for at most one hour in process memory and returns only an allowlist of structured metadata plus correlation/object references. Free-form log messages, exception strings, arbitrary structured bodies, prompts and secret/token values are never returned by `/api/logs`. Tenant queries only return entries whose organization and workspace exactly match the authenticated operator; unscoped process logs are excluded from tenant queries.
+
+This bounded buffer is classified as **internal runtime telemetry**. It is transient diagnostic data, not canonical business state or durable audit evidence. Longer retention/export belongs in a separately governed observability backend that preserves the same privacy and tenant-isolation rules.
+
 ## Metrics and cardinality
 
 `RuntimeMetrics` is an in-process diagnostics registry. It supports counters and duration observations with a deliberately small allowlist of low-cardinality labels such as method, component, provider, result, status class, operation, queue, and kind.
@@ -68,7 +72,8 @@ The local runtime exposes:
 - `GET /api/metrics` — bounded counters/timers;
 - `GET /api/health` — machine-readable liveness/readiness/dependency/autonomy health;
 - `GET /api/traces/recent` — bounded recent trace spans;
-- `GET /api/observability` — combined diagnostics snapshot.
+- `GET /api/logs` — bounded, tenant-scoped structured-log query with deterministic filters for level/logger/event/correlation/causation and canonical object references;
+- `GET /api/observability` — combined diagnostics snapshot plus structured-log retention/query limits.
 
 These endpoints are operational projections, not authority/state mutation APIs. The Platform Foundation UI (#141) can consume them without creating dashboard-local health truth.
 
