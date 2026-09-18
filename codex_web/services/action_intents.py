@@ -75,6 +75,12 @@ class ActionIntentService:
             return "action-intent:admin" in actor.service_scopes
         return actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
 
+    @classmethod
+    def _require_worker(cls, actor: AuthenticationActor) -> None:
+        if actor.principal_kind == PrincipalKind.SERVICE or cls._admin(actor):
+            return
+        raise AuthorizationError("action intent worker operations require service or administrator identity")
+
     @staticmethod
     def _same_scope(intent: ActionIntent, actor: AuthenticationActor) -> bool:
         return (
@@ -235,6 +241,10 @@ class ActionIntentService:
             if payload.verification_required is None
             else payload.verification_required
         )
+        if verification_required and not definition.capabilities.verification:
+            raise ActionRequirementError(
+                "verification-required intent needs a verification-capable action"
+            )
         timeout_seconds = payload.timeout_seconds or definition.timeout_seconds
         retry_policy = payload.retry_policy.model_copy(
             update={
@@ -335,6 +345,7 @@ class ActionIntentService:
         actor: AuthenticationActor,
         intent_id: str | None = None,
     ) -> ActionIntent | None:
+        self._require_worker(actor)
         self.recover_stale_claims()
         now = time.time()
         claimed: list[ActionIntent] = []
@@ -384,6 +395,7 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
     ) -> ActionIntent:
+        self._require_worker(actor)
         intent = self._intent(intent_id, actor)
         now = time.time()
         if (
@@ -640,6 +652,7 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
     ) -> ActionIntent:
+        self._require_worker(actor)
         intent = self._mark_executing(intent_id, worker_id, actor)
         with correlated(
             correlation_id=intent.correlation_id,
@@ -723,9 +736,9 @@ class ActionIntentService:
         intent = self._intent(intent_id, actor)
         if intent.attempt >= intent.retry_policy.max_attempts:
             raise ActionIntentConflictError("action intent retry limit reached")
-        if intent.status == ActionIntentStatus.UNCERTAIN and not intent.provider_idempotency_supported:
+        if intent.attempt > 0 and not intent.provider_idempotency_supported:
             raise ActionIntentUnsafeRetryError(
-                "uncertain non-idempotent action requires reconciliation before retry"
+                "replaying an executed non-idempotent action is unsafe; reconcile instead"
             )
         if intent.status not in {
             ActionIntentStatus.FAILED,
@@ -886,6 +899,7 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
     ) -> ActionIntent:
+        self._require_worker(actor)
         intent = self._intent(intent_id, actor)
         state = self.store.load()
         results = [
@@ -933,6 +947,7 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
     ) -> ActionIntent:
+        self._require_worker(actor)
         intent = self._intent(intent_id, actor)
         if not intent.rollback_required and not intent.action_definition.capabilities.rollback:
             raise ActionIntentConflictError("action intent does not support rollback")
