@@ -76,6 +76,10 @@ class AutonomyInstallationTests(unittest.TestCase):
         self.assertIs(host._run_work_item_sla_cycle.__self__, first)
         self.assertIs(host._run_orchestrator_watchdog_cycle.__self__, first)
         self.assertIs(host._run_split_brain_watchdog_cycle.__self__, first)
+        self.assertIs(host._prepare_external_action.__self__, first)
+        self.assertIs(host._execute_external_action.__self__, first)
+        self.assertIs(host._verify_external_action.__self__, first)
+        self.assertIs(host._rollback_external_action.__self__, first)
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
