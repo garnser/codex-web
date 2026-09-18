@@ -416,6 +416,10 @@ class TurnExecutionBindingService:
         session_seconds: int = THREAD_BOOTSTRAP_SESSION_SECONDS,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
+        effective_limits = limits or WorkerResourceLimits(
+            cpu_seconds=session_seconds,
+            wall_seconds=session_seconds,
+        )
         return self._prepare_subject(
             subject=subject,
             thread_id=None,
@@ -426,5 +430,5 @@ class TurnExecutionBindingService:
             execution_contract_version=THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
             session_seconds=session_seconds,
             max_session_seconds=THREAD_BOOTSTRAP_SESSION_SECONDS,
-            limits=limits,
+            limits=effective_limits,
         )
