@@ -186,6 +186,36 @@ class TurnExecutionService:
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and thread_id in self.host._load_active_turns())
 
+    def _assignment_session_for_thread(self, thread_id: str):
+        active = self.host._load_active_turns().get(thread_id)
+        if active is None or not active.assignment_id:
+            return None
+        manager = self.session_manager
+        if manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="assignment-bound Codex session manager is unavailable",
+            )
+        session = manager.get(active.assignment_id)
+        if session is None:
+            raise HTTPException(
+                status_code=503,
+                detail="active thread assignment has no live Codex session",
+            )
+        session.validate_current()
+        return session
+
+    async def request_for_thread(
+        self,
+        thread_id: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session = self._assignment_session_for_thread(thread_id)
+        if session is not None:
+            return await session.request(method, params)
+        return await self.host.codex.request(method, params)
+
     def mark_thread_active(
         self,
         thread_id: str | None,
@@ -823,6 +853,7 @@ def install_turn_execution_service(
     host._pop_queued_turn = service.pop_queued_turn
     host._requeue_turn_front = service.requeue_turn_front
     host._thread_is_active = service.thread_is_active
+    host._codex_request_for_thread = service.request_for_thread
     host._mark_thread_active = service.mark_thread_active
     host._clear_thread_active = service.clear_thread_active
     host._record_thread_activity = service.record_thread_activity
