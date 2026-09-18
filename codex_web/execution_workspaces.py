@@ -8,11 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from codex_web.execution_subjects import (
-    ExecutionSubject,
-    ExecutionSubjectKind,
-    normalize_execution_subject,
-)
+from codex_web.execution_subjects import ExecutionSubject, normalize_execution_subject
 
 
 class ExecutionWorkspaceKind(StrEnum):
