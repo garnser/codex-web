@@ -138,6 +138,10 @@ class BubblewrapExecutionBackend:
             "--symlink",
             "usr/lib",
             "/lib",
+        ]
+        if Path("/usr/lib64").exists():
+            command.extend(("--symlink", "usr/lib64", "/lib64"))
+        command.extend([
             "--proc",
             "/proc",
             "--dev",
@@ -146,7 +150,7 @@ class BubblewrapExecutionBackend:
             "/tmp",
             "--",
             "/bin/true",
-        ]
+        ])
         try:
             completed = self._probe_runner(
                 command,
