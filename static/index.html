@@ -527,6 +527,35 @@
                 </div>
                 <div class="developer-card">
                   <div class="section-title">
+                    <h2>Input Plugin Pipeline</h2>
+                    <button id="refresh-input-plugins" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="input-plugin-status" class="form-result" aria-live="polite">Open to load effective input-composition state.</div>
+                  <div class="route-test">
+                    <input id="input-plugin-search" type="search" placeholder="Search plugin, invocation, field or failure" />
+                    <select id="input-plugin-outcome-filter">
+                      <option value="">All plugin outcomes</option>
+                      <option value="applied">Applied</option>
+                      <option value="skipped">Skipped</option>
+                      <option value="failed">Failed / denied</option>
+                    </select>
+                    <button id="open-input-pipeline-definition" type="button" class="ghost-button">Open Definition Registry</button>
+                  </div>
+                  <div class="section-title"><span>Effective versioned pipeline definition</span></div>
+                  <div id="input-plugin-definition" class="comm-log"></div>
+                  <div class="section-title"><span>Configured registrations & local implementations</span></div>
+                  <div id="input-plugin-registrations" class="comm-log"></div>
+                  <details>
+                    <summary>Per-invocation plugin provenance</summary>
+                    <div id="input-plugin-invocations" class="comm-log"></div>
+                  </details>
+                  <details>
+                    <summary>Rejected mutations & transport failures</summary>
+                    <div id="input-plugin-security-events" class="comm-log"></div>
+                  </details>
+                </div>
+                <div class="developer-card">
+                  <div class="section-title">
                     <h2>Action Providers</h2>
                     <button id="refresh-action-providers" type="button" class="ghost-button">Refresh</button>
                   </div>
@@ -1099,6 +1128,7 @@
     <script src="static/crypto_key_admin.js" type="module"></script>
     <script src="static/model_gateway_admin.js" type="module"></script>
     <script src="static/model_gateway_management.js" type="module"></script>
+    <script src="static/input_plugin_admin.js" type="module"></script>
     <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/entitlement_admin.js" type="module"></script>
     <script src="static/configuration_admin.js" type="module"></script>
