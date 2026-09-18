@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import Any
 
 from codex_web.action_intents import (
@@ -77,9 +78,44 @@ class ActionIntentService:
 
     @classmethod
     def _require_worker(cls, actor: AuthenticationActor) -> None:
-        if actor.principal_kind == PrincipalKind.SERVICE or cls._admin(actor):
+        if cls._admin(actor):
             return
-        raise AuthorizationError("action intent worker operations require service or administrator identity")
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:worker", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError(
+            "action intent worker operations require action-intent:worker scope or administrator identity"
+        )
+
+    @classmethod
+    def _require_callback_actor(cls, actor: AuthenticationActor) -> None:
+        if cls._admin(actor):
+            return
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:callback", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError(
+            "provider callback ingestion requires action-intent:callback scope or administrator identity"
+        )
+
+    @classmethod
+    def _require_intent_control(
+        cls,
+        intent: ActionIntent,
+        actor: AuthenticationActor,
+    ) -> None:
+        if intent.requested_by == actor.identity_id or cls._admin(actor):
+            return
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and {"action-intent:worker", "action-intent:admin"}.intersection(actor.service_scopes)
+        ):
+            return
+        raise AuthorizationError("action intent requester, worker, or administrator required")
 
     @staticmethod
     def _same_scope(intent: ActionIntent, actor: AuthenticationActor) -> bool:
@@ -212,7 +248,7 @@ class ActionIntentService:
             or new_correlation_id()
         )
         causation_id = context.causation_id if context else None
-        intent_id = f"action-intent-{__import__('uuid').uuid4().hex}"
+        intent_id = f"action-intent-{uuid.uuid4().hex}"
         provider_idempotency = bool(definition.capabilities.idempotency)
         idempotency_key = request.idempotency_key or f"codex-intent:{intent_id}"
         provider_request = request
@@ -302,7 +338,13 @@ class ActionIntentService:
         self.store.update(apply)
         return intent
 
-    def recover_stale_claims(self, *, now: float | None = None) -> list[str]:
+    def recover_stale_claims(
+        self,
+        *,
+        now: float | None = None,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[str]:
         current = time.time() if now is None else now
         recovered: list[str] = []
 
@@ -310,7 +352,9 @@ class ActionIntentService:
             for index, intent in enumerate(state.intents):
                 lease = intent.lease
                 if (
-                    lease is None
+                    (organization_id is not None and intent.organization_id != organization_id)
+                    or (workspace_id is not None and intent.workspace_id != workspace_id)
+                    or lease is None
                     or lease.expires_at > current
                     or intent.status not in {
                         ActionIntentStatus.CLAIMED,
@@ -346,7 +390,10 @@ class ActionIntentService:
         intent_id: str | None = None,
     ) -> ActionIntent | None:
         self._require_worker(actor)
-        self.recover_stale_claims()
+        self.recover_stale_claims(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
         now = time.time()
         claimed: list[ActionIntent] = []
 
@@ -722,9 +769,16 @@ class ActionIntentService:
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="required provider/evidence verification is not satisfied",
             )
-        succeeded = self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
-        self._advance_work_item(succeeded)
-        return self._intent(intent.id, actor)
+        current = self._intent(intent.id, actor)
+        try:
+            self._advance_work_item(current)
+        except Exception as exc:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=f"external action verified but canonical state advance failed: {type(exc).__name__}: {exc}",
+            )
+        return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
 
     def retry(
         self,
@@ -734,6 +788,7 @@ class ActionIntentService:
         actor: AuthenticationActor,
     ) -> ActionIntent:
         intent = self._intent(intent_id, actor)
+        self._require_intent_control(intent, actor)
         if intent.attempt >= intent.retry_policy.max_attempts:
             raise ActionIntentConflictError("action intent retry limit reached")
         if intent.attempt > 0 and not intent.provider_idempotency_supported:
@@ -794,14 +849,15 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
     ) -> ActionInboxMessage:
-        if actor.principal_kind != PrincipalKind.SERVICE and not self._admin(actor):
-            raise AuthorizationError("provider callback ingestion requires service or admin identity")
+        self._require_callback_actor(actor)
         state = self.store.load()
         existing = next(
             (
                 item
                 for item in state.inbox
-                if item.provider_type == payload.provider_type
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.provider_type == payload.provider_type
                 and item.provider_instance == payload.provider_instance
                 and item.delivery_id == payload.delivery_id
             ),
@@ -822,6 +878,13 @@ class ActionIntentService:
                 ),
                 None,
             )
+        if intent is not None and (
+            intent.provider_type != payload.provider_type
+            or intent.provider_instance != payload.provider_instance
+        ):
+            raise ActionIntentConflictError(
+                "callback provider does not match action intent provider"
+            )
         if intent is None and payload.idempotency_key:
             matches = [
                 item
@@ -836,6 +899,8 @@ class ActionIntentService:
                 intent = matches[0]
 
         message = ActionInboxMessage(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
             **payload.model_dump(),
             intent_id=intent.id if intent else payload.intent_id,
             processed_at=time.time(),
@@ -909,16 +974,25 @@ class ActionIntentService:
         ]
         latest_result = results[-1] if results else None
 
-        if latest_result is not None and latest_result.status != "failed":
+        if latest_result is not None and latest_result.status == "rolled_back":
+            return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+        if latest_result is not None and latest_result.status in {"succeeded", "dry_run"}:
             verified = await self._verify_completion(
                 intent,
                 latest_result,
                 actor=actor,
             )
             if verified:
-                succeeded = self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
-                self._advance_work_item(succeeded)
-                return self._intent(intent.id, actor)
+                current = self._intent(intent.id, actor)
+                try:
+                    self._advance_work_item(current)
+                except Exception as exc:
+                    return self._set_status(
+                        intent.id,
+                        ActionIntentStatus.REQUIRES_RECONCILIATION,
+                        error=f"verification succeeded but canonical state advance failed: {type(exc).__name__}: {exc}",
+                    )
+                return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
             return self._set_status(
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
