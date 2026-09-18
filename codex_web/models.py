@@ -265,9 +265,13 @@ class BotConnection(BaseModel):
     name: str
     project_id: str = "home"
     bot_token: str | None = None
+    bot_token_secret_id: str | None = None
     slack_app_token: str | None = None
+    slack_app_token_secret_id: str | None = None
     signing_secret: str | None = None
+    signing_secret_secret_id: str | None = None
     webhook_secret: str | None = None
+    webhook_secret_secret_id: str | None = None
     default_external_conversation_id: str | None = None
     default_external_name: str | None = None
     telegram_update_offset: int | None = None
@@ -281,9 +285,13 @@ class BotConnectionCreate(BaseModel):
     name: str = Field(min_length=1)
     project_id: str = "home"
     bot_token: str | None = None
+    bot_token_secret_id: str | None = None
     slack_app_token: str | None = None
+    slack_app_token_secret_id: str | None = None
     signing_secret: str | None = None
+    signing_secret_secret_id: str | None = None
     webhook_secret: str | None = None
+    webhook_secret_secret_id: str | None = None
     default_external_conversation_id: str | None = None
     default_external_name: str | None = None
 

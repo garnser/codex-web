@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from codex_web.api.identity import request_actor
 from codex_web.models import BotBindingCreate, BotConnectionCreate, BotInboundMessage
 from codex_web.services.bots import BotService
 
@@ -20,8 +21,8 @@ def build_bots_router(service: BotService) -> APIRouter:
         return service.list_connections()
 
     @router.post("/api/bots/connections")
-    async def save_connection(payload: BotConnectionCreate) -> dict[str, Any]:
-        return await service.save_connection(payload)
+    async def save_connection(payload: BotConnectionCreate, request: Request) -> dict[str, Any]:
+        return await service.save_connection(payload, request_actor(request))
 
     @router.get("/api/bots/bindings")
     async def list_bindings() -> list[dict[str, Any]]:

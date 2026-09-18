@@ -7,6 +7,8 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
+from codex_web.services.secrets import SecretBroker
+
 from fastapi import HTTPException, Request
 
 
@@ -65,30 +67,75 @@ def verify_gitlab_token(request: Request, expected_secret: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid GitLab webhook token")
 
 
-def install_webhook_security(host: Any) -> None:
-    """Install fail-closed verification adapters on the legacy runtime.
+def install_webhook_security(
+    host: Any,
+    secret_broker: SecretBroker | None = None,
+) -> None:
+    """Install fail-closed verification adapters.
 
-    The adapters intentionally resolve connection-backed secrets at request
-    time so connection changes do not require an application restart.
+    Secret-reference credentials are consumed inside broker callbacks. Legacy
+    connection fields and deployment environment secrets remain supported only
+    as compatibility inputs during migration.
     """
 
     def slack(request: Request, body: bytes) -> None:
-        signing_secrets: list[str | None] = [os.environ.get("SLACK_SIGNING_SECRET")]
-        signing_secrets.extend(
-            connection.signing_secret
-            for connection in host._load_bot_connections()
-            if connection.provider == "slack"
-        )
-        verify_slack_signature(request, body, signing_secrets)
+        deployment_secret = os.environ.get("SLACK_SIGNING_SECRET")
+        legacy: list[str | None] = [deployment_secret]
+        for connection in host._load_bot_connections():
+            if connection.provider != "slack":
+                continue
+            secret_id = getattr(connection, "signing_secret_secret_id", None)
+            if secret_id and secret_broker is not None:
+                actor = host._bot_runtime_actor(connection.project_id)
+
+                def verify(value: str) -> bool:
+                    verify_slack_signature(request, body, [value])
+                    return True
+
+                try:
+                    secret_broker.use(
+                        secret_id,
+                        actor=actor,
+                        operation="slack.webhook.verify",
+                        consumer=verify,
+                        context={"connection_id": connection.id},
+                    )
+                    return
+                except HTTPException as exc:
+                    if exc.status_code != 401:
+                        raise
+                continue
+            legacy.append(connection.signing_secret)
+        verify_slack_signature(request, body, legacy)
 
     def telegram(request: Request) -> None:
-        expected_secrets: list[str | None] = [os.environ.get("TELEGRAM_WEBHOOK_SECRET")]
-        expected_secrets.extend(
-            connection.webhook_secret
-            for connection in host._load_bot_connections()
-            if connection.provider == "telegram"
-        )
-        verify_telegram_secret(request, expected_secrets)
+        legacy: list[str | None] = [os.environ.get("TELEGRAM_WEBHOOK_SECRET")]
+        for connection in host._load_bot_connections():
+            if connection.provider != "telegram":
+                continue
+            secret_id = getattr(connection, "webhook_secret_secret_id", None)
+            if secret_id and secret_broker is not None:
+                actor = host._bot_runtime_actor(connection.project_id)
+
+                def verify(value: str) -> bool:
+                    verify_telegram_secret(request, [value])
+                    return True
+
+                try:
+                    secret_broker.use(
+                        secret_id,
+                        actor=actor,
+                        operation="telegram.webhook.verify",
+                        consumer=verify,
+                        context={"connection_id": connection.id},
+                    )
+                    return
+                except HTTPException as exc:
+                    if exc.status_code != 401:
+                        raise
+                continue
+            legacy.append(connection.webhook_secret)
+        verify_telegram_secret(request, legacy)
 
     def gitlab(request: Request) -> None:
         verify_gitlab_token(
