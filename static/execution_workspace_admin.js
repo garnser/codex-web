@@ -67,11 +67,18 @@
       && (actor.roles || []).some((role) => ["owner", "admin"].includes(role));
   }
 
+  function subjectText(workspace) {
+    if (workspace.subject?.kind && workspace.subject?.ref) {
+      return `${workspace.subject.kind}:${workspace.subject.ref}`;
+    }
+    return workspace.work_item_ref ? `work_item:${workspace.work_item_ref}` : "unknown";
+  }
+
   function searchable(item) {
     const workspace = item.workspace;
     const lease = item.lease || {};
     return [
-      workspace.id, workspace.work_item_ref, workspace.execution_id,
+      workspace.id, subjectText(workspace), workspace.work_item_ref, workspace.execution_id,
       workspace.project_id, workspace.owner_identity_id, workspace.kind,
       workspace.status, workspace.path, workspace.branch_name,
       workspace.base_revision, workspace.head_revision,
@@ -120,7 +127,7 @@
       ? item.lease_active ? "active" : item.lease_expired ? "expired-unrecovered" : lease.released_at ? "released" : "inactive"
       : "missing";
     return `<details class="comm-entry" data-workspace-row="${escapeHtml(workspace.id)}">
-      <summary><strong>${escapeHtml(workspace.work_item_ref)} · ${escapeHtml(workspace.execution_id)} · ${escapeHtml(workspace.status)}</strong></summary>
+      <summary><strong>${escapeHtml(subjectText(workspace))} · ${escapeHtml(workspace.execution_id)} · ${escapeHtml(workspace.status)}</strong></summary>
       <small>Workspace: ${escapeHtml(workspace.id)} · kind: ${escapeHtml(workspace.kind)} · project: ${escapeHtml(projectName(workspace.project_id))}</small>
       <small>Owner: ${escapeHtml(workspace.owner_identity_id)} · resources: ${escapeHtml(resourceNames(workspace.resource_ids))}</small>
       <small>Repository resource: ${escapeHtml(workspace.repository_resource_id || "none")} · branch: ${escapeHtml(workspace.branch_name || "none")}</small>
@@ -193,7 +200,7 @@
     const consequence = discard
       ? "The workspace is terminal and the backend may delete its branch/worktree according to canonical cleanup semantics."
       : "The lease is released and the isolated workspace is cleaned up; the branch is retained where the backend supports it.";
-    if (!window.confirm(`${label} ${item.workspace.work_item_ref} / ${item.workspace.execution_id}? ${consequence}`)) return;
+    if (!window.confirm(`${label} ${subjectText(item.workspace)} / ${item.workspace.execution_id}? ${consequence}`)) return;
     const reason = window.prompt("Release reason (optional):", discard ? "operator discard" : "operator release");
     if (reason === null) return;
     try {
