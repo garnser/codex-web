@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
@@ -41,6 +42,7 @@ from codex_web.runtime import core
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
+from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
@@ -74,6 +76,7 @@ from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
+from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -185,6 +188,17 @@ app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 
+action_intent_store = ActionIntentStore(state_store)
+action_intent_service = ActionIntentService(
+    action_intent_store,
+    action_execution_service,
+    artifact_evidence=artifact_evidence_service,
+    work_item_host=core,
+)
+app.include_router(build_action_intents_router(action_intent_service))
+app.state.action_intent_store = action_intent_store
+app.state.action_intent_service = action_intent_service
+
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
     return resource_catalog_service.resource_ids_for_project(project)
@@ -218,6 +232,7 @@ auxiliary_state = install_auxiliary_state(app, core)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
 artifact_evidence_service.expire_retention()
+action_intent_service.recover_stale_claims()
 
 # Compose extracted runtime ownership here rather than in server.py so direct
 # application imports and tests observe the same implementation as the CLI
@@ -228,7 +243,12 @@ thread_execution_settings_service = install_thread_execution_settings_service(ap
 turn_execution_service = install_turn_execution_service(app, core)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
-autonomy_service = install_autonomy_service(app, core, action_execution_service)
+autonomy_service = install_autonomy_service(
+    app,
+    core,
+    action_execution_service,
+    action_intent_service,
+)
 turn_queue_policy = install_turn_queue_policy(app, core)
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 turn_service = TurnService(core)
