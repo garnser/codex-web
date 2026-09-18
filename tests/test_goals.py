@@ -235,6 +235,48 @@ class GoalServiceTests(unittest.TestCase):
         self.assertEqual(health.health, GoalHealth.AT_RISK)
         self.assertIn("high/critical", health.reasons[0])
 
+    def test_work_item_reverse_trace_uses_canonical_goal_bindings(self) -> None:
+        parent_goal = self.service.create(
+            self._payload(
+                title="Parent-rooted goal",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(
+                        project_id="project-a",
+                        root_work_item_refs=("root-a",),
+                    ),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        other_goal = self.service.create(
+            self._payload(
+                title="Other project goal",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(project_id="project-b"),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+
+        child_matches = self.service.goals_for_work_item(
+            "child-a",
+            scope=self.scope,
+        )
+        other_matches = self.service.goals_for_work_item(
+            "work-b",
+            scope=self.scope,
+        )
+        missing = self.service.goals_for_work_item(
+            "not-bound",
+            scope=self.scope,
+        )
+
+        self.assertEqual([item.id for item in child_matches], [parent_goal.id])
+        self.assertEqual([item.id for item in other_matches], [other_goal.id])
+        self.assertEqual(missing, ())
+
     def test_revisions_and_lifecycle_are_versioned_with_reasons(self) -> None:
         goal = self.service.create(
             self._payload(),
@@ -334,6 +376,21 @@ class GoalApiAssuranceTests(unittest.TestCase):
             scope=self.scope,
             actor_id="bootstrap",
         )
+        self.trace_goal = self.service.create(
+            GoalCreate(
+                title="Traceable goal",
+                description="Goal bound to a canonical Work Graph subgraph",
+                owner_identity_id="owner-a",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(
+                        project_id="project-a",
+                        root_work_item_refs=("root-a",),
+                    ),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="bootstrap",
+        )
         self.actor = AuthenticationActor(
             identity_id="admin",
             principal_kind=PrincipalKind.HUMAN,
@@ -373,6 +430,20 @@ class GoalApiAssuranceTests(unittest.TestCase):
             ],
             "budget": {"max_model_calls": 3, "max_cost_usd": 2.0},
         }
+
+    def test_work_item_reverse_trace_is_readable_without_step_up(self) -> None:
+        response = self.client.get(
+            "/api/goals/by-work-item",
+            params={"ref": "child-a"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["work_item_ref"], "child-a")
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(
+            response.json()["items"][0]["goal"]["id"],
+            self.trace_goal.id,
+        )
 
     def test_low_assurance_admin_can_read_but_not_mutate(self) -> None:
         self.assertEqual(self.client.get("/api/goals").status_code, 200)
