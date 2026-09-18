@@ -5,6 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.crypto import (
     EncryptionContext,
     KeyPurpose,
@@ -239,6 +243,82 @@ class CryptoKeyServiceTests(unittest.TestCase):
         self.assertTrue(encryption_required(DataClassification.CONFIDENTIAL))
         self.assertTrue(encryption_required(DataClassification.RESTRICTED))
         self.assertTrue(encryption_required(DataClassification.SECRET))
+
+
+class CryptoKeyApiAssuranceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.service = CryptoKeyService(
+            CryptoKeyStore(SQLiteStateStore(root / "state.sqlite3")),
+            {"local": LocalFileKeyBackend(root / "keys")},
+        )
+        self.actor = AuthenticationActor(
+            identity_id="admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_crypto_keys_router(self.service))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    def test_low_assurance_human_can_inspect_but_cannot_create_key(self) -> None:
+        self.assertEqual(self.client.get("/api/crypto/keys").status_code, 200)
+
+        response = self.client.post(
+            "/api/crypto/keys",
+            json={"purpose": "application_data", "backend_type": "local"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("mfa", response.json()["detail"].lower())
+
+    def test_mfa_human_can_create_and_rotate_key(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        created = self.client.post(
+            "/api/crypto/keys",
+            json={"purpose": "application_data", "backend_type": "local"},
+        )
+        self.assertEqual(created.status_code, 200)
+        key_id = created.json()["item"]["id"]
+
+        rotated = self.client.post(f"/api/crypto/keys/{key_id}/rotate")
+
+        self.assertEqual(rotated.status_code, 200)
+        self.assertEqual(rotated.json()["current_version"], 2)
+
+    def test_crypto_admin_service_actor_does_not_require_human_mfa(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="crypto-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("crypto:admin",),
+        )
+
+        response = self.client.post(
+            "/api/crypto/keys",
+            json={"purpose": "backup", "backend_type": "local"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["purpose"], "backup")
 
 
 if __name__ == "__main__":
