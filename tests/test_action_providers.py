@@ -5,6 +5,10 @@ import time
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.action_providers import build_action_providers_router
 from codex_web.action_providers import (
     ActionCapability,
     ActionDefinition,
@@ -16,7 +20,13 @@ from codex_web.action_providers import (
     ActionVerification,
     UnsupportedActionCapabilityError,
 )
-from codex_web.identity import TenantScope
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+    TenantScope,
+)
 from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.secret_backends import LocalFileSecretBackend
 from codex_web.secrets import SecretCreate
@@ -298,6 +308,93 @@ class ActionProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(Exception):
             await self.execution.prepare(binding.id, request, actor=self.actor)
+
+
+class ActionProviderApiAssuranceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.sqlite = SQLiteStateStore(root / "state.sqlite3")
+        identity = IdentityService(IdentityStateStore(self.sqlite))
+        identity.bootstrap_local()
+        bootstrap_actor = identity.local_trusted_actor()
+        self.resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
+        self.resource = self.resources.create(
+            ResourceCreate(resource_type=ResourceType.OTHER, name="API target"),
+            actor=bootstrap_actor,
+        )
+        self.registry = ActionProviderRegistry(ActionProviderStateStore(self.sqlite))
+        self.registry.register(ReferenceActionProvider())
+        self.execution = ActionExecutionService(self.registry, self.resources)
+        self.actor = AuthenticationActor(
+            identity_id="admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_action_providers_router(self.registry, self.execution))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    def _binding_payload(self):
+        return {
+            "provider_type": "reference",
+            "provider_instance": "local-reference",
+            "resource_ids": [self.resource.id],
+        }
+
+    def test_low_assurance_human_can_read_catalog_but_cannot_create_binding(self) -> None:
+        self.assertEqual(self.client.get("/api/action-providers").status_code, 200)
+
+        response = self.client.post(
+            "/api/action-providers/bindings",
+            json=self._binding_payload(),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("mfa", response.json()["detail"].lower())
+
+    def test_mfa_human_can_create_binding(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+
+        response = self.client.post(
+            "/api/action-providers/bindings",
+            json=self._binding_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["resource_ids"], [self.resource.id])
+
+    def test_action_provider_admin_service_scope_remains_supported(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="action-provider-admin",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-provider:admin",),
+        )
+
+        response = self.client.post(
+            "/api/action-providers/bindings",
+            json=self._binding_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":
