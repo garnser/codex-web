@@ -517,6 +517,44 @@ class DefinitionRegistryApiTests(unittest.TestCase):
         hidden = self.client.get(f"/api/definitions/{other.record_id}/usage")
         self.assertEqual(hidden.status_code, 404)
 
+    def test_global_definition_usage_filters_cross_tenant_projects(self) -> None:
+        record = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id="execution-roles.global-usage",
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                payload=execution_role_catalog_seed_payload(),
+                actor="internal-bootstrap",
+            )
+        )
+        self.service.register_usage_provider(
+            lambda _reference: [
+                {
+                    "object_type": "work_item",
+                    "object_id": "group-a/app#1",
+                    "project_id": "project-a",
+                },
+                {
+                    "object_type": "work_item",
+                    "object_id": "group-b/app#2",
+                    "project_id": "project-b",
+                },
+                {
+                    "object_type": "unknown",
+                    "object_id": "unscoped",
+                },
+            ]
+        )
+
+        response = self.client.get(f"/api/definitions/{record.record_id}/usage")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(
+            response.json()["items"][0]["object_id"],
+            "group-a/app#1",
+        )
+
     def test_project_scope_is_fenced_by_canonical_project_service(self) -> None:
         allowed = self.client.post(
             "/api/definitions/drafts",
