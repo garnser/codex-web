@@ -133,6 +133,22 @@ GET /api/model-gateway/invocations
 
 There is intentionally no generic browser/API `invoke` endpoint in this foundation. Product/runtime services invoke models through the in-process gateway after their own authorization/context decisions; exposing a generic inference proxy would create a new unowned authority and abuse surface.
 
+## Executive adoption
+
+Open Executive advisory/board reasoning now consumes the gateway rather than choosing a provider directly in the production application composition.
+
+- ordinary advice and board specialist/synthesis calls request the stable `strategic` model class;
+- context compaction requests `lightweight`;
+- the authenticated request actor supplies tenant/workspace scope to gateway routing;
+- API responses retain the legacy `model` field for compatibility and additionally expose `model_class` plus exact `model_invocation_ids`;
+- every referenced invocation resolves exact provider/model/template/policy attribution through the gateway ledger;
+- successful provider token/cost usage is emitted into the canonical #164 usage ledger;
+- prompt, conversation, response and credential bodies are not copied into model-invocation or metering records.
+
+For existing self-hosted installations, Executive performs a compatibility bootstrap only when no strategic model mapping exists. It converts the current Executive provider/model environment defaults into ordinary tenant-scoped gateway registry records. Native OpenAI's standard `OPENAI_API_KEY` environment behavior remains a compatibility credential path; canonical hosted/provider administration should use SecretBroker `credential_ref` records.
+
+This compatibility bootstrap is intentionally subordinate to canonical registry state: once an administrator supplies a strategic mapping, Executive no longer chooses a provider/model from its legacy environment settings.
+
 ## Adoption path
 
 1. Compose the gateway and reference adapters at application startup.
