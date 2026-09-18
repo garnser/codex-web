@@ -17,6 +17,7 @@ from codex_web.services.entitlements import (
     EntitlementDeniedError,
     EntitlementService,
     QuotaExceededError,
+    UsageIdempotencyConflictError,
 )
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.entitlements import EntitlementStore
@@ -134,6 +135,52 @@ class EntitlementServiceTests(unittest.TestCase):
                     idempotency_key="attempt-3",
                     metric="external_action_attempts",
                     amount=1,
+                ),
+                actor=self.actor,
+            )
+
+    def test_usage_replay_survives_plan_change_but_conflicting_key_is_rejected(self) -> None:
+        self._enforce()
+        first = self.service.consume(
+            "external_actions",
+            UsageEventCreate(
+                idempotency_key="stable-usage",
+                metric="external_action_attempts",
+                amount=1,
+                source="action-intent",
+                action_intent_id="action-intent-1",
+            ),
+            actor=self.actor,
+        )
+        self.assertFalse(first.duplicate)
+
+        self.service.set_capability(
+            "external_actions",
+            CapabilityEntitlementUpdate(enabled=False),
+            actor=self.actor,
+        )
+        replay = self.service.consume(
+            "external_actions",
+            UsageEventCreate(
+                idempotency_key="stable-usage",
+                metric="external_action_attempts",
+                amount=1,
+                source="action-intent",
+                action_intent_id="action-intent-1",
+            ),
+            actor=self.actor,
+        )
+        self.assertTrue(replay.duplicate)
+        self.assertEqual(replay.event.id, first.event.id)
+
+        with self.assertRaises(UsageIdempotencyConflictError):
+            self.service.record_usage(
+                UsageEventCreate(
+                    idempotency_key="stable-usage",
+                    metric="external_action_attempts",
+                    amount=2,
+                    source="action-intent",
+                    action_intent_id="action-intent-1",
                 ),
                 actor=self.actor,
             )
