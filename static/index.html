@@ -355,6 +355,31 @@
                   <div id="identity-recovery" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Secrets & Credentials</h2>
+                    <button id="refresh-secrets" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="secret-admin-status" class="form-result" aria-live="polite">Open to load secret metadata.</div>
+                  <details id="secret-create-panel">
+                    <summary>Create secret reference</summary>
+                    <div class="route-test">
+                      <input id="secret-create-name" placeholder="Reference name" />
+                      <input id="secret-create-provider" placeholder="Provider (optional)" />
+                      <input id="secret-create-purpose" placeholder="Purpose (optional)" />
+                      <input id="secret-create-value" type="password" autocomplete="new-password" placeholder="Secret value (never rendered back)" />
+                      <label>Use permission identities <select id="secret-create-use-identities" multiple size="4"></select></label>
+                      <label>Reveal permission identities <select id="secret-create-reveal-identities" multiple size="4"></select></label>
+                      <input id="secret-create-expires" type="datetime-local" />
+                      <button id="create-secret" type="button" class="ghost-button">Create secret</button>
+                    </div>
+                  </details>
+                  <div class="section-title"><span>Secret references</span></div>
+                  <div id="secret-admin-list" class="comm-log"></div>
+                  <div class="section-title"><span>Secret audit</span></div>
+                  <div id="secret-audit-status" class="form-result" aria-live="polite">Audit not loaded.</div>
+                  <div id="secret-audit-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -475,6 +500,7 @@
     <script src="static/resource_catalog_management.js" type="module"></script>
     <script src="static/identity_admin.js" type="module"></script>
     <script src="static/identity_authority_admin.js" type="module"></script>
+    <script src="static/secret_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
