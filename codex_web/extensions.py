@@ -361,7 +361,7 @@ class ExtensionUpgradeRequest(BaseModel):
 
     manifest: ExtensionManifest
     observed_digest: str = Field(pattern=_DIGEST_RE.pattern)
-    migration_completed: bool = False
+    migration_evidence_id: str | None = None
 
 
 class ExtensionRemoveRequest(BaseModel):
