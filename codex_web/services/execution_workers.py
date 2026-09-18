@@ -283,7 +283,51 @@ class ExecutionWorkerService:
             None,
         )
         if existing is not None:
-            return existing
+            normalized_capabilities = tuple(
+                sorted(set(capabilities), key=lambda value: value.value)
+            )
+            updated: list[ExecutionWorker] = []
+
+            def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+                current = next(item for item in state.workers if item.id == existing.id)
+                lifecycle = (
+                    WorkerLifecycle.ACTIVE
+                    if current.lifecycle == WorkerLifecycle.OFFLINE
+                    else current.lifecycle
+                )
+                replacement = current.model_copy(
+                    update={
+                        "version": version,
+                        "capabilities": normalized_capabilities,
+                        "last_heartbeat_at": time.time(),
+                        "lifecycle": lifecycle,
+                    }
+                )
+                state.workers = [
+                    replacement if item.id == current.id else item
+                    for item in state.workers
+                ]
+                changed = (
+                    current.version != version
+                    or current.capabilities != normalized_capabilities
+                    or current.lifecycle != lifecycle
+                )
+                if changed:
+                    self._event(
+                        state,
+                        actor=actor,
+                        event_type="worker_capabilities_reconciled",
+                        worker_id=current.id,
+                        details={
+                            "version": version,
+                            "capability_count": len(normalized_capabilities),
+                        },
+                    )
+                updated.append(replacement)
+                return state
+
+            self.store.update(apply)
+            return updated[0]
         return self.register(
             ExecutionWorkerRegister(
                 service_identity_id=service_identity_id,
@@ -507,6 +551,7 @@ class ExecutionWorkerService:
         payload: AssignmentClaimRequest,
         *,
         actor: AuthenticationActor,
+        assignment_id: str | None = None,
     ) -> ExecutionAssignment | None:
         claimed: list[ExecutionAssignment] = []
         now = time.time()
@@ -519,6 +564,7 @@ class ExecutionWorkerService:
                 for item in state.assignments
                 if self._same_scope(item, actor)
                 and item.status == AssignmentStatus.PENDING
+                and (assignment_id is None or item.id == assignment_id)
             ]
             candidates.sort(key=lambda item: (item.created_at, item.id))
             target = None

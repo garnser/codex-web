@@ -15,9 +15,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/codex
 
 # The expensive OS/Node/Codex/Python runtime is supplied by Dockerfile.base and
-# published from trusted main builds. Keep user creation here so local UID/GID
-# overrides continue to work for mounted workspaces. Fail explicitly if the
-# requested Codex version does not match the selected base image.
+# published from trusted main builds. Bubblewrap stays in the application image
+# because local-worker isolation is a runtime safety primitive and must be
+# present even when an older cached base image is selected.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep user creation here so local UID/GID overrides continue to work for
+# mounted workspaces. Fail explicitly if the requested Codex version does not
+# match the selected base image.
 RUN actual="$(codex --version)" \
     && printf '%s' "$actual" | grep -F "${CODEX_VERSION}" \
     && groupadd --gid "${CODEX_GID}" codex \

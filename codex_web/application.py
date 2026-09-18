@@ -39,6 +39,7 @@ from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.model_providers import OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
+from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.execution_workers import WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
@@ -75,6 +76,7 @@ from codex_web.services.execution_role_definitions import install_execution_role
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.model_gateway import ModelGatewayService
@@ -294,6 +296,8 @@ execution_worker_service = ExecutionWorkerService(
     identity=identity_service,
     workspaces=execution_workspace_service,
 )
+local_execution_backend = BubblewrapExecutionBackend()
+local_execution_backend_status = local_execution_backend.probe()
 local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
     name="Local Execution Worker",
@@ -302,18 +306,16 @@ local_worker_actor = identity_service.bootstrap_service_actor(
 )
 local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
-    version="local-v1",
-    capabilities=(
-        WorkerCapability.GIT,
-        WorkerCapability.COMMAND_EXECUTION,
-        WorkerCapability.ARTIFACT_UPLOAD,
-    ),
+    version="local-v2",
+    capabilities=local_execution_backend_status.capabilities,
     actor=identity_service.local_trusted_actor(),
 )
 app.include_router(build_execution_workers_router(execution_worker_service))
 app.state.execution_worker_store = execution_worker_store
 app.state.execution_worker_service = execution_worker_service
 app.state.local_execution_worker = local_execution_worker
+app.state.local_execution_backend = local_execution_backend
+app.state.local_execution_backend_status = local_execution_backend_status
 
 artifact_evidence_store = ArtifactEvidenceStore(state_store)
 artifact_evidence_service = ArtifactEvidenceService(
@@ -333,6 +335,17 @@ data_governance_service.register_action_handler(
 app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+
+local_execution_worker_runtime = LocalExecutionWorkerRuntime(
+    execution_worker_service,
+    execution_workspace_service,
+    local_execution_backend,
+    worker=local_execution_worker,
+    worker_actor=local_worker_actor,
+    control_actor=identity_service.local_trusted_actor(),
+    artifact_evidence=artifact_evidence_service,
+)
+app.state.local_execution_worker_runtime = local_execution_worker_runtime
 
 action_intent_store = ActionIntentStore(state_store)
 action_intent_service = ActionIntentService(
