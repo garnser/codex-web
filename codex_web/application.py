@@ -13,6 +13,7 @@ from codex_web.api.identity import build_identity_router, install_identity_middl
 from codex_web.api.projects import build_projects_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.secrets import build_secrets_router
+from codex_web.api.security import build_security_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
@@ -64,6 +65,7 @@ from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.secrets import SecretBroker
+from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.thread_recovery import install_thread_recovery_service
@@ -83,6 +85,7 @@ from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.secret_state import SecretStateStore
+from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
@@ -125,6 +128,12 @@ app.include_router(build_secrets_router(secret_broker))
 app.state.secret_state_store = secret_state_store
 app.state.secret_broker = secret_broker
 app.state.local_secret_backend = local_secret_backend
+
+security_event_store = SecurityEventStore(state_store)
+security_boundary_service = SecurityBoundaryService(security_event_store)
+app.include_router(build_security_router(security_boundary_service))
+app.state.security_event_store = security_event_store
+app.state.security_boundary_service = security_boundary_service
 
 runtime_state = RuntimeStateRepositories(
     state_store,
@@ -194,6 +203,7 @@ action_intent_service = ActionIntentService(
     action_execution_service,
     artifact_evidence=artifact_evidence_service,
     work_item_host=core,
+    security_boundary=security_boundary_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store

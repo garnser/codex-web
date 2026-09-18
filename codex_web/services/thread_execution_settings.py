@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 from codex_web.models import BotBinding, ThreadRunSettings
+from codex_web.security import security_boundary_instructions
 
 
 class ThreadExecutionSettingsService:
@@ -132,7 +133,12 @@ class ThreadExecutionSettingsService:
             "_work_item_contract_instructions",
             self.work_item_contract_instructions,
         )(thread_id)
-        parts = [part.strip() for part in (instructions, contract) if part and part.strip()]
+        trust_boundary = security_boundary_instructions()
+        parts = [
+            part.strip()
+            for part in (instructions, trust_boundary, contract)
+            if part and part.strip()
+        ]
         if not parts:
             return None
         return "\n\n".join(parts)
@@ -145,10 +151,13 @@ class ThreadExecutionSettingsService:
             "_work_item_contract_instructions",
             self.work_item_contract_instructions,
         )(thread_id)
+        removable = [security_boundary_instructions()]
         if contract:
-            while contract in normalized:
-                normalized = normalized.replace(contract, "").strip()
-            normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+            removable.append(contract)
+        for generated in removable:
+            while generated in normalized:
+                normalized = normalized.replace(generated, "").strip()
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
         return normalized or None
 
     def sync_bot_binding_settings(self, thread_id: str, settings: ThreadRunSettings) -> None:

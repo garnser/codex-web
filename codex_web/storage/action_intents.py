@@ -7,16 +7,75 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.0", ("1.0",))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.1", ("1.1",))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": ACTION_INTENT_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
     },
 )
+
+
+def _security_migration(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    intents: list[dict[str, Any]] = []
+    for raw in migrated.get("intents", []) or []:
+        item = dict(raw)
+        definition = dict(item.get("action_definition") or {})
+        authority = dict(item.get("authority_decision") or {})
+        policy = dict(item.get("policy_decision") or {})
+        resource_ids = list(item.get("resource_ids") or [])
+        item.setdefault(
+            "security_policy",
+            {
+                "sandbox": "workspace-write",
+                "network": {
+                    "enabled": False,
+                    "allowed_schemes": ["https"],
+                    "allowed_hosts": [],
+                    "allowed_ports": [443],
+                    "allowed_private_cidrs": [],
+                    "max_redirects": 0,
+                },
+                "filesystem": {
+                    "allowed_read_roots": [],
+                    "allowed_write_roots": [],
+                    "allow_symlink_escape": False,
+                },
+                "process": {
+                    "allow_process_execution": True,
+                    "allowed_executables": [],
+                    "allow_shell": False,
+                },
+                "require_digest_for_executable_artifacts": True,
+            },
+        )
+        item.setdefault(
+            "security_decision",
+            {
+                "outcome": "deny",
+                "source": "security:migration",
+                "risk_class": str(definition.get("risk_class") or "medium"),
+                "resource_ids": resource_ids,
+                "sandbox": "workspace-write",
+                "network_enabled": False,
+                "authority_source": str(authority.get("source") or "unknown"),
+                "policy_source": str(policy.get("source") or "unknown"),
+                "reasons": [
+                    "migrated pre-security-boundary intent requires re-evaluation"
+                ],
+            },
+        )
+        intents.append(item)
+    migrated["intents"] = intents
+    migrated["schema_version"] = "1.1"
+    return migrated
+
+
+ACTION_INTENT_STATE_MIGRATIONS.register("1.0", "1.1", _security_migration)
 
 
 class ActionIntentStore:

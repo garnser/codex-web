@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import server
+from codex_web.security import security_boundary_instructions
 from codex_web.models import (
     BotBinding,
     BotConnection,
@@ -98,7 +99,7 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
         request.assert_awaited_once()
         self.assertEqual(
             request.await_args.args[1]["developerInstructions"],
-            "base instructions\n\ncontract",
+            f"base instructions\n\n{security_boundary_instructions()}\n\ncontract",
         )
 
     def test_resume_thread_backgrounds_slow_codex_resume(self) -> None:
@@ -440,7 +441,7 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
         turn_start_call = request.await_args_list[1]
         self.assertEqual(
             turn_start_call.args[1]["developerInstructions"],
-            "base instructions\n\ncontract",
+            f"base instructions\n\n{security_boundary_instructions()}\n\ncontract",
         )
 
 

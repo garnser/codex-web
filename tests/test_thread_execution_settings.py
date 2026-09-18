@@ -103,6 +103,7 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
         self.assertIsNotNone(effective)
         self.assertTrue(effective.startswith("Custom instruction\n\n"))
         self.assertEqual(effective.count("codex-web structured work-item contract"), 1)
+        self.assertEqual(effective.count("SECURITY TRUST BOUNDARY"), 1)
 
         stripped = service.base_developer_instructions("t1", effective)
         self.assertEqual(stripped, "Custom instruction")
@@ -114,7 +115,13 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
         service = ThreadExecutionSettingsService(host)
 
         self.assertIsNone(service.work_item_contract_instructions("t1"))
-        self.assertEqual(service.effective_developer_instructions("t1", "Only custom"), "Only custom")
+        effective = service.effective_developer_instructions("t1", "Only custom")
+        self.assertTrue(effective.startswith("Only custom\n\n"))
+        self.assertIn("SECURITY TRUST BOUNDARY", effective)
+        self.assertEqual(
+            service.base_developer_instructions("t1", effective),
+            "Only custom",
+        )
 
     def test_installer_rebinds_historical_host_surface(self) -> None:
         host = Host()

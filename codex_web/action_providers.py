@@ -9,9 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
 from codex_web.resources import ResourceType
+from codex_web.security import ExecutionSecurityPolicy
 
 
-ACTION_PROVIDER_CONTRACT = ContractSpec("action-provider", "1.0", ("1.0",))
+ACTION_PROVIDER_CONTRACT = ContractSpec(
+    "action-provider",
+    "1.1",
+    ("1.0", "1.1"),
+    deprecated=("1.0",),
+)
 
 
 class ActionRiskClass(StrEnum):
@@ -57,6 +63,9 @@ class ActionDefinition(BaseModel):
     timeout_seconds: float = Field(default=60.0, gt=0.0)
     retry_max_attempts: int = Field(default=1, ge=1, le=100)
     reversible: bool = False
+    network_access: bool = False
+    filesystem_access: Literal["none", "read", "write"] = "none"
+    process_access: bool = False
 
     @model_validator(mode="after")
     def validate_capabilities(self) -> "ActionDefinition":
@@ -153,6 +162,7 @@ class ActionProviderBinding(BaseModel):
     project_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     credential_ref: str | None = None
+    security_policy: ExecutionSecurityPolicy = Field(default_factory=ExecutionSecurityPolicy)
     enabled: bool = True
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
@@ -171,6 +181,7 @@ class ActionProviderBindingCreate(BaseModel):
     project_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     credential_ref: str | None = None
+    security_policy: ExecutionSecurityPolicy = Field(default_factory=ExecutionSecurityPolicy)
     enabled: bool = True
 
     @model_validator(mode="after")
