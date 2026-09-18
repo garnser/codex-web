@@ -263,6 +263,14 @@ class ExtensionLifecycleTests(unittest.TestCase):
                 resource_ids=(other.id,),
             )
 
+        with self.assertRaises(ExtensionAuthorizationError):
+            self.service.require_runtime_capability(
+                installation.id,
+                "extension.read",
+                actor=self.actor,
+                resource_ids=(),
+            )
+
     def test_secret_configuration_persists_reference_only(self) -> None:
         installation = self._install(
             secret_refs=("github_token",),
