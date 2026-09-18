@@ -93,6 +93,9 @@ from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntim
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.goals import GoalService
+from codex_web.services.goal_decomposition_generation import (
+    GoalDecompositionGenerationService,
+)
 from codex_web.services.goal_decompositions import GoalDecompositionService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
@@ -510,12 +513,27 @@ goal_decomposition_service = GoalDecompositionService(
     goal_service,
     project_service,
 )
+goal_decomposition_generation_service = GoalDecompositionGenerationService(
+    goal_decomposition_service,
+    goal_service,
+    project_service,
+    work_graph_service,
+    model_gateway_service,
+)
 app.state.goal_store = goal_store
 app.state.goal_service = goal_service
 app.state.goal_decomposition_store = goal_decomposition_store
 app.state.goal_decomposition_service = goal_decomposition_service
+app.state.goal_decomposition_generation_service = (
+    goal_decomposition_generation_service
+)
 app.include_router(build_goals_router(goal_service))
-app.include_router(build_goal_decompositions_router(goal_decomposition_service))
+app.include_router(
+    build_goal_decompositions_router(
+        goal_decomposition_service,
+        goal_decomposition_generation_service,
+    )
+)
 extension_runtime_registry = ExtensionRuntimeRegistry(
     extension_service,
     work_item_service.task_source_registry,
