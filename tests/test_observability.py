@@ -18,11 +18,13 @@ from codex_web.observability import (
     CORRELATION_HEADER,
     JsonFormatter,
     RuntimeHealth,
+    RuntimeLogBuffer,
     RuntimeMetrics,
     RuntimeTracer,
     correlated,
     current_correlation,
     install_observability,
+    log_event,
     sanitize_telemetry,
 )
 
@@ -30,6 +32,101 @@ from codex_web.observability import (
 class _Host:
     def __init__(self) -> None:
         self.hub = EventHub()
+
+
+class RuntimeLogBufferTests(unittest.TestCase):
+    def test_buffer_is_tenant_scoped_redacted_and_omits_freeform_message(self) -> None:
+        buffer = RuntimeLogBuffer(max_entries=10, retention_seconds=300)
+        record = logging.LogRecord(
+            "codex_web.test",
+            logging.WARNING,
+            __file__,
+            1,
+            "freeform secret should never be returned",
+            (),
+            None,
+        )
+        record.structured = {
+            "event": "action.failed",
+            "api_token": "must-not-leak",
+            "provider": "reference",
+        }
+
+        with correlated(
+            correlation_id="corr-log-a",
+            causation_id="cause-log-a",
+            tenant_id="org-a",
+            workspace_id="ws-a",
+            work_item_ref="group/app#1",
+        ):
+            buffer.emit(record)
+
+        own, truncated = buffer.query(
+            organization_id="org-a",
+            workspace_id="ws-a",
+            window_seconds=300,
+            limit=10,
+        )
+        foreign, _ = buffer.query(
+            organization_id="org-b",
+            workspace_id="ws-b",
+            window_seconds=300,
+            limit=10,
+        )
+
+        self.assertFalse(truncated)
+        self.assertEqual(len(own), 1)
+        self.assertEqual(foreign, [])
+        self.assertEqual(own[0]["event"], "action.failed")
+        self.assertEqual(own[0]["correlationId"], "corr-log-a")
+        self.assertEqual(own[0]["fields"]["api_token"], "[REDACTED]")
+        self.assertEqual(own[0]["fields"]["provider"], "reference")
+        self.assertEqual(own[0]["classification"], "internal")
+        self.assertTrue(own[0]["telemetryOnly"])
+        self.assertNotIn("message", own[0])
+        self.assertNotIn("exception", own[0])
+
+    def test_buffer_query_filters_and_bounds_results_deterministically(self) -> None:
+        buffer = RuntimeLogBuffer(max_entries=10, retention_seconds=300)
+        logger = logging.getLogger("codex_web.buffer-test")
+        for index, event in enumerate(("first", "second", "third")):
+            record = logging.LogRecord(
+                logger.name,
+                logging.INFO if index < 2 else logging.ERROR,
+                __file__,
+                index + 1,
+                "not returned",
+                (),
+                None,
+            )
+            record.structured = {"event": event, "sequence": index}
+            with correlated(
+                correlation_id="corr-shared" if index < 2 else "corr-other",
+                tenant_id="org-a",
+                workspace_id="ws-a",
+            ):
+                buffer.emit(record)
+
+        rows, truncated = buffer.query(
+            organization_id="org-a",
+            workspace_id="ws-a",
+            window_seconds=300,
+            limit=1,
+            correlation_id="corr-shared",
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "second")
+
+        error_rows, _ = buffer.query(
+            organization_id="org-a",
+            workspace_id="ws-a",
+            window_seconds=300,
+            limit=10,
+            level="ERROR",
+            event="third",
+        )
+        self.assertEqual([item["event"] for item in error_rows], ["third"])
 
 
 class RuntimeMetricsTests(unittest.TestCase):
@@ -123,6 +220,7 @@ class RuntimeMetricsTests(unittest.TestCase):
         self.assertIn("/api/metrics", paths)
         self.assertIn("/api/health", paths)
         self.assertIn("/api/traces/recent", paths)
+        self.assertIn("/api/logs/recent", paths)
         self.assertIn("/api/observability", paths)
 
     def test_http_correlation_is_propagated_and_observable_without_model_calls(self) -> None:
@@ -193,6 +291,7 @@ class RuntimeMetricsTests(unittest.TestCase):
                 "/api/metrics",
                 "/api/health",
                 "/api/traces/recent",
+                "/api/logs/recent",
                 "/api/observability",
             ):
                 self.assertEqual(client.get(path).status_code, 403)
@@ -218,6 +317,111 @@ class RuntimeMetricsTests(unittest.TestCase):
                 update={"service_scopes": ("observability:read",)}
             )
             self.assertEqual(client.get("/api/metrics").status_code, 200)
+
+
+class RuntimeLogApiTests(unittest.TestCase):
+    def test_log_query_enforces_scope_redaction_filters_and_bounds(self) -> None:
+        app = FastAPI()
+        host = _Host()
+        install_observability(app, host)
+        app.state.runtime_log_buffer.clear()
+        current = {
+            "actor": AuthenticationActor(
+                identity_id="operator",
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id="org-a",
+                workspace_id="ws-a",
+                roles=(MembershipRole.ADMIN,),
+                assurance=AuthenticationAssurance.PRIMARY,
+            )
+        }
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = current["actor"]
+            return await call_next(request)
+
+        logger = logging.getLogger("codex_web.api-log-test")
+        with correlated(
+            correlation_id="corr-api",
+            causation_id="cause-api",
+            tenant_id="org-a",
+            workspace_id="ws-a",
+            execution_id="exec-1",
+            action_intent_id="intent-1",
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "provider.failed",
+                "freeform provider failure with secret-looking text",
+                provider="reference",
+                access_token="must-not-leak",
+            )
+        with correlated(
+            correlation_id="corr-foreign",
+            tenant_id="org-b",
+            workspace_id="ws-b",
+        ):
+            log_event(
+                logger,
+                logging.INFO,
+                "foreign.event",
+                "foreign tenant event",
+                provider="other",
+            )
+
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/logs/recent",
+                params={
+                    "correlation_id": "corr-api",
+                    "level": "error",
+                    "limit": 1,
+                    "window_seconds": 900,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["classification"], "internal")
+            self.assertEqual(payload["retentionSeconds"], 3600)
+            self.assertEqual(payload["maxResultBytes"], 64 * 1024)
+            self.assertTrue(payload["telemetryOnly"])
+            item = payload["items"][0]
+            self.assertEqual(item["event"], "provider.failed")
+            self.assertEqual(item["executionId"], "exec-1")
+            self.assertEqual(item["actionIntentId"], "intent-1")
+            self.assertEqual(item["fields"]["access_token"], "[REDACTED]")
+            self.assertNotIn("message", item)
+            self.assertNotIn("foreign.event", json.dumps(payload))
+
+            self.assertEqual(
+                client.get("/api/logs/recent", params={"limit": 101}).status_code,
+                422,
+            )
+            self.assertEqual(
+                client.get(
+                    "/api/logs/recent",
+                    params={"window_seconds": 86401},
+                ).status_code,
+                422,
+            )
+
+            current["actor"] = current["actor"].model_copy(
+                update={"roles": (MembershipRole.MEMBER,)}
+            )
+            self.assertEqual(client.get("/api/logs/recent").status_code, 403)
+
+            current["actor"] = AuthenticationActor(
+                identity_id="observer-service",
+                principal_kind=PrincipalKind.SERVICE,
+                organization_id="org-a",
+                workspace_id="ws-a",
+                assurance=AuthenticationAssurance.SERVICE_TOKEN,
+                service_scopes=("observability:read",),
+            )
+            self.assertEqual(client.get("/api/logs/recent").status_code, 200)
 
 
 class CorrelationAndHealthTests(unittest.TestCase):
