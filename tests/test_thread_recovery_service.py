@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI, HTTPException
 
@@ -38,6 +39,48 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail["code"], "thread_replaced")
         self.assertEqual(raised.exception.detail["newThreadId"], "new")
 
+    def test_active_turn_stale_timeout_defaults_invalid_and_clamps(self) -> None:
+        service = ThreadRecoveryService(SimpleNamespace())
+
+        with patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": ""}, clear=False):
+            self.assertEqual(service.active_turn_stale_seconds(), 120.0)
+        with patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": "bad"}, clear=False):
+            self.assertEqual(service.active_turn_stale_seconds(), 120.0)
+        with patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": "5"}, clear=False):
+            self.assertEqual(service.active_turn_stale_seconds(), 30.0)
+        with patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": "240"}, clear=False):
+            self.assertEqual(service.active_turn_stale_seconds(), 240.0)
+
+    def test_active_turn_stale_detection_and_release_preserve_legacy_behavior(self) -> None:
+        active_turns = {"thread-1": SimpleNamespace(updated_at=800.0)}
+        append_event = Mock()
+        clear_active = Mock()
+        host = SimpleNamespace(
+            _load_active_turns=lambda: active_turns,
+            _append_bot_event=append_event,
+            _clear_thread_active=clear_active,
+        )
+        service = ThreadRecoveryService(host)
+
+        with (
+            patch("codex_web.services.thread_recovery.time.time", return_value=1000.0),
+            patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": "120"}, clear=False),
+        ):
+            self.assertTrue(service.active_turn_is_stale("thread-1"))
+            self.assertFalse(service.active_turn_is_stale(None))
+            self.assertFalse(service.active_turn_is_stale("missing"))
+            self.assertFalse(service.active_turn_is_stale("thread-1", max_age=250.0))
+            service.release_stale_active_turn("thread-1", "queue-recovery")
+
+        append_event.assert_called_once_with(
+            {
+                "type": "stale_active_turn_released",
+                "thread_id": "thread-1",
+                "reason": "queue-recovery",
+            }
+        )
+        clear_active.assert_called_once_with("thread-1")
+
     def test_installer_rebinds_recovery_compatibility_entrypoints(self) -> None:
         app = FastAPI()
         host = SimpleNamespace()
@@ -50,6 +93,9 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         self.assertIs(host._retarget_bot_thread_state.__self__, service)
         self.assertIs(host._replacement_thread_id.__self__, service)
         self.assertIs(host._raise_if_thread_replaced.__self__, service)
+        self.assertIs(host._active_turn_stale_seconds.__self__, service)
+        self.assertIs(host._active_turn_is_stale.__self__, service)
+        self.assertIs(host._release_stale_active_turn.__self__, service)
 
 
 class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
