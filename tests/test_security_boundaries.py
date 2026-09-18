@@ -51,6 +51,11 @@ from codex_web.services.security_boundary import (
     redact_boundary_payload,
 )
 from codex_web.services.work_item_contracts import WorkItemContractService
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    PrincipalKind,
+)
 from codex_web.models import WorkItemState
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
@@ -139,6 +144,14 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.identity = IdentityService(IdentityStateStore(self.sqlite))
         self.identity.bootstrap_local()
         self.actor = self.identity.local_trusted_actor()
+        self.worker_actor = AuthenticationActor(
+            identity_id="security-action-worker",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-intent:worker",),
+        )
         self.resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
         self.resource = self.resources.create(
             ResourceCreate(resource_type=ResourceType.OTHER, name="Target"),
@@ -255,14 +268,14 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intent.security_decision.outcome, SecurityDecisionOutcome.ALLOW)
         claimed = self.intents.claim(
             ActionIntentClaimRequest(worker_id="security-worker", lease_seconds=30),
-            actor=self.actor,
+            actor=self.worker_actor,
             intent_id=intent.id,
         )
         self.assertIsNotNone(claimed)
         completed = await self.intents.execute_claimed(
             intent.id,
             "security-worker",
-            actor=self.actor,
+            actor=self.worker_actor,
         )
         self.assertEqual(completed.status, ActionIntentStatus.SUCCEEDED)
         self.assertEqual(provider.executions, 1)
@@ -321,7 +334,7 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intent.status, ActionIntentStatus.PENDING)
         self.intents.claim(
             ActionIntentClaimRequest(worker_id="security-worker", lease_seconds=30),
-            actor=self.actor,
+            actor=self.worker_actor,
             intent_id=intent.id,
         )
 
@@ -344,7 +357,7 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         completed = await self.intents.execute_claimed(
             intent.id,
             "security-worker",
-            actor=self.actor,
+            actor=self.worker_actor,
         )
         self.assertEqual(completed.status, ActionIntentStatus.CANCELLED)
         self.assertEqual(provider.executions, 0)
