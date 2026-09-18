@@ -426,6 +426,23 @@ class BubblewrapExecutionBackend:
             except (ProcessLookupError, OSError):
                 pass
 
+    def terminate_process(self, process) -> None:
+        self._kill_process_group(process)
+
+    def execution_disk_usage(
+        self,
+        workspace_path: Path,
+        git_metadata_path: Path | None = None,
+    ) -> int:
+        return self._execution_disk_usage(
+            workspace_path.resolve(),
+            (
+                git_metadata_path.resolve()
+                if git_metadata_path is not None
+                else self.discover_git_metadata(workspace_path)
+            ),
+        )
+
     def spawn_interactive(
         self,
         assignment: ExecutionAssignment,
