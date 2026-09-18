@@ -167,16 +167,16 @@ class AssignmentBoundModelEgressBroker:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        try:
-            while True:
-                chunk = await reader.read(64 * 1024)
-                if not chunk:
-                    return
-                writer.write(chunk)
-                await writer.drain()
-        finally:
-            with contextlib.suppress(Exception):
-                writer.close()
+        while True:
+            chunk = await reader.read(64 * 1024)
+            if not chunk:
+                with contextlib.suppress(Exception):
+                    if writer.can_write_eof():
+                        writer.write_eof()
+                        await writer.drain()
+                return
+            writer.write(chunk)
+            await writer.drain()
 
     async def _deny(
         self,
@@ -204,7 +204,12 @@ class AssignmentBoundModelEgressBroker:
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
         try:
-            self._validate_current()
+            try:
+                self._validate_current()
+            except Exception as exc:
+                raise CodexModelEgressDeniedError(
+                    "assignment model egress authority is stale"
+                ) from exc
             raw = await asyncio.wait_for(
                 reader.readuntil(b"\r\n\r\n"),
                 timeout=10,
@@ -226,7 +231,12 @@ class AssignmentBoundModelEgressBroker:
                 await self._deny(writer, "405 Method Not Allowed")
                 return
             endpoint = self._destination(target)
-            self._validate_current()
+            try:
+                self._validate_current()
+            except Exception as exc:
+                raise CodexModelEgressDeniedError(
+                    "assignment model egress authority is stale"
+                ) from exc
             upstream_reader, upstream_writer = await asyncio.open_connection(
                 endpoint.host,
                 endpoint.port,
