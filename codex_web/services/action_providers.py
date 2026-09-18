@@ -215,7 +215,11 @@ class ActionProviderRegistry:
                     actor=actor,
                 )
                 actions = [item.model_dump(mode="json") for item in provider.actions()]
-                status = "available" if binding.enabled else "disabled"
+                status = (
+                    "available"
+                    if binding.enabled and actions
+                    else ("disabled" if not binding.enabled else "unavailable")
+                )
             except ActionProviderError:
                 actions = []
                 status = "unavailable"
