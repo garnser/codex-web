@@ -26,6 +26,13 @@ from codex_web.action_providers import (
     ActionResult,
     ActionVerification,
 )
+from codex_web.entitlements import (
+    CapabilityEntitlementUpdate,
+    EntitlementMode,
+    QuotaBehavior,
+    QuotaPolicyUpdate,
+    QuotaWindow,
+)
 from codex_web.artifact_evidence import (
     EvidenceCreate,
     EvidenceRequirement,
@@ -37,12 +44,14 @@ from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.services.action_intents import ActionIntentService, ActionIntentUnsafeRetryError
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
 from codex_web.services.identity import IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -220,11 +229,13 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             ArtifactEvidenceStore(self.sqlite),
             work_item_host=self.host,
         )
+        self.entitlements = EntitlementService(EntitlementStore(self.sqlite))
         self.service = ActionIntentService(
             ActionIntentStore(self.sqlite),
             self.execution,
             artifact_evidence=self.artifacts,
             work_item_host=self.host,
+            entitlements=self.entitlements,
         )
         self.binding = self.registry.bind(
             ActionProviderBindingCreate(
@@ -272,6 +283,90 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             "worker-1",
             actor=self.actor,
         )
+
+    async def test_enforced_entitlement_denies_intent_creation_without_capability(self) -> None:
+        self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
+
+        with self.assertRaises(EntitlementDeniedError):
+            self._create()
+
+        self.assertEqual(self.reference.values, {})
+
+    async def test_existing_idempotent_intent_is_retrievable_after_entitlement_revocation(self) -> None:
+        stable = self._request(idempotency_key="stable-before-plan-change")
+        first = self.service.create(
+            ActionIntentCreate(
+                binding_id=self.binding.id,
+                request=stable,
+                work_item_ref=self.work_item.ref,
+            ),
+            actor=self.actor,
+        )
+
+        self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
+        with self.assertRaises(EntitlementDeniedError):
+            self._create()
+
+        duplicate = self.service.create(
+            ActionIntentCreate(
+                binding_id=self.binding.id,
+                request=stable,
+                work_item_ref=self.work_item.ref,
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(duplicate.id, first.id)
+
+    async def test_hard_quota_denies_before_provider_execution_and_keeps_attempt_unspent(self) -> None:
+        self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
+        self.entitlements.set_capability(
+            "external_actions",
+            CapabilityEntitlementUpdate(enabled=True),
+            actor=self.actor,
+        )
+        self.entitlements.set_quota(
+            "external_action_attempts",
+            QuotaPolicyUpdate(
+                limit=0,
+                window=QuotaWindow.LIFETIME,
+                behavior=QuotaBehavior.HARD_STOP,
+            ),
+            actor=self.actor,
+        )
+        intent = self._create()
+
+        completed = await self._execute(intent)
+
+        self.assertEqual(completed.status, ActionIntentStatus.FAILED)
+        self.assertEqual(completed.attempt, 0)
+        self.assertIsNone(completed.lease)
+        self.assertIn("quota_exceeded_hard_stop", completed.last_error)
+        self.assertEqual(self.reference.values, {})
+        self.assertEqual(
+            self.entitlements.usage_total(
+                self.actor,
+                metric="external_action_attempts",
+            ),
+            0,
+        )
+
+    async def test_entitlement_does_not_override_authority_denial(self) -> None:
+        self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
+        self.entitlements.set_capability(
+            "external_actions",
+            CapabilityEntitlementUpdate(enabled=True),
+            actor=self.actor,
+        )
+        intent = self._create(
+            authority_decision=ActionDecisionSnapshot(
+                outcome=ActionDecisionOutcome.DENY,
+                source="policy:test",
+                reason="not authorized",
+            ),
+        )
+
+        self.assertEqual(intent.status, ActionIntentStatus.CANCELLED)
+        self.assertEqual(self.reference.values, {})
 
     async def test_intent_is_durable_before_any_provider_side_effect(self) -> None:
         intent = self._create()
