@@ -51,6 +51,7 @@ class ApplicationCompositionTests(unittest.TestCase):
             "/api/resources": "resources",
             "/api/action-providers": "action-providers",
             "/api/execution-workspaces": "execution-workspaces",
+            "/api/artifacts": "artifact-evidence",
             "/api/threads": "threads",
             "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
