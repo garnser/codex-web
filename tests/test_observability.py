@@ -209,6 +209,24 @@ class CorrelationAndHealthTests(unittest.TestCase):
 
 
 class EventHubObservabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_publish_inherits_correlation_into_canonical_event_fanout(self) -> None:
+        hub = EventHub()
+        seen: list[dict] = []
+        hub.subscribe(seen.append)
+
+        with correlated(
+            correlation_id="corr-event",
+            causation_id="request-1",
+            workspace_id="workspace-a",
+            work_item_ref="TASK-9",
+        ):
+            await hub.publish({"type": "work.updated"})
+
+        self.assertEqual(seen[0]["correlation_id"], "corr-event")
+        self.assertEqual(seen[0]["causation_id"], "request-1")
+        self.assertEqual(seen[0]["workspace_id"], "workspace-a")
+        self.assertEqual(seen[0]["work_item_ref"], "TASK-9")
+
     async def test_listener_failure_is_counted_without_breaking_other_listeners(self) -> None:
         hub = EventHub()
         metrics = RuntimeMetrics()
