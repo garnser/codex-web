@@ -268,6 +268,77 @@
                     <button id="refresh-identity-admin" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="identity-admin-status" class="form-result" aria-live="polite">Open to load identity state.</div>
+                  <details id="identity-authority-panel">
+                    <summary>Identity & authority mutations</summary>
+                    <div id="identity-authority-requirement" class="form-result">Sensitive identity administration requires canonical admin authority and MFA/step-up assurance.</div>
+                    <details>
+                      <summary>Create organization</summary>
+                      <div class="route-test">
+                        <input id="identity-create-org-name" placeholder="Organization name" />
+                        <input id="identity-create-org-id" placeholder="Optional stable organization ID" />
+                        <button id="identity-create-org" type="button" class="ghost-button">Create organization</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Create workspace</summary>
+                      <div class="route-test">
+                        <select id="identity-create-workspace-org"></select>
+                        <input id="identity-create-workspace-name" placeholder="Workspace name" />
+                        <input id="identity-create-workspace-id" placeholder="Optional stable workspace ID" />
+                        <button id="identity-create-workspace" type="button" class="ghost-button">Create workspace</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Create human identity</summary>
+                      <div class="route-test">
+                        <input id="identity-create-human-name" placeholder="Display name" />
+                        <input id="identity-create-human-email" type="email" placeholder="Email (optional)" />
+                        <input id="identity-create-human-id" placeholder="Optional stable human ID" />
+                        <button id="identity-create-human" type="button" class="ghost-button">Create human</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Create service identity</summary>
+                      <div class="route-test">
+                        <input id="identity-create-service-name" placeholder="Service name" />
+                        <textarea id="identity-create-service-description" rows="2" placeholder="Description"></textarea>
+                        <button id="identity-create-service" type="button" class="ghost-button">Create service identity</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Add membership</summary>
+                      <div class="route-test">
+                        <select id="identity-membership-identity"></select>
+                        <select id="identity-membership-org"></select>
+                        <select id="identity-membership-workspace"><option value="">Organization-wide membership</option></select>
+                        <select id="identity-membership-roles" multiple size="4">
+                          <option value="owner">Owner</option>
+                          <option value="admin">Admin</option>
+                          <option value="approver">Approver</option>
+                          <option value="member" selected>Member</option>
+                        </select>
+                        <select id="identity-membership-teams" multiple size="3"></select>
+                        <button id="identity-create-membership" type="button" class="ghost-button">Add membership</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Create service token</summary>
+                      <div class="route-test">
+                        <select id="identity-token-service"></select>
+                        <select id="identity-token-org"></select>
+                        <select id="identity-token-workspace"></select>
+                        <input id="identity-token-scopes" placeholder="Scopes, comma separated" />
+                        <input id="identity-token-expires" type="datetime-local" />
+                        <button id="identity-create-token" type="button" class="ghost-button">Create service token</button>
+                        <div id="identity-created-token-result" class="form-result" hidden>
+                          <strong>One-time service token</strong>
+                          <pre id="identity-created-token"></pre>
+                          <button id="identity-clear-created-token" type="button" class="ghost-button">Clear token from browser</button>
+                        </div>
+                      </div>
+                    </details>
+                    <div id="identity-authority-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="section-title"><span>Current actor & tenant</span></div>
                   <div id="identity-current" class="comm-log"></div>
                   <div class="section-title"><span>Organizations & workspaces</span></div>
@@ -403,6 +474,7 @@
     <script src="static/resource_catalog_admin.js" type="module"></script>
     <script src="static/resource_catalog_management.js" type="module"></script>
     <script src="static/identity_admin.js" type="module"></script>
+    <script src="static/identity_authority_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>

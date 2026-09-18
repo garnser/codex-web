@@ -38,6 +38,7 @@ class IdentityAdminUiTests(unittest.TestCase):
         self.assertNotIn("token_hash", javascript)
         self.assertNotIn("session_token_hash", javascript)
         self.assertNotIn("refresh_token_hash", javascript)
+        self.assertIn("codex:identity-state-rendered", javascript)
 
 
 if __name__ == "__main__":

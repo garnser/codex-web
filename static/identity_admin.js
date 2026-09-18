@@ -141,6 +141,9 @@
       renderSessions(state);
       renderTokens(state);
       renderRecovery(state);
+      window.dispatchEvent(new CustomEvent("codex:identity-state-rendered", {
+        detail: { actor, state },
+      }));
       if (status) status.textContent = `Identity state loaded · current assurance: ${actor.assurance}`;
     } catch (error) {
       if (status) status.textContent = `Identity administration unavailable: ${error.message}`;
