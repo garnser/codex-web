@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+
+from codex_web.action_providers import ACTION_PROVIDER_CONTRACT
 from types import SimpleNamespace
 
 from codex_web.compatibility import (
@@ -13,7 +15,10 @@ from codex_web.compatibility import (
     negotiate,
 )
 from codex_web.models import TaskSourceIdentity, WorkItemState
+from codex_web.services.action_providers import ActionProviderRegistry
 from codex_web.services.task_source_runtime import TaskSourceRegistry, TaskSourceResolutionError
+from codex_web.storage.action_providers import ActionProviderStateStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.services.task_sources import TaskSourceCapabilities, TaskSourceEvent
 
 
@@ -102,6 +107,30 @@ class CompatibilityTests(unittest.TestCase):
         )
         with self.assertRaises(ContractCompatibilityError):
             registry.migrate({}, from_version="9.0", to_version="10.0")
+
+    def test_action_provider_contract_is_exact_and_registry_rejects_future_version(self) -> None:
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.0")
+
+        class IncompatibleProvider:
+            contract_version = "2.0"
+            provider_type = "future"
+            provider_instance = "test"
+
+            @staticmethod
+            def actions():
+                return ()
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ActionProviderRegistry(
+                ActionProviderStateStore(
+                    SQLiteStateStore(Path(directory) / "state.sqlite3")
+                )
+            )
+            with self.assertRaises(ContractCompatibilityError):
+                registry.register(IncompatibleProvider())
 
     def test_task_source_registry_accepts_legacy_v1_adapter_and_rejects_incompatible_one(self) -> None:
         state = WorkItemState(
