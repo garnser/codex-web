@@ -17,6 +17,7 @@ from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
+from codex_web.api.goals import build_goals_router
 from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
@@ -90,6 +91,7 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.goals import GoalService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.projects import ProjectService
@@ -127,6 +129,7 @@ from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.goals import GoalStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
@@ -496,6 +499,11 @@ work_graph_service = WorkGraphService(
 app.state.work_graph_store = work_graph_store
 app.state.work_graph_service = work_graph_service
 app.include_router(build_work_graph_router(work_graph_service, project_service))
+goal_store = GoalStore(state_store)
+goal_service = GoalService(goal_store, project_service, work_graph_service)
+app.state.goal_store = goal_store
+app.state.goal_service = goal_service
+app.include_router(build_goals_router(goal_service))
 extension_runtime_registry = ExtensionRuntimeRegistry(
     extension_service,
     work_item_service.task_source_registry,
