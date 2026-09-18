@@ -9,8 +9,13 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.thread_bootstrap_bindings import (
+    ThreadBootstrapBindingNotFoundError,
+    ThreadBootstrapBindingService,
+)
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 
 
@@ -23,10 +28,14 @@ class TurnExecutionService:
         *,
         binding_service: TurnExecutionBindingService | None = None,
         session_manager: AssignmentBoundCodexSessionManager | None = None,
+        bootstrap_bindings: ThreadBootstrapBindingService | None = None,
+        control_actor: AuthenticationActor | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
         self.session_manager = session_manager
+        self.bootstrap_bindings = bootstrap_bindings
+        self.control_actor = control_actor
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -187,9 +196,24 @@ class TurnExecutionService:
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and thread_id in self.host._load_active_turns())
 
+    def _bootstrap_binding_for_thread(self, thread_id: str):
+        service = self.bootstrap_bindings
+        actor = self.control_actor
+        if service is None or actor is None:
+            return None
+        try:
+            return service.get_by_thread(thread_id, actor)
+        except ThreadBootstrapBindingNotFoundError:
+            return None
+
     def _assignment_session_for_thread(self, thread_id: str):
         active = self.host._load_active_turns().get(thread_id)
-        if active is None or not active.assignment_id:
+        assignment_id = active.assignment_id if active is not None else None
+        bootstrap = None
+        if not assignment_id:
+            bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            assignment_id = bootstrap.assignment_id if bootstrap is not None else None
+        if not assignment_id:
             return None
         manager = self.session_manager
         if manager is None:
@@ -197,12 +221,14 @@ class TurnExecutionService:
                 status_code=503,
                 detail="assignment-bound Codex session manager is unavailable",
             )
-        session = manager.get(active.assignment_id)
+        session = manager.get(assignment_id)
         if session is None:
-            raise HTTPException(
-                status_code=503,
-                detail="active thread assignment has no live Codex session",
+            detail = (
+                "thread bootstrap binding has no live Codex session"
+                if bootstrap is not None
+                else "active thread assignment has no live Codex session"
             )
+            raise HTTPException(status_code=503, detail=detail)
         session.validate_current()
         return session
 
