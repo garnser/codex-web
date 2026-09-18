@@ -252,6 +252,7 @@ class ExtensionInstallation(BaseModel):
     manifest: ExtensionManifest
     manifest_history: tuple[ExtensionManifest, ...] = ()
     package_verification: ExtensionPackageVerification
+    package_ref: str | None = None
     deployment_mode: ExtensionDeploymentMode
     lifecycle: ExtensionLifecycleState = ExtensionLifecycleState.INSTALLED
     installed_by: str = Field(min_length=1)
