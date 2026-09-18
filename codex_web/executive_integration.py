@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from codex_web.api.identity import request_actor
-from codex_web.execution_contracts import ROLE_CONTRACTS
+from codex_web.execution_contracts import execution_roles
 from codex_web.identity import AuthenticationActor
 from codex_web.model_gateway import (
     MODEL_CLASS_HIGH_REASONING,
@@ -378,7 +378,7 @@ def install_executive_integrated(
                 }
                 for agent in AGENTS.values()
             ],
-            "executionRoles": [role.public() for role in ROLE_CONTRACTS.values()],
+            "executionRoles": [role.public() for role in execution_roles()],
             **service.provider_status(),
         }
 
