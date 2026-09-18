@@ -163,6 +163,22 @@ class ActionProviderBinding(BaseModel):
         return self
 
 
+class ActionProviderBindingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    provider_type: str = Field(min_length=1)
+    provider_instance: str = Field(min_length=1)
+    project_id: str | None = None
+    resource_ids: tuple[str, ...] = ()
+    credential_ref: str | None = None
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def normalize_resources(self) -> "ActionProviderBindingCreate":
+        self.resource_ids = tuple(dict.fromkeys(self.resource_ids))
+        return self
+
+
 class ActionProviderState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
