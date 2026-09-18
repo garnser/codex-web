@@ -24,6 +24,7 @@ from codex_web.input_plugins import (
 )
 from codex_web.services.input_plugin_definitions import (
     InputPluginCatalog,
+    InputPluginDefinitionError,
     default_input_plugin_catalog,
 )
 
@@ -188,7 +189,10 @@ class SkillInputPluginTests(unittest.IsolatedAsyncioTestCase):
             )
 
             default_catalog = default_input_plugin_catalog()
-            with self.assertRaisesRegex(Exception, "implementation unavailable"):
+            with self.assertRaisesRegex(
+                InputPluginDefinitionError,
+                "implementation unavailable",
+            ):
                 default_catalog.get("prompt-master", "1.8.0")
 
             configured = default_input_plugin_catalog(skill_root=str(root))
