@@ -539,6 +539,41 @@
                     <button id="refresh-definitions" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="definition-registry-status" class="form-result" aria-live="polite">Open to load versioned operational definitions.</div>
+                  <details id="definition-management-panel">
+                    <summary>Definition lifecycle management</summary>
+                    <div id="definition-management-assurance" class="form-result">Definition mutations require canonical administrative authority and elevated assurance.</div>
+                    <details>
+                      <summary>Create draft revision</summary>
+                      <div class="route-test">
+                        <label>Start from revision <select id="definition-draft-source"><option value="">New definition</option></select></label>
+                        <label>Definition ID <input id="definition-draft-id" placeholder="stable.definition-id" /></label>
+                        <label>Schema <select id="definition-draft-schema"></select></label>
+                        <label>Scope <select id="definition-draft-scope">
+                          <option value="global">Global</option>
+                          <option value="organization">Organization</option>
+                          <option value="workspace">Workspace</option>
+                          <option value="project">Project</option>
+                        </select></label>
+                        <label>Scope target <select id="definition-draft-scope-id"></select></label>
+                        <label>Reason <input id="definition-draft-reason" placeholder="Why this revision is needed" /></label>
+                        <label>Effective from <input id="definition-draft-from" type="datetime-local" /></label>
+                        <label>Effective until <input id="definition-draft-until" type="datetime-local" /></label>
+                        <label>Minimum engine <input id="definition-draft-min-engine" placeholder="Optional" /></label>
+                        <label>Maximum engine <input id="definition-draft-max-engine" placeholder="Optional" /></label>
+                        <label>Validated definition payload <textarea id="definition-draft-payload" rows="10" spellcheck="false" placeholder="{ }"></textarea></label>
+                        <button id="create-definition-draft" type="button" class="ghost-button">Create draft</button>
+                      </div>
+                    </details>
+                    <details>
+                      <summary>Export / import visible definitions</summary>
+                      <div class="route-test">
+                        <button id="export-definitions" type="button" class="ghost-button">Load tenant-visible export</button>
+                        <textarea id="definition-transfer-document" rows="10" spellcheck="false" placeholder="Export document or import document"></textarea>
+                        <button id="import-definitions" type="button" class="ghost-button">Import as drafts</button>
+                      </div>
+                    </details>
+                    <div id="definition-management-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="route-test">
                     <input id="definition-search" type="search" placeholder="Search definition ID, kind, actor, checksum or payload" />
                     <select id="definition-kind-filter"><option value="">All kinds</option></select>
@@ -710,6 +745,7 @@
     <script src="static/model_gateway_management.js" type="module"></script>
     <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
+    <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
