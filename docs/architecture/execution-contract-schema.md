@@ -22,7 +22,7 @@ The contract follows the repository architecture policy:
 
 ## Version 1.4
 
-Schema `1.4` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
+Schema `1.4` is a backward-compatible evolution of the v1 contract family. It retains the structured resume/accounting and isolated-workspace target introduced by earlier v1 revisions and adds machine-readable evidence requirements without changing canonical ownership or permission semantics.
 
 `ExecutionContractV1` contains:
 
@@ -45,7 +45,7 @@ The Pydantic models use `extra="forbid"` so unknown fields cannot silently chang
 
 ### Resume inputs
 
-The v1.4 input envelope adds:
+The v1 family input envelope includes:
 
 ```yaml
 retry_attempt: 0
@@ -62,7 +62,7 @@ Only the latest checkpoint id and summary are copied into the contract. Full che
 
 ### Accounting envelope
 
-Every v1.4 contract includes:
+Every current v1.4 contract includes:
 
 ```yaml
 accounting:
@@ -115,7 +115,7 @@ A future schema change must:
 
 ## Execution workspace target
 
-Schema 1.4 adds the optional `target.workspace` projection. It carries canonical execution-workspace and lease identity, resource IDs, isolated path/branch, pinned base/head revision, lifecycle status, and lease expiry. The field is derived from canonical Work Item execution state; prompts do not invent workspace ownership.
+Schema 1.3 introduced the optional `target.workspace` projection; schema 1.4 retains it. It carries canonical execution-workspace and lease identity, resource IDs, isolated path/branch, pinned base/head revision, lifecycle status, and lease expiry. The field is derived from canonical Work Item execution state; prompts do not invent workspace ownership.
 
 
 ## Evidence requirements
