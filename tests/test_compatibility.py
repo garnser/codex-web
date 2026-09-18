@@ -118,7 +118,7 @@ class CompatibilityTests(unittest.TestCase):
             registry.migrate({}, from_version="9.0", to_version="10.0")
 
     def test_action_provider_contract_is_exact_and_registry_rejects_future_version(self) -> None:
-        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.0")
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.1")
 
         class IncompatibleProvider:
             contract_version = "2.0"
