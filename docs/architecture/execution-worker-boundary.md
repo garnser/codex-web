@@ -28,7 +28,7 @@ scope.
 
 Assignments contain bounded inputs only:
 
-- canonical work/execution/project/resource identity;
+- canonical execution subject, execution, project and resource identity;
 - base revision and execution-contract version;
 - required worker capabilities;
 - sandbox and approval policy;
@@ -41,6 +41,27 @@ Assignments contain bounded inputs only:
 
 The assignment is not authority to perform arbitrary external side effects.
 Those still flow through ActionProvider/ActionIntent.
+
+### Execution subject and v1.1 compatibility
+
+Worker assignments and execution workspaces use one shared typed execution
+subject:
+
+- `work_item:<ref>` for canonical Work Item execution;
+- `thread:<thread-id>` for interactive/web/bot thread execution.
+
+The subject kind is explicit structured state. Thread executions must not be
+encoded as fake `work_item_ref` values. `work_item_ref` remains a
+backward-compatible projection only for `work_item` subjects so existing
+Work Item APIs and execution-contract attribution remain stable.
+
+The persisted execution-worker and execution-workspace state contracts are
+version `1.1`. Loading `1.0` deterministically migrates each legacy
+`work_item_ref` to the equivalent `{kind: "work_item", ref: ...}` subject.
+Conflicting subject/work-item projections fail validation rather than guessing.
+Workspace identity, branch derivation and assignment/workspace matching use the
+canonical subject. Work Item synchronization is skipped entirely for non-Work
+Item subjects.
 
 ## Fenced leases
 
@@ -73,8 +94,9 @@ self-grant capabilities from assignment input.
 
 Workers submit only bounded completion metadata and canonical artifact/evidence
 IDs. Produced files/results must be uploaded through Artifact/Evidence APIs.
-Canonical Work Item state is mutated by the control plane after verifying the
-assignment lease and result; workers do not receive direct database access.
+Canonical Work Item state is mutated by the control plane only when the
+execution subject is a real Work Item and after verifying the assignment lease
+and result; workers do not receive direct database access.
 
 ## Local mode
 
@@ -109,9 +131,9 @@ should produce canonical evidence through #136 where applicable.
 ## UI impact
 
 #141/#125 should expose worker pools, identity, capability set, version,
-heartbeat/health, concurrency, assignment/fence/lease status, drain/quarantine/
-revocation, sandbox/network/resource limits, and failure evidence. Raw lease
-tokens and secret material must never be rendered.
+heartbeat/health, concurrency, execution subject, assignment/fence/lease status,
+drain/quarantine/revocation, sandbox/network/resource limits, and failure
+evidence. Raw lease tokens and secret material must never be rendered.
 
 
 ## Local isolated execution backend
@@ -132,7 +154,7 @@ A local command execution requires all of the following:
 - a canonical execution assignment already authorized by the control plane;
 - the canonical local worker identity and active fenced lease;
 - an active #135 filesystem execution workspace matching the execution,
-  Work Item, project/resource set and base revision;
+  execution subject, project/resource set and base revision;
 - `command_execution` in the assignment capability set;
 - a sandbox other than `danger-full-access`;
 - a network-disabled policy that Bubblewrap can actually enforce;
@@ -286,8 +308,8 @@ app-server/thread compatibility transport has **not** silently become an
 assignment-bound worker process.
 
 The delegation primitive is the credential/state seam required by that move.
-#166 still owns migrating the long-lived compatibility transport so each worker
-Codex process is associated with canonical assignment/workspace/lease state and
-uses this delegation contract. Until that migration is complete, new untrusted
+#294 owns migrating the long-lived compatibility transport so each worker Codex
+process is associated with canonical assignment/workspace/lease state and uses
+this delegation contract. Until that migration is complete, new untrusted
 command/tool execution paths must use the isolated worker backend rather than
 introducing direct `subprocess` execution in the control plane.
