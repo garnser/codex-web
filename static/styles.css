@@ -1641,3 +1641,91 @@ menu {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Deterministic dependency graph operator surface. */
+.work-graph-canvas {
+  width: 100%;
+  min-height: 260px;
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+#work-graph-svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  min-height: 260px;
+}
+
+.work-graph-edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 2;
+}
+
+.work-graph-edge.relation-parent {
+  stroke-dasharray: 6 5;
+}
+
+.work-graph-edge.critical {
+  stroke: var(--amber);
+  stroke-width: 3;
+}
+
+#work-graph-arrow path {
+  fill: var(--line-strong);
+}
+
+.work-graph-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.work-graph-node rect {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+
+.work-graph-node.status-runnable rect {
+  stroke: var(--accent);
+}
+
+.work-graph-node.status-blocked rect {
+  stroke: var(--amber);
+}
+
+.work-graph-node.status-terminal rect {
+  stroke: var(--faint);
+}
+
+.work-graph-node.critical rect {
+  stroke-width: 3;
+}
+
+.work-graph-node.focused rect,
+.work-graph-node:focus rect {
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 4px var(--focus-ring));
+}
+
+.work-graph-node-title {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.work-graph-node-ref,
+.work-graph-node-state,
+.work-graph-empty {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.work-graph-empty {
+  font-size: 13px;
+}
