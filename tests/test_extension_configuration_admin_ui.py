@@ -23,6 +23,8 @@ class ExtensionConfigurationAdminUiTests(unittest.TestCase):
         )
         self.assertIn('method: "PUT"', javascript)
         self.assertIn("does not grant authority or reveal secret material", javascript)
+        self.assertIn("canMutateMutation", javascript)
+        self.assertIn("requires tenant admin/owner plus MFA/local-trusted assurance", javascript)
         self.assertNotIn("secret.value", javascript)
         self.assertNotIn("/reveal", javascript)
 
