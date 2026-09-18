@@ -31,7 +31,7 @@ class ConfigurationManagementUiTests(unittest.TestCase):
         self.assertIn("SecretBroker reference", javascript)
         self.assertIn("Raw secret values are never configuration", javascript)
         self.assertIn("definition_ref", javascript)
-        self.assertIn("published Definition Registry", javascript)
+        self.assertIn("Published Definition Registry", javascript)
         self.assertIn("feature_flag", javascript)
         self.assertIn("kill_switch_capable", javascript)
         self.assertIn("force_disabled", javascript)
