@@ -27,6 +27,7 @@ from codex_web.services.codex_worker_session import (
     AssignmentBoundCodexSession,
     AssignmentBoundCodexSessionStaleError,
 )
+from codex_web.services.codex_model_egress import CodexModelEgressEndpoint
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.identity import IdentityService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
@@ -118,6 +119,10 @@ class _FakeBackend:
                 "workspace_path": Path(workspace_path),
                 "environment_keys": tuple(sorted((environment or {}).keys())),
                 "access_token_present": bool((environment or {}).get("CODEX_ACCESS_TOKEN")),
+                "environment": dict(environment or {}),
+                "trusted_readonly_mounts": tuple(
+                    kwargs.get("trusted_readonly_mounts") or ()
+                ),
             }
         )
         return process
@@ -367,6 +372,50 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(self.delegation.secret, repr(session.status().public()))
         finally:
             await session.stop()
+
+    async def test_session_brokers_model_egress_without_sharing_worker_network(self) -> None:
+        assignment = self._create_assignment()
+
+        async def sleep(_seconds):
+            await asyncio.sleep(3600)
+
+        session = AssignmentBoundCodexSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+            runtime_factory=_FakeCodexRuntime,
+            watchdog_interval_seconds=0.05,
+            egress_endpoints_resolver=lambda: (
+                CodexModelEgressEndpoint("models.example.test", 443),
+            ),
+            clock=lambda: self.delegation.now,
+            monotonic=lambda: self.delegation.now,
+            sleep=sleep,
+        )
+        await session.start()
+        broker = session.egress_broker
+        self.assertIsNotNone(broker)
+        broker_root = broker.mount_source
+        try:
+            launch = self.backend.spawned[0]
+            self.assertEqual(launch["argv"][:3], ("/usr/bin/python3", "-u", "-c"))
+            self.assertEqual(launch["argv"][-1], "app-server")
+            self.assertIn("HTTPS_PROXY", launch["environment"])
+            self.assertIn("HTTP_PROXY", launch["environment"])
+            self.assertIn("127.0.0.1:8787", launch["environment"]["HTTPS_PROXY"])
+            self.assertNotIn(
+                launch["environment"]["HTTPS_PROXY"],
+                repr(session.status().public()),
+            )
+            self.assertEqual(
+                launch["trusted_readonly_mounts"],
+                ((broker_root, Path("/run/codex-model-egress")),),
+            )
+            self.assertTrue(broker_root.exists())
+        finally:
+            await session.stop()
+
+        self.assertFalse(broker_root.exists())
 
     async def test_session_renews_exact_fenced_assignment_lease(self) -> None:
         assignment = self._create_assignment()

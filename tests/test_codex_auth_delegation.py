@@ -172,6 +172,20 @@ class CodexAuthDelegationTests(unittest.TestCase):
             'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
             joined,
         )
+        for variable in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ):
+            self.assertIn(
+                f'shell_environment_policy.filters.{variable}="exclude"',
+                joined,
+            )
         self.assertNotIn("auth.json", joined)
         self.assertEqual(result["token_copy"], "[REDACTED]")
         self.assertEqual(result["home"], CODEX_WORKER_HOME)

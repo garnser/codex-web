@@ -343,6 +343,7 @@ class BubblewrapExecutionBackend:
         argv: Sequence[str],
         workspace_path: Path,
         git_metadata_path: Path | None = None,
+        trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
     ) -> list[str]:
         self.validate_assignment(assignment)
         if not argv or not str(argv[0]).strip():
@@ -385,6 +386,24 @@ class BubblewrapExecutionBackend:
         )
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
+
+        for source_raw, destination_raw in trusted_readonly_mounts:
+            source = Path(source_raw).resolve(strict=True)
+            destination = Path(destination_raw)
+            if not source.is_dir():
+                raise LocalExecutionPolicyError(
+                    "trusted readonly mount source must be an existing directory"
+                )
+            if not destination.is_absolute():
+                raise LocalExecutionPolicyError(
+                    "trusted readonly mount destination must be absolute"
+                )
+            if destination == workspace or destination.is_relative_to(workspace):
+                raise LocalExecutionPolicyError(
+                    "trusted readonly mount cannot replace or nest inside execution workspace"
+                )
+            command.extend(self._directory_creation_args(destination))
+            command.extend(("--ro-bind", str(source), str(destination)))
 
         metadata = (
             git_metadata_path.resolve(strict=True)
@@ -451,6 +470,7 @@ class BubblewrapExecutionBackend:
         workspace_path: Path,
         environment: Mapping[str, str] | None = None,
         git_metadata_path: Path | None = None,
+        trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -482,6 +502,7 @@ class BubblewrapExecutionBackend:
             argv=argv,
             workspace_path=workspace,
             git_metadata_path=resolved_git_metadata,
+            trusted_readonly_mounts=trusted_readonly_mounts,
         )
         env = self.minimal_environment(extra=environment)
         return self._popen(

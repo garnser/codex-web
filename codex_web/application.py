@@ -74,6 +74,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
+from codex_web.services.codex_model_egress import endpoints_from_provider_base_urls
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
@@ -390,9 +391,32 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
 )
 app.state.local_execution_worker_runtime = local_execution_worker_runtime
 
+def _codex_model_egress_endpoints():
+    providers = model_gateway_service.list_providers(
+        identity_service.local_trusted_actor()
+    )
+    active = [
+        provider
+        for provider in providers
+        if getattr(provider.status, "value", provider.status) == "active"
+    ]
+    include_first_party = (
+        not active
+        or any(
+            provider.adapter_type == "openai" and not provider.base_url
+            for provider in active
+        )
+    )
+    return endpoints_from_provider_base_urls(
+        [provider.base_url for provider in active],
+        include_default_openai=include_first_party,
+    )
+
+
 assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
     local_execution_worker_runtime,
     core,
+    egress_endpoints_resolver=_codex_model_egress_endpoints,
 )
 app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
