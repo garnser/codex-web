@@ -176,7 +176,12 @@ core.start_turn = turn_service.start
 # routers or provider workers can receive traffic.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
-bot_connection_service = install_bot_connection_service(app, core)
+bot_connection_service = install_bot_connection_service(
+    app,
+    core,
+    secret_broker=secret_broker,
+    identity_service=identity_service,
+)
 bot_binding_selection_service = install_bot_binding_selection_service(app, core)
 agent_channel_preference_service = install_agent_channel_preference_service(app, core)
 bot_runtime = install_bot_runtime(
