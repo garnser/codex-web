@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.entitlements import build_entitlements_router
 from codex_web.entitlements import (
     CapabilityEntitlementUpdate,
     EntitlementMode,
@@ -18,6 +22,12 @@ from codex_web.services.entitlements import (
     EntitlementService,
     QuotaExceededError,
     UsageIdempotencyConflictError,
+)
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
 )
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.entitlements import EntitlementStore
@@ -335,6 +345,149 @@ class EntitlementServiceTests(unittest.TestCase):
                 CapabilityEntitlementUpdate(enabled=True),
                 actor=member,
             )
+
+
+class EntitlementApiAssuranceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.service = EntitlementService(EntitlementStore(sqlite))
+        self.actor = AuthenticationActor(
+            identity_id="admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_entitlements_router(self.service))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    def test_low_assurance_human_can_read_but_cannot_administer_or_meter(self) -> None:
+        self.assertEqual(self.client.get("/api/entitlements/mode").status_code, 200)
+        self.assertEqual(self.client.get("/api/entitlements/usage").status_code, 200)
+
+        mode = self.client.put(
+            "/api/entitlements/mode",
+            json={"mode": "enforced"},
+        )
+        capability = self.client.put(
+            "/api/entitlements/capabilities/external_actions",
+            json={"enabled": True, "source": "test"},
+        )
+        quota = self.client.put(
+            "/api/entitlements/quotas/external_action_attempts",
+            json={
+                "limit": 10,
+                "window": "month",
+                "behavior": "hard_stop",
+                "warning_fraction": 0.8,
+                "source": "test",
+            },
+        )
+        usage = self.client.post(
+            "/api/entitlements/usage",
+            json={
+                "idempotency_key": "manual-1",
+                "metric": "external_action_attempts",
+                "amount": 1,
+            },
+        )
+        reconcile = self.client.post(
+            "/api/entitlements/usage/reconcile",
+            json={
+                "events": [
+                    {
+                        "idempotency_key": "reconcile-1",
+                        "metric": "external_action_attempts",
+                        "amount": 1,
+                    }
+                ]
+            },
+        )
+
+        for response in (mode, capability, quota, usage, reconcile):
+            self.assertEqual(response.status_code, 403)
+            self.assertIn("mfa", response.json()["detail"].lower())
+
+    def test_mfa_human_can_administer_and_meter(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+
+        mode = self.client.put(
+            "/api/entitlements/mode",
+            json={"mode": "enforced"},
+        )
+        capability = self.client.put(
+            "/api/entitlements/capabilities/external_actions",
+            json={"enabled": True, "source": "test"},
+        )
+        quota = self.client.put(
+            "/api/entitlements/quotas/external_action_attempts",
+            json={
+                "limit": 10,
+                "window": "lifetime",
+                "behavior": "hard_stop",
+                "warning_fraction": 0.8,
+                "source": "test",
+            },
+        )
+        usage = self.client.post(
+            "/api/entitlements/usage",
+            json={
+                "idempotency_key": "manual-1",
+                "metric": "external_action_attempts",
+                "amount": 1,
+            },
+        )
+
+        self.assertEqual(mode.status_code, 200)
+        self.assertEqual(capability.status_code, 200)
+        self.assertEqual(quota.status_code, 200)
+        self.assertEqual(usage.status_code, 200)
+
+    def test_service_admin_and_meter_scopes_remain_non_human_automation(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="entitlement-admin-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("entitlements:admin",),
+        )
+        mode = self.client.put(
+            "/api/entitlements/mode",
+            json={"mode": "enforced"},
+        )
+        self.assertEqual(mode.status_code, 200)
+
+        self.actor = self.actor.model_copy(
+            update={
+                "identity_id": "entitlement-meter-service",
+                "service_scopes": ("entitlements:meter",),
+            }
+        )
+        usage = self.client.post(
+            "/api/entitlements/usage",
+            json={
+                "idempotency_key": "service-meter-1",
+                "metric": "model_input_tokens",
+                "amount": 5,
+            },
+        )
+        self.assertEqual(usage.status_code, 200)
 
 
 if __name__ == "__main__":
