@@ -259,6 +259,39 @@ class ExecutionWorkerService:
         self.store.update(apply)
         return created[0]
 
+    def ensure_local_worker(
+        self,
+        *,
+        service_identity_id: str,
+        version: str,
+        capabilities: tuple,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        self._require_admin(actor)
+        existing = next(
+            (
+                item
+                for item in self.store.load().workers
+                if self._same_scope(item, actor)
+                and item.service_identity_id == service_identity_id
+                and item.pool == "local"
+                and item.lifecycle != WorkerLifecycle.REVOKED
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        return self.register(
+            ExecutionWorkerRegister(
+                service_identity_id=service_identity_id,
+                pool="local",
+                version=version,
+                capabilities=capabilities,
+                max_concurrency=1,
+            ),
+            actor=actor,
+        )
+
     def heartbeat(
         self,
         worker_id: str,
