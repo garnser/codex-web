@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
+from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
@@ -25,7 +26,7 @@ from codex_web.services.execution_workers import (
     WorkerLeaseError,
     WorkerNotFoundError,
 )
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError, IdentityService, TenantIsolationError
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -47,6 +48,14 @@ def _operator_assignment(item) -> dict[str, Any]:
     return payload
 
 
+def _control_actor(request: Request):
+    actor = request_actor(request)
+    if actor.principal_kind != PrincipalKind.SERVICE:
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+    return actor
+
+
 def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter:
     router = APIRouter(prefix="/api/execution-workers", tags=["execution-workers"])
 
@@ -66,7 +75,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.register(payload, actor=request_actor(request))
+            item = service.register(payload, actor=_control_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError, ValueError)):
@@ -94,7 +103,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
     @router.post("/{worker_id}/activate")
     async def activate(worker_id: str, request: Request) -> dict[str, Any]:
         try:
-            item = service.activate(worker_id, actor=request_actor(request))
+            item = service.activate(worker_id, actor=_control_actor(request))
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
@@ -111,7 +120,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
             item = service.set_lifecycle(
                 worker_id,
                 WorkerLifecycle.DRAINING,
-                actor=request_actor(request),
+                actor=_control_actor(request),
                 reason=payload.reason,
             )
             return {"item": item.model_dump(mode="json")}
@@ -130,7 +139,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
             item = service.set_lifecycle(
                 worker_id,
                 WorkerLifecycle.QUARANTINED,
-                actor=request_actor(request),
+                actor=_control_actor(request),
                 reason=payload.reason,
             )
             return {"item": item.model_dump(mode="json")}
@@ -149,7 +158,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
             item = service.set_lifecycle(
                 worker_id,
                 WorkerLifecycle.REVOKED,
-                actor=request_actor(request),
+                actor=_control_actor(request),
                 reason=payload.reason,
             )
             return {"item": item.model_dump(mode="json")}
@@ -182,7 +191,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
         try:
             item = service.create_assignment(
                 payload,
-                actor=request_actor(request),
+                actor=_control_actor(request),
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
@@ -272,7 +281,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
     async def recover_stale_workers(request: Request) -> dict[str, Any]:
         try:
             ids = service.mark_stale_workers_offline(
-                actor=request_actor(request),
+                actor=_control_actor(request),
             )
             return {"worker_ids": ids}
         except Exception as exc:
@@ -283,7 +292,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
     @router.post("/assignments/recover-expired")
     async def recover_expired(request: Request) -> dict[str, Any]:
         try:
-            ids = service.recover_expired(actor=request_actor(request))
+            ids = service.recover_expired(actor=_control_actor(request))
             return {"assignment_ids": ids}
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
@@ -295,7 +304,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
         try:
             item = service.retry_lost(
                 assignment_id,
-                actor=request_actor(request),
+                actor=_control_actor(request),
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
