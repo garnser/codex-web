@@ -28,6 +28,7 @@ from codex_web.services.task_source_work_items import TaskSourceWorkItemProjecto
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
+    TaskSourceCreateCapable,
     TaskSourceCreateRequest,
     TaskSourceEvent,
 )
@@ -168,6 +169,10 @@ class WorkItemService:
         )
         assert source is not None
         source.capabilities.require(TaskSourceCapability.CREATE)
+        if not isinstance(source, TaskSourceCreateCapable):
+            raise TaskSourceResolutionError(
+                "Task-source adapter advertises CREATE without create() support"
+            )
         snapshot = await source.create(payload, scope=configuration.scope)
         return self.task_source_projector.upsert(
             source,
