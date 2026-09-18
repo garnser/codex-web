@@ -514,7 +514,12 @@ action_intent_service.recover_stale_claims()
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
-turn_execution_service = install_turn_execution_service(app, core)
+turn_execution_service = install_turn_execution_service(
+    app,
+    core,
+    binding_service=turn_execution_binding_service,
+    session_manager=assignment_bound_codex_session_manager,
+)
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
 work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(app, core)
