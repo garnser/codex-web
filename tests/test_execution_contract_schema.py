@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from codex_web.artifact_evidence import EvidenceRequirement, EvidenceResult, EvidenceType
 from pydantic import ValidationError
 
 from codex_web.execution_contract_schema import (
@@ -43,7 +44,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(contract.schema_version, EXECUTION_CONTRACT_SCHEMA_VERSION)
-        self.assertEqual(contract.schema_version, "1.3")
+        self.assertEqual(contract.schema_version, "1.4")
         self.assertEqual(contract.work_item_ref, "group/app#42")
         self.assertEqual(contract.role_id, "james")
         self.assertEqual(contract.agent_id, "james")
@@ -109,6 +110,25 @@ class ExecutionContractSchemaTests(unittest.TestCase):
             ["resource-repo", "resource-prod"],
         )
 
+    def test_required_evidence_is_carried_from_canonical_execution_state(self) -> None:
+        lifecycle = WorkItemExecutionLifecycle(
+            evidence_requirements=[
+                EvidenceRequirement(
+                    id="ci-pass",
+                    evidence_type=EvidenceType.CI_CHECK,
+                    accepted_results=(EvidenceResult.PASS,),
+                )
+            ]
+        )
+        contract = execution_contract_for_work_item(
+            self._state(execution=lifecycle),
+            ROLE_CONTRACTS["james"],
+        )
+
+        self.assertEqual(contract.schema_version, "1.4")
+        self.assertEqual(len(contract.required_evidence), 1)
+        self.assertEqual(contract.required_evidence[0].id, "ci-pass")
+
     def test_pending_handoff_makes_recipient_the_contract_agent(self) -> None:
         handoff = WorkItemHandoff(
             from_agent="james",
@@ -158,7 +178,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
 
         public = contract.compact_public()
 
-        self.assertEqual(public["schema_version"], "1.3")
+        self.assertEqual(public["schema_version"], "1.4")
         self.assertEqual(public["target"], {})
         self.assertNotIn("branch", public["target"])
         self.assertNotIn("environment", public["target"])
@@ -176,7 +196,7 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         text = service.dispatch_text(state)
 
         self.assertEqual(contract.role_id, "james")
-        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.3)", text)
+        self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.4)", text)
         self.assertIn("WORK ITEM group/app#42", text)
         self.assertNotIn('"expected_outputs"', text)
 

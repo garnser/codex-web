@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
+from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.context import build_context_router
@@ -42,6 +43,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
+from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
@@ -73,6 +75,7 @@ from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_
 from codex_web.services.work_item_contracts import install_work_item_contract_service
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.action_providers import ActionProviderStateStore
+from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -172,6 +175,16 @@ app.state.execution_workspace_state_store = execution_workspace_state_store
 app.state.execution_workspace_backend = execution_workspace_backend
 app.state.execution_workspace_service = execution_workspace_service
 
+artifact_evidence_store = ArtifactEvidenceStore(state_store)
+artifact_evidence_service = ArtifactEvidenceService(
+    artifact_evidence_store,
+    resources=resource_catalog_service,
+    work_item_host=core,
+)
+app.include_router(build_artifact_evidence_router(artifact_evidence_service))
+app.state.artifact_evidence_store = artifact_evidence_store
+app.state.artifact_evidence_service = artifact_evidence_service
+
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
     return resource_catalog_service.resource_ids_for_project(project)
@@ -204,6 +217,7 @@ app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
+artifact_evidence_service.expire_retention()
 
 # Compose extracted runtime ownership here rather than in server.py so direct
 # application imports and tests observe the same implementation as the CLI

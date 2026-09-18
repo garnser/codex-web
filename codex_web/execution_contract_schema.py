@@ -4,12 +4,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_contracts import ExecutionRoleContract
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
 from codex_web.models import ArtifactState, HandoffStatus, WorkItemStage, WorkItemState
 
 
-EXECUTION_CONTRACT_SCHEMA_VERSION = "1.3"
+EXECUTION_CONTRACT_SCHEMA_VERSION = "1.4"
 
 
 class ExecutionTargetV1(BaseModel):
@@ -81,7 +82,7 @@ class ExecutionContractV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.3"] = EXECUTION_CONTRACT_SCHEMA_VERSION
+    schema_version: Literal["1.4"] = EXECUTION_CONTRACT_SCHEMA_VERSION
     work_item_ref: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
     agent_id: str | None = None
@@ -90,6 +91,7 @@ class ExecutionContractV1(BaseModel):
     inputs: CanonicalWorkItemInputV1
     accounting: ExecutionAccountingV1
     expected_outputs: tuple[str, ...]
+    required_evidence: tuple[EvidenceRequirement, ...] = ()
     success_criteria: tuple[str, ...]
     failure_conditions: tuple[str, ...]
 
@@ -156,6 +158,7 @@ def execution_contract_for_work_item(
             decision_id=lifecycle.usage.decision_id,
         ),
         expected_outputs=tuple(role.required_artifacts),
+        required_evidence=tuple(lifecycle.evidence_requirements),
         success_criteria=(
             "Produce the artifacts required by the resolved execution role.",
             "Record concrete progress, an explicit handoff, or one exact blocker in canonical work-item state.",
