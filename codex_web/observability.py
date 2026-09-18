@@ -25,6 +25,13 @@ CAUSATION_HEADER = "x-causation-id"
 MAX_CORRELATION_LENGTH = 128
 MAX_LABEL_VALUE_LENGTH = 80
 MAX_RECENT_SPANS = 200
+MAX_RECENT_LOGS = 500
+DEFAULT_LOG_RETENTION_SECONDS = 3600
+MAX_LOG_QUERY_WINDOW_SECONDS = 86400
+MAX_LOG_QUERY_LIMIT = 100
+MAX_LOG_QUERY_BYTES = 64 * 1024
+MAX_LOG_FIELD_COUNT = 24
+MAX_LOG_STRING_LENGTH = 512
 SAFE_METRIC_LABELS = frozenset(
     {
         "component",
@@ -201,11 +208,193 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(sanitize_telemetry(payload), separators=(",", ":"), default=str)
 
 
+def _bounded_log_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        return "[truncated]"
+    value = sanitize_telemetry(value)
+    if isinstance(value, str):
+        return value[:MAX_LOG_STRING_LENGTH]
+    if isinstance(value, Mapping):
+        return {
+            str(key)[:MAX_LOG_STRING_LENGTH]: _bounded_log_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:MAX_LOG_FIELD_COUNT]
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_bounded_log_value(item, depth=depth + 1) for item in list(value)[:16]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:MAX_LOG_STRING_LENGTH]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLogEntry:
+    occurred_at: float
+    level: str
+    logger: str
+    event: str | None
+    tenant_id: str | None
+    workspace_id: str | None
+    correlation_id: str | None
+    causation_id: str | None
+    work_item_ref: str | None
+    execution_id: str | None
+    action_intent_id: str | None
+    fields: dict[str, Any]
+    retention_expires_at: float
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "occurredAt": self.occurred_at,
+            "level": self.level,
+            "logger": self.logger,
+            "event": self.event,
+            "organizationId": self.tenant_id,
+            "workspaceId": self.workspace_id,
+            "correlationId": self.correlation_id,
+            "causationId": self.causation_id,
+            "workItemRef": self.work_item_ref,
+            "executionId": self.execution_id,
+            "actionIntentId": self.action_intent_id,
+            "fields": self.fields,
+            "classification": "internal",
+            "retentionExpiresAt": self.retention_expires_at,
+            "telemetryOnly": True,
+        }
+
+
+class RuntimeLogBuffer(logging.Handler):
+    """Bounded redacted runtime-log telemetry; never canonical business state."""
+
+    _SCOPE_KEYS = frozenset(
+        {
+            "tenant_id",
+            "workspace_id",
+            "correlation_id",
+            "causation_id",
+            "work_item_ref",
+            "execution_id",
+            "action_intent_id",
+            "event",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = MAX_RECENT_LOGS,
+        retention_seconds: int = DEFAULT_LOG_RETENTION_SECONDS,
+    ) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.retention_seconds = max(60, min(int(retention_seconds), MAX_LOG_QUERY_WINDOW_SECONDS))
+        self._recent: deque[RuntimeLogEntry] = deque(maxlen=max(1, int(max_entries)))
+        self._buffer_lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        structured = getattr(record, "structured", None)
+        source = structured if isinstance(structured, dict) else {}
+        payload = sanitize_telemetry({**correlation_fields(), **source})
+        fields = {
+            str(key): _bounded_log_value(value)
+            for key, value in list(payload.items())[:MAX_LOG_FIELD_COUNT]
+            if key not in self._SCOPE_KEYS and value is not None
+        }
+        occurred_at = float(record.created)
+        entry = RuntimeLogEntry(
+            occurred_at=occurred_at,
+            level=str(record.levelname).upper(),
+            logger=str(record.name)[:MAX_LOG_STRING_LENGTH],
+            event=(
+                str(payload.get("event"))[:MAX_LOG_STRING_LENGTH]
+                if payload.get("event") is not None
+                else None
+            ),
+            tenant_id=_bounded_identifier(payload.get("tenant_id")),
+            workspace_id=_bounded_identifier(payload.get("workspace_id")),
+            correlation_id=_bounded_identifier(payload.get("correlation_id")),
+            causation_id=_bounded_identifier(payload.get("causation_id")),
+            work_item_ref=_bounded_identifier(payload.get("work_item_ref")),
+            execution_id=_bounded_identifier(payload.get("execution_id")),
+            action_intent_id=_bounded_identifier(payload.get("action_intent_id")),
+            fields=fields,
+            retention_expires_at=occurred_at + self.retention_seconds,
+        )
+        with self._buffer_lock:
+            self._recent.append(entry)
+
+    def clear(self) -> None:
+        with self._buffer_lock:
+            self._recent.clear()
+
+    def query(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        window_seconds: int,
+        limit: int,
+        level: str | None = None,
+        logger_name: str | None = None,
+        event: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        work_item_ref: str | None = None,
+        execution_id: str | None = None,
+        action_intent_id: str | None = None,
+        now: float | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        current = time.time() if now is None else now
+        cutoff = current - window_seconds
+        with self._buffer_lock:
+            retained = [
+                item
+                for item in self._recent
+                if item.retention_expires_at > current
+            ]
+            self._recent.clear()
+            self._recent.extend(retained)
+
+        rows = [
+            item
+            for item in reversed(retained)
+            if item.occurred_at >= cutoff
+            and item.tenant_id == organization_id
+            and item.workspace_id == workspace_id
+            and (level is None or item.level == level)
+            and (logger_name is None or item.logger == logger_name)
+            and (event is None or item.event == event)
+            and (correlation_id is None or item.correlation_id == correlation_id)
+            and (causation_id is None or item.causation_id == causation_id)
+            and (work_item_ref is None or item.work_item_ref == work_item_ref)
+            and (execution_id is None or item.execution_id == execution_id)
+            and (action_intent_id is None or item.action_intent_id == action_intent_id)
+        ]
+
+        selected: list[dict[str, Any]] = []
+        size_bytes = 0
+        truncated = len(rows) > limit
+        for item in rows[:limit]:
+            public = item.public()
+            encoded_size = len(
+                json.dumps(public, separators=(",", ":"), default=str).encode("utf-8")
+            )
+            if size_bytes + encoded_size > MAX_LOG_QUERY_BYTES:
+                truncated = True
+                break
+            selected.append(public)
+            size_bytes += encoded_size
+        return selected, truncated
+
+
+_runtime_log_buffer = RuntimeLogBuffer()
+
+
 def configure_logging() -> None:
     level_name = (os.environ.get("CODEX_WEB_LOG_LEVEL") or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     root = logging.getLogger()
     root.setLevel(level)
+    if _runtime_log_buffer not in root.handlers:
+        root.addHandler(_runtime_log_buffer)
     for handler in root.handlers:
         if getattr(handler, "_codex_web_handler", False):
             handler.setLevel(level)
@@ -515,9 +704,11 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
     metrics = RuntimeMetrics()
     health = RuntimeHealth()
     tracer = RuntimeTracer()
+    log_buffer = _runtime_log_buffer
     app.state.runtime_metrics = metrics
     app.state.runtime_health = health
     app.state.runtime_tracer = tracer
+    app.state.runtime_log_buffer = log_buffer
 
     if hasattr(host.hub, "configure_observability"):
         host.hub.configure_observability(metrics)
@@ -602,6 +793,73 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
         require_observability_reader(request)
         items = tracer.snapshot()
         return {"items": items, "count": len(items)}
+
+    @router.get("/api/logs/recent")
+    async def recent_logs(
+        request: Request,
+        window_seconds: int = 900,
+        limit: int = 50,
+        level: str | None = None,
+        logger_name: str | None = None,
+        event: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        work_item_ref: str | None = None,
+        execution_id: str | None = None,
+        action_intent_id: str | None = None,
+    ) -> dict[str, Any]:
+        require_observability_reader(request)
+        if not 1 <= window_seconds <= MAX_LOG_QUERY_WINDOW_SECONDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"window_seconds must be between 1 and {MAX_LOG_QUERY_WINDOW_SECONDS}",
+            )
+        if not 1 <= limit <= MAX_LOG_QUERY_LIMIT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"limit must be between 1 and {MAX_LOG_QUERY_LIMIT}",
+            )
+        actor = request_actor(request)
+        exact_filters = {
+            "correlation_id": correlation_id,
+            "causation_id": causation_id,
+            "work_item_ref": work_item_ref,
+            "execution_id": execution_id,
+            "action_intent_id": action_intent_id,
+        }
+        normalized_filters: dict[str, str | None] = {}
+        for key, value in exact_filters.items():
+            if value is None:
+                normalized_filters[key] = None
+                continue
+            bounded = _bounded_identifier(value)
+            if bounded is None:
+                raise HTTPException(status_code=422, detail=f"{key} is invalid")
+            normalized_filters[key] = bounded
+        if logger_name is not None and len(logger_name) > MAX_LOG_STRING_LENGTH:
+            raise HTTPException(status_code=422, detail="logger_name is too long")
+        if event is not None and len(event) > MAX_LOG_STRING_LENGTH:
+            raise HTTPException(status_code=422, detail="event is too long")
+
+        items, truncated = log_buffer.query(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            window_seconds=window_seconds,
+            limit=limit,
+            level=level.upper() if level else None,
+            logger_name=logger_name,
+            event=event,
+            **normalized_filters,
+        )
+        return {
+            "items": items,
+            "count": len(items),
+            "truncated": truncated,
+            "classification": "internal",
+            "retentionSeconds": log_buffer.retention_seconds,
+            "maxResultBytes": MAX_LOG_QUERY_BYTES,
+            "telemetryOnly": True,
+        }
 
     @router.get("/api/observability")
     async def observability_snapshot(request: Request) -> dict[str, Any]:
