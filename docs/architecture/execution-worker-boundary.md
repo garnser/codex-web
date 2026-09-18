@@ -331,6 +331,39 @@ This stage intentionally stops before `thread/resume`, `thread/start` or
 to the #294 migration; the planner only guarantees that those operations can
 begin from one canonical, isolated and auditable execution binding.
 
+### Production turn routing through isolated sessions
+
+Production `thread/resume` and `turn/start` traffic for an executing turn is
+routed through the AssignmentBoundCodexSession that owns the canonical
+ExecutionAssignment. The control-plane `host.codex` process is not a fallback
+for an active assignment.
+
+The turn orchestrator now:
+
+- creates or reuses one explicit thread-turn execution ID;
+- obtains the canonical thread execution binding before any model RPC;
+- starts the matching assignment-bound Codex session;
+- uses the isolated ExecutionWorkspace path for `cwd` and sandbox policy;
+- persists execution ID, assignment ID, workspace ID, worker ID and fence on
+  ActiveThreadTurn state;
+- routes active thread reads/lifecycle requests to the same isolated session;
+- completes the exact fenced assignment on terminal turn completion/failure;
+- namespaces interactive approval request IDs by assignment and routes approval
+  responses to the runtime that owns them, so concurrent isolated sessions
+  cannot collide on raw app-server request IDs;
+- keeps `turn/start` timeouts attached to the already-active execution rather
+  than silently queueing a duplicate turn.
+
+Missing/stale sessions, changed fences, quarantined/revoked workers, expired
+delegations and other canonical mismatches fail closed. There is no fallback
+from an active assignment to the long-lived control-plane CodexRuntime.
+
+This migration intentionally leaves metadata-oriented compatibility operations
+such as initial `thread/start` creation and inactive-thread listing on the
+control-plane runtime for the next #294 slice. That compatibility path does not
+execute a production turn. Removing the remaining global app-server requirement
+and completing restart/session-loss coverage is required before #294 can close.
+
 ### Assignment-bound Codex app-server session
 
 The local worker now has a concrete interactive Codex session primitive. One
