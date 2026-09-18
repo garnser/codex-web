@@ -21,7 +21,7 @@ class ExtensionAdminUiTests(unittest.TestCase):
 
         self.assertIn('data-extension-action="', javascript)
         self.assertIn('["installed", "configured", "disabled"]', javascript)
-        self.assertIn('["disable", "quarantine", "clear-quarantine"]', javascript)
+        self.assertIn('["disable", "quarantine", "clear-quarantine", "remove"]', javascript)
         self.assertIn("window.confirm", javascript)
         self.assertIn("window.prompt", javascript)
         self.assertIn('/api/extensions/${encodeURIComponent(installationId)}/${action}', javascript)
@@ -34,6 +34,8 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("mandatory capability", javascript)
         self.assertIn("data-extension-config-host", javascript)
         self.assertIn("codex:extension-state-rendered", javascript)
+        self.assertIn("preserve_tombstone", javascript)
+        self.assertIn("hard deletion is not supported", javascript)
 
 
 if __name__ == "__main__":

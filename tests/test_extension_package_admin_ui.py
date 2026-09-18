@@ -25,6 +25,8 @@ class ExtensionPackageAdminUiTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("window.confirm", javascript)
+        self.assertIn("data-extension-upgrade-host", javascript)
+        self.assertIn("codex:extension-packages-rendered", javascript)
 
 
 if __name__ == "__main__":

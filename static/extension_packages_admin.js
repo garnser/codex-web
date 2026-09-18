@@ -33,9 +33,12 @@
         item.lifecycle !== "removed" && item.manifest?.id === manifest.id
       ));
       const requested = manifest.capabilities?.requested || [];
-      const installationState = installed
-        ? `<small>Installed version ${escapeHtml(installed.manifest?.version || "unknown")} · use the upgrade lifecycle for another version.</small>`
-        : `<button type="button" class="ghost-button" data-extension-package-install data-package-ref="${escapeHtml(candidate.package_ref)}" data-package-id="${escapeHtml(manifest.id)}" data-package-version="${escapeHtml(manifest.version)}" data-package-publisher="${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")}" data-package-signature="${escapeHtml(verification.signature_status || "unknown")}" data-package-digest-verified="${verification.digest_verified ? "true" : "false"}">Install package</button>`;
+      const sameVersion = installed?.manifest?.version === manifest.version;
+      const installationState = !installed
+        ? `<button type="button" class="ghost-button" data-extension-package-install data-package-ref="${escapeHtml(candidate.package_ref)}" data-package-id="${escapeHtml(manifest.id)}" data-package-version="${escapeHtml(manifest.version)}" data-package-publisher="${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")}" data-package-signature="${escapeHtml(verification.signature_status || "unknown")}" data-package-digest-verified="${verification.digest_verified ? "true" : "false"}">Install package</button>`
+        : sameVersion
+          ? `<small>Installed version ${escapeHtml(installed.manifest?.version || "unknown")} matches this candidate.</small>`
+          : `<div data-extension-upgrade-host="${escapeHtml(candidate.package_ref)}"></div>`;
       return `<div class="comm-entry">
         <strong>${escapeHtml(manifest.id || candidate.package_ref)} @ ${escapeHtml(manifest.version || "unknown")}</strong>
         <small>Publisher: ${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")} · Types: ${(manifest.types || []).map(escapeHtml).join(", ") || "unknown"}</small>
@@ -52,6 +55,9 @@
     </div>`);
     list.innerHTML = [...packageCards, ...errorCards].join("")
       || '<div class="comm-entry"><strong>No packages discovered</strong><small>Add a canonical manifest.json + payload.cwext package to the configured catalog root.</small></div>';
+    window.dispatchEvent(new CustomEvent("codex:extension-packages-rendered", {
+      detail: { discovery, installations },
+    }));
   }
 
   async function refreshPackages() {
