@@ -279,7 +279,6 @@ class EvidenceRequirementsUpdate(BaseModel):
 class EvidenceEvaluationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    work_item_ref: str = Field(min_length=1)
     requirements: tuple[EvidenceRequirement, ...] = ()
 
 
