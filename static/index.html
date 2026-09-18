@@ -412,6 +412,23 @@
                   <div id="crypto-key-audit" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Model Gateway</h2>
+                    <button id="refresh-model-gateway" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="model-gateway-status" class="form-result" aria-live="polite">Open to load model routing state.</div>
+                  <div class="section-title"><span>Providers</span></div>
+                  <div id="model-provider-list" class="comm-log"></div>
+                  <div class="section-title"><span>Models & classes</span></div>
+                  <div id="model-definition-list" class="comm-log"></div>
+                  <div class="section-title"><span>Tenant routing policy</span></div>
+                  <div id="model-policy" class="comm-log"></div>
+                  <div class="section-title"><span>Prompt template revisions</span></div>
+                  <div id="model-prompt-list" class="comm-log"></div>
+                  <div class="section-title"><span>Recent invocation attribution</span></div>
+                  <div id="model-invocation-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -534,6 +551,7 @@
     <script src="static/identity_authority_admin.js" type="module"></script>
     <script src="static/secret_admin.js" type="module"></script>
     <script src="static/crypto_key_admin.js" type="module"></script>
+    <script src="static/model_gateway_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
