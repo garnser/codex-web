@@ -12,8 +12,7 @@ class WorkItemWatchdogPromptPolicy:
     def __init__(self, host: Any) -> None:
         self.host = host
 
-    @staticmethod
-    def human_duration(seconds: float) -> str:
+    def human_duration(self, seconds: float) -> str:
         total = max(0, int(seconds))
         if total < 60:
             return f"{total}s"
