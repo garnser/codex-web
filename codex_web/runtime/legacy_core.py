@@ -415,14 +415,6 @@ def _append_bot_event(event: dict[str, Any]) -> None:
     payload = {"created_at": time.time(), **event}
     with BOTS_EVENTS_FILE.open("a") as handle:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
-def _queue_recovery_interval_seconds() -> float:
-    try:
-        seconds = float(os.environ.get("CODEX_WEB_QUEUE_RECOVERY_SECONDS") or "30")
-    except ValueError:
-        return 30.0
-    if seconds <= 0:
-        return 0.0
-    return max(10.0, seconds)
 async def _dispatch_event_to_binding(binding: BotBinding, text: str, source: str) -> dict[str, Any]:
     project = _project(binding.project_id)
     settings = _thread_run_settings(binding.thread_id)
@@ -1901,18 +1893,6 @@ def _sd_notify(message: str) -> bool:
         return True
     except OSError:
         return False
-
-
-def _watchdog_interval() -> float:
-    try:
-        usec = int(os.environ.get("WATCHDOG_USEC") or "0")
-    except ValueError:
-        return 0
-    if usec <= 0:
-        return 0
-    return max(5.0, min(30.0, usec / 2_000_000))
-
-
 def _autonomy_enabled() -> bool:
     if (DATA_DIR / "AUTONOMY_DISABLED").exists():
         return False
