@@ -8,10 +8,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from codex_web.api.identity import install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.models import Project, ProjectCreate, TaskSourceConfiguration
+from codex_web.services.identity import IdentityService
 from codex_web.services.projects import ProjectService
+from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.projects import ProjectRepository
+from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ProjectTaskSourceConfigurationTests(unittest.TestCase):
@@ -20,6 +24,16 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
         service = ProjectService(repository)
         service.list()
         return service
+
+    def _app(self, root: Path, service: ProjectService) -> FastAPI:
+        app = FastAPI()
+        identity = IdentityService(
+            IdentityStateStore(SQLiteStateStore(root / "identity.sqlite3"))
+        )
+        identity.bootstrap_local()
+        install_identity_middleware(app, identity)
+        app.include_router(build_projects_router(service))
+        return app
 
     def test_task_source_configuration_is_strict_and_non_empty(self) -> None:
         source = TaskSourceConfiguration(
@@ -113,8 +127,7 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
     def test_project_api_sets_and_clears_canonical_binding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = self._service(Path(directory))
-            app = FastAPI()
-            app.include_router(build_projects_router(service))
+            app = self._app(Path(directory), service)
             client = TestClient(app)
 
             response = client.put(
@@ -144,9 +157,9 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
 
     def test_project_api_returns_not_found_for_unknown_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            service = self._service(Path(directory))
-            app = FastAPI()
-            app.include_router(build_projects_router(service))
+            root = Path(directory)
+            service = self._service(root)
+            app = self._app(root, service)
             client = TestClient(app)
 
             response = client.put(

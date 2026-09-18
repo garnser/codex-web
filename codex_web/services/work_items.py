@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.identity import TenantScope
 from codex_web.models import (
     WorkItemAckCreate,
     WorkItemHandoffCreate,
@@ -124,8 +125,16 @@ class WorkItemService:
         owner: str | None,
         stage: str | None,
         release_gate: bool | None,
+        scope: TenantScope | None = None,
     ) -> dict[str, Any]:
         states = list(self.host._load_work_item_states().values())
+        if scope is not None:
+            states = [
+                state
+                for state in states
+                if state.organization_id == scope.organization_id
+                and state.workspace_id == scope.workspace_id
+            ]
         if project_id:
             states = [state for state in states if state.project_id == project_id]
         if owner:
@@ -150,13 +159,23 @@ class WorkItemService:
             "count": len(states),
         }
 
-    async def _sync_from_gitlab_async(self) -> dict[str, int]:
+    async def _sync_from_gitlab_async(self, scope: TenantScope | None = None) -> dict[str, int]:
         """Compatibility entrypoint backed by the provider-neutral TaskSource path."""
 
         synced = 0
         seen_refs: set[str] = set()
         settings = self.host._load_gitlab_routing_settings()
+        allowed_project_ids: set[str] | None = None
+        if scope is not None:
+            allowed_project_ids = {
+                project.id
+                for project in self.host._load_projects()
+                if project.organization_id == scope.organization_id
+                and project.workspace_id == scope.workspace_id
+            }
         for project_id, project_settings in settings.projects.items():
+            if allowed_project_ids is not None and project_id not in allowed_project_ids:
+                continue
             if not project_settings.enabled:
                 continue
             token = self.host._gitlab_token_for_project(project_id)
@@ -291,9 +310,9 @@ class WorkItemService:
         state = self._preserve_gitlab_closed_label_cleanup(state)
         return state
 
-    async def sync_from_gitlab(self) -> dict[str, Any]:
+    async def sync_from_gitlab(self, scope: TenantScope | None = None) -> dict[str, Any]:
         try:
-            result = await self._sync_from_gitlab_async()
+            result = await self._sync_from_gitlab_async(scope)
         except Exception as exc:
             self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
             self.host.GITLAB_SYNC_LAST_ERROR = self.host._truncate_text(str(exc), 500)

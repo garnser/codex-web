@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.models import ProjectCreate, TaskSourceConfiguration
+from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
 from codex_web.services.projects import (
     InvalidProjectPathError,
     LastProjectDeletionError,
@@ -17,13 +18,17 @@ def build_projects_router(service: ProjectService) -> APIRouter:
     router = APIRouter(tags=["projects"])
 
     @router.get("/api/projects")
-    async def list_projects() -> list[dict[str, Any]]:
-        return [project.model_dump() for project in service.list()]
+    async def list_projects(request: Request) -> list[dict[str, Any]]:
+        scope = request.state.tenant_scope
+        return [project.model_dump() for project in service.list(scope)]
 
     @router.post("/api/projects")
-    async def create_project(payload: ProjectCreate) -> dict[str, Any]:
+    async def create_project(payload: ProjectCreate, request: Request) -> dict[str, Any]:
         try:
-            return service.create(payload).model_dump()
+            IdentityService.require_admin(request.state.identity_actor)
+            return service.create(payload, request.state.tenant_scope).model_dump()
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except InvalidProjectPathError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -31,23 +36,37 @@ def build_projects_router(service: ProjectService) -> APIRouter:
     async def set_project_task_source(
         project_id: str,
         payload: TaskSourceConfiguration,
+        request: Request,
     ) -> dict[str, Any]:
         try:
-            return service.set_authoritative_task_source(project_id, payload).model_dump()
+            IdentityService.require_admin(request.state.identity_actor)
+            return service.set_authoritative_task_source(
+                project_id, payload, request.state.tenant_scope
+            ).model_dump()
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.delete("/api/projects/{project_id}/task-source")
-    async def clear_project_task_source(project_id: str) -> dict[str, Any]:
+    async def clear_project_task_source(project_id: str, request: Request) -> dict[str, Any]:
         try:
-            return service.set_authoritative_task_source(project_id, None).model_dump()
+            IdentityService.require_admin(request.state.identity_actor)
+            return service.set_authoritative_task_source(
+                project_id, None, request.state.tenant_scope
+            ).model_dump()
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.delete("/api/projects/{project_id}")
-    async def delete_project(project_id: str) -> dict[str, bool]:
+    async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
         try:
-            service.delete(project_id)
+            IdentityService.require_admin(request.state.identity_actor)
+            service.delete(project_id, request.state.tenant_scope)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except LastProjectDeletionError as exc:

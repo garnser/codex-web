@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+
+from codex_web.identity import (
+    AuthenticationAssurance,
+    HumanIdentityCreate,
+    Membership,
+    MembershipCreate,
+    MembershipRole,
+    OrganizationCreate,
+    PrincipalKind,
+    ServiceIdentityCreate,
+    ServiceTokenCreate,
+    TenantScope,
+    WorkspaceCreate,
+)
+from codex_web.services.identity import (
+    AuthenticationError,
+    AuthorizationError,
+    IdentityError,
+    IdentityService,
+    identity_http_error,
+)
+
+
+SESSION_COOKIE = "codex_web_session"
+CSRF_HEADER = "x-csrf-token"
+ORG_HEADER = "x-codex-organization"
+WORKSPACE_HEADER = "x-codex-workspace"
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def request_actor(request: Request):
+    actor = getattr(request.state, "identity_actor", None)
+    if actor is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    return actor
+
+
+def _public_state(service: IdentityService, actor) -> dict[str, Any]:
+    IdentityService.require_admin(actor)
+    state = service.state()
+    return {
+        "schema_version": state.schema_version,
+        "organizations": [item.model_dump(mode="json") for item in state.organizations],
+        "workspaces": [item.model_dump(mode="json") for item in state.workspaces],
+        "humans": [item.model_dump(mode="json") for item in state.humans],
+        "services": [item.model_dump(mode="json") for item in state.services],
+        "teams": [item.model_dump(mode="json") for item in state.teams],
+        "memberships": [item.model_dump(mode="json") for item in state.memberships],
+        "sessions": [
+            {
+                "id": item.id,
+                "identity_id": item.identity_id,
+                "organization_id": item.organization_id,
+                "workspace_id": item.workspace_id,
+                "assurance": item.assurance,
+                "created_at": item.created_at,
+                "last_seen_at": item.last_seen_at,
+                "idle_expires_at": item.idle_expires_at,
+                "absolute_expires_at": item.absolute_expires_at,
+                "step_up_until": item.step_up_until,
+                "rotation": item.rotation,
+                "revoked_at": item.revoked_at,
+                "revoke_reason": item.revoke_reason,
+            }
+            for item in state.sessions
+        ],
+        "service_tokens": [
+            {
+                "id": item.id,
+                "service_identity_id": item.service_identity_id,
+                "organization_id": item.organization_id,
+                "workspace_id": item.workspace_id,
+                "scopes": item.scopes,
+                "created_at": item.created_at,
+                "expires_at": item.expires_at,
+                "last_used_at": item.last_used_at,
+                "rotation": item.rotation,
+                "revoked_at": item.revoked_at,
+                "revoke_reason": item.revoke_reason,
+            }
+            for item in state.service_tokens
+        ],
+        "recovery_factors": [
+            item.model_dump(mode="json") for item in state.recovery_factors
+        ],
+    }
+
+
+def install_identity_middleware(app: Any, service: IdentityService) -> None:
+    if getattr(app.state, "identity_middleware_installed", False):
+        return
+    app.state.identity_middleware_installed = True
+
+    @app.middleware("http")
+    async def identity_boundary(request: Request, call_next: Any):
+        mode = (os.environ.get("CODEX_WEB_IDENTITY_MODE") or "local-trusted").strip().lower()
+        session_token = request.cookies.get(SESSION_COOKIE)
+        auth_header = request.headers.get("authorization", "")
+        bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        actor = None
+        used_cookie_session = False
+
+        try:
+            if session_token:
+                used_cookie_session = True
+                authenticated = service.authenticate_session(
+                    session_token,
+                    csrf_token=request.headers.get(CSRF_HEADER),
+                    require_csrf=request.method.upper() not in SAFE_METHODS,
+                )
+                actor = authenticated.actor
+            elif bearer:
+                try:
+                    actor = service.authenticate_session(
+                        bearer,
+                        require_csrf=False,
+                    ).actor
+                except AuthenticationError:
+                    actor = service.authenticate_service_token(bearer)
+            elif mode == "local-trusted":
+                actor = service.local_trusted_actor()
+            elif request.url.path in {"/api/livez", "/api/auth-verifier"}:
+                actor = None
+            else:
+                raise AuthenticationError("authentication required")
+
+            if actor is not None:
+                requested_org = request.headers.get(ORG_HEADER)
+                requested_workspace = request.headers.get(WORKSPACE_HEADER)
+                if requested_org and requested_org != actor.organization_id:
+                    raise AuthorizationError("cross-organization request denied")
+                if requested_workspace and requested_workspace != actor.workspace_id:
+                    raise AuthorizationError("cross-workspace request denied")
+                request.state.identity_actor = actor
+                request.state.tenant_scope = actor.tenant
+                request.state.used_cookie_session = used_cookie_session
+        except IdentityError as exc:
+            error = identity_http_error(exc)
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+        response = await call_next(request)
+        return response
+
+
+def build_identity_router(service: IdentityService) -> APIRouter:
+    router = APIRouter(tags=["identity"])
+
+    @router.get("/api/identity/me")
+    async def me(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        return actor.model_dump(mode="json")
+
+    @router.get("/api/identity")
+    async def identity_state(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            return _public_state(service, actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    def require_sensitive_admin(request: Request):
+        actor = request_actor(request)
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
+
+    @router.post("/api/identity/organizations")
+    async def create_organization(payload: OrganizationCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_organization(
+                name=payload.name,
+                organization_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/workspaces")
+    async def create_workspace(payload: WorkspaceCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_workspace(
+                organization_id=payload.organization_id,
+                name=payload.name,
+                workspace_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/humans")
+    async def create_human(payload: HumanIdentityCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_human_identity(
+                display_name=payload.display_name,
+                email=payload.email,
+                identity_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/services")
+    async def create_service(payload: ServiceIdentityCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_service_identity(
+                payload.name,
+                payload.description,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/memberships")
+    async def create_membership(payload: MembershipCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            membership = Membership(
+                identity_id=payload.identity_id,
+                principal_kind=payload.principal_kind,
+                organization_id=payload.organization_id,
+                workspace_id=payload.workspace_id,
+                roles=payload.roles,
+                team_ids=payload.team_ids,
+            )
+            return service.add_membership(membership).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/service-tokens")
+    async def create_service_token(payload: ServiceTokenCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            credentials = service.create_service_token(
+                service_identity_id=payload.service_identity_id,
+                scope=TenantScope(
+                    organization_id=payload.organization_id,
+                    workspace_id=payload.workspace_id,
+                ),
+                scopes=payload.scopes,
+                expires_at=payload.expires_at,
+            )
+            # Raw token is returned once at creation and never appears in list APIs.
+            return credentials.model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.get("/api/identity/sessions")
+    async def sessions(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        if actor.principal_kind != PrincipalKind.HUMAN:
+            raise HTTPException(status_code=403, detail="human identity required")
+        return {
+            "items": [
+                {
+                    "id": item.id,
+                    "created_at": item.created_at,
+                    "last_seen_at": item.last_seen_at,
+                    "idle_expires_at": item.idle_expires_at,
+                    "absolute_expires_at": item.absolute_expires_at,
+                    "assurance": item.assurance,
+                    "step_up_until": item.step_up_until,
+                    "revoked_at": item.revoked_at,
+                    "current": item.id == actor.session_id,
+                }
+                for item in service.list_sessions(actor)
+            ]
+        }
+
+    @router.post("/api/identity/sessions/revoke-others")
+    async def revoke_other_sessions(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            return {"revoked": service.revoke_other_sessions(actor)}
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.delete("/api/identity/sessions/{session_id}")
+    async def revoke_session(session_id: str, request: Request) -> dict[str, bool]:
+        actor = request_actor(request)
+        allowed = session_id == actor.session_id
+        if not allowed:
+            try:
+                IdentityService.require_admin(actor)
+                IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+                allowed = True
+            except IdentityError as exc:
+                raise identity_http_error(exc) from exc
+        if not allowed:
+            raise HTTPException(status_code=403, detail="session revocation denied")
+        try:
+            service.revoke_session(session_id, reason=f"revoked-by:{actor.identity_id}")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        return {"ok": True}
+
+    @router.delete("/api/identity/service-tokens/{token_id}")
+    async def revoke_service_token(token_id: str, request: Request) -> dict[str, bool]:
+        actor = request_actor(request)
+        try:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            service.revoke_service_token(token_id, reason=f"revoked-by:{actor.identity_id}")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        return {"ok": True}
+
+    return router

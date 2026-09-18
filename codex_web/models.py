@@ -56,6 +56,8 @@ class TaskSourceConfiguration(BaseModel):
 
 class Project(BaseModel):
     id: str
+    organization_id: str = "local"
+    workspace_id: str = "default"
     name: str
     path: str
     model: str | None = None
@@ -120,6 +122,8 @@ class WorkItemHandoff(BaseModel):
 
 class WorkItemState(BaseModel):
     ref: str
+    organization_id: str = "local"
+    workspace_id: str = "default"
     project_id: str | None = None
     project_path: str | None = None
     source_identity: TaskSourceIdentity | None = None
