@@ -305,7 +305,10 @@ class MultiProviderExecutiveService(ExecutiveService):
             result = await super().chat(request)
             await self._compact_session_if_needed(request.session_id)
             return result.model_copy(
-                update={"model_invocation_ids": list(invocation_ids)}
+                update={
+                    "model_class": MODEL_CLASS_STRATEGIC,
+                    "model_invocation_ids": list(invocation_ids),
+                }
             )
         finally:
             self._invocation_ids.reset(invocation_token)
