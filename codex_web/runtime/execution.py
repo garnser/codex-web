@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.execution_workers import WorkerLeaseError
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
@@ -223,12 +224,53 @@ class TurnExecutionService:
             )
         session = manager.get(assignment_id)
         if session is None:
-            detail = (
-                "thread bootstrap binding has no live Codex session"
+            subject = (
+                "thread bootstrap binding"
                 if bootstrap is not None
-                else "active thread assignment has no live Codex session"
+                else "active thread assignment"
             )
-            raise HTTPException(status_code=503, detail=detail)
+            try:
+                assignment = manager.reconcile_missing_session(assignment_id)
+            except WorkerLeaseError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"{subject} has no live Codex session while its "
+                        "canonical worker lease remains valid"
+                    ),
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"{subject} has no live Codex session and canonical "
+                        "assignment recovery failed"
+                    ),
+                ) from exc
+
+            status = getattr(assignment.status, "value", str(assignment.status))
+            if active is not None:
+                self.clear_thread_active(thread_id)
+            self.host._append_bot_event(
+                {
+                    "type": "codex_session_missing_reconciled",
+                    "thread_id": thread_id,
+                    "execution_id": assignment.execution_id,
+                    "assignment_id": assignment.id,
+                    "execution_workspace_id": assignment.execution_workspace_id,
+                    "worker_id": assignment.assigned_worker_id,
+                    "fence": assignment.fence,
+                    "assignment_status": status,
+                    "bootstrap": bootstrap is not None,
+                }
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"{subject} has no live Codex session; canonical "
+                    f"assignment is {status}"
+                ),
+            )
         session.validate_current()
         return session
 
