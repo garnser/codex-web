@@ -932,11 +932,12 @@ class ActionIntentService:
             if len(matches) == 1:
                 intent = matches[0]
 
+        message_payload = payload.model_dump()
+        message_payload["intent_id"] = intent.id if intent else payload.intent_id
         message = ActionInboxMessage(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
-            **payload.model_dump(),
-            intent_id=intent.id if intent else payload.intent_id,
+            **message_payload,
             processed_at=time.time(),
         )
 
@@ -977,12 +978,18 @@ class ActionIntentService:
                         ActionIntentStatus.EXECUTING,
                     }:
                         next_status = ActionIntentStatus.REQUIRES_RECONCILIATION
+                    updated_at = time.time()
                     current.intents[index] = item.model_copy(
                         update={
                             "status": next_status,
                             "last_receipt_id": receipt.id,
                             "lease": None,
-                            "updated_at": time.time(),
+                            "updated_at": updated_at,
+                            "completed_at": (
+                                updated_at
+                                if next_status in TERMINAL_ACTION_INTENT_STATUSES
+                                else item.completed_at
+                            ),
                         }
                     )
                     break
