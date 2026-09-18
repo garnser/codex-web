@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.api.configuration import build_configuration_router
@@ -18,11 +18,19 @@ from codex_web.configuration import (
     ConfigurationValueKind,
     FeatureTargeting,
 )
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.services.configuration import (
     ConfigurationConflictError,
     ConfigurationError,
     ConfigurationService,
 )
+from codex_web.services.projects import ProjectNotFoundError
+from codex_web.services.resources import ResourceNotFoundError
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -343,54 +351,276 @@ class ConfigurationServiceTests(unittest.TestCase):
 
 
 class ConfigurationApiTests(unittest.TestCase):
-    def test_api_uses_same_canonical_service_for_publish_and_resolution(self) -> None:
-        with tempfile.TemporaryDirectory() as tempdir:
-            state = SQLiteStateStore(Path(tempdir) / "state.db")
-            service = ConfigurationService(ConfigurationRegistryStore(state))
-            service.register_spec(
-                ConfigurationSpec(
-                    key="feature.api_fixture",
-                    value_kind=ConfigurationValueKind.BOOLEAN,
-                    default=False,
-                    feature_flag=True,
-                )
+    class _Projects:
+        @staticmethod
+        def get(project_id, scope):
+            if (
+                project_id == "project-a"
+                and scope.organization_id == "org-a"
+                and scope.workspace_id == "ws-a"
+            ):
+                return object()
+            raise ProjectNotFoundError("Project not found")
+
+    class _Resources:
+        @staticmethod
+        def get(resource_id, actor):
+            if (
+                resource_id == "resource-a"
+                and actor.organization_id == "org-a"
+                and actor.workspace_id == "ws-a"
+            ):
+                return object()
+            raise ResourceNotFoundError("resource not found")
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.state = SQLiteStateStore(Path(self.tempdir.name) / "state.db")
+        self.service = ConfigurationService(ConfigurationRegistryStore(self.state))
+        self.service.register_spec(
+            ConfigurationSpec(
+                key="feature.api_fixture",
+                value_kind=ConfigurationValueKind.BOOLEAN,
+                default=False,
+                feature_flag=True,
             )
-            app = FastAPI()
-            app.include_router(build_configuration_router(service))
+        )
+        self.actor = AuthenticationActor(
+            identity_id="authenticated-admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED,
+        )
+        app = FastAPI()
 
-            with TestClient(app) as client:
-                draft_response = client.post(
-                    "/api/configuration/drafts",
-                    json={
-                        "key": "feature.api_fixture",
-                        "scope_type": "workspace",
-                        "scope_id": "workspace-a",
-                        "value": True,
-                        "actor": "admin",
-                    },
-                )
-                self.assertEqual(draft_response.status_code, 200)
-                record_id = draft_response.json()["record"]["id"]
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
 
-                publish = client.post(
-                    f"/api/configuration/{record_id}/publish",
-                    json={"actor": "admin"},
-                )
-                self.assertEqual(publish.status_code, 200)
+        app.include_router(
+            build_configuration_router(
+                self.service,
+                self._Projects(),
+                self._Resources(),
+            )
+        )
+        self.client = TestClient(app)
 
-                resolved = client.post(
-                    "/api/configuration/resolve",
-                    json={
-                        "key": "feature.api_fixture",
-                        "context": {"workspace_id": "workspace-a"},
-                    },
-                )
-                self.assertEqual(resolved.status_code, 200)
-                self.assertTrue(resolved.json()["effective"]["value"])
-                self.assertEqual(
-                    resolved.json()["effective"]["record_id"],
-                    record_id,
-                )
+    def tearDown(self) -> None:
+        self.client.close()
+        self.tempdir.cleanup()
+
+    def _draft_payload(self, **overrides):
+        payload = {
+            "key": "feature.api_fixture",
+            "scope_type": "workspace",
+            "scope_id": "ws-a",
+            "value": True,
+            "actor": "forged-client-actor",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_api_uses_authenticated_actor_and_tenant_default_resolution(self) -> None:
+        global_record = self.service.create_draft(
+            ConfigurationDraftCreate(
+                key="feature.api_fixture",
+                scope_type=ConfigurationScope.GLOBAL,
+                value=False,
+                actor="bootstrap",
+            )
+        )
+        self.service.publish(
+            global_record.id,
+            ConfigurationPublishRequest(actor="bootstrap"),
+        )
+
+        draft_response = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(),
+        )
+        self.assertEqual(draft_response.status_code, 200)
+        self.assertEqual(
+            draft_response.json()["record"]["created_by"],
+            self.actor.identity_id,
+        )
+        record_id = draft_response.json()["record"]["id"]
+
+        publish = self.client.post(
+            f"/api/configuration/{record_id}/publish",
+            json={"actor": "forged-publisher"},
+        )
+        self.assertEqual(publish.status_code, 200)
+        self.assertEqual(
+            publish.json()["record"]["published_by"],
+            self.actor.identity_id,
+        )
+
+        resolved = self.client.post(
+            "/api/configuration/resolve",
+            json={"key": "feature.api_fixture", "context": {}},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        self.assertTrue(resolved.json()["effective"]["value"])
+        self.assertEqual(
+            resolved.json()["effective"]["record_id"],
+            record_id,
+        )
+
+    def test_low_assurance_human_cannot_mutate_but_can_read(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.PRIMARY}
+        )
+
+        self.assertEqual(self.client.get("/api/configuration/specs").status_code, 200)
+        response = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("mfa", response.json()["detail"].lower())
+
+    def test_cross_tenant_records_filters_and_context_fail_closed(self) -> None:
+        own = self.service.create_draft(
+            ConfigurationDraftCreate(
+                key="feature.api_fixture",
+                scope_type=ConfigurationScope.ORGANIZATION,
+                scope_id="org-a",
+                value=True,
+                actor="bootstrap",
+            )
+        )
+        other = self.service.create_draft(
+            ConfigurationDraftCreate(
+                key="feature.api_fixture",
+                scope_type=ConfigurationScope.ORGANIZATION,
+                scope_id="org-b",
+                value=True,
+                actor="bootstrap",
+            )
+        )
+
+        rows = self.client.get("/api/configuration/records")
+        self.assertEqual(rows.status_code, 200)
+        ids = {item["id"] for item in rows.json()["items"]}
+        self.assertIn(own.id, ids)
+        self.assertNotIn(other.id, ids)
+
+        denied_filter = self.client.get(
+            "/api/configuration/records",
+            params={"scope_type": "organization", "scope_id": "org-b"},
+        )
+        self.assertEqual(denied_filter.status_code, 403)
+
+        hidden = self.client.get(f"/api/configuration/{other.id}/impact")
+        self.assertEqual(hidden.status_code, 404)
+
+        denied_context = self.client.post(
+            "/api/configuration/resolve",
+            json={
+                "key": "feature.api_fixture",
+                "context": {"workspace_id": "ws-b"},
+            },
+        )
+        self.assertEqual(denied_context.status_code, 403)
+
+    def test_project_and_resource_scopes_use_canonical_tenant_lookups(self) -> None:
+        project = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="project",
+                scope_id="project-a",
+            ),
+        )
+        self.assertEqual(project.status_code, 200)
+
+        denied_project = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="project",
+                scope_id="project-b",
+            ),
+        )
+        self.assertEqual(denied_project.status_code, 403)
+
+        resource = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="resource",
+                scope_id="resource-a",
+            ),
+        )
+        self.assertEqual(resource.status_code, 200)
+
+        denied_resource = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="resource",
+                scope_id="resource-b",
+            ),
+        )
+        self.assertEqual(denied_resource.status_code, 403)
+
+    def test_service_scopes_separate_tenant_and_platform_configuration(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="configuration-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("configuration:admin",),
+        )
+        workspace = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(),
+        )
+        self.assertEqual(workspace.status_code, 200)
+        self.assertEqual(
+            workspace.json()["record"]["created_by"],
+            "configuration-service",
+        )
+
+        global_denied = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="global",
+                scope_id=None,
+            ),
+        )
+        self.assertEqual(global_denied.status_code, 403)
+        self.assertIn("configuration:global-admin", global_denied.json()["detail"])
+
+        self.actor = self.actor.model_copy(
+            update={"service_scopes": ("configuration:global-admin",)}
+        )
+        global_allowed = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="global",
+                scope_id=None,
+            ),
+        )
+        self.assertEqual(global_allowed.status_code, 200)
+
+    def test_global_human_mutation_requires_local_trusted_platform_context(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+
+        response = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(
+                scope_type="global",
+                scope_id=None,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("local-trusted", response.json()["detail"])
 
 
 if __name__ == "__main__":

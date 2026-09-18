@@ -530,7 +530,7 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "configuration": replace_routes(
         app,
-        build_configuration_router(configuration_service),
+        build_configuration_router(configuration_service, project_service, resource_catalog_service),
         paths=set(),
         key="configuration",
     ),
