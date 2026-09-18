@@ -170,10 +170,12 @@ An upgrade:
 - resets health state;
 - returns to disabled when compatible or incompatible otherwise.
 
-If the new manifest declares a migration entrypoint, migration completion must
-be explicit before the manifest replacement commits. A later package execution
-layer should run those migrations through the isolated worker boundary rather
-than inside the control-plane process.
+If the new manifest declares a migration entrypoint, the upgrade must reference
+a valid canonical PASS Evidence record for the exact extension ID and target
+version before the manifest replacement commits. The extension registry does
+not trust a caller-supplied completion boolean. A package execution layer should
+run migrations through the isolated worker boundary and publish the resulting
+Evidence rather than executing migration code inside the control-plane process.
 
 Removal uses a tombstone. Active grants are revoked and the installation moves
 to removed. Hard deletion is intentionally unsupported until a canonical
