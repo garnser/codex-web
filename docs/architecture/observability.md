@@ -26,6 +26,21 @@ Telemetry sanitization redacts secret-bearing keys such as authorization headers
 
 Do not emit prompt bodies, task/repository content, cookies, credentials, encryption keys, secret values, or provider response bodies merely to improve diagnostics. Later data-governance rules may further restrict export/retention of otherwise safe fields.
 
+### Bounded structured-log query buffer
+
+The built-in runtime keeps a bounded in-memory structured-log projection for operator drill-down. It is intentionally narrower than stdout/stderr logging:
+
+- only sanitized structured fields plus correlation/object references are retained;
+- free-form log messages and exception text are **not** retained in the query buffer because they cannot be proven secret/prompt-safe from field names alone;
+- entries are classified as `internal` telemetry and expire after one hour;
+- the buffer holds at most 500 recent entries per process;
+- queries are scoped to the caller's exact organization/workspace and exclude tenant-less or foreign-tenant entries;
+- query windows are capped at 24 hours, results at 100 rows, and serialized response payload at 64 KiB;
+- level, logger, event, correlation/causation, Work Item, execution and ActionIntent filters are exact deterministic filters;
+- the buffer is local to one process/instance and is not durable audit evidence or canonical business state.
+
+Longer-lived/centralized log storage may be added behind an exporter/query adapter later, but it must preserve the same tenant, classification, retention, redaction and bounded-query invariants instead of exposing raw process logs to the browser.
+
 ## Metrics and cardinality
 
 `RuntimeMetrics` is an in-process diagnostics registry. It supports counters and duration observations with a deliberately small allowlist of low-cardinality labels such as method, component, provider, result, status class, operation, queue, and kind.
@@ -68,6 +83,7 @@ The local runtime exposes:
 - `GET /api/metrics` — bounded counters/timers;
 - `GET /api/health` — machine-readable liveness/readiness/dependency/autonomy health;
 - `GET /api/traces/recent` — bounded recent trace spans;
+- `GET /api/logs/recent` — bounded, tenant-scoped, redacted structured-log telemetry;
 - `GET /api/observability` — combined diagnostics snapshot.
 
 These endpoints are operational projections, not authority/state mutation APIs. The Platform Foundation UI (#141) can consume them without creating dashboard-local health truth.
