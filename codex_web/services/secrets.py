@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
-from typing import Any, Callable, Iterable, Mapping, TypeVar
+from typing import Any, Awaitable, Callable, Iterable, Mapping, TypeVar
 
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.secrets import SecretAuditEvent, SecretCreate, SecretReference, SecretRotate, SecretStatus
@@ -108,6 +108,8 @@ class SecretBroker:
     def _can_use(cls, actor: AuthenticationActor, reference: SecretReference) -> bool:
         if cls._admin(actor):
             return True
+        if actor.principal_kind == PrincipalKind.SERVICE and "secret:use" not in actor.service_scopes:
+            return False
         return actor.identity_id in {
             reference.owner_identity_id,
             *reference.allowed_identity_ids,
@@ -245,7 +247,57 @@ class SecretBroker:
             )
             raise
         if _contains_secret(result, value):
-            result = scrub_secret(result, (value,))
+            scrubbed = scrub_secret(result, (value,))
+            if _contains_secret(scrubbed, value):
+                self._audit(reference, actor, "use", "failed", reason="secret-escape")
+                raise SecretUnavailableError("provider result attempted to expose secret material")
+            result = scrubbed
+        self._audit(
+            reference,
+            actor,
+            "use",
+            "succeeded",
+            context={"operation": operation, **dict(context or {})},
+        )
+        return result
+
+    async def use_async(
+        self,
+        secret_id: str,
+        *,
+        actor: AuthenticationActor,
+        operation: str,
+        consumer: Callable[[str], Awaitable[T]],
+        context: Mapping[str, str | int | float | bool | None] | None = None,
+    ) -> T:
+        reference = self._reference(secret_id)
+        self._scope(actor, reference)
+        if reference.status() != SecretStatus.ACTIVE:
+            self._audit(reference, actor, "use", "denied", reason=reference.status().value)
+            raise SecretUseDeniedError(f"secret is {reference.status().value}")
+        if not self._can_use(actor, reference):
+            self._audit(reference, actor, "use", "denied", reason="authority")
+            raise SecretUseDeniedError("secret use authority denied")
+        backend = self._backend(reference)
+        value = backend.get(reference.id)
+        try:
+            result = await consumer(value)
+        except Exception as exc:
+            self._audit(
+                reference,
+                actor,
+                "use",
+                "failed",
+                reason=type(exc).__name__,
+                context={"operation": operation, **dict(context or {})},
+            )
+            raise
+        if _contains_secret(result, value):
+            scrubbed = scrub_secret(result, (value,))
+            if _contains_secret(scrubbed, value):
+                self._audit(reference, actor, "use", "failed", reason="secret-escape")
+                raise SecretUnavailableError("provider result attempted to expose secret material")
+            result = scrubbed
         self._audit(
             reference,
             actor,
