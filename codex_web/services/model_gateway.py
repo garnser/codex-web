@@ -710,7 +710,11 @@ class ModelGatewayService:
         *,
         actor: AuthenticationActor,
     ) -> ModelInvocationResponse:
-        route = self.route(request, actor=actor)
+        effective_request, input_result = await self._compose_input(
+            request,
+            actor=actor,
+        )
+        route = self.route(effective_request, actor=actor)
         state = self.store.load()
         template = next(
             item
@@ -720,7 +724,7 @@ class ModelGatewayService:
             and item.checksum_sha256 == route.prompt_template_checksum_sha256
             and self._same_scope(item, actor)
         )
-        rendered_request = request.model_copy(
+        rendered_request = effective_request.model_copy(
             update={"system_prompt": self._render_system_prompt(template, request)}
         )
         attempts: list[ModelInvocationAttempt] = []
@@ -757,11 +761,11 @@ class ModelGatewayService:
                             rendered_request,
                             credential=credential,
                         ),
-                        timeout=request.timeout_seconds,
+                        timeout=effective_request.timeout_seconds,
                     )
                 except asyncio.TimeoutError as exc:
                     raise ModelProviderTransientError(
-                        f"provider attempt timed out after {request.timeout_seconds}s"
+                        f"provider attempt timed out after {effective_request.timeout_seconds}s"
                     ) from exc
 
             try:
@@ -778,7 +782,7 @@ class ModelGatewayService:
                         context={
                             "provider_id": provider.id,
                             "model_id": model.id,
-                            "model_class": request.model_class,
+                            "model_class": effective_request.model_class,
                         },
                     )
                 else:
@@ -853,25 +857,31 @@ class ModelGatewayService:
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
                 actor_id=actor.identity_id,
-                model_class=request.model_class,
-                purpose=request.purpose,
+                model_class=effective_request.model_class,
+                purpose=effective_request.purpose,
                 prompt_template_id=route.prompt_template_id,
                 prompt_template_version=route.prompt_template_version,
                 prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
                 rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
-                message_count=len(request.messages),
-                input_character_count=len(rendered_request.system_prompt)
-                + sum(len(item.content) for item in rendered_request.messages),
-                required_capabilities=request.required_capabilities,
+                message_count=len(effective_request.messages),
+                input_character_count=len(rendered_effective_request.system_prompt)
+                + sum(len(item.content) for item in rendered_effective_request.messages),
+                required_capabilities=effective_request.required_capabilities,
                 required_residency_tags=route.effective_required_residency_tags,
                 required_compliance_tags=route.effective_required_compliance_tags,
                 max_cost_usd=route.effective_max_cost_usd,
                 policy_fingerprint_sha256=route.policy_fingerprint_sha256,
                 route_reason=candidate.routing_reason,
-                work_item_ref=request.work_item_ref,
-                goal_id=request.goal_id,
-                decision_id=request.decision_id,
-                execution_id=request.execution_id,
+                work_item_ref=effective_request.work_item_ref,
+                goal_id=effective_request.goal_id,
+                decision_id=effective_request.decision_id,
+                execution_id=effective_request.execution_id,
+                input_plugin_provenance=(
+                    input_result.provenance if input_result is not None else ()
+                ),
+                input_gated_proposals=(
+                    input_result.gated_proposals if input_result is not None else ()
+                ),
                 attempts=tuple(attempts),
                 selected_provider_id=provider.id,
                 selected_model_id=model.id,
@@ -889,25 +899,31 @@ class ModelGatewayService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             actor_id=actor.identity_id,
-            model_class=request.model_class,
-            purpose=request.purpose,
+            model_class=effective_request.model_class,
+            purpose=effective_request.purpose,
             prompt_template_id=route.prompt_template_id,
             prompt_template_version=route.prompt_template_version,
             prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
             rendered_prompt_sha256=self._rendered_prompt_hash(rendered_request),
-            message_count=len(request.messages),
-            input_character_count=len(rendered_request.system_prompt)
-            + sum(len(item.content) for item in rendered_request.messages),
-            required_capabilities=request.required_capabilities,
+            message_count=len(effective_request.messages),
+            input_character_count=len(rendered_effective_request.system_prompt)
+            + sum(len(item.content) for item in rendered_effective_request.messages),
+            required_capabilities=effective_request.required_capabilities,
             required_residency_tags=route.effective_required_residency_tags,
             required_compliance_tags=route.effective_required_compliance_tags,
             max_cost_usd=route.effective_max_cost_usd,
             policy_fingerprint_sha256=route.policy_fingerprint_sha256,
             route_reason="all eligible attempts exhausted",
-            work_item_ref=request.work_item_ref,
-            goal_id=request.goal_id,
-            decision_id=request.decision_id,
-            execution_id=request.execution_id,
+            work_item_ref=effective_request.work_item_ref,
+            goal_id=effective_request.goal_id,
+            decision_id=effective_request.decision_id,
+            execution_id=effective_request.execution_id,
+            input_plugin_provenance=(
+                input_result.provenance if input_result is not None else ()
+            ),
+            input_gated_proposals=(
+                input_result.gated_proposals if input_result is not None else ()
+            ),
             attempts=tuple(attempts),
             status="failed",
             completed_at=completed,
