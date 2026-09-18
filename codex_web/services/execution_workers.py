@@ -468,9 +468,9 @@ class ExecutionWorkerService:
                 raise WorkerConflictError(
                     "assignment execution does not match execution workspace"
                 )
-            if workspace.work_item_ref != payload.work_item_ref:
+            if workspace.subject != payload.subject:
                 raise WorkerConflictError(
-                    "assignment Work Item does not match execution workspace"
+                    "assignment execution subject does not match execution workspace"
                 )
             if payload.project_id is not None and workspace.project_id != payload.project_id:
                 raise WorkerConflictError(
@@ -522,6 +522,8 @@ class ExecutionWorkerService:
                 assignment_id=assignment.id,
                 details={
                     "execution_id": assignment.execution_id,
+                    "subject_kind": assignment.subject.kind.value,
+                    "subject_ref": assignment.subject.ref,
                     "work_item_ref": assignment.work_item_ref,
                 },
             )
