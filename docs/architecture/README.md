@@ -88,6 +88,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
 - [Runtime supervision](runtime-supervision.md)
+- [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
 - [Storage scaling](storage-scaling.md)
 
 Additional M3/M7/M11 architecture contracts should be added as their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
