@@ -263,6 +263,27 @@
                   <div id="resource-catalog-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Identity & Sessions</h2>
+                    <button id="refresh-identity-admin" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="identity-admin-status" class="form-result" aria-live="polite">Open to load identity state.</div>
+                  <div class="section-title"><span>Current actor & tenant</span></div>
+                  <div id="identity-current" class="comm-log"></div>
+                  <div class="section-title"><span>Organizations & workspaces</span></div>
+                  <div id="identity-tenants" class="comm-log"></div>
+                  <div class="section-title"><span>Human & service identities</span></div>
+                  <div id="identity-principals" class="comm-log"></div>
+                  <div class="section-title"><span>Memberships & teams</span></div>
+                  <div id="identity-memberships" class="comm-log"></div>
+                  <div class="section-title"><span>Browser sessions</span></div>
+                  <div id="identity-sessions" class="comm-log"></div>
+                  <div class="section-title"><span>Service/API tokens</span></div>
+                  <div id="identity-service-tokens" class="comm-log"></div>
+                  <div class="section-title"><span>Recovery factors</span></div>
+                  <div id="identity-recovery" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -381,6 +402,7 @@
     <script src="static/extension_observability_admin.js" type="module"></script>
     <script src="static/resource_catalog_admin.js" type="module"></script>
     <script src="static/resource_catalog_management.js" type="module"></script>
+    <script src="static/identity_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
