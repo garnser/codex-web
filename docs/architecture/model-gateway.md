@@ -1,0 +1,145 @@
+# Model gateway, registry, and prompt governance
+
+## Status
+
+Milestone 3 foundation for issue #155.
+
+The model gateway owns provider/model identity and deterministic routing. Agent/role identity does not select provider-specific model names directly.
+
+## Stable model classes
+
+Core orchestration should request a stable class/capability such as:
+
+- `lightweight`
+- `primary-coding`
+- `high-reasoning`
+- `strategic`
+
+Concrete provider/model mappings live in the canonical registry and may change without rewriting orchestration logic.
+
+Explicit provider-specific model strings remain a migration/compatibility surface until existing Codex project/thread settings are migrated.
+
+## Provider and model registry
+
+Provider records contain metadata only:
+
+- provider ID and adapter type;
+- base URL where applicable;
+- secret-broker credential reference, never credential material;
+- residency/compliance tags;
+- availability state.
+
+Model records contain:
+
+- stable model ID and concrete provider model name/version;
+- one or more stable model classes;
+- capabilities/modalities/tool support;
+- context and output limits;
+- latency class;
+- pricing metadata;
+- residency/compliance tags;
+- routing priority and lifecycle state.
+
+## Tenant routing policy
+
+Tenant/workspace policy may restrict:
+
+- allowed providers;
+- allowed models;
+- required residency tags;
+- required compliance tags;
+- maximum invocation cost;
+- maximum bounded attempts including fallback.
+
+A policy can restrict routing but does not grant agent/action authority.
+
+## Deterministic routing
+
+Routing filters candidates before invocation in this order:
+
+1. exact tenant/workspace scope;
+2. stable model class;
+3. active model/provider lifecycle;
+4. tenant provider/model allowlists;
+5. required capabilities;
+6. residency and compliance constraints;
+7. context-window capacity;
+8. cost ceiling;
+9. preferred provider, provider health, and route priority.
+
+If no candidate survives, routing fails before provider invocation.
+
+Fallback is bounded and only follows transient provider failures. Every fallback candidate is independently subjected to the same policy/residency/capability/budget constraints. The gateway conservatively charges the estimated upper-bound cost against the remaining fallback budget after an uncertain transient attempt so fallback cannot silently expand the configured budget.
+
+## Prompt/version governance
+
+Prompt templates are versioned canonical records with a SHA-256 checksum.
+
+Invocation requests pin an explicit template version or resolve the current active version before routing. Invocation audit records contain the template ID/version/checksum plus a hash of the rendered prompt/messages, but never the prompt/message body.
+
+The initial gateway treats template content as an administration asset. Definition Registry #170 may become the shared publication mechanism for prompt/template definitions later; this gateway remains the runtime resolver/enforcer and invocation-attribution owner.
+
+## Credentials
+
+Provider registry records may store a `credential_ref` only. When present, the model gateway resolves it through the canonical SecretBroker at the bounded provider-call boundary. Raw provider credentials are never returned through model-gateway APIs or persisted in model registry/invocation state.
+
+Credential-less local providers such as a protected local Ollama endpoint may explicitly set `credential_required=false`.
+
+## Invocation attribution
+
+Every gateway invocation records metadata sufficient for audit/cost/replay attribution:
+
+- tenant/workspace and acting identity;
+- model class and purpose;
+- exact prompt template ID/version/checksum;
+- rendered prompt hash, message count and character count;
+- required capabilities/residency/compliance constraints;
+- effective cost ceiling;
+- work/goal/decision/execution references;
+- ordered provider/model attempts;
+- exact selected provider, model, concrete model name and model version;
+- provider request ID when available;
+- token usage and computed cost when available;
+- success/failure timestamps.
+
+Prompt text, user messages, model output and secret values are deliberately excluded from this ledger.
+
+## Adapter boundary
+
+`ModelProviderAdapter` is provider-neutral. The reference `OpenAIModelProviderAdapter` supports:
+
+- native OpenAI Responses API;
+- OpenAI-compatible chat-completions endpoints;
+- Ollama's OpenAI-compatible endpoint.
+
+Provider errors are classified into transient vs terminal failures so fallback remains explicit and bounded.
+
+## API
+
+```text
+GET /api/model-gateway/providers
+PUT /api/model-gateway/providers/{provider_id}
+
+GET /api/model-gateway/models
+PUT /api/model-gateway/models/{model_id}
+
+GET /api/model-gateway/prompts
+PUT /api/model-gateway/prompts/{template_id}/{version}
+
+GET|PUT /api/model-gateway/policy
+POST /api/model-gateway/route
+GET /api/model-gateway/invocations
+```
+
+There is intentionally no generic browser/API `invoke` endpoint in this foundation. Product/runtime services invoke models through the in-process gateway after their own authorization/context decisions; exposing a generic inference proxy would create a new unowned authority and abuse surface.
+
+## Adoption path
+
+1. Compose the gateway and reference adapters at application startup.
+2. Seed/migrate concrete providers/models/templates through canonical administration, never hard-coded runtime branches.
+3. Migrate Executive reasoning to `strategic` / `high-reasoning` classes.
+4. Migrate Codex turn defaults to `primary-coding` while preserving explicit user/project model overrides during transition.
+5. Attach model invocation IDs to Work Items/Goals/Decisions/audit/evaluation.
+6. Feed token/cost results into #164 metering and future budget policy.
+
+UI administration belongs to #141/#125/#127 and must display provider/model capabilities, exact routing constraints and provenance without exposing credentials.
