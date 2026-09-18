@@ -229,7 +229,20 @@ class BubblewrapExecutionBackend:
         return env
 
     def validate_assignment(self, assignment: ExecutionAssignment) -> None:
-        self.validate_assignment(assignment)
+        status = self.probe()
+        if not status.ready:
+            raise LocalExecutionUnavailableError(
+                status.reason or "local execution isolation is unavailable"
+            )
+        if assignment.sandbox == "danger-full-access":
+            raise LocalExecutionPolicyError(
+                "danger-full-access is not allowed on the isolated local worker"
+            )
+        self._validate_network(assignment.network)
+        if WorkerCapability.COMMAND_EXECUTION not in assignment.required_capabilities:
+            raise LocalExecutionPolicyError(
+                "assignment does not authorize command execution capability"
+            )
 
     @staticmethod
     def _validate_network(policy: NetworkPolicy) -> None:
@@ -251,20 +264,7 @@ class BubblewrapExecutionBackend:
         workspace_path: Path,
         home_path: Path,
     ) -> list[str]:
-        status = self.probe()
-        if not status.ready:
-            raise LocalExecutionUnavailableError(
-                status.reason or "local execution isolation is unavailable"
-            )
-        if assignment.sandbox == "danger-full-access":
-            raise LocalExecutionPolicyError(
-                "danger-full-access is not allowed on the isolated local worker"
-            )
-        self._validate_network(assignment.network)
-        if WorkerCapability.COMMAND_EXECUTION not in assignment.required_capabilities:
-            raise LocalExecutionPolicyError(
-                "assignment does not authorize command execution capability"
-            )
+        self.validate_assignment(assignment)
         if not argv or not str(argv[0]).strip():
             raise LocalExecutionPolicyError("execution command is empty")
 
