@@ -62,17 +62,20 @@ def build_extensions_router(
 
     @router.get("/packages")
     async def discover_packages(request: Request) -> dict[str, Any]:
-        service._require_admin(request_actor(request))
         if package_catalog is None:
             raise HTTPException(
                 status_code=503,
                 detail="extension package catalog is unavailable",
             )
-        discovery = package_catalog.discover()
-        return {
-            "items": [item.metadata() for item in discovery.candidates],
-            "errors": [item.metadata() for item in discovery.errors],
-        }
+        try:
+            service._require_admin(request_actor(request))
+            discovery = package_catalog.discover()
+            return {
+                "items": [item.metadata() for item in discovery.candidates],
+                "errors": [item.metadata() for item in discovery.errors],
+            }
+        except AuthorizationError as exc:
+            raise _error(exc) from exc
 
     @router.post("/packages/{package_ref}/install")
     async def install_package(
