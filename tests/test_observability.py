@@ -292,7 +292,11 @@ class RuntimeStructuredLogTests(unittest.TestCase):
         store.append(self._record())
 
         self.assertEqual(
-            store.query(tenant_id="org-a", workspace_id="ws-a"),
+            store.query(
+                tenant_id="org-a",
+                workspace_id="ws-a",
+                window_seconds=60,
+            ),
             [],
         )
         with self.assertRaisesRegex(ValueError, "window_seconds"):
