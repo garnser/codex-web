@@ -185,9 +185,9 @@ class AssignmentBoundModelEgressBroker:
         self.denied_connections += 1
         writer.write(
             (
-                f"HTTP/1.1 {status}\\r\\n"
-                "Connection: close\\r\\n"
-                "Content-Length: 0\\r\\n\\r\\n"
+                f"HTTP/1.1 {status}\r\n"
+                "Connection: close\r\n"
+                "Content-Length: 0\r\n\r\n"
             ).encode("ascii")
         )
         with contextlib.suppress(Exception):
@@ -205,12 +205,12 @@ class AssignmentBoundModelEgressBroker:
         try:
             self._validate_current()
             raw = await asyncio.wait_for(
-                reader.readuntil(b"\\r\\n\\r\\n"),
+                reader.readuntil(b"\r\n\r\n"),
                 timeout=10,
             )
             if len(raw) > 32 * 1024:
                 raise CodexModelEgressDeniedError("proxy request headers are too large")
-            lines = raw.decode("iso-8859-1").split("\\r\\n")
+            lines = raw.decode("iso-8859-1").split("\r\n")
             method, target, _version = lines[0].split(" ", 2)
             headers: dict[str, str] = {}
             for line in lines[1:]:
@@ -232,8 +232,8 @@ class AssignmentBoundModelEgressBroker:
             )
             self.connections += 1
             writer.write(
-                b"HTTP/1.1 200 Connection Established\\r\\n"
-                b"Proxy-Agent: codex-web-assignment-egress\\r\\n\\r\\n"
+                b"HTTP/1.1 200 Connection Established\r\n"
+                b"Proxy-Agent: codex-web-assignment-egress\r\n\r\n"
             )
             await writer.drain()
             await asyncio.gather(
