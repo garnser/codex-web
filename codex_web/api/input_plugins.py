@@ -48,14 +48,6 @@ def build_input_plugins_router(
                     "implementation_transport": (
                         local["transport"] if local is not None else None
                     ),
-                    "transport_matches": (
-                        True
-                        if local is None
-                        else local["transport"] == item.model_dump(mode="json").get(
-                            "transport",
-                            local["transport"],
-                        )
-                    ),
                 }
             )
 
