@@ -113,6 +113,23 @@ Every create/revise/status transition records:
 
 Historical scope, criteria, budget, and relationship changes can therefore be inspected without replaying chat history.
 
+## Bounded decomposition proposal and review contract
+
+Issue #106 persists decomposition as canonical proposal state **before** any model output may become Work Items. The first slice is deterministic and model-independent:
+
+- a proposal is scoped to one exact Goal revision;
+- it records the Goal's reasoning-budget snapshot plus explicit maximum planning depth and proposed-item count;
+- every proposed item names an existing tenant-visible project and may declare a parent and blocking dependencies only within the proposal;
+- item IDs are unique and parent/blocking graphs must be acyclic;
+- structural hard limits cap proposal depth and item count even if a client requests more;
+- accepted, rejected, and revised proposals are revisioned with actor/reason/timestamp events;
+- acceptance fails when the Goal changed after the proposal was produced, forcing an explicit revision against current Goal state;
+- revising a proposal refreshes the exact Goal revision and reasoning-budget snapshot before it can be reviewed again.
+
+Creating or accepting a proposal does **not** create canonical Work Items and does not call a model. The later generation slice may use the Model Gateway to produce strict structured proposal JSON, but it must validate through this same deterministic contract and attribute every invocation to the Goal. The later commit slice must use the project TaskSource CREATE capability added by #310 and persist each external creation through the ActionIntent/ActionProvider side-effect boundary before provider execution.
+
+This separation makes preview/review durable and auditable: models propose bounded structure, authorized operators accept/revise/reject, and side effects remain a later explicit phase.
+
 ## M5 handoff
 
 This foundation intentionally does **not** perform Goal decomposition or LLM-driven completion judgment. Issue #106 builds on this contract to add:
