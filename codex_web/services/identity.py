@@ -480,6 +480,54 @@ class IdentityService:
         ):
             raise TenantIsolationError("cross-tenant access denied")
 
+    def bootstrap_service_actor(
+        self,
+        *,
+        identity_id: str,
+        name: str,
+        scope: TenantScope,
+        service_scopes: Iterable[str] = (),
+    ) -> AuthenticationActor:
+        """Ensure one internal service principal exists and return its actor."""
+
+        def apply(state: IdentityState) -> IdentityState:
+            if not any(item.id == identity_id for item in state.services):
+                state.services.append(
+                    ServiceIdentity(
+                        id=identity_id,
+                        name=name,
+                        description="Internal codex-web service principal",
+                    )
+                )
+            if not any(
+                item.identity_id == identity_id
+                and item.principal_kind == PrincipalKind.SERVICE
+                and item.organization_id == scope.organization_id
+                and item.workspace_id == scope.workspace_id
+                and item.revoked_at is None
+                for item in state.memberships
+            ):
+                state.memberships.append(
+                    Membership(
+                        identity_id=identity_id,
+                        principal_kind=PrincipalKind.SERVICE,
+                        organization_id=scope.organization_id,
+                        workspace_id=scope.workspace_id,
+                        roles=[MembershipRole.MEMBER],
+                    )
+                )
+            return state
+
+        state = self.store.update(apply)
+        return self._actor(
+            state,
+            identity_id=identity_id,
+            principal_kind=PrincipalKind.SERVICE,
+            scope=scope,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=service_scopes,
+        )
+
     def create_service_identity(self, name: str, description: str | None = None) -> ServiceIdentity:
         identity = ServiceIdentity(name=name, description=description)
 
