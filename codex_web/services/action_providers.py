@@ -15,7 +15,12 @@ from codex_web.action_providers import (
     ActionVerification,
     UnsupportedActionCapabilityError,
 )
-from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.identity import (
+    AuthenticationActor,
+    MembershipRole,
+    PrincipalKind,
+    TenantScope,
+)
 from codex_web.resources import ResourceType
 from codex_web.services.action_provider_conformance import ActionProviderConformanceSuite
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
@@ -48,15 +53,91 @@ class ActionProviderRegistry:
     def __init__(self, store: ActionProviderStateStore) -> None:
         self.store = store
         self.providers: dict[tuple[str, str], ActionProvider] = {}
+        self.tenant_providers: dict[
+            tuple[str, str, str, str],
+            ActionProvider,
+        ] = {}
         self.conformance = ActionProviderConformanceSuite()
 
-    def register(self, provider: ActionProvider) -> None:
-        self.conformance.validate_contract(provider)
-        key = (provider.provider_type, provider.provider_instance)
-        self.providers[key] = provider
+    @staticmethod
+    def _provider_key(
+        provider_type: str,
+        provider_instance: str,
+    ) -> tuple[str, str]:
+        return (
+            str(provider_type or "").strip(),
+            str(provider_instance or "").strip(),
+        )
 
-    def provider(self, provider_type: str, provider_instance: str) -> ActionProvider:
-        provider = self.providers.get((provider_type, provider_instance))
+    def register(
+        self,
+        provider: ActionProvider,
+        *,
+        tenant_scope: TenantScope | None = None,
+    ) -> None:
+        self.conformance.validate_contract(provider)
+        provider_type, provider_instance = self._provider_key(
+            provider.provider_type,
+            provider.provider_instance,
+        )
+        if not provider_type or not provider_instance:
+            raise ValueError("action provider type and instance are required")
+        if tenant_scope is None:
+            self.providers[(provider_type, provider_instance)] = provider
+            return
+        self.tenant_providers[
+            (
+                tenant_scope.organization_id,
+                tenant_scope.workspace_id,
+                provider_type,
+                provider_instance,
+            )
+        ] = provider
+
+    def unregister_tenant(
+        self,
+        provider_type: str,
+        provider_instance: str,
+        *,
+        tenant_scope: TenantScope,
+    ) -> None:
+        provider_type, provider_instance = self._provider_key(
+            provider_type,
+            provider_instance,
+        )
+        self.tenant_providers.pop(
+            (
+                tenant_scope.organization_id,
+                tenant_scope.workspace_id,
+                provider_type,
+                provider_instance,
+            ),
+            None,
+        )
+
+    def provider(
+        self,
+        provider_type: str,
+        provider_instance: str,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> ActionProvider:
+        provider_type, provider_instance = self._provider_key(
+            provider_type,
+            provider_instance,
+        )
+        provider = None
+        if actor is not None:
+            provider = self.tenant_providers.get(
+                (
+                    actor.organization_id,
+                    actor.workspace_id,
+                    provider_type,
+                    provider_instance,
+                )
+            )
+        if provider is None:
+            provider = self.providers.get((provider_type, provider_instance))
         if provider is None:
             raise ActionProviderNotFoundError(
                 f"action provider {provider_type}/{provider_instance} is not registered"
@@ -79,7 +160,11 @@ class ActionProviderRegistry:
     ) -> ActionProviderBinding:
         if not self._admin(actor):
             raise AuthorizationError("action provider administration authority required")
-        self.provider(payload.provider_type, payload.provider_instance)
+        self.provider(
+            payload.provider_type,
+            payload.provider_instance,
+            actor=actor,
+        )
         for resource_id in payload.resource_ids:
             resources.get(resource_id, actor)
         binding = ActionProviderBinding(
@@ -124,7 +209,11 @@ class ActionProviderRegistry:
         items: list[dict[str, Any]] = []
         for binding in self.list_bindings(actor):
             try:
-                provider = self.provider(binding.provider_type, binding.provider_instance)
+                provider = self.provider(
+                    binding.provider_type,
+                    binding.provider_instance,
+                    actor=actor,
+                )
                 actions = [item.model_dump(mode="json") for item in provider.actions()]
                 status = "available" if binding.enabled else "disabled"
             except ActionProviderError:
@@ -173,7 +262,11 @@ class ActionExecutionService:
         ):
             raise TenantIsolationError("cross-tenant action request denied")
         binding = self.registry.binding(binding_id, actor)
-        provider = self.registry.provider(binding.provider_type, binding.provider_instance)
+        provider = self.registry.provider(
+            binding.provider_type,
+            binding.provider_instance,
+            actor=actor,
+        )
         definition = self._definition(provider, request.action_id)
 
         if binding.project_id is not None and request.project_id != binding.project_id:
