@@ -180,6 +180,34 @@ class ActionIntentService:
             ],
         }
 
+    def _validate_work_item_attribution(
+        self,
+        work_item_ref: str | None,
+        project_id: str | None,
+        actor: AuthenticationActor,
+    ) -> None:
+        if work_item_ref is None:
+            return
+        if self.work_item_host is None:
+            raise ActionIntentConflictError(
+                "work item attribution requires canonical Work Item state"
+            )
+        states = self.work_item_host._load_work_item_states()
+        state = states.get(work_item_ref)
+        if state is None or (
+            state.organization_id != actor.organization_id
+            or state.workspace_id != actor.workspace_id
+        ):
+            raise ActionIntentNotFoundError("work item not found")
+        if (
+            state.project_id is not None
+            and project_id is not None
+            and state.project_id != project_id
+        ):
+            raise ActionIntentConflictError(
+                "action intent project does not match attributed Work Item"
+            )
+
     def _work_item_requirements(
         self,
         work_item_ref: str | None,
@@ -187,13 +215,10 @@ class ActionIntentService:
     ):
         if not work_item_ref or self.artifact_evidence is None:
             return ()
-        try:
-            return self.artifact_evidence.work_item_requirements(
-                work_item_ref,
-                actor=actor,
-            )
-        except Exception:
-            return ()
+        return self.artifact_evidence.work_item_requirements(
+            work_item_ref,
+            actor=actor,
+        )
 
     def create(
         self,
@@ -213,6 +238,15 @@ class ActionIntentService:
             request,
             actor=actor,
         )
+        self._validate_work_item_attribution(
+            payload.work_item_ref,
+            request.project_id,
+            actor,
+        )
+        if payload.work_item_success is not None and payload.work_item_ref is None:
+            raise ActionIntentConflictError(
+                "work_item_success requires work_item_ref"
+            )
         if payload.rollback_required and (
             not definition.capabilities.rollback or not definition.reversible
         ):
