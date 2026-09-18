@@ -316,7 +316,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             state,
             ROLE_CONTRACTS["james"],
         )
-        self.assertEqual(contract.schema_version, "1.3")
+        self.assertEqual(contract.schema_version, "1.4")
         self.assertEqual(contract.target.workspace.workspace_id, workspace.id)
         self.assertEqual(contract.target.workspace.branch_name, workspace.branch_name)
         self.assertEqual(contract.target.workspace.base_revision, "base-revision")
