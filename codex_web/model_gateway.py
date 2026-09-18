@@ -8,9 +8,15 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 
-MODEL_GATEWAY_CONTRACT = ContractSpec("model-gateway-state", "1.0", ("1.0",))
+MODEL_GATEWAY_CONTRACT = ContractSpec(
+    "model-gateway-state",
+    "1.1",
+    ("1.0", "1.1"),
+    deprecated=("1.0",),
+)
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
 MODEL_CLASS_PRIMARY_CODING = "primary-coding"
@@ -279,6 +285,8 @@ class ModelInvocationRecord(BaseModel):
     goal_id: str | None = None
     decision_id: str | None = None
     execution_id: str | None = None
+    input_plugin_provenance: tuple[InputPluginProvenance, ...] = ()
+    input_gated_proposals: tuple[InputGatedProposal, ...] = ()
     attempts: tuple[ModelInvocationAttempt, ...] = ()
     selected_provider_id: str | None = None
     selected_model_id: str | None = None
