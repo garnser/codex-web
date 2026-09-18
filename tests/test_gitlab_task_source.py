@@ -9,6 +9,7 @@ from codex_web.services.task_source_conformance import TaskSourceConformanceSuit
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
+    TaskSourceCreateRequest,
     UnsupportedTaskSourceCapability,
 )
 
@@ -29,6 +30,7 @@ class _FakeGitLabClient:
         self.group_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[tuple[str, int]] = []
         self.update_payloads: list[dict[str, object]] = []
+        self.create_payloads: list[tuple[str, dict[str, object]]] = []
         self.notes: list[tuple[str, int, str]] = []
 
     async def group_issues(self, api_base, group, *, token, labels=None, state="opened"):
@@ -38,6 +40,21 @@ class _FakeGitLabClient:
     async def project_issue(self, api_base, project, iid, *, token):
         self.read_calls.append((project, iid))
         return deepcopy(self.issue)
+
+    async def create_project_issue(self, api_base, project, *, token, payload):
+        self.create_payloads.append((project, dict(payload)))
+        issue = {
+            **deepcopy(self.issue),
+            "id": 9002,
+            "iid": 43,
+            "title": payload["title"],
+            "references": {"full": f"{project}#43"},
+            "web_url": f"https://gitlab.example/{project}/-/issues/43",
+            "labels": [
+                value for value in str(payload.get("labels") or "").split(",") if value
+            ],
+        }
+        return issue
 
     async def update_project_issue(self, api_base, project, iid, *, token, payload):
         self.update_payloads.append(dict(payload))
@@ -71,6 +88,7 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.conformance.validate_adapter(self.source)
         self.assertEqual(self.source.source_type, "gitlab")
         self.assertEqual(self.source.source_instance, "https://gitlab.example/api/v4")
+        self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.CREATE))
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.DISCOVERY))
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.READ))
         self.assertTrue(self.source.capabilities.supports(TaskSourceCapability.EVENTS))
@@ -84,6 +102,30 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
             GitLabTaskSource("", "token", client=self.client)
         with self.assertRaises(ValueError):
             GitLabTaskSource("https://gitlab.example/api/v4", "", client=self.client)
+
+    async def test_create_uses_configured_project_scope_and_normalizes_identity(self) -> None:
+        snapshot = await self.source.create(
+            TaskSourceCreateRequest(
+                title="Generated goal work",
+                body="Created only after approved decomposition.",
+                owners=("quinn",),
+                labels=("priority::P1",),
+            ),
+            scope="group/project",
+        )
+
+        self.conformance.validate_snapshot(self.source, snapshot)
+        self.assertEqual(snapshot.identity.external_id, "group/project#43")
+        self.assertEqual(snapshot.title, "Generated goal work")
+        self.assertIn("owner::quinn", snapshot.labels)
+        self.assertIn("priority::P1", snapshot.labels)
+        project, payload = self.client.create_payloads[-1]
+        self.assertEqual(project, "group/project")
+        self.assertEqual(payload["title"], "Generated goal work")
+        self.assertEqual(
+            payload["description"],
+            "Created only after approved decomposition.",
+        )
 
     async def test_discovery_and_read_normalize_provider_objects(self) -> None:
         discovered = await self.source.discover(scope="group")
