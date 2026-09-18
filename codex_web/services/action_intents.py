@@ -22,7 +22,11 @@ from codex_web.action_intents import (
     TERMINAL_ACTION_INTENT_STATUSES,
 )
 from codex_web.action_providers import ActionRequest, ActionResult
-from codex_web.entitlements import UsageEventCreate
+from codex_web.entitlements import (
+    CAPABILITY_EXTERNAL_ACTIONS,
+    METRIC_EXTERNAL_ACTION_ATTEMPTS,
+    UsageEventCreate,
+)
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.observability import correlated, current_correlation, new_correlation_id
 from codex_web.security import (
@@ -350,12 +354,6 @@ class ActionIntentService:
         ):
             raise TenantIsolationError("cross-tenant action intent denied")
 
-        if self.entitlements is not None:
-            self.entitlements.require_capability(
-                "external_actions",
-                actor=actor,
-            )
-
         binding, provider, definition, request = self.execution.resolve_contract(
             payload.binding_id,
             request,
@@ -396,6 +394,12 @@ class ActionIntentService:
             )
             if existing is not None:
                 return existing
+
+        if self.entitlements is not None:
+            self.entitlements.require_capability(
+                CAPABILITY_EXTERNAL_ACTIONS,
+                actor=actor,
+            )
 
         now = time.time()
         context = current_correlation()
@@ -885,12 +889,12 @@ class ActionIntentService:
         if self.entitlements is not None:
             try:
                 self.entitlements.consume(
-                    "external_actions",
+                    CAPABILITY_EXTERNAL_ACTIONS,
                     UsageEventCreate(
                         idempotency_key=(
                             f"action-intent:{pending.id}:attempt:{pending.attempt + 1}"
                         ),
-                        metric="external_action_attempts",
+                        metric=METRIC_EXTERNAL_ACTION_ATTEMPTS,
                         amount=1.0,
                         source="action-intent",
                         project_id=pending.project_id,
