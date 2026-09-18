@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from codex_web.compatibility import ContractCompatibilityError, TASK_SOURCE_CONTRACT
+from codex_web.identity import TenantScope
 from codex_web.models import WorkItemState
 from codex_web.services.task_sources import (
     TaskSource,
@@ -25,12 +26,47 @@ class TaskSourceRegistry:
 
     def __init__(self) -> None:
         self._factories: dict[str, TaskSourceFactory] = {}
+        self._tenant_factories: dict[
+            tuple[str, str, str],
+            TaskSourceFactory,
+        ] = {}
 
-    def register(self, source_type: str, factory: TaskSourceFactory) -> None:
+    @staticmethod
+    def _source_key(source_type: str) -> str:
         key = str(source_type or "").strip().casefold()
         if not key:
             raise ValueError("task-source type must not be empty")
-        self._factories[key] = factory
+        return key
+
+    def register(self, source_type: str, factory: TaskSourceFactory) -> None:
+        self._factories[self._source_key(source_type)] = factory
+
+    def register_tenant(
+        self,
+        scope: TenantScope,
+        source_type: str,
+        factory: TaskSourceFactory,
+    ) -> None:
+        key = (
+            scope.organization_id,
+            scope.workspace_id,
+            self._source_key(source_type),
+        )
+        self._tenant_factories[key] = factory
+
+    def unregister_tenant(
+        self,
+        scope: TenantScope,
+        source_type: str,
+    ) -> None:
+        self._tenant_factories.pop(
+            (
+                scope.organization_id,
+                scope.workspace_id,
+                self._source_key(source_type),
+            ),
+            None,
+        )
 
     def resolve(self, state: WorkItemState, *, required: bool = False) -> TaskSource | None:
         identity = getattr(state, "source_identity", None)
@@ -38,7 +74,16 @@ class TaskSourceRegistry:
             if required:
                 raise TaskSourceResolutionError("Work item has no authoritative task-source identity")
             return None
-        factory = self._factories.get(identity.source_type.casefold())
+        source_key = identity.source_type.casefold()
+        factory = self._tenant_factories.get(
+            (
+                state.organization_id,
+                state.workspace_id,
+                source_key,
+            )
+        )
+        if factory is None:
+            factory = self._factories.get(source_key)
         if factory is None:
             if required:
                 raise TaskSourceResolutionError(
