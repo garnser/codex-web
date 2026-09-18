@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from codex_web.services.runtime_supervisor import RuntimeSupervisor, install_runtime_supervisor
 
 
 class RuntimeSupervisorInstallTests(unittest.TestCase):
+    def test_runtime_timer_defaults_invalid_values_and_clamps_match_legacy_behavior(self) -> None:
+        service = RuntimeSupervisor(SimpleNamespace(state=SimpleNamespace()), SimpleNamespace())
+
+        with patch.dict(os.environ, {"WATCHDOG_USEC": ""}, clear=False):
+            self.assertEqual(service.watchdog_interval(), 0.0)
+        with patch.dict(os.environ, {"WATCHDOG_USEC": "bad"}, clear=False):
+            self.assertEqual(service.watchdog_interval(), 0.0)
+        with patch.dict(os.environ, {"WATCHDOG_USEC": "2"}, clear=False):
+            self.assertEqual(service.watchdog_interval(), 5.0)
+        with patch.dict(os.environ, {"WATCHDOG_USEC": "200000000"}, clear=False):
+            self.assertEqual(service.watchdog_interval(), 30.0)
+        with patch.dict(os.environ, {"WATCHDOG_USEC": "20000000"}, clear=False):
+            self.assertEqual(service.watchdog_interval(), 10.0)
+
+        with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": ""}, clear=False):
+            self.assertEqual(service.queue_recovery_interval_seconds(), 30.0)
+        with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": "bad"}, clear=False):
+            self.assertEqual(service.queue_recovery_interval_seconds(), 30.0)
+        with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": "0"}, clear=False):
+            self.assertEqual(service.queue_recovery_interval_seconds(), 0.0)
+        with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": "5"}, clear=False):
+            self.assertEqual(service.queue_recovery_interval_seconds(), 10.0)
+        with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": "45"}, clear=False):
+            self.assertEqual(service.queue_recovery_interval_seconds(), 45.0)
+
     def test_installer_replaces_legacy_lifecycle_handlers(self) -> None:
         async def legacy_startup() -> None:
             return None
@@ -31,6 +58,8 @@ class RuntimeSupervisorInstallTests(unittest.TestCase):
         self.assertEqual(app.router.on_startup[0].__func__, RuntimeSupervisor.start)
         self.assertIs(app.router.on_shutdown[0].__self__, service)
         self.assertEqual(app.router.on_shutdown[0].__func__, RuntimeSupervisor.stop)
+        self.assertIs(host._watchdog_interval.__self__, service)
+        self.assertIs(host._queue_recovery_interval_seconds.__self__, service)
 
     def test_installer_adds_handlers_when_legacy_runtime_has_none(self) -> None:
         host = SimpleNamespace()

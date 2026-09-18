@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -26,6 +27,24 @@ class RuntimeSupervisor:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.startup_tasks: set[asyncio.Task[Any]] = set()
         self.started = False
+
+    def watchdog_interval(self) -> float:
+        try:
+            usec = int(os.environ.get("WATCHDOG_USEC") or "0")
+        except ValueError:
+            return 0.0
+        if usec <= 0:
+            return 0.0
+        return max(5.0, min(30.0, usec / 2_000_000))
+
+    def queue_recovery_interval_seconds(self) -> float:
+        try:
+            seconds = float(os.environ.get("CODEX_WEB_QUEUE_RECOVERY_SECONDS") or "30")
+        except ValueError:
+            return 30.0
+        if seconds <= 0:
+            return 0.0
+        return max(10.0, seconds)
 
     def _spawn(self, name: str, coroutine: Awaitable[None]) -> asyncio.Task[None]:
         task = asyncio.create_task(coroutine, name=f"codex-web:{name}")
@@ -256,6 +275,8 @@ def install_runtime_supervisor(app: Any, host: Any) -> RuntimeSupervisor:
 
     service = RuntimeSupervisor(app, host)
     app.state.runtime_supervisor = service
+    host._watchdog_interval = service.watchdog_interval
+    host._queue_recovery_interval_seconds = service.queue_recovery_interval_seconds
     _replace_lifecycle_handler(app.router.on_startup, getattr(host, "startup", None), service.start)
     _replace_lifecycle_handler(app.router.on_shutdown, getattr(host, "shutdown", None), service.stop)
     return service
