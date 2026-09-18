@@ -1172,6 +1172,7 @@ class ExtensionService:
         *,
         actor: AuthenticationActor,
     ) -> ExtensionInstallation:
+        self._require_admin(actor)
         current = self.get(installation_id, actor)
         verification = self._verify_package(
             payload.manifest,
