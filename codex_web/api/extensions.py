@@ -69,7 +69,7 @@ def build_extensions_router(
                 detail="extension package catalog is unavailable",
             )
         try:
-            service._require_admin(request_actor(request))
+            service._require_admin_role(request_actor(request))
             discovery = package_catalog.discover()
             return {
                 "items": [item.metadata() for item in discovery.candidates],

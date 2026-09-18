@@ -29,10 +29,15 @@ from codex_web.extensions import (
     ExtensionType,
     ExtensionUpgradeRequest,
 )
-from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.configuration import ConfigurationService
-from codex_web.services.identity import AuthorizationError
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.secrets import SecretBroker
 from codex_web.storage.extensions import ExtensionStateStore
@@ -234,13 +239,22 @@ class ExtensionService:
         )
 
     @staticmethod
-    def _require_admin(actor: AuthenticationActor) -> None:
+    def _require_admin_role(actor: AuthenticationActor) -> None:
         if actor.principal_kind == PrincipalKind.SERVICE:
             if "extensions:admin" not in actor.service_scopes:
                 raise AuthorizationError("extensions:admin service scope required")
             return
         if not actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN):
             raise AuthorizationError("tenant administrator required")
+
+    @classmethod
+    def _require_admin(cls, actor: AuthenticationActor) -> None:
+        cls._require_admin_role(actor)
+        if actor.principal_kind != PrincipalKind.SERVICE:
+            IdentityService.require_assurance(
+                actor,
+                AuthenticationAssurance.MFA,
+            )
 
     @staticmethod
     def _require_health_reporter(actor: AuthenticationActor) -> None:
