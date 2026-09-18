@@ -139,6 +139,7 @@ class ExecutiveModelGatewayTests(unittest.TestCase):
             )
 
             self.assertEqual(response.reply, "gateway reply from strategic-model")
+            self.assertEqual(response.model_class, MODEL_CLASS_STRATEGIC)
             self.assertEqual(adapter.model_ids, ["strategic-model"])
             self.assertEqual(len(response.model_invocation_ids), 1)
             invocation = gateway.invocations(actor)[0]
