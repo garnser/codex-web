@@ -118,6 +118,7 @@ Historical scope, criteria, budget, and relationship changes can therefore be in
 This foundation intentionally does **not** perform Goal decomposition or LLM-driven completion judgment. Issue #106 builds on this contract to add:
 
 - bounded Goal → proposed-work decomposition;
+- accepted proposed work committed only through the project's authoritative TaskSource CREATE capability, with the external side effect persisted through the canonical ActionIntent/ActionProvider boundary before provider execution;
 - review/accept/revise/reject before canonical work creation where policy requires;
 - completion evaluation and evidence;
 - Goal workspace/UI;
