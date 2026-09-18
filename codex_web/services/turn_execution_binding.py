@@ -416,6 +416,14 @@ class TurnExecutionBindingService:
         session_seconds: int = THREAD_BOOTSTRAP_SESSION_SECONDS,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
+        if (
+            session_seconds < 30
+            or session_seconds > THREAD_BOOTSTRAP_SESSION_SECONDS
+        ):
+            raise TurnExecutionBindingError(
+                "thread execution session lifetime must be between "
+                f"30 and {THREAD_BOOTSTRAP_SESSION_SECONDS} seconds"
+            )
         effective_limits = limits or WorkerResourceLimits(
             cpu_seconds=session_seconds,
             wall_seconds=session_seconds,
