@@ -91,6 +91,16 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
                 raise _error(exc) from exc
             raise
 
+    @router.post("/{worker_id}/activate")
+    async def activate(worker_id: str, request: Request) -> dict[str, Any]:
+        try:
+            item = service.activate(worker_id, actor=request_actor(request))
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
     @router.post("/{worker_id}/drain")
     async def drain(
         worker_id: str,
