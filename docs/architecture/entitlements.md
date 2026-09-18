@@ -98,6 +98,16 @@ GET /api/entitlements/usage/export
 
 Administrative mutations require a tenant owner/admin or a service principal with `entitlements:admin`. Direct usage ingestion requires `entitlements:meter` or `entitlements:admin`; internal canonical integrations use the transactional consume boundary after their own authorization checks.
 
+## Model usage metering
+
+The model gateway emits successful provider usage through the same canonical usage ledger using metadata-only metrics:
+
+- `model_input_tokens`;
+- `model_output_tokens`;
+- `model_cost_usd` when registry pricing plus provider usage permit an actual-cost calculation.
+
+Usage idempotency is keyed by canonical model invocation ID plus metric. Model metering does not copy prompts, responses, provider credentials, or arbitrary model metadata into entitlement records. A metering sink failure does not rewrite a provider-successful model invocation; reconciliation can repair usage independently.
+
 ## Privacy and governance
 
 Meter events intentionally do not contain prompt text, response text, secret values, request payloads, or provider credentials. They are quantitative attribution records.
