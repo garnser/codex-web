@@ -153,9 +153,11 @@ class ResourceCatalogService:
     ) -> Resource:
         self._require_admin(actor)
         current = self.get(resource_id, actor)
-        changes = payload.model_dump(exclude_none=True)
+        changes = payload.model_dump(exclude_unset=True)
         changes["updated_at"] = time.time()
-        updated = current.model_copy(update=changes)
+        updated = Resource.model_validate(
+            {**current.model_dump(mode="json"), **changes}
+        )
         state = self.store.load()
         scoped = [
             item
