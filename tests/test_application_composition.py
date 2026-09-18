@@ -49,6 +49,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         expected = {
             "/api/projects": "projects",
             "/api/resources": "resources",
+            "/api/action-providers": "action-providers",
             "/api/threads": "threads",
             "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
