@@ -243,6 +243,12 @@ class ActionIntentService:
         trusted = (
             payload.authority_decision.outcome == ActionDecisionOutcome.ALLOW
             and payload.policy_decision.outcome == ActionDecisionOutcome.ALLOW
+            and SecurityBoundaryService.trusted_decision_source(
+                payload.authority_decision.source
+            )
+            and SecurityBoundaryService.trusted_decision_source(
+                payload.policy_decision.source
+            )
         )
         reasons = (
             ("security boundary service unavailable for privileged action",)
