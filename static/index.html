@@ -705,6 +705,42 @@
                   <div id="configuration-record-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Execution Workers</h2>
+                    <button id="refresh-execution-workers" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="execution-worker-status" class="form-result" aria-live="polite">Open to load canonical worker and assignment state.</div>
+                  <div class="route-test">
+                    <input id="execution-worker-search" type="search" placeholder="Search worker, pool, identity, execution or Work Item" />
+                    <select id="execution-worker-lifecycle-filter">
+                      <option value="">All worker states</option>
+                      <option value="active">Active</option>
+                      <option value="draining">Draining</option>
+                      <option value="quarantined">Quarantined</option>
+                      <option value="revoked">Revoked</option>
+                      <option value="offline">Offline</option>
+                    </select>
+                    <select id="execution-assignment-status-filter">
+                      <option value="">All assignment states</option>
+                      <option value="pending">Pending</option>
+                      <option value="claimed">Claimed</option>
+                      <option value="running">Running</option>
+                      <option value="succeeded">Succeeded</option>
+                      <option value="failed">Failed</option>
+                      <option value="cancelled">Cancelled</option>
+                      <option value="lost">Lost</option>
+                    </select>
+                  </div>
+                  <div class="section-title"><span>Worker pools & trust state</span></div>
+                  <div id="execution-worker-list" class="comm-log"></div>
+                  <div class="section-title"><span>Assignments & leases</span></div>
+                  <div id="execution-assignment-list" class="comm-log"></div>
+                  <details>
+                    <summary>Recent worker control-plane events</summary>
+                    <div id="execution-worker-events" class="comm-log"></div>
+                  </details>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -833,6 +869,7 @@
     <script src="static/entitlement_admin.js" type="module"></script>
     <script src="static/configuration_admin.js" type="module"></script>
     <script src="static/configuration_management.js" type="module"></script>
+    <script src="static/execution_worker_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
