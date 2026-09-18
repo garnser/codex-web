@@ -145,6 +145,44 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.approval_requests, [message])
         self.assertEqual(self.host.hub.events[-1]["type"], "approval.request")
 
+    async def test_assignment_bound_approval_ids_are_namespaced_but_rpc_response_uses_raw_id(self) -> None:
+        self.runtime.approval_namespace = "assignment-1"
+        self.runtime._send = AsyncMock()
+        message = {
+            "id": 12,
+            "method": "item/fileChange/requestApproval",
+            "params": {"threadId": "thread-1"},
+        }
+
+        await self.runtime._handle_message(message)
+
+        public_id = "assignment-1:12"
+        self.assertIn(public_id, self.runtime.pending_approvals)
+        self.assertEqual(
+            self.runtime.pending_approvals[public_id]["id"],
+            public_id,
+        )
+        self.assertEqual(
+            self.runtime.pending_approval_rpc_ids[public_id],
+            12,
+        )
+        self.assertEqual(self.host.approval_requests[0]["id"], public_id)
+
+        await self.runtime.respond_to_server_request(
+            public_id,
+            {"decision": "accept"},
+        )
+
+        self.runtime._send.assert_awaited_once_with(
+            {"id": 12, "result": {"decision": "accept"}}
+        )
+        self.assertNotIn(public_id, self.runtime.pending_approvals)
+        self.assertNotIn(public_id, self.runtime.pending_approval_rpc_ids)
+        self.assertEqual(
+            self.host.hub.events[-1]["id"],
+            public_id,
+        )
+
     async def test_terminal_turn_event_schedules_queue_drain_and_projects_event(self) -> None:
         message = {
             "method": "turn/completed",
