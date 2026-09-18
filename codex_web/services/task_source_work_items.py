@@ -78,6 +78,15 @@ class TaskSourceWorkItemProjector:
                     )
         return ("local", "default")
 
+    def _project_resource_ids(self, project_id: str) -> list[str]:
+        resolver = getattr(self.host, "_resource_ids_for_project", None)
+        if not callable(resolver):
+            return []
+        try:
+            return list(dict.fromkeys(str(item) for item in resolver(project_id) if str(item).strip()))
+        except Exception:
+            return []
+
     def upsert(
         self,
         source: TaskSource,
@@ -101,6 +110,7 @@ class TaskSourceWorkItemProjector:
 
         now = time.time()
         organization_id, workspace_id = self._project_tenant(project_id)
+        resource_ids = self._project_resource_ids(project_id)
         source_timestamp = self._revision_timestamp(snapshot)
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
@@ -116,6 +126,7 @@ class TaskSourceWorkItemProjector:
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 project_id=project_id,
+                resource_ids=resource_ids,
                 project_path=project_path,
                 source_identity=snapshot.identity,
                 title=snapshot.title,
@@ -216,6 +227,7 @@ class TaskSourceWorkItemProjector:
             state.organization_id = organization_id
             state.workspace_id = workspace_id
             state.project_id = project_id
+            state.resource_ids = resource_ids
             state.project_path = project_path or state.project_path
             state.source_identity = snapshot.identity
             state.title = snapshot.title or state.title

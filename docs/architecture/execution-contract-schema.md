@@ -20,15 +20,15 @@ The contract follows the repository architecture policy:
 - future authority controls must extend the versioned contract rather than bypass it;
 - the prompt path receives only the schema version in addition to the existing role contract, avoiding duplicated structured payload tokens.
 
-## Version 1.1
+## Version 1.2
 
-Schema `1.1` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
+Schema `1.2` is a backward-compatible evolution of the v1 contract family. It adds structured execution-resume and accounting data while retaining the same ownership, target, permissions, output, success, and failure semantics introduced in 1.0.
 
 `ExecutionContractV1` contains:
 
 | Field | Purpose |
 | --- | --- |
-| `schema_version` | Exact schema version, currently `1.1`. |
+| `schema_version` | Exact schema version, currently `1.2`. |
 | `work_item_ref` | Canonical work-item identity. |
 | `role_id` | Resolved execution-role contract. |
 | `agent_id` | Current canonical owner, or pending handoff recipient when applicable. |
@@ -44,7 +44,7 @@ The Pydantic models use `extra="forbid"` so unknown fields cannot silently chang
 
 ### Resume inputs
 
-The v1.1 input envelope adds:
+The v1.2 input envelope adds:
 
 ```yaml
 retry_attempt: 0
@@ -61,7 +61,7 @@ Only the latest checkpoint id and summary are copied into the contract. Full che
 
 ### Accounting envelope
 
-Every v1.1 contract includes:
+Every v1.2 contract includes:
 
 ```yaml
 accounting:
@@ -94,7 +94,7 @@ Before a canonical work-item wake-up is formatted for an agent, `WorkItemContrac
 
 1. resolves split-brain findings deterministically;
 2. resolves the execution role from canonical state;
-3. constructs and validates `ExecutionContractV1` schema 1.1;
+3. constructs and validates `ExecutionContractV1` schema 1.2;
 4. carries only the compact latest-checkpoint resume hint into the structured contract;
 5. continues through the existing role-prompt path.
 

@@ -34,6 +34,9 @@ class _Host:
     def _leading_owner_cue_in_action(self, action):
         return None
 
+    def _resource_ids_for_project(self, project_id):
+        return ["resource-repo", "resource-prod"]
+
 
 class TaskSourceWorkItemProjectionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -70,6 +73,7 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(state.current_owner, "carl")
         self.assertEqual(state.current_stage, "implementation_active")
         self.assertEqual(state.priority, "priority::P1")
+        self.assertEqual(state.resource_ids, ["resource-repo", "resource-prod"])
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
 

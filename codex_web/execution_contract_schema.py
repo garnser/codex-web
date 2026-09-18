@@ -8,14 +8,15 @@ from codex_web.execution_contracts import ExecutionRoleContract
 from codex_web.models import ArtifactState, HandoffStatus, WorkItemStage, WorkItemState
 
 
-EXECUTION_CONTRACT_SCHEMA_VERSION = "1.1"
+EXECUTION_CONTRACT_SCHEMA_VERSION = "1.2"
 
 
 class ExecutionTargetV1(BaseModel):
-    """Repository/environment target known at work-item dispatch time."""
+    """Canonical plus compatibility targets known at work-item dispatch time."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    resource_ids: tuple[str, ...] = ()
     repository: str | None = None
     branch: str | None = None
     environment: str | None = None
@@ -78,7 +79,7 @@ class ExecutionContractV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.1"] = EXECUTION_CONTRACT_SCHEMA_VERSION
+    schema_version: Literal["1.2"] = EXECUTION_CONTRACT_SCHEMA_VERSION
     work_item_ref: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
     agent_id: str | None = None
@@ -93,7 +94,11 @@ class ExecutionContractV1(BaseModel):
     def compact_public(self) -> dict[str, object]:
         """Return stable machine-readable data without null target noise."""
 
-        return self.model_dump(mode="json", exclude_none=True)
+        payload = self.model_dump(mode="json", exclude_none=True)
+        target = payload.get("target")
+        if isinstance(target, dict) and not target.get("resource_ids"):
+            target.pop("resource_ids", None)
+        return payload
 
 
 def execution_contract_for_work_item(
@@ -119,7 +124,10 @@ def execution_contract_for_work_item(
         work_item_ref=state.ref,
         role_id=role.id,
         agent_id=agent_id,
-        target=ExecutionTargetV1(repository=state.project_path),
+        target=ExecutionTargetV1(
+            resource_ids=tuple(dict.fromkeys(state.resource_ids)),
+            repository=state.project_path,
+        ),
         inputs=CanonicalWorkItemInputV1(
             current_stage=state.current_stage,
             artifact_state=state.artifact_state,

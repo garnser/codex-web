@@ -125,6 +125,7 @@ class WorkItemState(BaseModel):
     organization_id: str = "local"
     workspace_id: str = "default"
     project_id: str | None = None
+    resource_ids: list[str] = Field(default_factory=list)
     project_path: str | None = None
     source_identity: TaskSourceIdentity | None = None
     title: str | None = None

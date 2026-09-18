@@ -48,6 +48,7 @@ class ApplicationCompositionTests(unittest.TestCase):
     def test_extracted_routes_are_owned_by_domain_routers(self) -> None:
         expected = {
             "/api/projects": "projects",
+            "/api/resources": "resources",
             "/api/threads": "threads",
             "/api/threads/{thread_id}/compact": "context",
             "/api/status": "runtime",
