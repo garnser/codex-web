@@ -884,6 +884,74 @@ class ExecutionWorkerService:
         self.store.update(apply)
         return lost
 
+    def recover_assignment_if_expired(
+        self,
+        assignment_id: str,
+        *,
+        actor: AuthenticationActor,
+        now: float | None = None,
+        failure_code: str = "worker_lease_expired",
+        failure_message: str = "worker lease expired before trusted completion",
+    ) -> ExecutionAssignment:
+        """Reconcile one leased assignment after its canonical lease expires.
+
+        This targeted recovery path is safe for request/startup reconciliation:
+        it never revokes a still-valid lease and never rewrites terminal/pending
+        state. The assignment ID, tenant scope and current lease remain
+        authoritative.
+        """
+        self._require_admin(actor)
+        current = time.time() if now is None else now
+        updated: list[ExecutionAssignment] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            assignment = self._assignment(state, assignment_id, actor)
+            if assignment.status not in {
+                AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING,
+            }:
+                updated.append(assignment)
+                return state
+            lease = assignment.lease
+            if lease is None:
+                raise WorkerConflictError(
+                    "claimed/running assignment has no recoverable lease"
+                )
+            if lease.expires_at > current:
+                raise WorkerLeaseError(
+                    "assignment lease is still valid and cannot be recovered"
+                )
+            replacement = assignment.model_copy(
+                update={
+                    "status": AssignmentStatus.LOST,
+                    "lease": None,
+                    "updated_at": current,
+                    "failure_code": failure_code,
+                    "failure_message": failure_message,
+                }
+            )
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_lost",
+                worker_id=assignment.assigned_worker_id,
+                assignment_id=assignment.id,
+                details={
+                    "fence": assignment.fence,
+                    "reason": failure_code,
+                },
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        return updated[0]
+
+
     def retry_lost(
         self,
         assignment_id: str,
