@@ -8,6 +8,7 @@ from codex_web.api.approvals import build_approvals_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
+from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
 from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
@@ -35,10 +36,12 @@ from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.integrations.webhook_security import install_webhook_security
 from codex_web.model_providers import OpenAIModelProviderAdapter
+from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     EXECUTION_WORKSPACE_DIR,
+    KEY_MATERIAL_DIR,
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
@@ -64,6 +67,7 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.data_governance import DataGovernanceService
@@ -97,6 +101,7 @@ from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.entitlements import EntitlementStore
+from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
@@ -190,6 +195,17 @@ entitlement_service = EntitlementService(entitlement_store)
 app.include_router(build_entitlements_router(entitlement_service))
 app.state.entitlement_store = entitlement_store
 app.state.entitlement_service = entitlement_service
+
+crypto_key_store = CryptoKeyStore(state_store)
+local_key_backend = LocalFileKeyBackend(KEY_MATERIAL_DIR)
+crypto_key_service = CryptoKeyService(
+    crypto_key_store,
+    {"local": local_key_backend},
+)
+app.include_router(build_crypto_keys_router(crypto_key_service))
+app.state.crypto_key_store = crypto_key_store
+app.state.crypto_key_service = crypto_key_service
+app.state.local_key_backend = local_key_backend
 
 secret_state_store = SecretStateStore(state_store)
 local_secret_backend = LocalFileSecretBackend(SECRET_MATERIAL_DIR)

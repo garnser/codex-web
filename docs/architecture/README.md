@@ -93,6 +93,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
 - [Data governance](data-governance.md) — canonical classification, retention, legal-hold, governed deletion/redaction, export authorization, residency propagation, and model-context filtering boundary.
 - [Entitlements, quotas, and usage metering](entitlements.md) — hosted/service capability access, deterministic quota enforcement, idempotent metering, reconciliation, and provider-neutral usage export.
+- [Encryption at rest and key management](encryption-key-management.md) — envelope encryption, scoped/versioned key references, rotation/revocation, restore manifests, and pluggable key backends.
 - [Model gateway and prompt governance](model-gateway.md) — stable model classes, provider/model registry, deterministic routing/fallback, secret references, prompt revisions, and invocation attribution.
 - [Storage scaling](storage-scaling.md)
 
