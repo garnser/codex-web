@@ -51,9 +51,17 @@
     ].filter(Boolean).join(" ").toLowerCase();
   }
 
+  function subjectText(item) {
+    if (item.subject?.kind && item.subject?.ref) {
+      return `${item.subject.kind}:${item.subject.ref}`;
+    }
+    return item.work_item_ref ? `work_item:${item.work_item_ref}` : "unknown";
+  }
+
   function assignmentSearchText(item) {
     return [
       item.id,
+      subjectText(item),
       item.work_item_ref,
       item.execution_id,
       item.project_id,
@@ -147,7 +155,7 @@
       const network = item.network || {};
       const limits = item.limits || {};
       return `<details class="comm-entry">
-        <summary><strong>${escapeHtml(item.work_item_ref)} · ${escapeHtml(item.execution_id)} · ${escapeHtml(item.status)}</strong></summary>
+        <summary><strong>${escapeHtml(subjectText(item))} · ${escapeHtml(item.execution_id)} · ${escapeHtml(item.status)}</strong></summary>
         <small>Assignment: ${escapeHtml(item.id)} · worker: ${escapeHtml(item.assigned_worker_id || "unassigned")}${worker ? ` (${escapeHtml(worker.pool)} / ${escapeHtml(worker.lifecycle)})` : ""} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")}</small>
         <small>Project: ${escapeHtml(item.project_id || "none")} · resources: ${listText(item.resource_ids)} · base revision: ${escapeHtml(item.base_revision || "none")} · contract: ${escapeHtml(item.execution_contract_version)}</small>
         <small>Required capabilities: ${listText(item.required_capabilities)} · sandbox: ${escapeHtml(item.sandbox)} · approval policy: ${escapeHtml(item.approval_policy)}</small>
