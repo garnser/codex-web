@@ -241,6 +241,10 @@ class TurnExecutionBindingTests(unittest.TestCase):
             THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
         )
         self.assertEqual(
+            assignment.limits.cpu_seconds,
+            THREAD_BOOTSTRAP_SESSION_SECONDS,
+        )
+        self.assertEqual(
             assignment.limits.wall_seconds,
             THREAD_BOOTSTRAP_SESSION_SECONDS,
         )
