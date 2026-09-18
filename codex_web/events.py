@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import Any
 
 from fastapi import WebSocket
 
-from codex_web.observability import RuntimeMetrics, log_event
+from codex_web.observability import RuntimeMetrics, correlated, correlation_fields, log_event
 
 
 EventListener = Callable[[dict[str, Any]], None]
@@ -77,26 +78,42 @@ class EventHub:
             self._senders.pop(websocket, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
+        event = dict(event)
+        for key, value in correlation_fields().items():
+            event.setdefault(key, value)
         if self._metrics:
             self._metrics.increment("eventhub.events_published")
 
         # Runtime observers must never be able to break browser fan-out. They are
         # intentionally synchronous and should only update state/schedule work.
-        for listener in list(self._listeners):
-            try:
-                listener(event)
-            except Exception as exc:
-                if self._metrics:
-                    self._metrics.increment("eventhub.listener_failures")
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "eventhub.listener_failed",
-                    "EventHub listener failed",
-                    event_type=event.get("type"),
-                    listener=getattr(listener, "__qualname__", repr(listener)),
-                    error=str(exc),
-                )
+        event_context = (
+            correlated(
+                correlation_id=event.get("correlation_id"),
+                causation_id=event.get("causation_id"),
+                workspace_id=event.get("workspace_id"),
+                work_item_ref=event.get("work_item_ref"),
+                execution_id=event.get("execution_id"),
+                action_intent_id=event.get("action_intent_id"),
+            )
+            if event.get("correlation_id")
+            else nullcontext()
+        )
+        with event_context:
+            for listener in list(self._listeners):
+                try:
+                    listener(event)
+                except Exception as exc:
+                    if self._metrics:
+                        self._metrics.increment("eventhub.listener_failures")
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "eventhub.listener_failed",
+                        "EventHub listener failed",
+                        event_type=event.get("type"),
+                        listener=getattr(listener, "__qualname__", repr(listener)),
+                        error=str(exc),
+                    )
 
         dead: list[WebSocket] = []
         for websocket in list(self._clients):
