@@ -4,6 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codex_web.artifact_evidence import (
+    EvidenceCreate,
+    EvidenceResult,
+    EvidenceType,
+)
 from codex_web.extensions import (
     ExtensionConfigureRequest,
     ExtensionDeploymentMode,
@@ -20,6 +25,7 @@ from codex_web.extensions import (
 from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.secret_backends import LocalFileSecretBackend
 from codex_web.secrets import SecretCreate
+from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.extension_conformance import (
     ExtensionConformanceSuite,
     ExtensionRuntimeDescriptor,
@@ -34,6 +40,7 @@ from codex_web.services.extensions import (
 from codex_web.services.identity import IdentityService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.secrets import SecretBroker
+from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
@@ -108,10 +115,14 @@ class ExtensionLifecycleTests(unittest.TestCase):
             SecretStateStore(self.sqlite),
             {"local": LocalFileSecretBackend(root / "secrets")},
         )
+        self.artifact_evidence = ArtifactEvidenceService(
+            ArtifactEvidenceStore(self.sqlite)
+        )
         self.service = ExtensionService(
             ExtensionStateStore(self.sqlite),
             secrets=self.secrets,
             resources=self.resources,
+            artifact_evidence=self.artifact_evidence,
             unhealthy_quarantine_threshold=3,
         )
         self.conformance = ExtensionConformanceSuite()
@@ -442,7 +453,7 @@ class ExtensionLifecycleTests(unittest.TestCase):
         )
         self.assertFalse(legacy.active)
 
-    def test_declared_migration_must_complete_before_upgrade_commit(self) -> None:
+    def test_declared_migration_requires_matching_canonical_evidence(self) -> None:
         installation = self._install()
         next_manifest = manifest(
             ExtensionType.TASK_SOURCE,
@@ -457,10 +468,53 @@ class ExtensionLifecycleTests(unittest.TestCase):
                 ExtensionUpgradeRequest(
                     manifest=next_manifest,
                     observed_digest=next_manifest.provenance.digest,
-                    migration_completed=False,
                 ),
                 actor=self.actor,
             )
+
+        wrong = self.artifact_evidence.create_evidence(
+            EvidenceCreate(
+                evidence_type=EvidenceType.POLICY_EVALUATION,
+                result=EvidenceResult.PASS,
+                metadata={
+                    "extension_id": installation.manifest.id,
+                    "to_version": "9.9.9",
+                },
+            ),
+            actor=self.actor,
+        )
+        with self.assertRaises(ExtensionConflictError):
+            self.service.upgrade(
+                installation.id,
+                ExtensionUpgradeRequest(
+                    manifest=next_manifest,
+                    observed_digest=next_manifest.provenance.digest,
+                    migration_evidence_id=wrong.id,
+                ),
+                actor=self.actor,
+            )
+
+        evidence = self.artifact_evidence.create_evidence(
+            EvidenceCreate(
+                evidence_type=EvidenceType.POLICY_EVALUATION,
+                result=EvidenceResult.PASS,
+                metadata={
+                    "extension_id": installation.manifest.id,
+                    "to_version": next_manifest.version,
+                },
+            ),
+            actor=self.actor,
+        )
+        upgraded = self.service.upgrade(
+            installation.id,
+            ExtensionUpgradeRequest(
+                manifest=next_manifest,
+                observed_digest=next_manifest.provenance.digest,
+                migration_evidence_id=evidence.id,
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(upgraded.version, "1.3.0")
 
     def test_remove_is_tombstoned_and_revokes_grants(self) -> None:
         installation = self._install()
