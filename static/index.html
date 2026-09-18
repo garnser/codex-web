@@ -534,6 +534,31 @@
                   <div id="action-provider-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Entitlements & Usage</h2>
+                    <button id="refresh-entitlements" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div id="entitlement-status" class="form-result" aria-live="polite">Open to load canonical entitlement state.</div>
+                  <div class="section-title"><span>Tenant mode</span></div>
+                  <div id="entitlement-mode" class="comm-log"></div>
+                  <div class="section-title"><span>Capabilities</span></div>
+                  <div id="entitlement-capabilities" class="comm-log"></div>
+                  <div class="section-title"><span>Quota policies</span></div>
+                  <div id="entitlement-quotas" class="comm-log"></div>
+                  <details id="entitlement-decision-panel">
+                    <summary>Deterministic entitlement/quota preview</summary>
+                    <div class="route-test">
+                      <select id="entitlement-preview-capability"></select>
+                      <select id="entitlement-preview-metric"><option value="">Capability only</option></select>
+                      <input id="entitlement-preview-amount" type="number" min="0" step="0.01" value="0" placeholder="Projected amount" />
+                      <button id="preview-entitlement" type="button" class="ghost-button">Evaluate entitlement</button>
+                    </div>
+                    <div id="entitlement-preview-result" class="comm-log"></div>
+                  </details>
+                  <div class="section-title"><span>Usage ledger</span></div>
+                  <div id="entitlement-usage" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -659,6 +684,7 @@
     <script src="static/model_gateway_admin.js" type="module"></script>
     <script src="static/model_gateway_management.js" type="module"></script>
     <script src="static/action_provider_admin.js" type="module"></script>
+    <script src="static/entitlement_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
