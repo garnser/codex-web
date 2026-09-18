@@ -322,6 +322,23 @@ class TurnExecutionService:
         assignment_id = active.assignment_id
         if manager is None or not assignment_id:
             return
+        bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
+        if bootstrap is not None and bootstrap.assignment_id == assignment_id:
+            self.host._append_bot_event(
+                {
+                    "type": "thread_bootstrap_turn_completed",
+                    "thread_id": active.thread_id,
+                    "turn_id": active.turn_id,
+                    "execution_id": bootstrap.execution_id,
+                    "assignment_id": bootstrap.assignment_id,
+                    "execution_workspace_id": bootstrap.execution_workspace_id,
+                    "worker_id": active.worker_id,
+                    "fence": active.fence,
+                    "succeeded": succeeded,
+                    "session_retained": True,
+                }
+            )
+            return
         existing = self.assignment_completion_tasks.get(assignment_id)
         if existing is not None and not existing.done():
             return
