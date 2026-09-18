@@ -7,10 +7,18 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.execution_subjects import (
+    ExecutionSubject,
+    normalize_execution_subject,
+)
 from codex_web.models import ApprovalPolicy, SandboxMode
 
 
-EXECUTION_WORKER_CONTRACT = ContractSpec("execution-worker-state", "1.0", ("1.0",))
+EXECUTION_WORKER_CONTRACT = ContractSpec(
+    "execution-worker-state",
+    "1.1",
+    ("1.0", "1.1"),
+)
 
 
 class WorkerLifecycle(StrEnum):
@@ -105,7 +113,8 @@ class ExecutionWorkerRegister(BaseModel):
 class ExecutionAssignmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    work_item_ref: str = Field(min_length=1)
+    subject: ExecutionSubject | None = None
+    work_item_ref: str | None = None
     execution_id: str = Field(min_length=1)
     project_id: str | None = None
     resource_ids: tuple[str, ...]
@@ -124,6 +133,10 @@ class ExecutionAssignmentCreate(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
+        self.subject, self.work_item_ref = normalize_execution_subject(
+            self.subject,
+            self.work_item_ref,
+        )
         self.resource_ids = tuple(dict.fromkeys(item for item in self.resource_ids if item))
         self.required_capabilities = tuple(
             sorted(set(self.required_capabilities), key=lambda value: value.value)
@@ -155,7 +168,8 @@ class ExecutionAssignment(BaseModel):
     id: str = Field(default_factory=lambda: f"assignment-{uuid.uuid4().hex}")
     organization_id: str
     workspace_id: str
-    work_item_ref: str
+    subject: ExecutionSubject | None = None
+    work_item_ref: str | None = None
     execution_id: str
     project_id: str | None = None
     resource_ids: tuple[str, ...]
@@ -184,6 +198,14 @@ class ExecutionAssignment(BaseModel):
     failure_message: str | None = None
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def normalize_subject(self) -> "ExecutionAssignment":
+        self.subject, self.work_item_ref = normalize_execution_subject(
+            self.subject,
+            self.work_item_ref,
+        )
+        return self
 
 
 class AssignmentClaimRequest(BaseModel):
