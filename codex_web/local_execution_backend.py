@@ -226,10 +226,7 @@ class BubblewrapExecutionBackend:
             for key in cls.SAFE_ENV_KEYS
             if (value := os.environ.get(key))
         }
-        env["PATH"] = os.environ.get(
-            "PATH",
-            "/usr/local/bin:/usr/bin:/bin",
-        )
+        env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
         if extra:
             for key, value in extra.items():
                 normalized = str(key).strip()
