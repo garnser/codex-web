@@ -12,7 +12,12 @@ from codex_web.resources import ResourceType
 from codex_web.security import ExecutionSecurityPolicy
 
 
-ACTION_PROVIDER_CONTRACT = ContractSpec("action-provider", "1.1", ("1.1",))
+ACTION_PROVIDER_CONTRACT = ContractSpec(
+    "action-provider",
+    "1.1",
+    ("1.0", "1.1"),
+    deprecated=("1.0",),
+)
 
 
 class ActionRiskClass(StrEnum):
