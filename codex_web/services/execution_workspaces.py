@@ -403,7 +403,12 @@ class ExecutionWorkspaceService:
             updated_at=now,
         )
 
+        reservation_already_exists: list[bool] = []
+
         def reserve(state):
+            if any(item.id == workspace_id for item in state.workspaces):
+                reservation_already_exists.append(True)
+                return state
             active_leases = [
                 item
                 for item in state.leases
@@ -446,6 +451,18 @@ class ExecutionWorkspaceService:
             return state
 
         self.store.update(reserve)
+        if reservation_already_exists:
+            current = self.get(workspace_id, actor)
+            if current.status in {
+                ExecutionWorkspaceStatus.PROVISIONING,
+                ExecutionWorkspaceStatus.ACTIVE,
+                ExecutionWorkspaceStatus.CONFLICTED,
+                ExecutionWorkspaceStatus.INTEGRATED,
+            }:
+                return current
+            raise ExecutionWorkspaceConflictError(
+                "execution id already has a terminal workspace; use a new execution id"
+            )
 
         if kind == ExecutionWorkspaceKind.RESOURCE_LEASE:
             activated_at = time.time()
