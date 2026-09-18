@@ -426,6 +426,60 @@ class BubblewrapExecutionBackend:
             except (ProcessLookupError, OSError):
                 pass
 
+    def spawn_interactive(
+        self,
+        assignment: ExecutionAssignment,
+        *,
+        argv: Sequence[str],
+        workspace_path: Path,
+        environment: Mapping[str, str] | None = None,
+        git_metadata_path: Path | None = None,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text: bool = True,
+        bufsize: int = 1,
+    ):
+        """Start one long-lived assignment process inside the canonical sandbox.
+
+        The caller owns process supervision. This method intentionally reuses the
+        same Bubblewrap command, minimal environment and POSIX resource limits as
+        one-shot execution so interactive runtimes do not become a second,
+        weaker execution boundary.
+        """
+        status = self.probe()
+        if not status.ready:
+            raise LocalExecutionUnavailableError(
+                status.reason or "local execution isolation is unavailable"
+            )
+        workspace = workspace_path.resolve(strict=True)
+        if not workspace.is_dir():
+            raise LocalExecutionPolicyError("execution workspace is not a directory")
+        resolved_git_metadata = (
+            git_metadata_path.resolve(strict=True)
+            if git_metadata_path is not None
+            else self.discover_git_metadata(workspace)
+        )
+        command = self.build_command(
+            assignment,
+            argv=argv,
+            workspace_path=workspace,
+            git_metadata_path=resolved_git_metadata,
+        )
+        env = self.minimal_environment(extra=environment)
+        return self._popen(
+            command,
+            cwd=str(workspace),
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            bufsize=bufsize,
+            start_new_session=True,
+            preexec_fn=self._limits_preexec(assignment.limits),
+        )
+
     def run(
         self,
         assignment: ExecutionAssignment,
