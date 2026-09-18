@@ -57,7 +57,7 @@ Usage is append-only and contains attribution metadata, never prompt/secret cont
 - actor/source;
 - optional project, resource, Work Item, and ActionIntent references.
 
-Idempotency is tenant-scoped. Replaying the same key does not double count.
+Idempotency is tenant-scoped. Replaying the same logical event does not double count, even if entitlement configuration changed after the original event was accepted. Reusing an idempotency key with different metric/amount/attribution is rejected as a conflict rather than silently rewriting accounting history.
 
 Aggregation uses `occurred_at`, not arrival time, so late events are assigned to the window in which the usage actually happened. Duplicate and late records can therefore be reconciled without inventing new consumption.
 
@@ -92,6 +92,8 @@ PUT /api/entitlements/quotas/{metric}
 
 GET /api/entitlements/usage
 POST /api/entitlements/usage
+POST /api/entitlements/usage/reconcile
+GET /api/entitlements/usage/export
 ```
 
 Administrative mutations require a tenant owner/admin or a service principal with `entitlements:admin`. Direct usage ingestion requires `entitlements:meter` or `entitlements:admin`; internal canonical integrations use the transactional consume boundary after their own authorization checks.
