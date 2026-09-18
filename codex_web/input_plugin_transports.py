@@ -5,14 +5,12 @@ import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.input_plugins import (
-    InputContextBlock,
     InputEnvelope,
-    InputMessage,
     InputPatch,
     InputPhase,
     InputPluginBudgetError,
@@ -82,14 +80,6 @@ ExternalInputInvoker = Callable[
     [ExternalInputPluginRequest],
     Mapping[str, Any] | InputPatch | Awaitable[Mapping[str, Any] | InputPatch],
 ]
-
-
-class ExternalInputInvokerProtocol(Protocol):
-    def __call__(
-        self,
-        request: ExternalInputPluginRequest,
-    ) -> Mapping[str, Any] | InputPatch | Awaitable[Mapping[str, Any] | InputPatch]: ...
-
 
 def _json_size(value: BaseModel | Mapping[str, Any]) -> int:
     payload: Any
