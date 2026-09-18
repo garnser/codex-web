@@ -18,6 +18,13 @@ from codex_web.artifact_evidence import (
     VerificationResult,
     sha256_digest,
 )
+from codex_web.data_governance import (
+    ContextFilterRequest,
+    DataClassification,
+    GovernanceAction,
+    GovernanceActionRequest,
+    GovernanceRequestStatus,
+)
 from codex_web.execution_contract_schema import execution_contract_for_work_item
 from codex_web.execution_contracts import ROLE_CONTRACTS
 from codex_web.identity import (
@@ -31,8 +38,10 @@ from codex_web.services.artifact_evidence import (
     ArtifactEvidenceConflictError,
     ArtifactEvidenceService,
 )
+from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import IdentityService
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -86,9 +95,20 @@ class ArtifactEvidenceTests(unittest.TestCase):
             created_at=1.0,
         )
         self.host = _WorkItemHost(self.work_item)
+        self.artifact_store = ArtifactEvidenceStore(sqlite)
+        self.governance = DataGovernanceService(DataGovernanceStore(sqlite))
         self.service = ArtifactEvidenceService(
-            ArtifactEvidenceStore(sqlite),
+            self.artifact_store,
             work_item_host=self.host,
+            governance=self.governance,
+        )
+        self.governance.register_action_handler(
+            "artifact",
+            self.service.apply_governance_action,
+        )
+        self.governance.register_action_handler(
+            "evidence",
+            self.service.apply_governance_action,
         )
 
     def tearDown(self) -> None:
@@ -366,6 +386,143 @@ class ArtifactEvidenceTests(unittest.TestCase):
             verification_rows[verification.id].result,
             VerificationResult.INVALIDATED,
         )
+
+    def test_artifact_and_evidence_governance_propagates_sensitivity_and_retention(self) -> None:
+        artifact = self._artifact(
+            classification=DataClassification.CONFIDENTIAL,
+            retention_expires_at=100.0,
+        )
+        evidence = self._evidence(
+            artifact.id,
+            classification=DataClassification.INTERNAL,
+            retention_expires_at=200.0,
+        )
+
+        self.assertIsNotNone(artifact.governance_record_id)
+        self.assertIsNotNone(evidence.governance_record_id)
+        artifact_governance = self.governance.get_record(
+            artifact.governance_record_id,
+            self.producer,
+        )
+        evidence_governance = self.governance.get_record(
+            evidence.governance_record_id,
+            self.producer,
+        )
+        self.assertEqual(
+            artifact_governance.classification,
+            DataClassification.CONFIDENTIAL,
+        )
+        self.assertEqual(
+            evidence_governance.classification,
+            DataClassification.CONFIDENTIAL,
+        )
+        self.assertEqual(evidence_governance.retention_expires_at, 100.0)
+        self.assertEqual(evidence.retention_expires_at, 100.0)
+
+        filtered = self.governance.filter_context(
+            ContextFilterRequest(
+                record_ids=(evidence.governance_record_id,),
+                max_classification=DataClassification.INTERNAL,
+            ),
+            actor=self.producer,
+        )
+        self.assertEqual(filtered.allowed_record_ids, ())
+        self.assertEqual(
+            filtered.denied_record_ids,
+            (evidence.governance_record_id,),
+        )
+
+    def test_governance_redaction_scrubs_evidence_and_invalidates_verification(self) -> None:
+        artifact = self._artifact()
+        evidence = self._evidence(
+            artifact.id,
+            external_id="ci-123",
+            deep_link="https://ci.example/jobs/123",
+            metadata={"job": "123"},
+        )
+        verification = self.service.create_verification(
+            VerificationCreate(
+                evidence_ids=(evidence.id,),
+                method="review",
+                result=VerificationResult.VERIFIED,
+            ),
+            actor=self.verifier,
+        )
+
+        action = self.governance.request_action(
+            GovernanceActionRequest(
+                record_id=evidence.governance_record_id,
+                action=GovernanceAction.REDACT,
+                reason="privacy request",
+            ),
+            actor=self.producer,
+        )
+        completed = self.governance.execute_request(action.id, actor=self.producer)
+        self.assertEqual(completed.status, GovernanceRequestStatus.COMPLETED)
+
+        redacted = {
+            item.id: item for item in self.service.list_evidence(self.producer)
+        }[evidence.id]
+        self.assertIsNone(redacted.summary)
+        self.assertIsNone(redacted.provider)
+        self.assertIsNone(redacted.source)
+        self.assertIsNone(redacted.external_id)
+        self.assertIsNone(redacted.deep_link)
+        self.assertEqual(redacted.metadata, {})
+        self.assertEqual(redacted.lifecycle, EvidenceLifecycle.INVALIDATED)
+
+        verification_rows = {
+            item.id: item for item in self.service.list_verifications(self.producer)
+        }
+        self.assertEqual(
+            verification_rows[verification.id].result,
+            VerificationResult.INVALIDATED,
+        )
+
+    def test_legacy_artifact_and_evidence_can_be_backfilled_into_governance(self) -> None:
+        legacy_service = ArtifactEvidenceService(
+            self.artifact_store,
+            work_item_host=self.host,
+        )
+        artifact = legacy_service.create_artifact(
+            ArtifactCreate(
+                work_item_ref=self.work_item.ref,
+                artifact_type=ArtifactType.REPORT,
+                name="legacy report",
+                retention_expires_at=100.0,
+            ),
+            actor=self.producer,
+        )
+        evidence = legacy_service.create_evidence(
+            EvidenceCreate(
+                work_item_ref=self.work_item.ref,
+                evidence_type=EvidenceType.REVIEW,
+                artifact_ids=(artifact.id,),
+                result=EvidenceResult.PASS,
+                summary="legacy review",
+                retention_expires_at=200.0,
+            ),
+            actor=self.producer,
+        )
+        self.assertIsNone(artifact.governance_record_id)
+        self.assertIsNone(evidence.governance_record_id)
+
+        result = self.service.sync_governance_records(actor=self.producer)
+        self.assertEqual(result, {"artifacts": 1, "evidence": 1})
+
+        artifacts = {item.id: item for item in self.service.list_artifacts(self.producer)}
+        evidence_rows = {item.id: item for item in self.service.list_evidence(self.producer)}
+        self.assertIsNotNone(artifacts[artifact.id].governance_record_id)
+        self.assertIsNotNone(evidence_rows[evidence.id].governance_record_id)
+        evidence_governance = self.governance.get_record(
+            evidence_rows[evidence.id].governance_record_id,
+            self.producer,
+        )
+        self.assertEqual(
+            evidence_governance.classification,
+            DataClassification.CONFIDENTIAL,
+        )
+        self.assertEqual(evidence_governance.retention_expires_at, 100.0)
 
     def test_work_item_requirements_are_canonical_and_flow_into_execution_contract(self) -> None:
         requirements = (
