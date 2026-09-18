@@ -67,6 +67,17 @@ class TaskSourceWorkItemProjector:
                 return candidate
         return None
 
+    def _project_tenant(self, project_id: str) -> tuple[str, str]:
+        loader = getattr(self.host, "_load_projects", None)
+        if callable(loader):
+            for project in loader():
+                if getattr(project, "id", None) == project_id:
+                    return (
+                        str(getattr(project, "organization_id", "local") or "local"),
+                        str(getattr(project, "workspace_id", "default") or "default"),
+                    )
+        return ("local", "default")
+
     def upsert(
         self,
         source: TaskSource,
@@ -89,6 +100,7 @@ class TaskSourceWorkItemProjector:
         self.conformance.validate_projection(source, snapshot, projection)
 
         now = time.time()
+        organization_id, workspace_id = self._project_tenant(project_id)
         source_timestamp = self._revision_timestamp(snapshot)
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
@@ -101,6 +113,8 @@ class TaskSourceWorkItemProjector:
         if state is None:
             state = WorkItemState(
                 ref=ref,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 project_id=project_id,
                 project_path=project_path,
                 source_identity=snapshot.identity,
@@ -199,6 +213,8 @@ class TaskSourceWorkItemProjector:
                 )
                 return state
 
+            state.organization_id = organization_id
+            state.workspace_id = workspace_id
             state.project_id = project_id
             state.project_path = project_path or state.project_path
             state.source_identity = snapshot.identity
