@@ -113,6 +113,27 @@ The canonical administration API is under `/api/definitions`:
 
 The Platform Foundation UI (#141) should build browse/search, history, draft/validate/publish/supersede/rollback, diff, provenance, compatibility, usage/reference and impact experiences on these APIs. Raw SQLite editing is not a supported administration path.
 
+## API authorization and tenant scope
+
+Definition Registry administration is bound to the canonical authenticated
+identity. API-supplied actor labels are compatibility input only and never
+control attribution: draft creation, validation, publication, quarantine,
+rollback and import persist the authenticated identity.
+
+Human mutations require tenant OWNER/ADMIN authority plus MFA/step-up
+assurance. Service automation requires the dedicated `definitions:admin`
+scope. Global definitions are inherited/readable across tenant contexts, but
+ordinary tenant administrators cannot mutate platform-global records; global
+writes are limited to local-trusted self-hosted human administration or a
+`definitions:admin` service identity.
+
+Organization and workspace records are visible/mutable only in the
+authenticated actor's matching scope. Project records are resolved through the
+canonical tenant-scoped Project service rather than trusting a project ID from
+the request. The same visibility boundary applies to history, diff, usage,
+export, rollback and resolve context, so object-ID guessing cannot expose a
+different tenant's definition revisions.
+
 ## Security boundary
 
 A database definition cannot:
