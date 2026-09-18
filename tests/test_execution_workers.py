@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_web.api.execution_workers import _operator_assignment
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.execution_workers import _operator_assignment, build_execution_workers_router
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
@@ -15,6 +18,7 @@ from codex_web.execution_workers import (
     ExecutionWorkerRegister,
     NetworkPolicy,
     WorkerCapability,
+    WorkerHeartbeatRequest,
     WorkerLifecycle,
     WorkerResourceLimits,
 )
@@ -363,6 +367,146 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 self.worker_actor,
             )
         self.assertEqual(self.service.list_workers(foreign), [])
+
+
+class ExecutionWorkerApiAssuranceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        identity_store = IdentityStateStore(sqlite)
+        self.identity = IdentityService(identity_store)
+        self.identity.bootstrap_local()
+
+        def add_worker_identity(state):
+            state.services.append(
+                ServiceIdentity(id="api-worker-service", name="API Worker")
+            )
+            state.memberships.append(
+                Membership(
+                    identity_id="api-worker-service",
+                    principal_kind=PrincipalKind.SERVICE,
+                    organization_id="local",
+                    workspace_id="default",
+                    roles=[MembershipRole.MEMBER],
+                )
+            )
+            return state
+
+        identity_store.update(add_worker_identity)
+        self.bootstrap_admin = self.identity.local_trusted_actor()
+        self.service = ExecutionWorkerService(
+            ExecutionWorkerStore(sqlite),
+            identity=self.identity,
+        )
+        self.worker = self.service.register(
+            ExecutionWorkerRegister(
+                service_identity_id="api-worker-service",
+                pool="api",
+                version="1.0.0",
+                capabilities=(WorkerCapability.GIT,),
+            ),
+            actor=self.bootstrap_admin,
+        )
+        self.actor = AuthenticationActor(
+            identity_id="human-admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_execution_workers_router(self.service))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    def test_low_assurance_human_can_inspect_but_cannot_mutate_control_plane(self) -> None:
+        listed = self.client.get("/api/execution-workers")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["items"][0]["id"], self.worker.id)
+
+        drained = self.client.post(
+            f"/api/execution-workers/{self.worker.id}/drain",
+            json={"reason": "maintenance"},
+        )
+
+        self.assertEqual(drained.status_code, 403)
+        self.assertIn("mfa", drained.json()["detail"].lower())
+
+    def test_mfa_human_can_mutate_worker_lifecycle_and_create_assignment(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        drained = self.client.post(
+            f"/api/execution-workers/{self.worker.id}/drain",
+            json={"reason": "maintenance"},
+        )
+        self.assertEqual(drained.status_code, 200)
+        self.assertEqual(drained.json()["item"]["lifecycle"], "draining")
+
+        assignment = self.client.post(
+            "/api/execution-workers/assignments",
+            json={
+                "work_item_ref": "group/app#api",
+                "execution_id": "exec-api",
+                "project_id": "home",
+                "resource_ids": ["repo-api"],
+                "base_revision": "abc123",
+                "execution_contract_version": "1.0",
+                "required_capabilities": ["git"],
+                "sandbox": "read-only",
+                "approval_policy": "on-request",
+                "secret_refs": ["secret-ref-api"],
+            },
+        )
+        self.assertEqual(assignment.status_code, 200)
+        self.assertEqual(assignment.json()["item"]["created_by"], "human-admin")
+
+    def test_execution_worker_admin_service_scope_can_mutate_without_human_mfa(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="worker-admin-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("execution-worker:admin",),
+        )
+
+        response = self.client.post(
+            f"/api/execution-workers/{self.worker.id}/quarantine",
+            json={"reason": "security investigation"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["lifecycle"], "quarantined")
+
+    def test_worker_owned_heartbeat_remains_service_identity_gated_not_mfa_gated(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="api-worker-service",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.MEMBER,),
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("execution-worker:run",),
+        )
+
+        response = self.client.post(
+            f"/api/execution-workers/{self.worker.id}/heartbeat",
+            json={"version": "1.0.1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["version"], "1.0.1")
 
 
 if __name__ == "__main__":
