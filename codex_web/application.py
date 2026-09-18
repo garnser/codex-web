@@ -79,6 +79,7 @@ from codex_web.services.execution_role_definitions import install_execution_role
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.extensions import ExtensionService
+from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
@@ -401,6 +402,12 @@ work_item_contract_service = install_work_item_contract_service(
     execution_role_definition_service,
 )
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
+extension_runtime_registry = ExtensionRuntimeRegistry(
+    extension_service,
+    work_item_service.task_source_registry,
+    action_provider_registry,
+)
+app.state.extension_runtime_registry = extension_runtime_registry
 gitlab_service = install_gitlab_service(app, core, gitlab_client)
 
 # Legacy code still needing project/runtime state consumes the extracted
