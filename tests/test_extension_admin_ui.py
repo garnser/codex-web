@@ -27,6 +27,13 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("window.prompt", javascript)
         self.assertIn('/api/extensions/${encodeURIComponent(installationId)}/${action}', javascript)
 
+        self.assertIn('apiRequest("/api/resources")', javascript)
+        self.assertIn('/api/extensions/${encodeURIComponent(item.id)}/grants', javascript)
+        self.assertIn('data-extension-grant-action="grant"', javascript)
+        self.assertIn('data-extension-grant-action="revoke"', javascript)
+        self.assertIn("resource_ids", javascript)
+        self.assertIn("mandatory capability", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()
