@@ -6,11 +6,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.goal_decomposition import (
+    GoalDecompositionGenerationRequest,
     GoalDecompositionProposalCreate,
     GoalDecompositionProposalRevise,
     GoalDecompositionReview,
 )
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
+from codex_web.services.goal_decomposition_generation import (
+    GoalDecompositionGenerationService,
+)
 from codex_web.services.goal_decompositions import (
     GoalDecompositionConflictError,
     GoalDecompositionError,
@@ -35,6 +39,7 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_goal_decompositions_router(
     service: GoalDecompositionService,
+    generation: GoalDecompositionGenerationService | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/goals/{goal_id}/decompositions",
@@ -112,6 +117,28 @@ def build_goal_decompositions_router(
             "items": [item.model_dump(mode="json") for item in rows],
             "count": len(rows),
         }
+
+    if generation is not None:
+        @router.post("/generate")
+        async def generate_proposal(
+            goal_id: str,
+            payload: GoalDecompositionGenerationRequest,
+            request: Request,
+        ) -> dict[str, Any]:
+            try:
+                actor = mutation_actor(request)
+                proposal = await generation.generate(
+                    goal_id,
+                    payload,
+                    actor=actor,
+                )
+            except (
+                AuthorizationError,
+                GoalDecompositionError,
+                ValueError,
+            ) as exc:
+                raise _error(exc) from exc
+            return {"proposal": proposal.model_dump(mode="json")}
 
     @router.get("/{proposal_id}")
     async def get_proposal(
