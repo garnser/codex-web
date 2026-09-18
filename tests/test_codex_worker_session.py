@@ -324,6 +324,16 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         await session.start()
         return session
 
+    async def test_default_session_factory_reuses_canonical_codex_runtime(self) -> None:
+        assignment = self._create_assignment()
+        session = AssignmentBoundCodexSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+        )
+        self.assertIs(session.runtime_factory, CodexRuntime)
+        self.assertIsNone(session.runtime)
+
     async def test_session_claims_starts_and_launches_codex_inside_worker_boundary(self) -> None:
         assignment = self._create_assignment()
         session = await self._session(assignment)
@@ -336,7 +346,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(persisted.status, AssignmentStatus.RUNNING)
             self.assertEqual(persisted.assigned_worker_id, self.worker.id)
             self.assertEqual(session.fence, persisted.fence)
-            self.assertIsInstance(session.runtime_factory, type(CodexRuntime))
+            self.assertIsInstance(session.runtime, _FakeCodexRuntime)
             self.assertTrue(session.status().ready)
             self.assertEqual(self.backend.validated, [assignment.id])
             launch = self.backend.spawned[0]
