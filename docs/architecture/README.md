@@ -95,6 +95,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Entitlements, quotas, and usage metering](entitlements.md) — hosted/service capability access, deterministic quota enforcement, idempotent metering, reconciliation, and provider-neutral usage export.
 - [Encryption at rest and key management](encryption-key-management.md) — envelope encryption, scoped/versioned key references, rotation/revocation, restore manifests, and pluggable key backends.
 - [Execution worker trust boundary](execution-worker-boundary.md) — canonical worker identity/capabilities, bounded assignments, fenced leases, health/drain/quarantine/revocation, and control-plane separation.
+- [Extension and plugin lifecycle](extensions.md) — immutable manifests, package verification, compatibility, separate grants/configuration, lifecycle, health quarantine, upgrades and runtime conformance.
 - [Model gateway and prompt governance](model-gateway.md) — stable model classes, provider/model registry, deterministic routing/fallback, secret references, prompt revisions, and invocation attribution.
 - [Storage scaling](storage-scaling.md)
 

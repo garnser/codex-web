@@ -23,6 +23,7 @@ Current foundational contracts are published by `GET /api/compatibility`:
 - TaskSource adapter/event contract: `1.0`;
 - ActionProvider contract: `1.1` (legacy `1.0` accepted and deprecated during the security-boundary migration);
 - generic persisted-record envelope: `1.0`.
+- extension manifest schema: `codex-web.extension/v1`, with extension-host compatibility level `3.0.0` negotiated independently from the HTTP API version.
 
 Clients may supply `api_version` to `/api/compatibility` to test compatibility. Unsupported versions return a structured `409 api_version_unsupported` response rather than falling through to a guessed interpretation.
 
@@ -88,6 +89,7 @@ During rolling upgrades, readers must support every persisted version that can l
 | ActionProvider | 1.1 | 1.0 (deprecated) | registry rejects declared unsupported version | 1.1 adds explicit network/filesystem/process requirements and binding security policy; legacy 1.0 uses restrictive defaults |
 | Persisted record | 1.0 | domain-specific legacy loaders may seed 1.0 | envelope rejects unsupported version | use `MigrationRegistry` step chain |
 | Execution contract | 1.4 | governed by its own exact schema validator | Pydantic/literal validation rejects | introduce and test explicit new execution-contract schema |
+| Extension package | host 3.0.0 / manifest codex-web.extension/v1 | exact/comparator SemVer ranges explicitly declared by package | incompatible/unknown range syntax is visible and cannot enable | upgrade re-verifies package, compatibility, grants and migration Evidence before activation |
 
 ## Deprecation policy
 

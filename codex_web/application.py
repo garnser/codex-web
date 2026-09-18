@@ -13,6 +13,7 @@ from codex_web.api.context import build_context_router
 from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.entitlements import build_entitlements_router
+from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
@@ -75,6 +76,7 @@ from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.entitlements import EntitlementService
+from codex_web.services.extensions import ExtensionService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
@@ -106,6 +108,7 @@ from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.entitlements import EntitlementStore
+from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
@@ -335,6 +338,18 @@ data_governance_service.register_action_handler(
 app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+
+extension_state_store = ExtensionStateStore(state_store)
+extension_service = ExtensionService(
+    extension_state_store,
+    secrets=secret_broker,
+    configuration=configuration_service,
+    resources=resource_catalog_service,
+    artifact_evidence=artifact_evidence_service,
+)
+app.include_router(build_extensions_router(extension_service))
+app.state.extension_state_store = extension_state_store
+app.state.extension_service = extension_service
 
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
