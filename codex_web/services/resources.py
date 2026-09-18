@@ -304,6 +304,8 @@ class ResourceCatalogService:
     ) -> list[Resource]:
         if max_depth < 1 or max_depth > 100:
             raise ValueError("max_depth must be between 1 and 100")
+        if direction not in {"incoming", "outgoing", "both"}:
+            raise ValueError("direction must be incoming, outgoing, or both")
         root = self.get(resource_id, actor)
         state = self.store.load()
         resources = {
