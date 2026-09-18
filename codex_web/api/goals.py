@@ -90,6 +90,25 @@ def build_goals_router(service: GoalService) -> APIRouter:
             "count": len(rows),
         }
 
+    @router.get("/by-work-item")
+    async def goals_by_work_item(
+        request: Request,
+        ref: str = Query(min_length=1),
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            rows = service.goals_for_work_item(ref, scope=actor.tenant)
+        except (GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {
+            "work_item_ref": ref,
+            "items": [
+                service.snapshot(item.id, scope=actor.tenant).model_dump(mode="json")
+                for item in rows
+            ],
+            "count": len(rows),
+        }
+
     @router.post("")
     async def create_goal(
         payload: GoalCreate,

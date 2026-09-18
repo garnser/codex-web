@@ -75,7 +75,9 @@ Binding validation is deterministic and tenant-scoped:
 - each explicit root must exist in that project's canonical Work Graph;
 - one Goal cannot bind the same project twice.
 
-This lets one Goal produce work across multiple projects while keeping the originating outcome inspectable. #106 will use these bindings when committing proposed decomposition so generated work remains attributable to the originating Goal.
+This lets one Goal produce work across multiple projects while keeping the originating outcome inspectable. The service also provides reverse lookup from a canonical Work Item ref to every visible Goal whose bound project/subgraph contains it. Reverse lookup is derived from the same Goal binding plus Work Graph edges; codex-web does not write a second mutable Goal-owner field into Work Item state merely for navigation.
+
+#106 will use these bindings when committing proposed decomposition so generated work remains attributable to the originating Goal.
 
 ## Deterministic progress
 
