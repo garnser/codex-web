@@ -1,0 +1,13 @@
+{
+  "id": "com.codex-web.reference-task-source",
+  "version": "1.0.0",
+  "publisher": {"id": "com.codex-web", "name": "codex-web"},
+  "provenance": {
+    "source": "examples/extensions/reference_task_source",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "compatibility": {"codex_web": ">=3.0.0 <4.0.0"},
+  "types": ["task_source"],
+  "capabilities": {"requested": [], "mandatory": []},
+  "entrypoints": {"task_source": "reference_task_source:create"}
+}
