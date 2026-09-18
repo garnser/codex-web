@@ -31,6 +31,7 @@ class TurnExecutionService:
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
+        self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
 
@@ -337,12 +338,18 @@ class TurnExecutionService:
                     }
                 )
             finally:
-                self.assignment_completion_tasks.pop(assignment_id, None)
+                current = asyncio.current_task()
+                if self.assignment_completion_tasks.get(assignment_id) is current:
+                    self.assignment_completion_tasks.pop(assignment_id, None)
+                if self.thread_completion_tasks.get(active.thread_id) is current:
+                    self.thread_completion_tasks.pop(active.thread_id, None)
 
-        self.assignment_completion_tasks[assignment_id] = asyncio.create_task(
+        task = asyncio.create_task(
             complete(),
             name=f"turn-assignment-complete-{assignment_id}",
         )
+        self.assignment_completion_tasks[assignment_id] = task
+        self.thread_completion_tasks[active.thread_id] = task
 
     def record_thread_activity(self, message: dict[str, Any]) -> None:
         h = self.host
@@ -433,7 +440,17 @@ class TurnExecutionService:
                     effective_sandbox,
                     workspace_cwd,
                 )
-            await session.request("thread/resume", resume_params)
+            try:
+                await session.request("thread/resume", resume_params)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    await session_manager.complete(
+                        binding.assignment_id,
+                        succeeded=False,
+                        failure_code="codex_thread_resume_failed",
+                        failure_message=str(exc)[:500],
+                    )
+                raise
 
             self.mark_thread_active(
                 thread_id,
@@ -544,6 +561,10 @@ class TurnExecutionService:
         if not thread_id:
             await self.publish_queue_status(thread_id)
             return
+        completion = self.thread_completion_tasks.get(thread_id)
+        if completion is not None and not completion.done():
+            with contextlib.suppress(Exception):
+                await asyncio.shield(completion)
         if self.thread_is_active(thread_id):
             h._release_stale_active_turn(thread_id, "queue-drain")
             if self.thread_is_active(thread_id):
@@ -901,4 +922,5 @@ def install_turn_execution_service(
     host.THREAD_TERMINAL_FAILURES = service.terminal_failures
     host.THREAD_LAST_INPUTS = service.last_inputs
     host.ASSIGNMENT_COMPLETION_TASKS = service.assignment_completion_tasks
+    host.THREAD_ASSIGNMENT_COMPLETION_TASKS = service.thread_completion_tasks
     return service
