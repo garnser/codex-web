@@ -226,6 +226,60 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
                 )
             )
 
+    def test_interactive_spawn_reuses_bubblewrap_environment_and_resource_limits(self) -> None:
+        captured = {}
+
+        class Process:
+            pid = 4321
+
+        def popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return Process()
+
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+            popen=popen,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": "ambient-must-not-cross",
+                    "LANG": "C.UTF-8",
+                },
+                clear=True,
+            ):
+                process = backend.spawn_interactive(
+                    _assignment(),
+                    argv=(
+                        "codex",
+                        "--config",
+                        'cli_auth_credentials_store="ephemeral"',
+                        "app-server",
+                    ),
+                    workspace_path=workspace,
+                    environment={
+                        "CODEX_HOME": "/tmp/codex-worker-home",
+                        "CODEX_ACCESS_TOKEN": "delegated-only-at-launch",
+                    },
+                )
+
+        self.assertEqual(process.pid, 4321)
+        self.assertEqual(captured["command"][0], "/usr/bin/bwrap")
+        self.assertIn("--unshare-net", captured["command"])
+        self.assertEqual(captured["command"][-1], "app-server")
+        self.assertNotIn("delegated-only-at-launch", " ".join(captured["command"]))
+        env = captured["kwargs"]["env"]
+        self.assertEqual(env["CODEX_HOME"], "/tmp/codex-worker-home")
+        self.assertEqual(env["CODEX_ACCESS_TOKEN"], "delegated-only-at-launch")
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertTrue(captured["kwargs"]["start_new_session"])
+        self.assertTrue(callable(captured["kwargs"]["preexec_fn"]))
+
     def test_minimal_environment_does_not_inherit_ambient_secrets(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
