@@ -11,6 +11,7 @@ import websockets
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.models import BotConnection, BotInboundMessage
+from codex_web.services.secrets import SecretBroker
 
 
 class BotRuntime:
@@ -22,10 +23,12 @@ class BotRuntime:
         *,
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
+        secret_broker: SecretBroker | None = None,
     ) -> None:
         self.host = host
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
+        self.secret_broker = secret_broker
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
         self.slack_payload_locks: dict[str, asyncio.Lock] = {}
@@ -73,12 +76,40 @@ class BotRuntime:
             await task
 
     @staticmethod
-    def _fingerprint(connection: BotConnection) -> tuple[Any, ...] | None:
-        if connection.provider == "slack" and connection.bot_token and connection.slack_app_token:
-            return ("slack", connection.bot_token, connection.slack_app_token)
-        if connection.provider == "telegram" and connection.bot_token:
-            return ("telegram", connection.bot_token, connection.telegram_update_offset)
+    def _credential_identity(connection: BotConnection, field: str) -> str | None:
+        return getattr(connection, f"{field}_secret_id", None) or getattr(connection, field, None)
+
+    @classmethod
+    def _fingerprint(cls, connection: BotConnection) -> tuple[Any, ...] | None:
+        bot_token = cls._credential_identity(connection, "bot_token")
+        app_token = cls._credential_identity(connection, "slack_app_token")
+        if connection.provider == "slack" and bot_token and app_token:
+            return ("slack", bot_token, app_token, connection.updated_at)
+        if connection.provider == "telegram" and bot_token:
+            return ("telegram", bot_token, connection.telegram_update_offset, connection.updated_at)
         return None
+
+    async def _with_credential(
+        self,
+        connection: BotConnection,
+        field: str,
+        operation: str,
+        consumer: Any,
+    ) -> Any:
+        secret_id = getattr(connection, f"{field}_secret_id", None)
+        if secret_id and self.secret_broker is not None:
+            actor = self.host._bot_runtime_actor(connection.project_id)
+            return await self.secret_broker.use_async(
+                secret_id,
+                actor=actor,
+                operation=operation,
+                consumer=consumer,
+                context={"connection_id": connection.id, "provider": connection.provider},
+            )
+        raw = getattr(connection, field, None)
+        if raw:
+            return await consumer(raw)
+        raise RuntimeError(f"Bot connection is missing {field}")
 
     async def _run_connection(self, connection: BotConnection) -> None:
         while True:
@@ -141,8 +172,12 @@ class BotRuntime:
                 await asyncio.sleep(10)
 
     async def _run_slack(self, connection: BotConnection) -> None:
-        assert connection.slack_app_token
-        socket_url = await self.slack.socket_url(connection.slack_app_token)
+        socket_url = await self._with_credential(
+            connection,
+            "slack_app_token",
+            "slack.socket_url",
+            self.slack.socket_url,
+        )
         self.host._set_runtime_status(connection, "connecting", lastError=None)
         await self.host.hub.publish(
             {"type": "bot.runtime", "provider": "slack", "connectionId": connection.id, "status": "connected"}
@@ -226,23 +261,31 @@ class BotRuntime:
                 )
             if result.get("ambiguous") and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await self.slack.post_message(
-                    connection.bot_token,
-                    channel,
-                    self.host._ambiguous_route_message(result.get("availablePrefixes") or []),
-                    username=self.host._slack_reply_username(binding) if binding else None,
-                    icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
-                    thread_ts=event.get("thread_ts") or event.get("ts"),
+                async def send_ambiguous(token: str):
+                    return await self.slack.post_message(
+                        token,
+                        channel,
+                        self.host._ambiguous_route_message(result.get("availablePrefixes") or []),
+                        username=self.host._slack_reply_username(binding) if binding else None,
+                        icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
+                        thread_ts=event.get("thread_ts") or event.get("ts"),
+                    )
+                await self._with_credential(
+                    connection, "bot_token", "slack.post_message", send_ambiguous
                 )
             elif result.get("timedOut") and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await self.slack.post_message(
-                    connection.bot_token,
-                    channel,
-                    "Codex is still busy starting that turn, so I could not steer it yet.",
-                    username=self.host._slack_reply_username(binding) if binding else None,
-                    icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
-                    thread_ts=event.get("thread_ts") or event.get("ts"),
+                async def send_timeout(token: str):
+                    return await self.slack.post_message(
+                        token,
+                        channel,
+                        "Codex is still busy starting that turn, so I could not steer it yet.",
+                        username=self.host._slack_reply_username(binding) if binding else None,
+                        icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
+                        thread_ts=event.get("thread_ts") or event.get("ts"),
+                    )
+                await self._with_credential(
+                    connection, "bot_token", "slack.post_message", send_timeout
                 )
         except Exception as exc:
             event = payload.get("event") or {}
@@ -265,24 +308,31 @@ class BotRuntime:
             )
             if channel and connection.bot_token:
                 binding = self.host._first_binding_for_connection("slack", channel)
-                await self.slack.post_message(
-                    connection.bot_token,
-                    channel,
-                    f"Codex could not handle that Slack message: {self.host._truncate_text(str(exc), 500)}",
-                    username=self.host._slack_reply_username(binding) if binding else None,
-                    icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
-                    thread_ts=thread_ts,
+                async def send_error(token: str):
+                    return await self.slack.post_message(
+                        token,
+                        channel,
+                        f"Codex could not handle that Slack message: {self.host._truncate_text(str(exc), 500)}",
+                        username=self.host._slack_reply_username(binding) if binding else None,
+                        icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
+                        thread_ts=thread_ts,
+                    )
+                await self._with_credential(
+                    connection, "bot_token", "slack.post_message", send_error
                 )
 
     async def _run_telegram(self, connection: BotConnection) -> None:
-        assert connection.bot_token
         offset = connection.telegram_update_offset
         self.host._set_runtime_status(connection, "polling", connectedAt=time.time(), lastError=None)
         await self.host.hub.publish(
             {"type": "bot.runtime", "provider": "telegram", "connectionId": connection.id, "status": "polling"}
         )
         while True:
-            response = await self.telegram.get_updates(connection.bot_token, offset=offset, timeout=0)
+            async def get_updates(token: str):
+                return await self.telegram.get_updates(token, offset=offset, timeout=0)
+            response = await self._with_credential(
+                connection, "bot_token", "telegram.get_updates", get_updates
+            )
             if not response.get("ok"):
                 raise RuntimeError(f"Telegram getUpdates failed: {response}")
             for update in response.get("result") or []:
@@ -336,6 +386,7 @@ def install_bot_runtime(
         host,
         slack_client=slack_client,
         telegram_client=telegram_client,
+        secret_broker=getattr(app.state, "secret_broker", None),
     )
     host.bot_runtime = runtime
     app.state.bot_runtime = runtime
