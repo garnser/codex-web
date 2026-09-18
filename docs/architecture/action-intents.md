@@ -108,15 +108,17 @@ Successful rollback appends a new receipt and moves the intent to terminal `roll
 
 ## Worker and callback authority
 
-Human tenant administrators may operate the worker/recovery surfaces for compatibility.
+The control plane and execution plane use distinct identities.
 
-Service principals require explicit scopes:
+Human tenant administrators may inspect intents and perform authorized control-plane operations such as create/retry/cancel and MFA-gated stale-claim recovery, but they **cannot impersonate an ActionIntent worker** or synthesize provider callbacks.
 
-- `action-intent:worker` for claim/execute/reconcile/rollback;
+Execution-plane and callback operations require explicit service identities:
+
+- `action-intent:worker` for claim/renew/execute/reconcile/rollback;
 - `action-intent:callback` for provider inbox delivery;
-- `action-intent:admin` for both.
+- `action-intent:admin` is control-plane automation authority only and does not imply either worker or callback authority.
 
-Actual provider execution still passes through ActionProvider resource/credential validation and the credential broker.
+This separation makes every provider execution/reconciliation/rollback attributable to an explicit worker service principal and every provider callback attributable to a callback service principal. Actual provider execution still passes through ActionProvider resource/credential validation and the credential broker.
 
 ## Autonomy boundary
 
