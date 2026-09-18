@@ -157,9 +157,9 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
 
     def test_project_api_returns_not_found_for_unknown_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            service = self._service(Path(directory))
-            app = FastAPI()
-            app.include_router(build_projects_router(service))
+            root = Path(directory)
+            service = self._service(root)
+            app = self._app(root, service)
             client = TestClient(app)
 
             response = client.put(
