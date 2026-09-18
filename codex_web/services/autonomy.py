@@ -3,8 +3,15 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.action_intents import (
+    ActionIntent,
+    ActionIntentCreate,
+    ActionIntentReconcileRequest,
+    ActionIntentRollbackRequest,
+)
+from codex_web.action_providers import ActionRequest
 from codex_web.identity import AuthenticationActor
+from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 
 
@@ -15,9 +22,11 @@ class AutonomyService:
         self,
         host: Any,
         action_execution: ActionExecutionService | None = None,
+        action_intents: ActionIntentService | None = None,
     ) -> None:
         self.host = host
         self.action_execution = action_execution
+        self.action_intents = action_intents
 
     def _actions(self) -> ActionExecutionService:
         if self.action_execution is None:
@@ -33,32 +42,48 @@ class AutonomyService:
     ):
         return await self._actions().prepare(binding_id, request, actor=actor)
 
+    def _intent_service(self) -> ActionIntentService:
+        if self.action_intents is None:
+            raise RuntimeError("action intent service is not configured")
+        return self.action_intents
+
     async def execute_external_action(
         self,
         binding_id: str,
         request: ActionRequest,
         *,
         actor: AuthenticationActor,
-    ) -> ActionResult:
-        return await self._actions().execute(binding_id, request, actor=actor)
+    ) -> ActionIntent:
+        """Compatibility name: queue durable intent instead of executing provider."""
+
+        return self._intent_service().create(
+            ActionIntentCreate(binding_id=binding_id, request=request),
+            actor=actor,
+        )
 
     async def verify_external_action(
         self,
-        binding_id: str,
-        result: ActionResult,
+        intent_id: str,
         *,
         actor: AuthenticationActor,
-    ):
-        return await self._actions().verify(binding_id, result, actor=actor)
+    ) -> ActionIntent:
+        return await self._intent_service().reconcile(
+            intent_id,
+            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            actor=actor,
+        )
 
     async def rollback_external_action(
         self,
-        binding_id: str,
-        result: ActionResult,
+        intent_id: str,
         *,
         actor: AuthenticationActor,
-    ) -> ActionResult:
-        return await self._actions().rollback(binding_id, result, actor=actor)
+    ) -> ActionIntent:
+        return await self._intent_service().rollback(
+            intent_id,
+            ActionIntentRollbackRequest(reason="autonomy rollback"),
+            actor=actor,
+        )
 
     async def run_owner_work_cycle(self) -> None:
         h = self.host
@@ -371,6 +396,7 @@ def install_autonomy_service(
     app: Any,
     host: Any,
     action_execution: ActionExecutionService | None = None,
+    action_intents: ActionIntentService | None = None,
 ) -> AutonomyService:
     """Install extracted autonomy cycle ownership before worker supervision."""
 
@@ -379,8 +405,14 @@ def install_autonomy_service(
         service = existing
         if action_execution is not None:
             service.action_execution = action_execution
+        if action_intents is not None:
+            service.action_intents = action_intents
     else:
-        service = AutonomyService(host, action_execution=action_execution)
+        service = AutonomyService(
+            host,
+            action_execution=action_execution,
+            action_intents=action_intents,
+        )
         app.state.autonomy_service = service
 
     host._run_owner_work_watchdog_cycle = service.run_owner_work_cycle
