@@ -188,6 +188,34 @@
                   <div id="extension-audit-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title">
+                    <h2>Resource Catalog</h2>
+                    <button id="refresh-resources" type="button" class="ghost-button">Refresh</button>
+                  </div>
+                  <div class="route-test">
+                    <input id="resource-search" type="search" placeholder="Search name, ID, owner or alias" />
+                    <select id="resource-type-filter">
+                      <option value="">All resource types</option>
+                      <option value="repository">Repository</option>
+                      <option value="service">Service</option>
+                      <option value="environment">Environment</option>
+                      <option value="deployment_target">Deployment target</option>
+                      <option value="cloud_account">Cloud account</option>
+                      <option value="database">Database</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <select id="resource-lifecycle-filter">
+                      <option value="">All lifecycle states</option>
+                      <option value="active">Active</option>
+                      <option value="deprecated">Deprecated</option>
+                      <option value="disabled">Disabled</option>
+                      <option value="deleted">Deleted</option>
+                    </select>
+                  </div>
+                  <div id="resource-catalog-status" class="form-result" aria-live="polite">Open to load canonical resources.</div>
+                  <div id="resource-catalog-list" class="comm-log"></div>
+                </div>
+                <div class="developer-card">
                   <h2>Client communication</h2>
                   <div id="comm-log" class="comm-log"></div>
                 </div>
@@ -304,6 +332,7 @@
     <script src="static/extension_packages_admin.js" type="module"></script>
     <script src="static/extension_upgrade_admin.js" type="module"></script>
     <script src="static/extension_observability_admin.js" type="module"></script>
+    <script src="static/resource_catalog_admin.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
