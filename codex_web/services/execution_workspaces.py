@@ -12,6 +12,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceAcquire,
     ExecutionWorkspaceEvent,
+    ExecutionWorkspaceInspection,
     ExecutionWorkspaceKind,
     ExecutionWorkspaceLease,
     ExecutionWorkspaceReference,
@@ -213,6 +214,55 @@ class ExecutionWorkspaceService:
                 if self._scope_matches(item, actor.tenant)
             ],
             key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    def inspect(
+        self,
+        actor: AuthenticationActor,
+        *,
+        now: float | None = None,
+    ) -> list[ExecutionWorkspaceInspection]:
+        observed_at = time.time() if now is None else now
+        state = self.store.load()
+        leases = {
+            lease.id: lease
+            for lease in state.leases
+            if (
+                lease.organization_id == actor.organization_id
+                and lease.workspace_id == actor.workspace_id
+            )
+        }
+        items = []
+        for workspace in state.workspaces:
+            if not self._scope_matches(workspace, actor.tenant):
+                continue
+            lease = leases.get(workspace.lease_id)
+            lease_active = bool(
+                lease is not None
+                and lease.released_at is None
+                and lease.expires_at > observed_at
+            )
+            lease_expired = bool(
+                lease is not None
+                and lease.released_at is None
+                and lease.expires_at <= observed_at
+            )
+            items.append(
+                ExecutionWorkspaceInspection(
+                    workspace=workspace,
+                    lease=lease,
+                    lease_active=lease_active,
+                    lease_expired=lease_expired,
+                    observed_at=observed_at,
+                )
+            )
+        return sorted(
+            items,
+            key=lambda item: (
+                item.workspace.created_at,
+                item.workspace.id,
+            ),
             reverse=True,
         )
 
