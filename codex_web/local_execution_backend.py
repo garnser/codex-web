@@ -379,7 +379,12 @@ class BubblewrapExecutionBackend:
             # Git worktrees legitimately share target-repository metadata. The
             # canonical repository/workspace lease is what authorizes mutation
             # of that target resource; unrelated control-plane paths stay absent.
-            command.extend(("--bind", str(metadata), str(metadata)))
+            metadata_mount = (
+                "--bind"
+                if assignment.sandbox == "workspace-write"
+                else "--ro-bind"
+            )
+            command.extend((metadata_mount, str(metadata), str(metadata)))
 
         command.extend(
             (
