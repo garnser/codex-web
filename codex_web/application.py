@@ -203,6 +203,15 @@ artifact_evidence_service = ArtifactEvidenceService(
     artifact_evidence_store,
     resources=resource_catalog_service,
     work_item_host=core,
+    governance=data_governance_service,
+)
+data_governance_service.register_action_handler(
+    "artifact",
+    artifact_evidence_service.apply_governance_action,
+)
+data_governance_service.register_action_handler(
+    "evidence",
+    artifact_evidence_service.apply_governance_action,
 )
 app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
