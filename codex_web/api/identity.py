@@ -5,7 +5,19 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from codex_web.identity import AuthenticationAssurance, MembershipRole, PrincipalKind
+from codex_web.identity import (
+    AuthenticationAssurance,
+    HumanIdentityCreate,
+    Membership,
+    MembershipCreate,
+    MembershipRole,
+    OrganizationCreate,
+    PrincipalKind,
+    ServiceIdentityCreate,
+    ServiceTokenCreate,
+    TenantScope,
+    WorkspaceCreate,
+)
 from codex_web.services.identity import (
     AuthenticationError,
     AuthorizationError,
@@ -151,6 +163,92 @@ def build_identity_router(service: IdentityService) -> APIRouter:
         actor = request_actor(request)
         try:
             return _public_state(service, actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    def require_sensitive_admin(request: Request):
+        actor = request_actor(request)
+        IdentityService.require_admin(actor)
+        IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+        return actor
+
+    @router.post("/api/identity/organizations")
+    async def create_organization(payload: OrganizationCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_organization(
+                name=payload.name,
+                organization_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/workspaces")
+    async def create_workspace(payload: WorkspaceCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_workspace(
+                organization_id=payload.organization_id,
+                name=payload.name,
+                workspace_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/humans")
+    async def create_human(payload: HumanIdentityCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_human_identity(
+                display_name=payload.display_name,
+                email=payload.email,
+                identity_id=payload.id,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/services")
+    async def create_service(payload: ServiceIdentityCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            return service.create_service_identity(
+                payload.name,
+                payload.description,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/memberships")
+    async def create_membership(payload: MembershipCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            membership = Membership(
+                identity_id=payload.identity_id,
+                principal_kind=payload.principal_kind,
+                organization_id=payload.organization_id,
+                workspace_id=payload.workspace_id,
+                roles=payload.roles,
+                team_ids=payload.team_ids,
+            )
+            return service.add_membership(membership).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/service-tokens")
+    async def create_service_token(payload: ServiceTokenCreate, request: Request) -> dict[str, Any]:
+        try:
+            require_sensitive_admin(request)
+            credentials = service.create_service_token(
+                service_identity_id=payload.service_identity_id,
+                scope=TenantScope(
+                    organization_id=payload.organization_id,
+                    workspace_id=payload.workspace_id,
+                ),
+                scopes=payload.scopes,
+                expires_at=payload.expires_at,
+            )
+            # Raw token is returned once at creation and never appears in list APIs.
+            return credentials.model_dump(mode="json")
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 
