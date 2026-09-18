@@ -105,6 +105,7 @@
       <pre>${escapeHtml(payload)}</pre>
       <button type="button" class="ghost-button" data-definition-usage="${escapeHtml(record.record_id)}">Load usage/references</button>
       <div id="definition-usage-${escapeHtml(record.record_id)}"></div>
+      <div data-definition-management-host="${escapeHtml(record.record_id)}"></div>
     </details>`;
   }
 

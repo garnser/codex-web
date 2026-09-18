@@ -539,6 +539,29 @@
                     <button id="refresh-definitions" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="definition-registry-status" class="form-result" aria-live="polite">Open to load versioned operational definitions.</div>
+                  <details id="definition-lifecycle-panel">
+                    <summary>Definition lifecycle management</summary>
+                    <div id="definition-lifecycle-assurance" class="form-result">Sensitive definition changes require canonical admin authority and elevated assurance. Global writes are platform-scoped.</div>
+                    <div class="route-test">
+                      <label>Definition ID <input id="definition-draft-id" placeholder="stable.definition-id" /></label>
+                      <label>Schema <select id="definition-draft-schema"></select></label>
+                      <label>Scope <select id="definition-draft-scope">
+                        <option value="workspace" selected>Workspace</option>
+                        <option value="organization">Organization</option>
+                        <option value="project">Project</option>
+                        <option value="global">Global</option>
+                      </select></label>
+                      <label>Project <select id="definition-draft-project"><option value="">Select project</option></select></label>
+                      <label>Reason <input id="definition-draft-reason" placeholder="Why this revision is needed" /></label>
+                      <label>Effective from <input id="definition-draft-effective-from" type="datetime-local" /></label>
+                      <label>Effective until <input id="definition-draft-effective-until" type="datetime-local" /></label>
+                      <label>Minimum engine <input id="definition-draft-min-engine" placeholder="Optional" /></label>
+                      <label>Maximum engine <input id="definition-draft-max-engine" placeholder="Optional" /></label>
+                      <label>Definition payload <textarea id="definition-draft-payload" rows="10" placeholder='{"key":"value"}'></textarea></label>
+                      <button id="create-definition-draft" type="button" class="ghost-button">Create validated-schema draft</button>
+                    </div>
+                    <div id="definition-lifecycle-status" class="form-result" aria-live="polite"></div>
+                  </details>
                   <div class="route-test">
                     <input id="definition-search" type="search" placeholder="Search definition ID, kind, actor, checksum or payload" />
                     <select id="definition-kind-filter"><option value="">All kinds</option></select>
@@ -710,6 +733,7 @@
     <script src="static/model_gateway_management.js" type="module"></script>
     <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
+    <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>
