@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 from codex_web.artifact_evidence import (
     EvidenceLifecycle,
@@ -200,6 +200,31 @@ class ExtensionService:
         self.resources = resources
         self.artifact_evidence = artifact_evidence
         self.unhealthy_quarantine_threshold = max(1, unhealthy_quarantine_threshold)
+        self._lifecycle_listeners: list[
+            Callable[[ExtensionInstallation, str], None]
+        ] = []
+        self.lifecycle_listener_errors: list[str] = []
+
+    def add_lifecycle_listener(
+        self,
+        listener: Callable[[ExtensionInstallation, str], None],
+    ) -> None:
+        if listener not in self._lifecycle_listeners:
+            self._lifecycle_listeners.append(listener)
+
+    def _notify_lifecycle(
+        self,
+        installation: ExtensionInstallation,
+        event_type: str,
+    ) -> None:
+        for listener in tuple(self._lifecycle_listeners):
+            try:
+                listener(installation, event_type)
+            except Exception as exc:
+                self.lifecycle_listener_errors.append(
+                    f"{event_type}:{installation.id}:{type(exc).__name__}"
+                )
+                self.lifecycle_listener_errors = self.lifecycle_listener_errors[-100:]
 
     @staticmethod
     def _same_scope(item, actor: AuthenticationActor) -> bool:
