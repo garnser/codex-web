@@ -40,6 +40,13 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _operator_assignment(item) -> dict[str, Any]:
+    payload = item.model_dump(mode="json")
+    if payload.get("lease"):
+        payload["lease"]["lease_token"] = "[redacted]"
+    return payload
+
+
 def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter:
     router = APIRouter(prefix="/api/execution-workers", tags=["execution-workers"])
 
@@ -151,7 +158,7 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
                 request_actor(request),
                 worker_id=worker_id,
             )
-            return {"items": [item.model_dump(mode="json") for item in items]}
+            return {"items": [_operator_assignment(item) for item in items]}
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
