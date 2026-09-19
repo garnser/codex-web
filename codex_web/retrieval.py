@@ -358,10 +358,12 @@ class LocalVectorRetrievalBackend(_LocalRetrievalBase):
             embedding_provider or DeterministicLocalEmbeddingProvider()
         )
         self._vectors: dict[str, tuple[float, ...]] = {}
+        self._indexed_identity: EmbeddingModelIdentity | None = None
 
     def _after_upsert(self, document: RetrievalIndexDocument) -> None:
         result = self.embedding_provider.embed((document.indexed_text,))
         self._vectors[document.knowledge_id] = result.vectors[0]
+        self._indexed_identity = result.identity
 
     def _after_delete(self, knowledge_id: str) -> None:
         self._vectors.pop(knowledge_id, None)
@@ -369,6 +371,7 @@ class LocalVectorRetrievalBackend(_LocalRetrievalBase):
     def _after_rebuild(self, documents: tuple[RetrievalIndexDocument, ...]) -> None:
         if not documents:
             self._vectors = {}
+            self._indexed_identity = self.embedding_provider.identity
             return
         result = self.embedding_provider.embed(
             tuple(item.indexed_text for item in documents)
@@ -377,6 +380,7 @@ class LocalVectorRetrievalBackend(_LocalRetrievalBase):
             item.knowledge_id: vector
             for item, vector in zip(documents, result.vectors)
         }
+        self._indexed_identity = result.identity
 
     @staticmethod
     def _similarity(
@@ -392,14 +396,24 @@ class LocalVectorRetrievalBackend(_LocalRetrievalBase):
 
     def status(self) -> RetrievalBackendStatus:
         with self._lock:
+            current_identity = self.embedding_provider.identity
+            identity_matches = (
+                not self._documents
+                or self._indexed_identity == current_identity
+            )
             return RetrievalBackendStatus(
                 backend_id=self.backend_id,
                 backend_type=self.backend_type,
                 capabilities=("lexical", "vector", "structured", "rebuild"),
                 index_revision=self._revision_id(),
                 document_count=len(self._documents),
-                healthy=True,
-                embedding_identity=self.embedding_provider.identity,
+                healthy=identity_matches,
+                last_error=(
+                    None
+                    if identity_matches
+                    else "embedding model identity changed; rebuild required"
+                ),
+                embedding_identity=current_identity,
             )
 
     def search(self, request: RetrievalSearchRequest) -> tuple[RetrievalSearchHit, ...]:
