@@ -45,6 +45,7 @@ class AgentRuntimeSessionRequest(BaseModel):
     project_id: str = Field(min_length=1)
     sandbox: str | None = None
     approval_policy: str | None = None
+    approval_reviewer: str | None = None
     workspace_cwd: str | None = None
     sandbox_policy: dict[str, Any] | None = None
     execution_id: str | None = None
@@ -74,6 +75,7 @@ class AgentRuntimeTurnRequest(BaseModel):
     reasoning_effort: str | None = None
     workspace_cwd: str | None = None
     approval_policy: str | None = None
+    approval_reviewer: str | None = None
     sandbox_policy: dict[str, Any] | None = None
     developer_instructions: str | None = None
 
