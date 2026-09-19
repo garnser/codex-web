@@ -540,14 +540,13 @@ class AutonomyAuditService:
         partition: str,
         rows: list[AutonomyAuditRecord],
     ) -> tuple[AutonomyAuditCheckpoint | None, str | None]:
-        checkpoints = sorted(
-            (
-                item
-                for item in self.store.load().checkpoints
-                if item.partition_id == partition
-            ),
-            key=lambda item: (item.created_at, item.sequence, item.id),
-        )
+        # Checkpoints are append-only. Preserve durable append order because
+        # multiple checkpoints can intentionally anchor the same record sequence.
+        checkpoints = [
+            item
+            for item in self.store.load().checkpoints
+            if item.partition_id == partition
+        ]
         previous_hash = GENESIS_HASH
         latest: AutonomyAuditCheckpoint | None = None
         row_by_sequence = {item.sequence: item for item in rows}
@@ -599,10 +598,27 @@ class AutonomyAuditService:
             key=lambda item: item.sequence,
         )
         if not rows:
+            checkpoint, checkpoint_error = self._verify_checkpoints(
+                partition,
+                [],
+            )
+            if checkpoint_error is not None:
+                return AuditIntegrityResult(
+                    status=AuditIntegrityStatus.FAILED,
+                    partition_id=partition,
+                    records_checked=0,
+                    checkpoint_id=(
+                        checkpoint.id if checkpoint is not None else None
+                    ),
+                    reason=checkpoint_error,
+                )
             return AuditIntegrityResult(
                 status=AuditIntegrityStatus.EMPTY,
                 partition_id=partition,
                 records_checked=0,
+                checkpoint_id=(
+                    checkpoint.id if checkpoint is not None else None
+                ),
             )
 
         previous_hash = GENESIS_HASH
@@ -691,7 +707,7 @@ class AutonomyAuditService:
             for item in self.store.load().checkpoints
             if item.partition_id == partition_id
         ]
-        return max(rows, key=lambda item: (item.sequence, item.created_at)) if rows else None
+        return rows[-1] if rows else None
 
     def checkpoint(
         self,
@@ -758,7 +774,11 @@ class AutonomyAuditService:
                 actor_assurance=actor.assurance.value,
                 target_audit_record_id=target.id,
                 reason_code="governed_redaction",
-                details={"reason": reason[:500]},
+                details={
+                    "reason_sha256": hashlib.sha256(
+                        reason.encode("utf-8", errors="replace")
+                    ).hexdigest()
+                },
             )
         )
 
