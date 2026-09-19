@@ -57,6 +57,24 @@ The registry store itself is versioned using the platform compatibility/migratio
 
 Application upgrades must validate active definition schemas/engine compatibility before protected work resumes; #168 owns full upgrade/version-skew orchestration.
 
+## Operational Role authority definitions
+
+M6 adds a second code-owned definition schema on the same registry:
+
+- kind: `authority-role-catalog`
+- stable ID: `authority.roles.default`
+- schema: `1.0`
+
+This catalog is distinct from the execution-role catalog. It stores operational
+authorization Roles, atomic grants, identity/Team bindings and expiring
+delegations. The evaluator, rank ordering, inheritance validation and fail-closed
+security semantics remain code-owned. Runtime decisions retain the exact
+Definition Registry reference used.
+
+A project/workspace scoped published authority catalog can override the same
+stable global definition through normal registry precedence. Missing or invalid
+authority definitions do not fall back to bootstrap data.
+
 ## Execution-role migration
 
 The first migrated definition is:
