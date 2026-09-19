@@ -10,6 +10,7 @@ from codex_web.action_providers import ActionProviderBindingCreate
 from codex_web.decisions import (
     Decision,
     DecisionBudget,
+    DecisionDeliberationLimits,
     DecisionFinalDecision,
     DecisionImportance,
     DecisionOption,
@@ -26,7 +27,6 @@ from codex_web.identity import (
     PrincipalKind,
     TenantScope,
 )
-from codex_web.metrics import MetricAggregation
 from codex_web.models import Project, TaskSourceConfiguration, WorkItemState
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import (
@@ -106,6 +106,11 @@ class _Host:
             ref: state.model_copy(deep=True)
             for ref, state in states.items()
         }
+
+    @staticmethod
+    def _leading_owner_cue_in_action(value):
+        del value
+        return None
 
 
 class _Projector:
@@ -278,6 +283,10 @@ class DecisionWorkTraceabilityTests(unittest.IsolatedAsyncioTestCase):
                 max_output_tokens=2000,
                 max_model_calls=2,
                 max_cost_usd=1.0,
+            ),
+            limits=DecisionDeliberationLimits(
+                max_participants=2,
+                max_rounds=1,
             ),
             status=DecisionStatus.APPROVED,
             final_decision=DecisionFinalDecision(
