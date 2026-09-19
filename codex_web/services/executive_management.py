@@ -570,9 +570,23 @@ class ExecutiveManagementService:
             actor=actor,
             project_id=payload.project_id,
         )
-        selections = self._select(payload, catalog=catalog)
-        context = self._context(
+        business_domains, business_kpi_ids = self._derive_business_scope(
             payload,
+            actor=actor,
+        )
+        effective_payload = payload.model_copy(
+            update={
+                "business_domains": business_domains,
+                "business_kpi_ids": business_kpi_ids,
+            }
+        )
+        selections = self._select(
+            effective_payload,
+            catalog=catalog,
+            business_domains=business_domains,
+        )
+        context = self._context(
+            effective_payload,
             selections,
             catalog,
             actor=actor,
@@ -594,10 +608,13 @@ class ExecutiveManagementService:
             trigger_ref=payload.trigger_ref,
             event_type=payload.event_type,
             project_id=payload.project_id,
-            goal_ids=payload.goal_ids,
-            decision_ids=payload.decision_ids,
-            work_item_refs=payload.work_item_refs,
-            evidence_ids=payload.evidence_ids,
+            goal_ids=effective_payload.goal_ids,
+            decision_ids=effective_payload.decision_ids,
+            work_item_refs=effective_payload.work_item_refs,
+            evidence_ids=effective_payload.evidence_ids,
+            business_entity_ids=effective_payload.business_entity_ids,
+            business_kpi_ids=effective_payload.business_kpi_ids,
+            business_domains=effective_payload.business_domains,
             role_catalog=reference,
             selections=selections,
             budget=payload.budget,
