@@ -317,10 +317,16 @@ class ServiceNowTaskSource:
         self._validate_identity(snapshot.identity)
         source_state = (snapshot.source_state or "").strip().casefold()
         closed_values = {
+            "closed",
+            "complete",
+            "completed",
+            "resolved",
+        }
+        closed_values.update(
             str(value).strip().casefold()
             for stage, value in self.canonical_state_values.items()
             if stage == "closed"
-        }
+        )
         stage: WorkItemStage
         if source_state and source_state in closed_values:
             stage = "closed"
