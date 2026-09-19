@@ -118,6 +118,8 @@ class CodexAgentRuntimeAdapter:
             params["approvalPolicy"] = request.approval_policy
         if request.model:
             params["model"] = request.model
+        if request.developer_instructions:
+            params["developerInstructions"] = request.developer_instructions
         response = await self.transport.request("thread/resume", params)
         result = self._result(response)
         if result.provider_native_session_id is None:
@@ -174,12 +176,26 @@ class CodexAgentRuntimeAdapter:
     ) -> AgentRuntimeResult:
         params: dict[str, Any] = {
             "threadId": provider_native_session_id,
-            "input": [{"type": "text", "text": request.message}],
+            "input": [
+                {
+                    "type": "text",
+                    "text": request.message,
+                    "text_elements": [],
+                }
+            ],
         }
+        if request.workspace_cwd:
+            params["cwd"] = request.workspace_cwd
         if request.model:
             params["model"] = request.model
         if request.reasoning_effort:
             params["effort"] = request.reasoning_effort
+        if request.developer_instructions:
+            params["developerInstructions"] = request.developer_instructions
+        if request.approval_policy:
+            params["approvalPolicy"] = request.approval_policy
+        if request.sandbox_policy is not None:
+            params["sandboxPolicy"] = request.sandbox_policy
         response = await self.transport.request("turn/start", params)
         result = self._result(response)
         if result.provider_native_session_id is None:
