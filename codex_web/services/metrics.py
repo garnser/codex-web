@@ -495,6 +495,75 @@ class MetricService:
         self.store.update(apply)
         return snapshot
 
+    def capture_observation_snapshot(
+        self,
+        metric_id: str,
+        observation_id: str,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        captured_at: float | None = None,
+    ) -> MetricSnapshot:
+        state = self.store.load()
+        definition = self._definition(state, metric_id, scope)
+        observation = next(
+            (
+                row
+                for row in state.observations
+                if row.id == observation_id
+                and row.metric_id == metric_id
+                and self._visible(row, scope)
+            ),
+            None,
+        )
+        if observation is None:
+            raise MetricNotFoundError("metric observation not found")
+        now = time.time() if captured_at is None else float(captured_at)
+        if observation.partial:
+            freshness = MetricFreshness.PARTIAL
+            reason = "selected metric observation is explicitly partial"
+        elif now - observation.observed_at > definition.freshness_seconds:
+            freshness = MetricFreshness.STALE
+            reason = (
+                f"selected observation is older than the "
+                f"{definition.freshness_seconds}s freshness policy"
+            )
+        else:
+            freshness = MetricFreshness.FRESH
+            reason = "selected observation satisfies the metric freshness policy"
+        snapshot = MetricSnapshot(
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            metric_id=metric_id,
+            metric_revision=observation.metric_revision,
+            observation_ids=(observation.id,),
+            window_start=observation.window_start,
+            window_end=observation.window_end,
+            aggregation=definition.aggregation,
+            value=observation.value,
+            unit=observation.unit,
+            freshness=freshness,
+            freshness_reason=reason,
+            newest_observation_at=observation.observed_at,
+            captured_by=actor_id,
+            captured_at=now,
+        )
+
+        def apply(current: MetricState) -> MetricState:
+            self._definition(current, metric_id, scope)
+            if not any(
+                row.id == observation_id
+                and row.metric_id == metric_id
+                and self._visible(row, scope)
+                for row in current.observations
+            ):
+                raise MetricNotFoundError("metric observation not found")
+            current.snapshots.append(snapshot)
+            return current
+
+        self.store.update(apply)
+        return snapshot
+
     def get_snapshot(
         self,
         metric_id: str,
