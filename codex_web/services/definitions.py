@@ -39,6 +39,7 @@ class DefinitionCompatibilityError(RuntimeError):
 
 
 DefinitionValidator = Callable[[dict[str, Any]], dict[str, Any]]
+DefinitionPublicationGuard = Callable[[DefinitionRecord | None, DefinitionRecord, DefinitionPublishRequest], None]
 DefinitionChangeNotifier = Callable[[dict[str, Any]], None]
 DefinitionUsageProvider = Callable[[DefinitionReference], list[dict[str, Any]]]
 
@@ -48,6 +49,7 @@ class DefinitionKindSchema:
     kind: str
     schema_version: str
     validate: DefinitionValidator
+    validate_publish: DefinitionPublicationGuard | None = None
 
 
 class DefinitionSchemaRegistry:
@@ -326,6 +328,12 @@ class DefinitionRegistryService:
                 and request.expected_active_revision != active_revision
             ):
                 raise DefinitionConflictError("active definition revision changed before publication")
+            schema = self.schemas.get(
+                selected.kind,
+                selected.definition_schema_version,
+            )
+            if schema.validate_publish is not None:
+                schema.validate_publish(active, selected, request)
             now = time.time()
             current = selected.model_copy(
                 update={
@@ -432,6 +440,7 @@ class DefinitionRegistryService:
                 actor=request.actor,
                 reason=request.reason or f"rollback to revision {target.revision}",
                 expected_active_revision=request.expected_active_revision,
+                approval_metadata=request.approval_metadata,
             ),
         )
 
