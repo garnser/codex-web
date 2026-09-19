@@ -18,6 +18,7 @@ from codex_web.definitions import (
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_contracts import (
     execution_role,
+    execution_roles,
     route_execution_role,
 )
 from codex_web.identity import (
@@ -126,6 +127,55 @@ class DefinitionRegistryTests(unittest.TestCase):
         self.assertEqual(resolved.record_id, rollback.record_id)
         self.assertGreaterEqual(len(self.events), 6)
 
+    def test_derived_draft_pins_same_slot_source_provenance(self) -> None:
+        source = self.service.publish(
+            self._draft().record_id,
+            DefinitionPublishRequest(actor="publisher"),
+        )
+        payload = execution_role_catalog_seed_payload()
+        payload["roles"][2]["description"] = "Typed editor derived revision."
+
+        derived = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id=EXECUTION_ROLE_CATALOG_ID,
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                payload=payload,
+                actor="typed-editor",
+                reason="typed edit",
+                derived_from_record_id=source.record_id,
+            )
+        )
+
+        self.assertEqual(derived.derived_from_record_id, source.record_id)
+        self.assertGreater(derived.revision, source.revision)
+
+        with self.assertRaises(DefinitionNotFoundError):
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id=EXECUTION_ROLE_CATALOG_ID,
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    payload=payload,
+                    actor="typed-editor",
+                    derived_from_record_id="missing-source",
+                )
+            )
+
+        with self.assertRaises(DefinitionConflictError):
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id=EXECUTION_ROLE_CATALOG_ID,
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    scope_type="project",
+                    scope_id="project-a",
+                    payload=payload,
+                    actor="typed-editor",
+                    derived_from_record_id=source.record_id,
+                )
+            )
+
     def test_publish_uses_optimistic_active_revision(self) -> None:
         first = self._draft()
         active = self.service.publish(
@@ -225,6 +275,35 @@ class DefinitionRegistryTests(unittest.TestCase):
                 draft.record_id,
                 DefinitionPublishRequest(actor="admin"),
             )
+
+    def test_legacy_execution_role_payload_without_lifecycle_keeps_checksum_shape(self) -> None:
+        legacy = execution_role_catalog_seed_payload()
+        for role in legacy["roles"]:
+            role.pop("lifecycle", None)
+
+        draft = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id=EXECUTION_ROLE_CATALOG_ID,
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                payload=legacy,
+                actor="legacy-import",
+            )
+        )
+        self.assertTrue(
+            all("lifecycle" not in role for role in draft.payload["roles"])
+        )
+        published = self.service.publish(
+            draft.record_id,
+            DefinitionPublishRequest(actor="publisher"),
+        )
+        resolved = self.service.resolve(
+            definition_id=EXECUTION_ROLE_CATALOG_ID,
+            kind=EXECUTION_ROLE_CATALOG_KIND,
+        )
+        self.assertEqual(resolved.checksum, published.checksum)
+        catalog = ExecutionRoleCatalogDefinition.model_validate(resolved.payload)
+        self.assertTrue(all(role.lifecycle == "active" for role in catalog.roles))
 
     def test_store_detects_payload_checksum_tampering(self) -> None:
         active = self.service.publish(
@@ -350,6 +429,58 @@ class ExecutionRoleDefinitionTests(unittest.TestCase):
             "release-manager",
         )
         self.assertEqual(execution_role("james", catalog=catalog).lane, "implementation")
+
+
+    def test_execution_role_lifecycle_controls_routing_and_resolution(self) -> None:
+        seed = execution_role_catalog_seed_payload()
+        maya = next(role for role in seed["roles"] if role["id"] == "maya")
+        maya["lifecycle"] = "deprecated"
+        deprecated = ExecutionRoleCatalogDefinition.model_validate(seed)
+
+        routed = route_execution_role(
+            "Design the UX and user flow for this workflow",
+            catalog=deprecated,
+        )
+        self.assertNotEqual(routed.id, "maya")
+        explicit = route_execution_role("@maya define the workflow", catalog=deprecated)
+        self.assertEqual(explicit.id, "maya")
+        self.assertEqual(explicit.public()["lifecycle"], "deprecated")
+
+        disabled_payload = deprecated.model_dump(mode="json")
+        disabled_maya = next(
+            role for role in disabled_payload["roles"] if role["id"] == "maya"
+        )
+        disabled_maya["lifecycle"] = "disabled"
+        disabled_payload["owner_to_execution_role"].pop("maya")
+        disabled = ExecutionRoleCatalogDefinition.model_validate(disabled_payload)
+
+        self.assertIsNone(execution_role("maya", catalog=disabled))
+        self.assertNotIn(
+            "maya",
+            {role.id for role in execution_roles(catalog=disabled)},
+        )
+        self.assertNotEqual(
+            route_execution_role("@maya define the workflow", catalog=disabled).id,
+            "maya",
+        )
+
+        mapped_disabled = deprecated.model_dump(mode="json")
+        next(
+            role
+            for role in mapped_disabled["roles"]
+            if role["id"] == "maya"
+        )["lifecycle"] = "disabled"
+        with self.assertRaises(ValueError):
+            ExecutionRoleCatalogDefinition.model_validate(mapped_disabled)
+
+        structural_disabled = execution_role_catalog_seed_payload()
+        next(
+            role
+            for role in structural_disabled["roles"]
+            if role["id"] == "orchestrator"
+        )["lifecycle"] = "disabled"
+        with self.assertRaises(ValueError):
+            ExecutionRoleCatalogDefinition.model_validate(structural_disabled)
 
 
 class DefinitionRegistryApiTests(unittest.TestCase):

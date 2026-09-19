@@ -127,6 +127,15 @@ def assess_authority_catalog_publication(
                 reasons.append(f"role {role.id}: new inherited authority")
             continue
 
+        if old_role.lifecycle == "disabled" and role.lifecycle != "disabled":
+            reasons.append(
+                f"role {role.id}: disabled authority Role reactivated"
+            )
+        elif old_role.lifecycle == "deprecated" and role.lifecycle == "active":
+            reasons.append(
+                f"role {role.id}: deprecated authority Role returned to active"
+            )
+
         added_parents = set(role.inherits) - set(old_role.inherits)
         if added_parents:
             reasons.append(

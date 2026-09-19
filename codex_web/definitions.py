@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -83,6 +83,7 @@ class DefinitionRecord(BaseModel):
     supersedes_record_id: str | None = None
     superseded_by_record_id: str | None = None
     rollback_of_record_id: str | None = None
+    derived_from_record_id: str | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
     publication_approvals: tuple[DefinitionPublicationApproval, ...] = ()
     min_engine_version: str | None = None
@@ -143,6 +144,7 @@ class DefinitionDraftCreate(BaseModel):
     effective_until: float | None = None
     min_engine_version: str | None = None
     max_engine_version: str | None = None
+    derived_from_record_id: str | None = None
 
 
 class DefinitionPublishRequest(BaseModel):

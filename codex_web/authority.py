@@ -136,6 +136,7 @@ class AuthorityRoleDefinition(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    lifecycle: Literal["active", "deprecated", "disabled"] = "active"
     inherits: tuple[str, ...] = ()
     grants: tuple[AuthorityGrant, ...] = ()
 
@@ -325,6 +326,16 @@ class AuthorityDecision(BaseModel):
 
 
 def validate_authority_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
-    return AuthorityRoleCatalogDefinition.model_validate(payload).model_dump(
+    normalized = AuthorityRoleCatalogDefinition.model_validate(payload).model_dump(
         mode="json"
     )
+    original_roles = {
+        str(item.get("id")): item
+        for item in payload.get("roles", [])
+        if isinstance(item, dict)
+    }
+    for role in normalized["roles"]:
+        original = original_roles.get(role["id"], {})
+        if "lifecycle" not in original:
+            role.pop("lifecycle", None)
+    return normalized

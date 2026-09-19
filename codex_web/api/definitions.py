@@ -47,6 +47,7 @@ class DefinitionDraftRequest(BaseModel):
     effective_until: float | None = None
     min_engine_version: str | None = None
     max_engine_version: str | None = None
+    derived_from_record_id: str | None = None
 
 
 class DefinitionValidateRequest(BaseModel):

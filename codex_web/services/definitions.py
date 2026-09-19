@@ -244,6 +244,36 @@ class DefinitionRegistryService:
         created: list[DefinitionRecord] = []
 
         def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            if payload.derived_from_record_id is not None:
+                source = next(
+                    (
+                        record
+                        for record in records
+                        if record.record_id == payload.derived_from_record_id
+                    ),
+                    None,
+                )
+                if source is None:
+                    raise DefinitionNotFoundError(
+                        "derived definition source record not found"
+                    )
+                if not self._same_slot(
+                    source,
+                    definition_id=payload.definition_id,
+                    kind=payload.kind,
+                    scope_type=payload.scope_type,
+                    scope_id=scope_id,
+                ):
+                    raise DefinitionConflictError(
+                        "derived definition source must belong to the same canonical slot"
+                    )
+                if (
+                    source.definition_schema_version
+                    != payload.definition_schema_version
+                ):
+                    raise DefinitionCompatibilityError(
+                        "derived definition source schema version changed"
+                    )
             revision = (
                 max(
                     (
@@ -281,6 +311,7 @@ class DefinitionRegistryService:
                 effective_until=payload.effective_until,
                 min_engine_version=payload.min_engine_version,
                 max_engine_version=payload.max_engine_version,
+                derived_from_record_id=payload.derived_from_record_id,
             )
             created.append(record)
             return [*records, record]
@@ -565,6 +596,7 @@ class DefinitionRegistryService:
                 effective_until=target.effective_until,
                 min_engine_version=target.min_engine_version,
                 max_engine_version=target.max_engine_version,
+                derived_from_record_id=target.record_id,
             )
         )
 

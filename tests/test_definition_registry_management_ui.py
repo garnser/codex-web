@@ -63,6 +63,44 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         self.assertNotIn("actor: actor.identity_id", javascript)
         self.assertNotIn("localStorage", javascript)
 
+    def test_typed_role_editor_creates_derived_drafts_only(self) -> None:
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        coordinator = (ROOT / "static" / "definition_typed_editor.js").read_text(
+            encoding="utf-8"
+        )
+        authority = (
+            ROOT / "static" / "definition_typed_authority_editor.js"
+        ).read_text(encoding="utf-8")
+        execution = (
+            ROOT / "static" / "definition_typed_execution_editor.js"
+        ).read_text(encoding="utf-8")
+        shared = (
+            ROOT / "static" / "definition_typed_editor_shared.js"
+        ).read_text(encoding="utf-8")
+        javascript = "\n".join((coordinator, authority, execution, shared))
+
+        self.assertIn('id="definition-typed-editor-panel"', html)
+        self.assertIn('id="definition-typed-source"', html)
+        self.assertIn('id="definition-typed-save"', html)
+        self.assertIn("authority-role-catalog", coordinator)
+        self.assertIn("execution-role-catalog", coordinator)
+        self.assertIn("/api/definitions/drafts", coordinator)
+        self.assertIn("derived_from_record_id", coordinator)
+        self.assertIn("nothing was activated", coordinator)
+        self.assertIn("clone-role", javascript)
+        self.assertIn("typed-role-lifecycle", javascript)
+        self.assertIn("typed-grant-capability", authority)
+        self.assertIn("typed-grant-level", authority)
+        self.assertIn("typed-grant-environments", authority)
+        self.assertIn("typed-binding-kind", authority)
+        self.assertIn("typed-delegation-identity", authority)
+        self.assertIn("typed-exec-shared-rules", execution)
+        self.assertIn("typed-role-artifacts", execution)
+        self.assertIn("typed-role-hands-to", execution)
+        self.assertIn("STRUCTURAL_EXECUTION_ROLES", execution)
+        self.assertNotIn("/publish", coordinator)
+        self.assertNotIn("localStorage", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

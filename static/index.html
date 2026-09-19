@@ -589,6 +589,20 @@
                       <label>Definition payload <textarea id="definition-draft-payload" rows="10" placeholder='{"key":"value"}'></textarea></label>
                       <button id="create-definition-draft" type="button" class="ghost-button">Create validated-schema draft</button>
                     </div>
+                    <details id="definition-typed-editor-panel">
+                      <summary>Typed Role & execution-contract editor</summary>
+                      <div class="route-test">
+                        <label>Source revision <select id="definition-typed-source"><option value="">Select supported revision</option></select></label>
+                        <label>Draft reason <input id="definition-typed-reason" placeholder="Why this typed revision is needed" /></label>
+                        <button id="definition-typed-add-role" type="button" class="ghost-button">Add role</button>
+                        <button id="definition-typed-add-binding" type="button" class="ghost-button">Add binding</button>
+                        <button id="definition-typed-add-delegation" type="button" class="ghost-button">Add delegation</button>
+                        <button id="definition-typed-save" type="button" class="primary-button">Create canonical draft revision</button>
+                      </div>
+                      <div id="definition-typed-source-meta" class="form-result">Choose an authority-role or execution-role revision. Typed edits never activate directly.</div>
+                      <div id="definition-typed-editor-host" class="comm-log"></div>
+                      <div id="definition-typed-status" class="form-result" aria-live="polite"></div>
+                    </details>
                     <details id="definition-transfer-panel">
                       <summary>Export / import versioned definitions</summary>
                       <div class="route-test">
@@ -1144,6 +1158,7 @@
     <script src="static/structured_log_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
+    <script src="static/definition_typed_editor.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>
   </body>
 </html>

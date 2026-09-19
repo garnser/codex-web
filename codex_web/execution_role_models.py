@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -19,6 +19,7 @@ class ExecutionRoleContract(BaseModel):
     name: str = Field(min_length=1)
     lane: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    lifecycle: Literal["active", "deprecated", "disabled"] = "active"
     expected_work: tuple[str, ...]
     must_refuse: tuple[str, ...]
     required_artifacts: tuple[str, ...]
@@ -48,6 +49,7 @@ class ExecutionRoleContract(BaseModel):
             "name": self.name,
             "lane": self.lane,
             "description": self.description,
+            "lifecycle": self.lifecycle,
             "expectedWork": list(self.expected_work),
             "mustRefuse": list(self.must_refuse),
             "requiredArtifacts": list(self.required_artifacts),
@@ -90,6 +92,26 @@ class ExecutionRoleCatalogDefinition(BaseModel):
                 "execution role mappings reference unknown roles: "
                 + ", ".join(sorted(unknown))
             )
+        disabled_targets = {
+            role.id
+            for role in self.roles
+            if role.lifecycle == "disabled" and role.id in targets
+        }
+        if disabled_targets:
+            raise ValueError(
+                "execution role mappings reference disabled roles: "
+                + ", ".join(sorted(disabled_targets))
+            )
+        structural_disabled = {
+            role.id
+            for role in self.roles
+            if role.id in required and role.lifecycle == "disabled"
+        }
+        if structural_disabled:
+            raise ValueError(
+                "required structural execution roles cannot be disabled: "
+                + ", ".join(sorted(structural_disabled))
+            )
         if any(not value.strip() for value in self.change_classifications):
             raise ValueError("change classifications cannot contain empty values")
         if any(not value.strip() for value in self.shared_execution_rules):
@@ -104,4 +126,16 @@ class ExecutionRoleCatalogDefinition(BaseModel):
 def validate_execution_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     """Definition Registry validator/normalizer for execution-role catalogs."""
 
-    return ExecutionRoleCatalogDefinition.model_validate(payload).model_dump(mode="json")
+    normalized = ExecutionRoleCatalogDefinition.model_validate(payload).model_dump(
+        mode="json"
+    )
+    original_roles = {
+        str(item.get("id")): item
+        for item in payload.get("roles", [])
+        if isinstance(item, dict)
+    }
+    for role in normalized["roles"]:
+        original = original_roles.get(role["id"], {})
+        if "lifecycle" not in original:
+            role.pop("lifecycle", None)
+    return normalized

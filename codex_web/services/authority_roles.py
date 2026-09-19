@@ -154,6 +154,8 @@ class AuthorityRoleService:
                 raise ValueError("authority role inheritance cycle detected at runtime")
             role = by_id[role_id]
             next_seen = {*seen, role_id}
+            if role.lifecycle == "disabled":
+                return
             for grant in role.grants:
                 rows.append(
                     _GrantPath(

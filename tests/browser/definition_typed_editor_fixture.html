@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Typed Definition Editor Fixture</title></head>
+<body>
+  <button id="refresh-definitions" type="button">Refresh</button>
+  <details id="definition-typed-editor-panel" open>
+    <summary>Typed editor</summary>
+    <select id="definition-typed-source"><option value="">Select supported revision</option></select>
+    <input id="definition-typed-reason" />
+    <button id="definition-typed-add-role" type="button">Add role</button>
+    <button id="definition-typed-add-binding" type="button">Add binding</button>
+    <button id="definition-typed-add-delegation" type="button">Add delegation</button>
+    <button id="definition-typed-save" type="button">Create canonical draft revision</button>
+    <div id="definition-typed-source-meta"></div>
+    <div id="definition-typed-editor-host"></div>
+    <div id="definition-typed-status"></div>
+  </details>
+  <script type="module" src="/static/definition_typed_editor.js"></script>
+</body>
+</html>

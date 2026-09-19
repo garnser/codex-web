@@ -46,7 +46,10 @@ def execution_roles(
     *,
     catalog: ExecutionRoleCatalogDefinition | None = None,
 ) -> tuple[ExecutionRoleContract, ...]:
-    return _catalog(catalog).roles
+    return tuple(
+        role for role in _catalog(catalog).roles
+        if role.lifecycle != "disabled"
+    )
 
 
 def execution_role(
@@ -56,7 +59,8 @@ def execution_role(
 ) -> ExecutionRoleContract | None:
     if not role_id:
         return None
-    return _catalog(catalog).role_map.get(role_id.strip().lower())
+    role = _catalog(catalog).role_map.get(role_id.strip().lower())
+    return role if role is not None and role.lifecycle != "disabled" else None
 
 
 def route_execution_role(
@@ -72,6 +76,8 @@ def route_execution_role(
     # Explicit role naming always wins, including roles intentionally excluded
     # from automatic routing.
     for role in resolved.roles:
+        if role.lifecycle == "disabled":
+            continue
         handles = {
             f"@{role.id}",
             f"@{role.id.replace('-', '')}",
@@ -87,7 +93,7 @@ def route_execution_role(
     scored: list[tuple[int, int, ExecutionRoleContract]] = []
     order = [role.id for role in resolved.roles]
     for role in resolved.roles:
-        if not role.auto_select:
+        if not role.auto_select or role.lifecycle != "active":
             continue
         score = 0
         for keyword in role.keywords:
@@ -99,7 +105,10 @@ def route_execution_role(
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     if scored and scored[0][0] > 0:
         return scored[0][2]
-    return roles.get(default_id) or roles["orchestrator"]
+    default_role = roles.get(default_id)
+    if default_role is not None and default_role.lifecycle != "disabled":
+        return default_role
+    return roles["orchestrator"]
 
 
 def execution_role_catalog_prompt(
@@ -109,7 +118,15 @@ def execution_role_catalog_prompt(
     resolved = _catalog(catalog)
     lines = ["Operational execution roles available after an executive decision:"]
     for role in resolved.roles:
-        suffix = " (explicit selection only)" if not role.auto_select else ""
+        if role.lifecycle == "disabled":
+            continue
+        suffix = (
+            " (deprecated; explicit selection only)"
+            if role.lifecycle == "deprecated"
+            else " (explicit selection only)"
+            if not role.auto_select
+            else ""
+        )
         lines.append(f"- {role.name} [{role.lane}]{suffix}: {role.description}")
     lines.append(
         "Executive personas advise; these execution roles own operational lanes. "
@@ -162,7 +179,10 @@ def execution_role_for_agent(
 ) -> ExecutionRoleContract | None:
     resolved = _catalog(catalog)
     role_id = resolved.owner_to_execution_role.get(_normalized_owner(agent))
-    return resolved.role_map.get(role_id) if role_id else None
+    if not role_id:
+        return None
+    role = resolved.role_map.get(role_id)
+    return role if role is not None and role.lifecycle != "disabled" else None
 
 
 def execution_agent_key(
