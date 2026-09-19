@@ -8,10 +8,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.action_intents import ActionIntentCreate
+from codex_web.autonomy_policy import (
+    AutonomyBreakGlassGrant,
+    AutonomyCycleBudgetUsage,
+    AutonomyLevel,
+    AutonomyPolicy,
+)
 from codex_web.compatibility import ContractSpec
 
 
-AUTONOMY_STATE_CONTRACT = ContractSpec("autonomy-state", "1.0", ("1.0",))
+AUTONOMY_STATE_CONTRACT = ContractSpec("autonomy-state", "2.0", ("1.0", "2.0"))
 
 
 class AutonomyMode(StrEnum):
@@ -23,6 +29,8 @@ class AutonomyMode(StrEnum):
 class AutonomyCycleOutcome(StrEnum):
     DETERMINISTIC = "deterministic"
     SKIPPED = "skipped"
+    RECOMMENDED = "recommended"
+    PREPARED = "prepared"
     DRY_RUN = "dry_run"
     SIMULATED = "simulated"
     COMPLETED = "completed"
@@ -43,6 +51,7 @@ class AutonomyControl(BaseModel):
     max_recursion_depth: int = Field(default=4, ge=0, le=16)
     max_actions_per_cycle: int = Field(default=4, ge=0, le=32)
     trigger_event_types: tuple[str, ...] = ()
+    policy: AutonomyPolicy = Field(default_factory=AutonomyPolicy)
 
     @model_validator(mode="after")
     def normalize(self) -> "AutonomyControl":
@@ -67,6 +76,7 @@ class AutonomyControlUpdate(BaseModel):
     max_recursion_depth: int | None = Field(default=None, ge=0, le=16)
     max_actions_per_cycle: int | None = Field(default=None, ge=0, le=32)
     trigger_event_types: tuple[str, ...] | None = None
+    policy: AutonomyPolicy | None = None
 
 
 class AutonomyObservation(BaseModel):
@@ -86,6 +96,13 @@ class AutonomyReasoningResult(BaseModel):
 
     summary: str = ""
     actions: tuple[ActionIntentCreate, ...] = ()
+    model_input_tokens: int = Field(default=0, ge=0)
+    model_output_tokens: int = Field(default=0, ge=0)
+    model_cost_usd: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def model_tokens(self) -> int:
+        return self.model_input_tokens + self.model_output_tokens
 
 
 class AutonomyCycleRecord(BaseModel):
@@ -106,6 +123,11 @@ class AutonomyCycleRecord(BaseModel):
     reasoning_attempts: int = Field(default=0, ge=0)
     action_count: int = Field(default=0, ge=0)
     action_intent_ids: tuple[str, ...] = ()
+    approval_request_ids: tuple[str, ...] = ()
+    autonomy_level: AutonomyLevel | None = None
+    policy_fingerprint: str | None = None
+    break_glass_grant_id: str | None = None
+    budget_usage: AutonomyCycleBudgetUsage = Field(default_factory=AutonomyCycleBudgetUsage)
     outcome: AutonomyCycleOutcome
     reason: str
     started_at: float = Field(default_factory=time.time)
@@ -134,6 +156,7 @@ class AutonomyState(BaseModel):
     control: AutonomyControl = Field(default_factory=AutonomyControl)
     cycles: list[AutonomyCycleRecord] = Field(default_factory=list)
     dead_letters: list[AutonomyDeadLetter] = Field(default_factory=list)
+    break_glass_grants: list[AutonomyBreakGlassGrant] = Field(default_factory=list)
     updated_at: float = Field(default_factory=time.time)
     updated_by: str = "system"
 

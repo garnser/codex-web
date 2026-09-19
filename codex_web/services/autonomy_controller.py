@@ -5,7 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from codex_web.action_intents import ActionIntentStatus
+from codex_web.action_intents import ActionDecisionOutcome, ActionIntentStatus
+from codex_web.approval_requests import ApprovalRequestStatus
 from codex_web.autonomy import (
     AutonomyControl,
     AutonomyControlUpdate,
@@ -15,9 +16,14 @@ from codex_web.autonomy import (
     AutonomyObservation,
     AutonomyReasoningResult,
 )
+from codex_web.autonomy_policy import (
+    AutonomyCycleBudgetUsage,
+    AutonomyLevel,
+)
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.autonomy_policy import AutonomyPolicyService
 from codex_web.storage.autonomy import AutonomyStateStore
 
 
@@ -35,9 +41,11 @@ class AutonomyController:
         store: AutonomyStateStore,
         *,
         action_intents: ActionIntentService | None = None,
+        policy: AutonomyPolicyService | None = None,
     ) -> None:
         self.store = store
         self.action_intents = action_intents
+        self.policy = policy
 
     def status(self) -> dict[str, Any]:
         state = self.store.load()
@@ -49,6 +57,10 @@ class AutonomyController:
             "dead_letters": [
                 item.model_dump(mode="json")
                 for item in reversed(state.dead_letters[-100:])
+            ],
+            "break_glass_grants": [
+                item.model_dump(mode="json")
+                for item in reversed(state.break_glass_grants[-100:])
             ],
             "updated_at": state.updated_at,
             "updated_by": state.updated_by,
@@ -103,6 +115,11 @@ class AutonomyController:
         reasoning_attempts: int = 0,
         action_count: int = 0,
         action_intent_ids: tuple[str, ...] = (),
+        approval_request_ids: tuple[str, ...] = (),
+        autonomy_level: AutonomyLevel | None = None,
+        policy_fingerprint: str | None = None,
+        break_glass_grant_id: str | None = None,
+        budget_usage: AutonomyCycleBudgetUsage | None = None,
         started_at: float | None = None,
         last_error: str | None = None,
     ) -> AutonomyCycleRecord:
@@ -122,6 +139,11 @@ class AutonomyController:
             reasoning_attempts=reasoning_attempts,
             action_count=action_count,
             action_intent_ids=action_intent_ids,
+            approval_request_ids=approval_request_ids,
+            autonomy_level=autonomy_level,
+            policy_fingerprint=policy_fingerprint,
+            break_glass_grant_id=break_glass_grant_id,
+            budget_usage=budget_usage or AutonomyCycleBudgetUsage(),
             outcome=outcome,
             reason=reason,
             started_at=started_at or now,
@@ -196,6 +218,25 @@ class AutonomyController:
 
         control = self.store.load().control
         started_at = time.time()
+        project_value = event.payload.get("project_id") if isinstance(event.payload, dict) else None
+        event_project_id = (
+            project_value.strip()
+            if isinstance(project_value, str) and project_value.strip()
+            else None
+        )
+        event_level = control.policy.level
+        event_policy_fingerprint = control.policy.fingerprint()
+        event_budget = control.policy.budget
+        if self.policy is not None and actor is not None:
+            effective_event_policy, _event_roles = self.policy.effective(
+                actor=actor,
+                project_id=event_project_id,
+                action_id=None,
+                now=started_at,
+            )
+            event_level = effective_event_policy.level
+            event_policy_fingerprint = effective_event_policy.policy_fingerprint
+            event_budget = effective_event_policy.budget
 
         if control.mode != "active":
             cycle = self._cycle(
@@ -232,6 +273,21 @@ class AutonomyController:
                 depth=depth,
                 outcome=AutonomyCycleOutcome.DETERMINISTIC,
                 reason=observation.reason,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        if event_level == AutonomyLevel.OBSERVE:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.SKIPPED,
+                reason="autonomy_level_observe",
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
                 started_at=started_at,
             )
             self.store.append_cycle(cycle)
@@ -363,21 +419,61 @@ class AutonomyController:
             )
             return cycle
 
-        if len(result.actions) > control.max_actions_per_cycle:
+        base_usage = AutonomyCycleBudgetUsage(
+            actions=len(result.actions),
+            model_tokens=result.model_tokens,
+            model_cost_usd=result.model_cost_usd,
+        )
+        if self.policy is not None:
+            violations = self.policy.budget_violations(
+                (),
+                base_usage,
+                hard_action_limit=control.max_actions_per_cycle,
+                default_limits=event_budget,
+            )
+        else:
+            violations = (
+                ("maximum_actions_per_cycle_exceeded",)
+                if len(result.actions) > control.max_actions_per_cycle
+                else ()
+            )
+        if violations:
             cycle = self._cycle(
                 event,
                 cycle_key=key,
                 observation=observation,
                 depth=depth,
                 outcome=AutonomyCycleOutcome.FAILED,
-                reason="maximum_actions_per_cycle_exceeded",
+                reason=violations[0],
                 reasoning_invoked=True,
                 reasoning_attempts=attempts,
                 action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
                 started_at=started_at,
             )
             self.store.append_cycle(cycle)
             self._record_dead_letter(cycle, reason=cycle.reason)
+            return cycle
+
+        if event_level == AutonomyLevel.RECOMMEND:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.RECOMMENDED,
+                reason=result.summary or "recommendation_completed",
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
             return cycle
 
         if result.actions and (self.action_intents is None or actor is None):
@@ -391,22 +487,330 @@ class AutonomyController:
                 reasoning_invoked=True,
                 reasoning_attempts=attempts,
                 action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
                 started_at=started_at,
             )
             self.store.append_cycle(cycle)
             self._record_dead_letter(cycle, reason=cycle.reason)
             return cycle
 
-        intents = []
-        for action in result.actions:
-            # ActionIntentService.create performs canonical authority, policy,
-            # tenant and security evaluation before any worker may execute.
-            intents.append(self.action_intents.create(action, actor=actor))
+        if event_level == AutonomyLevel.PREPARE:
+            if self.action_intents is None or actor is None:
+                cycle = self._cycle(
+                    event,
+                    cycle_key=key,
+                    observation=observation,
+                    depth=depth,
+                    outcome=AutonomyCycleOutcome.FAILED,
+                    reason="action_prepare_boundary_unavailable",
+                    reasoning_invoked=True,
+                    reasoning_attempts=attempts,
+                    action_count=len(result.actions),
+                    autonomy_level=event_level,
+                    policy_fingerprint=event_policy_fingerprint,
+                    budget_usage=base_usage,
+                    started_at=started_at,
+                )
+                self.store.append_cycle(cycle)
+                self._record_dead_letter(cycle, reason=cycle.reason)
+                return cycle
+            try:
+                for action in result.actions:
+                    await self.action_intents.execution.prepare(
+                        action.binding_id,
+                        action.request.model_copy(update={"dry_run": True})
+                        if action.request.dry_run
+                        else action.request,
+                        actor=actor,
+                    )
+            except Exception as exc:
+                cycle = self._cycle(
+                    event,
+                    cycle_key=key,
+                    observation=observation,
+                    depth=depth,
+                    outcome=AutonomyCycleOutcome.BLOCKED,
+                    reason=f"action_preflight_failed:{type(exc).__name__}",
+                    reasoning_invoked=True,
+                    reasoning_attempts=attempts,
+                    action_count=len(result.actions),
+                    autonomy_level=event_level,
+                    policy_fingerprint=event_policy_fingerprint,
+                    budget_usage=base_usage,
+                    started_at=started_at,
+                    last_error=str(exc)[:1000],
+                )
+                self.store.append_cycle(cycle)
+                return cycle
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.PREPARED,
+                reason=result.summary or "action_preflight_completed",
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
 
-        denied = any(
-            getattr(item.status, "value", item.status) == ActionIntentStatus.CANCELLED.value
+        # Standalone/legacy controller usage keeps the historical ActionIntent
+        # boundary. The composed application always supplies AutonomyPolicyService.
+        if self.policy is None:
+            intents = []
+            for action in result.actions:
+                intents.append(self.action_intents.create(action, actor=actor))
+            denied = any(
+                getattr(item.status, "value", item.status)
+                == ActionIntentStatus.CANCELLED.value
+                for item in intents
+            )
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=(
+                    AutonomyCycleOutcome.BLOCKED
+                    if denied
+                    else AutonomyCycleOutcome.COMPLETED
+                ),
+                reason=(
+                    "one_or_more_actions_denied_by_canonical_authority"
+                    if denied
+                    else result.summary or "reasoning_completed"
+                ),
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                action_intent_ids=tuple(item.id for item in intents),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        decisions = []
+        normalized_actions = []
+        try:
+            for action in result.actions:
+                _binding, _provider, definition, request = (
+                    self.action_intents.execution.resolve_contract(
+                        action.binding_id,
+                        action.request,
+                        actor=actor,
+                    )
+                )
+                decision = self.policy.evaluate_action(
+                    definition,
+                    request,
+                    actor=actor,
+                    now=started_at,
+                )
+                decisions.append(decision)
+                normalized_actions.append(
+                    action.model_copy(update={"request": request})
+                )
+        except Exception as exc:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.BLOCKED,
+                reason=f"autonomy_policy_evaluation_failed:{type(exc).__name__}",
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=base_usage,
+                started_at=started_at,
+                last_error=str(exc)[:1000],
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        decisions_tuple = tuple(decisions)
+        usage = self.policy.cycle_budget_usage(decisions_tuple, result)
+        violations = self.policy.budget_violations(
+            decisions_tuple,
+            usage,
+            hard_action_limit=control.max_actions_per_cycle,
+            default_limits=event_budget,
+        )
+        if violations:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.BLOCKED,
+                reason=violations[0],
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        denied_decisions = [
+            item for item in decisions_tuple if not item.allowed
+        ]
+        if denied_decisions:
+            denied = denied_decisions[0]
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.BLOCKED,
+                reason=(
+                    denied.reasons[-1]
+                    if denied.reasons
+                    else "autonomy_policy_denied_action"
+                ),
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                autonomy_level=denied.effective_level,
+                policy_fingerprint=denied.policy_fingerprint,
+                break_glass_grant_id=denied.break_glass_grant_id,
+                budget_usage=usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        approval_ids = []
+        approvals = []
+        for action, decision in zip(normalized_actions, decisions_tuple):
+            approval = await self.policy.ensure_action_approval(
+                action,
+                decision,
+                actor=actor,
+            )
+            approvals.append(approval)
+            if approval is not None:
+                approval_ids.append(approval.id)
+
+        pending_approvals = [
+            approval
+            for approval in approvals
+            if approval is not None
+            and approval.status != ApprovalRequestStatus.APPROVED
+        ]
+        if pending_approvals:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.BLOCKED,
+                reason="canonical_approval_required",
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                approval_request_ids=tuple(approval_ids),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                break_glass_grant_id=next(
+                    (
+                        item.break_glass_grant_id
+                        for item in decisions_tuple
+                        if item.break_glass_grant_id is not None
+                    ),
+                    None,
+                ),
+                budget_usage=usage,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        prepared_actions = []
+        try:
+            for action, decision in zip(normalized_actions, decisions_tuple):
+                updated = action.model_copy(
+                    update={
+                        "policy_decision": self.policy.action_policy_snapshot(
+                            decision
+                        ),
+                        "rollback_required": (
+                            action.rollback_required
+                            or decision.rollback_required
+                        ),
+                        "verification_required": (
+                            True
+                            if decision.verification_required
+                            else action.verification_required
+                        ),
+                    }
+                )
+                if decision.preflight_required:
+                    await self.action_intents.execution.prepare(
+                        updated.binding_id,
+                        updated.request,
+                        actor=actor,
+                    )
+                prepared_actions.append(updated)
+        except Exception as exc:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.BLOCKED,
+                reason=f"required_preflight_failed:{type(exc).__name__}",
+                reasoning_invoked=True,
+                reasoning_attempts=attempts,
+                action_count=len(result.actions),
+                approval_request_ids=tuple(approval_ids),
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
+                budget_usage=usage,
+                started_at=started_at,
+                last_error=str(exc)[:1000],
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        # Consume exact approved targets before exposing executable intents to
+        # workers. A later creation failure requires a new approval rather than
+        # permitting an intent to race ahead of canonical approval consumption.
+        for action, approval in zip(prepared_actions, approvals):
+            if approval is not None:
+                await self.policy.consume_action_approval(
+                    approval,
+                    action,
+                    actor=actor,
+                    cycle_id=f"{key}:{event.event_id}",
+                )
+
+        intents = [
+            self.action_intents.create(action, actor=actor)
+            for action in prepared_actions
+        ]
+        authority_denied = any(
+            getattr(item.status, "value", item.status)
+            == ActionIntentStatus.CANCELLED.value
             for item in intents
         )
+        primary_decision = decisions_tuple[0] if decisions_tuple else None
         cycle = self._cycle(
             event,
             cycle_key=key,
@@ -414,19 +818,40 @@ class AutonomyController:
             depth=depth,
             outcome=(
                 AutonomyCycleOutcome.BLOCKED
-                if denied
+                if authority_denied
                 else AutonomyCycleOutcome.COMPLETED
             ),
             reason=(
                 "one_or_more_actions_denied_by_canonical_authority"
-                if denied
+                if authority_denied
                 else result.summary or "reasoning_completed"
             ),
             reasoning_invoked=True,
             reasoning_attempts=attempts,
             action_count=len(result.actions),
             action_intent_ids=tuple(item.id for item in intents),
+            approval_request_ids=tuple(approval_ids),
+            autonomy_level=(
+                primary_decision.effective_level
+                if primary_decision is not None
+                else event_level
+            ),
+            policy_fingerprint=(
+                primary_decision.policy_fingerprint
+                if primary_decision is not None
+                else event_policy_fingerprint
+            ),
+            break_glass_grant_id=next(
+                (
+                    item.break_glass_grant_id
+                    for item in decisions_tuple
+                    if item.break_glass_grant_id is not None
+                ),
+                None,
+            ),
+            budget_usage=usage,
             started_at=started_at,
         )
         self.store.append_cycle(cycle)
         return cycle
+
