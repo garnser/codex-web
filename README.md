@@ -171,7 +171,7 @@ See [Storage scaling path](docs/architecture/storage-scaling.md).
 
 The long-term target is a governed, event-driven software-company operating system in which normal code owns deterministic state and models are invoked only where judgment is actually required.
 
-The roadmap is organized into M1–M12:
+The roadmap is organized into M1–M13:
 
 | Milestone | Focus |
 | --- | --- |
@@ -182,17 +182,17 @@ The roadmap is organized into M1–M12:
 | M5 | First-Class Goals |
 | M6 | Role Authority + Permission Contracts |
 | M7 | Event-Driven Autonomous Orchestration |
-| M8 | First-Class Decisions |
+| M8 | First-Class Decisions + Measured Outcomes |
 | M9 | Executive Management |
 | M10 | Organizational Memory |
 | M11 | Controlled Production Autonomy |
-| M12 | Product Documentation + Adoption |
+| M12 | Product Documentation + Adoption |\n| M13 | Business Operations + Company Data |
 
 The roadmap does **not** mean every item above is already implemented. GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests are the delivery source of truth.
 
 Tracking bootstrap issue `#126` defines the roadmap structure and issue assignment. The architecture index describes the durable contracts and dependency order.
 
-M3 is deliberately foundational. Later autonomous behavior must build on canonical identity, tenant/workspace scope, secrets-by-reference, provider-neutral actions, safe execution boundaries, evidence, versioned contracts, configuration, model governance, data governance, and other shared primitives rather than inventing feature-local substitutes.
+M3 is deliberately foundational. Later autonomous behavior must build on canonical identity, tenant/workspace scope, secrets-by-reference, provider-neutral actions, safe execution boundaries, evidence, versioned contracts, configuration, model governance, data governance, and other shared primitives rather than inventing feature-local substitutes.\n\nM7 completes the event-driven safe-autonomy substrate with durable scheduling (#158), canonical ApprovalRequests (#338), human-attention routing (#160), deterministic evaluation/replay (#159), and the orchestration inspector (#112) before Decision work depends on it. M8 adds generic provenance-aware KPI/Metric observations (#339) so Goals and Decisions can reference measured outcomes without LLM arithmetic.\n\nM13 deliberately extends the platform beyond engineering operations without trying to replace CRM, billing, accounting, analytics, or support products. External systems remain authoritative where configured; codex-web stores governed business references/facts/KPIs needed for Goals, Decisions, Executive reasoning, policy, actions, and evidence, with external mutations continuing through canonical ActionProvider/ActionIntent and approval paths.
 
 A major architectural rule is:
 
@@ -414,7 +414,7 @@ Use:
 - **GitHub Project** for status, priority, risk, area, dependencies, and cross-milestone visibility;
 - **Pull Requests** for implementation and validation evidence.
 
-See tracking issue `#126` and [the architecture index](docs/architecture/README.md) for the M1–M12 structure.
+See tracking issue `#126` and [the architecture index](docs/architecture/README.md) for the M1–M13 structure.
 
 ---
 
