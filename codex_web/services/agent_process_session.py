@@ -13,6 +13,7 @@ from codex_web.execution_workers import (
     AssignmentStartRequest,
     AssignmentStatus,
     ExecutionAssignment,
+    ExecutionRuntimeBinding,
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
@@ -73,6 +74,7 @@ class AssignmentBoundAgentProcessSession:
         *,
         runtime_factory: Callable[..., Any],
         credential_provider: AssignmentRuntimeCredentialProvider,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
         clock: Callable[[], float] = time.time,
@@ -90,6 +92,7 @@ class AssignmentBoundAgentProcessSession:
                 "runtime credential provider is required"
             )
         self.credential_provider = credential_provider
+        self.runtime_binding = runtime_binding
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -153,6 +156,13 @@ class AssignmentBoundAgentProcessSession:
 
     def _current_assignment(self) -> ExecutionAssignment:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if (
+            self.runtime_binding is not None
+            and assignment.runtime_binding != self.runtime_binding
+        ):
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime binding changed or is incompatible"
+            )
         if self.fence is not None:
             lease = assignment.lease
             if (
@@ -169,6 +179,13 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if (
+            self.runtime_binding is not None
+            and assignment.runtime_binding != self.runtime_binding
+        ):
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime binding is incompatible"
+            )
         workspace_path = self.local_worker._workspace_path(assignment)
         self.local_worker.backend.validate_assignment(assignment)
 
@@ -564,6 +581,7 @@ class AssignmentBoundAgentProcessSessionManager:
         *,
         runtime_factory: Callable[..., Any],
         credential_provider: AssignmentRuntimeCredentialProvider,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
         session_factory: Callable[..., AssignmentBoundAgentProcessSession] = AssignmentBoundAgentProcessSession,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
@@ -575,6 +593,7 @@ class AssignmentBoundAgentProcessSessionManager:
         self.watchdog_interval_seconds = watchdog_interval_seconds
         self.egress_endpoints_resolver = egress_endpoints_resolver
         self.credential_provider = credential_provider
+        self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
         self._lock = asyncio.Lock()
 
@@ -596,6 +615,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
                 egress_endpoints_resolver=self.egress_endpoints_resolver,
                 credential_provider=self.credential_provider,
+                runtime_binding=self.runtime_binding,
             )
             await session.start()
             self.sessions[assignment_id] = session

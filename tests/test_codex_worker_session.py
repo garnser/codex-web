@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from codex_web.execution_workers import (
     AssignmentStatus,
     ExecutionAssignmentCreate,
+    ExecutionRuntimeBinding,
     ExecutionWorkerRegister,
     NetworkPolicy,
     WorkerCapability,
@@ -17,7 +18,10 @@ from codex_web.execution_workers import (
 )
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus
 from codex_web.runtime.codex import CodexRuntime
-from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
+from codex_web.services.agent_process_session import (
+    AssignmentBoundAgentProcessSession,
+    AssignmentBoundAgentProcessSessionStaleError,
+)
 from codex_web.services.codex_auth_delegation import (
     CODEX_WORKER_HOME,
     CodexAuthDelegation,
@@ -436,6 +440,88 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(provider.secret, repr(session.status().public()))
         finally:
             await session.stop()
+
+    async def test_generic_process_session_rejects_runtime_binding_mismatch_before_launch(self) -> None:
+        assignment = self._create_assignment(
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="provider-a",
+                runtime_id="runtime-a",
+                capability_revision=3,
+            )
+        )
+        provider = _FakeAlternateCredentialProvider()
+        session = AssignmentBoundAgentProcessSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+            runtime_factory=_FakeAlternateRuntime,
+            credential_provider=provider,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="provider-b",
+                runtime_id="runtime-b",
+                capability_revision=3,
+            ),
+            watchdog_interval_seconds=60,
+            clock=lambda: provider.now,
+            monotonic=lambda: provider.now,
+        )
+
+        with self.assertRaisesRegex(
+            AssignmentBoundAgentProcessSessionStaleError,
+            "runtime binding is incompatible",
+        ):
+            await session.start()
+
+        self.assertEqual(self.backend.spawned, [])
+        self.assertEqual(provider.use_calls, 0)
+
+    async def test_generic_process_session_stops_when_runtime_revision_changes(self) -> None:
+        expected = ExecutionRuntimeBinding(
+            provider_id="provider-alt",
+            runtime_id="alternate",
+            capability_revision=4,
+        )
+        assignment = self._create_assignment(runtime_binding=expected)
+        provider = _FakeAlternateCredentialProvider()
+        gate = asyncio.Event()
+
+        async def sleep(_seconds):
+            await gate.wait()
+
+        session = AssignmentBoundAgentProcessSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+            runtime_factory=_FakeAlternateRuntime,
+            credential_provider=provider,
+            runtime_binding=expected,
+            watchdog_interval_seconds=0.05,
+            clock=lambda: provider.now,
+            monotonic=lambda: provider.now,
+            sleep=sleep,
+        )
+        await session.start()
+
+        def change_runtime_binding(state):
+            for index, item in enumerate(state.assignments):
+                if item.id == assignment.id:
+                    state.assignments[index] = item.model_copy(
+                        update={
+                            "runtime_binding": ExecutionRuntimeBinding(
+                                provider_id="provider-alt",
+                                runtime_id="alternate",
+                                capability_revision=5,
+                            )
+                        }
+                    )
+            return state
+
+        self.worker_service.store.update(change_runtime_binding)
+        gate.set()
+        await asyncio.wait_for(session.watchdog_task, timeout=1)
+
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertIn("runtime binding changed", session.last_error)
 
     async def test_default_session_factory_reuses_canonical_codex_runtime(self) -> None:
         assignment = self._create_assignment()

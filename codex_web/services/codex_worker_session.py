@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any, Callable
 
+from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.runtime.codex import CodexRuntime
 from codex_web.services.agent_model_egress import AgentRuntimeModelEgressEndpoint
 from codex_web.services.agent_process_session import (
@@ -40,6 +41,7 @@ class AssignmentBoundCodexSession(AssignmentBoundAgentProcessSession):
         ]
         | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider | None = None,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -55,6 +57,7 @@ class AssignmentBoundCodexSession(AssignmentBoundAgentProcessSession):
             assignment_id,
             runtime_factory=runtime_factory,
             credential_provider=provider,
+            runtime_binding=runtime_binding,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,
             clock=clock,
@@ -78,6 +81,7 @@ class AssignmentBoundCodexSessionManager(AssignmentBoundAgentProcessSessionManag
         ]
         | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider | None = None,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
     ) -> None:
         provider = credential_provider or local_worker.codex_auth_delegation
         if provider is None:
@@ -89,6 +93,7 @@ class AssignmentBoundCodexSessionManager(AssignmentBoundAgentProcessSessionManag
             host,
             runtime_factory=runtime_factory,
             credential_provider=provider,
+            runtime_binding=runtime_binding,
             session_factory=AssignmentBoundCodexSession,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,

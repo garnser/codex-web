@@ -110,6 +110,14 @@ class ExecutionWorkerRegister(BaseModel):
     max_concurrency: int = Field(default=1, ge=1, le=128)
 
 
+class ExecutionRuntimeBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    provider_id: str = Field(min_length=1)
+    runtime_id: str = Field(min_length=1)
+    capability_revision: int = Field(ge=1)
+
+
 class ExecutionAssignmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -130,6 +138,7 @@ class ExecutionAssignmentCreate(BaseModel):
     expected_artifact_types: tuple[str, ...] = ()
     expected_evidence_types: tuple[str, ...] = ()
     execution_workspace_id: str | None = None
+    runtime_binding: ExecutionRuntimeBinding | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -185,6 +194,7 @@ class ExecutionAssignment(BaseModel):
     expected_artifact_types: tuple[str, ...] = ()
     expected_evidence_types: tuple[str, ...] = ()
     execution_workspace_id: str | None = None
+    runtime_binding: ExecutionRuntimeBinding | None = None
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None
