@@ -14,8 +14,13 @@ from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
+from codex_web.provider_capacity import ProviderCapacityWaitCreate
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_routing import AgentRoutingService
+from codex_web.services.provider_capacity import (
+    ProviderCapacityBlockedError,
+    ProviderCapacityService,
+)
 from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
@@ -51,6 +56,7 @@ class TurnExecutionService:
         routing_service: AgentRoutingService | None = None,
         session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
         runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
+        provider_capacity: ProviderCapacityService | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -62,6 +68,7 @@ class TurnExecutionService:
         if session_manager is not None:
             self.session_managers.setdefault(("openai", "codex"), session_manager)
         self.runtime_adapter_factory = runtime_adapter_factory
+        self.provider_capacity = provider_capacity
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -120,6 +127,71 @@ class TurnExecutionService:
                 detail="selected agent runtime has no assignment-bound session manager",
             )
         return manager
+
+    def _capacity_error(
+        self,
+        runtime_binding: ExecutionRuntimeBinding | None,
+        exc: Exception,
+    ) -> ProviderCapacityBlockedError | None:
+        if self.provider_capacity is None or self.control_actor is None:
+            return None
+        provider_id = (
+            runtime_binding.provider_id
+            if runtime_binding is not None
+            else "openai"
+        )
+        runtime_id = (
+            runtime_binding.runtime_id
+            if runtime_binding is not None
+            else "codex"
+        )
+        record = self.provider_capacity.report_exception(
+            provider_id,
+            runtime_id,
+            exc,
+            actor=self.control_actor,
+            source=f"agent-runtime:{provider_id}/{runtime_id}",
+        )
+        if (
+            record is not None
+            and record.blocks(float(self.provider_capacity.clock()))
+        ):
+            return ProviderCapacityBlockedError(record)
+        return None
+
+    def wait_for_thread_capacity(
+        self,
+        *,
+        thread_id: str,
+        execution_id: str | None,
+        provider_keys: tuple[str, ...],
+        retry_at: float | None,
+        reason: str,
+    ):
+        if self.provider_capacity is None or self.control_actor is None:
+            delay = self.host._thread_resume_retry_delay()
+            asyncio.get_running_loop().call_later(
+                delay,
+                self.schedule_queue_drain,
+                thread_id,
+            )
+            return None
+        effective_retry_at = retry_at
+        if effective_retry_at is None:
+            effective_retry_at = (
+                float(self.provider_capacity.clock())
+                + self.provider_capacity.default_retry_seconds
+            )
+        return self.provider_capacity.wait_for_capacity(
+            ProviderCapacityWaitCreate(
+                thread_id=thread_id,
+                execution_id=execution_id,
+                provider_keys=provider_keys,
+                retry_at=effective_retry_at,
+                reason=reason,
+            ),
+            actor=self.control_actor,
+        )
 
     def _session_for_assignment(
         self,
@@ -710,6 +782,9 @@ class TurnExecutionService:
                     runtime_session_request,
                 )
             except Exception as exc:
+                capacity_error = self._capacity_error(runtime_binding, exc)
+                if capacity_error is not None:
+                    raise capacity_error from exc
                 with contextlib.suppress(Exception):
                     await session_manager.complete(
                         assignment_id,
@@ -781,6 +856,10 @@ class TurnExecutionService:
                 )
                 response = runtime_turn_result.payload
             except Exception as exc:
+                capacity_error = self._capacity_error(runtime_binding, exc)
+                if capacity_error is not None:
+                    self.clear_thread_active(thread_id)
+                    raise capacity_error from exc
                 if not h._is_codex_timeout_error(exc):
                     self.clear_thread_active(thread_id)
                     with contextlib.suppress(Exception):
@@ -906,6 +985,31 @@ class TurnExecutionService:
                 }
             )
         except Exception as exc:
+            if isinstance(exc, ProviderCapacityBlockedError):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+                wait = self.wait_for_thread_capacity(
+                    thread_id=thread_id,
+                    execution_id=queued.execution_id,
+                    provider_keys=(exc.record.key,),
+                    retry_at=exc.retry_at,
+                    reason=str(exc),
+                )
+                reschedule_queue = False
+                h._append_bot_event(
+                    {
+                        "type": "queued_turn_waiting_for_capacity",
+                        "thread_id": thread_id,
+                        "queued_id": queued.id,
+                        "capacity_status": exc.record.status.value,
+                        "provider_key": exc.record.key,
+                        "retry_at": exc.retry_at,
+                        "capacity_wait_id": getattr(wait, "id", None),
+                        "error": h._truncate_text(str(exc), 500),
+                    }
+                )
+                await self.publish_queue_status(thread_id)
+                return
             if h._is_stale_thread_error(exc):
                 bindings = h._bindings_for_thread(thread_id)
                 if bindings:
@@ -1194,6 +1298,7 @@ def install_turn_execution_service(
     routing_service: AgentRoutingService | None = None,
     session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
     runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
+    provider_capacity: ProviderCapacityService | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1210,6 +1315,7 @@ def install_turn_execution_service(
         service.runtime_adapter_factory = (
             runtime_adapter_factory or service.runtime_adapter_factory
         )
+        service.provider_capacity = provider_capacity or service.provider_capacity
     else:
         service = TurnExecutionService(
             host,
@@ -1220,6 +1326,7 @@ def install_turn_execution_service(
             routing_service=routing_service,
             session_managers=session_managers,
             runtime_adapter_factory=runtime_adapter_factory,
+            provider_capacity=provider_capacity,
         )
         app.state.turn_execution_service = service
 
@@ -1238,6 +1345,7 @@ def install_turn_execution_service(
     host._start_thread_turn_now = service.start_thread_turn_now
     host._drain_thread_queue = service.drain_thread_queue
     host._schedule_queue_drain = service.schedule_queue_drain
+    host._wait_for_thread_capacity = service.wait_for_thread_capacity
     host._resume_active_threads_after_startup = service.resume_active_threads_after_startup
     host._schedule_terminal_thread_recovery = service.schedule_terminal_thread_recovery
     host._record_terminal_turn_result = service.record_terminal_turn_result
