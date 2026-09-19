@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 import time
-from typing import Callable
+from typing import Callable, Protocol
 
 from codex_web.attention import (
     AttentionItem,
@@ -22,6 +23,13 @@ from codex_web.storage.attention import AttentionItemNotFoundError, AttentionSto
 
 
 Clock = Callable[[], float]
+logger = logging.getLogger(__name__)
+
+
+class AttentionNotificationAdapter(Protocol):
+    """Provider-neutral best-effort delivery after canonical persistence."""
+
+    async def deliver(self, item: AttentionItem) -> None: ...
 
 
 class AttentionStateError(RuntimeError):
@@ -43,6 +51,25 @@ class AttentionService:
         self.canonical_events = canonical_events
         self.scheduler = scheduler
         self.clock = clock
+        self.notification_adapters: list[AttentionNotificationAdapter] = []
+
+    def register_notification_adapter(
+        self,
+        adapter: AttentionNotificationAdapter,
+    ) -> None:
+        self.notification_adapters.append(adapter)
+
+    async def _notify(self, item: AttentionItem) -> None:
+        for adapter in tuple(self.notification_adapters):
+            try:
+                await adapter.deliver(item)
+            except Exception:
+                # Delivery is deliberately downstream of canonical persistence:
+                # provider failure must never lose or roll back an AttentionItem.
+                logger.exception(
+                    "attention notification delivery failed",
+                    extra={"attention_item_id": item.id},
+                )
 
     def list(self, actor: AuthenticationActor) -> list[AttentionItem]:
         return [
@@ -137,6 +164,7 @@ class AttentionService:
         if saved.escalation_schedule_id is None:
             saved = self._schedule_escalation(saved, actor_id=actor_id)
         await self._emit(saved, transition="upserted", actor_id=actor_id)
+        await self._notify(saved)
         return saved
 
     async def acknowledge(self, item_id: str, *, actor: AuthenticationActor) -> AttentionItem:
@@ -263,6 +291,7 @@ class AttentionService:
             now=self.clock(),
         )
         await self._emit(updated, transition="escalated", actor_id=actor_id)
+        await self._notify(updated)
         return updated
 
     async def handle_approval_event(self, event: CanonicalEventEnvelope) -> None:
