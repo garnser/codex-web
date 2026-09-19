@@ -24,3 +24,11 @@ Move to the next stage only when operators can:
 - recover from the relevant failure mode.
 
 Use the Autonomy Control Center before enabling broad production autonomy.
+
+## Detailed maturity model
+
+See [Adoption Levels 1–5](adoption-levels.md) for prerequisites, capabilities, risks, observable success and promotion criteria at each stage.
+
+## Worked scenarios
+
+See [Worked examples](../examples/README.md) for feature/bug work, blockers and handoffs, Goals/Decisions/Executive analysis, provider/action/isolation flows, and intentionally failing autonomy scenarios.
