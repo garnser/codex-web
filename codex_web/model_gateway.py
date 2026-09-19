@@ -90,6 +90,7 @@ class ModelDefinitionUpsert(BaseModel):
     capabilities: tuple[str, ...] = ("text",)
     modalities: tuple[str, ...] = ("text",)
     supports_tools: bool = False
+    embedding_dimensions: int | None = Field(default=None, ge=8, le=65536)
     context_window_tokens: int = Field(default=128000, ge=1)
     max_output_tokens: int = Field(default=8192, ge=1)
     latency_class: ModelLatencyClass = ModelLatencyClass.STANDARD
@@ -115,6 +116,13 @@ class ModelDefinitionRecord(ModelDefinitionUpsert):
         self.model_classes = tuple(dict.fromkeys(self.model_classes))
         self.capabilities = tuple(sorted(set(self.capabilities)))
         self.modalities = tuple(sorted(set(self.modalities)))
+        if (
+            self.embedding_dimensions is not None
+            and "embedding" not in self.capabilities
+        ):
+            raise ValueError(
+                "embedding_dimensions requires the embedding capability"
+            )
         self.residency_tags = tuple(sorted(set(self.residency_tags)))
         self.compliance_tags = tuple(sorted(set(self.compliance_tags)))
         return self
