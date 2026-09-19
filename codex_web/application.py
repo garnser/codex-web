@@ -128,6 +128,15 @@ from codex_web.services.bot_connections import install_bot_connection_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
+from codex_web.services.conversation_channels import (
+    ConversationChannelRegistry,
+    ConversationChannelService,
+)
+from codex_web.services.conversation_channel_adapters import (
+    SlackConversationChannel,
+    TelegramConversationChannel,
+    TeamsConversationChannel,
+)
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.capacity import CapacityService
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
@@ -261,6 +270,7 @@ from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
@@ -1641,6 +1651,32 @@ bot_delivery_service = install_bot_delivery_service(
 )
 thread_recovery_service = install_thread_recovery_service(app, core)
 bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
+
+conversation_channel_store = ConversationChannelStore(state_store)
+conversation_channel_registry = ConversationChannelRegistry()
+conversation_channel_registry.register_provider(
+    "slack",
+    SlackConversationChannel,
+)
+conversation_channel_registry.register_provider(
+    "telegram",
+    TelegramConversationChannel,
+)
+conversation_channel_registry.register_provider(
+    "teams",
+    TeamsConversationChannel,
+)
+conversation_channel_service = ConversationChannelService(
+    conversation_channel_store,
+    conversation_channel_registry,
+    canonical_event_ingestion,
+    bot_routing_service.route_normalized,
+)
+bot_routing_service.conversation_channels = conversation_channel_service
+app.state.conversation_channel_store = conversation_channel_store
+app.state.conversation_channel_registry = conversation_channel_registry
+app.state.conversation_channel_service = conversation_channel_service
+
 slack_provider_service = install_slack_provider_service(
     app,
     core,
