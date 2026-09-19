@@ -78,7 +78,11 @@ class AttentionService:
             if item.organization_id == actor.tenant.organization_id
             and item.workspace_id == actor.tenant.workspace_id
             and (
-                not item.recipient_identity_ids
+                (
+                    not item.recipient_identity_ids
+                    and not item.recipient_team_ids
+                    and item.owner_identity_id is None
+                )
                 or actor.identity_id in item.recipient_identity_ids
                 or bool(set(actor.team_ids) & set(item.recipient_team_ids))
                 or actor.identity_id == item.owner_identity_id
