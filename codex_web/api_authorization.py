@@ -252,6 +252,30 @@ def classify_api_policy(
     return None
 
 
+def _policy_markdown(policy: APIAuthorizationPolicy) -> str:
+    details = [f"kind=\`{policy.kind.value}\`"]
+    if policy.human_roles:
+        details.append(
+            "human roles=" + "/".join(item.value for item in policy.human_roles)
+        )
+    if policy.required_assurance is not None:
+        details.append(f"assurance=\`{policy.required_assurance.value}\`")
+    if policy.capability is not None:
+        details.append(f"capability=\`{policy.capability}\`")
+    if policy.authority_level is not None:
+        details.append(f"level=\`{policy.authority_level.value}\`")
+    if policy.service_scope_mode != APIServiceScopeMode.NONE:
+        details.append(
+            f"service scopes=\`{policy.service_scope_mode.value}\`"
+        )
+    return (
+        "**Authorization:** "
+        + "; ".join(details)
+        + ". "
+        + policy.description
+    )
+
+
 def _route_methods(route: APIRoute) -> tuple[str, ...]:
     return tuple(sorted(method for method in route.methods or () if method != "OPTIONS"))
 
@@ -370,6 +394,14 @@ def install_api_authorization(
             else [{"bearerAuth": []}, {"cookieSession": []}]
         )
         route.openapi_extra = extra
+        authorization_note = _policy_markdown(representative)
+        existing_description = (route.description or "").strip()
+        if authorization_note not in existing_description:
+            route.description = (
+                f"{existing_description}\n\n{authorization_note}"
+                if existing_description
+                else authorization_note
+            )
         if representative.kind != APIAuthorizationKind.PUBLIC:
             route.responses = {
                 **dict(route.responses or {}),
