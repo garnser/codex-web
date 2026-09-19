@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.compatibility import CanonicalEventEnvelope
-from codex_web.models import Project, WorkItemEvent
+from codex_web.models import Project, QueuedTurn, WorkItemEvent
 from codex_web.coordination import CoordinationFenceError
 from codex_web.event_transport import (
     EventTransportCapabilities,
@@ -28,6 +28,7 @@ from codex_web.services.event_transport import (
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.operational_state import QueuedTurnRepository
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.state_store import StateStoreMigrator
@@ -112,6 +113,103 @@ class SharedCanonicalStateTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["ref"], "work-1")
             self.assertTrue(host.WORK_ITEM_EVENTS_FILE.exists())
+
+    def test_concurrent_project_updates_delta_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            store_a = SQLiteStateStore(path / "shared.sqlite3")
+            store_b = SQLiteStateStore(path / "shared.sqlite3")
+            legacy_a = path / "projects-a.json"
+            legacy_b = path / "projects-b.json"
+            initial = ProjectRepository(legacy_a, store=store_a)
+            initial.save(
+                [
+                    Project(id="base", name="Base", path=str(path / "base"))
+                ]
+            )
+            first = ProjectRepository(legacy_a, store=store_a)
+            second = ProjectRepository(legacy_b, store=store_b)
+            first_rows = first.load()
+            second_rows = second.load()
+
+            first.save(
+                first_rows
+                + [Project(id="alpha", name="Alpha", path=str(path / "alpha"))]
+            )
+            second.save(
+                second_rows
+                + [Project(id="beta", name="Beta", path=str(path / "beta"))]
+            )
+            final = ProjectRepository(legacy_a, store=store_a).load()
+            self.assertEqual(
+                {item.id for item in final},
+                {"base", "alpha", "beta"},
+            )
+
+    def test_concurrent_same_thread_enqueues_are_merged_and_semantic_duplicates_deduped(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            store_a = SQLiteStateStore(path / "shared.sqlite3")
+            store_b = SQLiteStateStore(path / "shared.sqlite3")
+            first = QueuedTurnRepository(store_a, path / "queue-a.json")
+            second = QueuedTurnRepository(store_b, path / "queue-b.json")
+            first.load()
+            second.load()
+
+            q1 = QueuedTurn(
+                id="q1",
+                thread_id="thread-a",
+                project_id="project-a",
+                message="first",
+                source="web",
+            )
+            q2 = QueuedTurn(
+                id="q2",
+                thread_id="thread-a",
+                project_id="project-a",
+                message="second",
+                source="web",
+            )
+            first.save({"thread-a": [q1]})
+            second.save({"thread-a": [q2]})
+            rows = QueuedTurnRepository(
+                store_a,
+                path / "queue-c.json",
+            ).load()["thread-a"]
+            self.assertEqual({item.id for item in rows}, {"q1", "q2"})
+
+            third = QueuedTurnRepository(store_a, path / "queue-d.json")
+            fourth = QueuedTurnRepository(store_b, path / "queue-e.json")
+            third_rows = third.load()
+            fourth_rows = fourth.load()
+            q3 = QueuedTurn(
+                id="q3",
+                thread_id="thread-a",
+                project_id="project-a",
+                message="duplicate",
+                source="bot",
+            )
+            q4 = QueuedTurn(
+                id="q4",
+                thread_id="thread-a",
+                project_id="project-a",
+                message="duplicate",
+                source="bot",
+            )
+            third_rows["thread-a"].append(q3)
+            fourth_rows["thread-a"].append(q4)
+            third.save(third_rows)
+            fourth.save(fourth_rows)
+            final = QueuedTurnRepository(
+                store_a,
+                path / "queue-f.json",
+            ).load()["thread-a"]
+            duplicates = [
+                item
+                for item in final
+                if item.source == "bot" and item.message == "duplicate"
+            ]
+            self.assertEqual(len(duplicates), 1)
 
 
 class CoordinationFailoverTests(unittest.TestCase):
