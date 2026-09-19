@@ -7,6 +7,7 @@ from typing import Any, Callable
 from codex_web.compatibility import ContractVersion
 from codex_web.definitions import (
     DEFINITION_SCOPE_PRECEDENCE,
+    DefinitionPublicationApproval,
     DefinitionContext,
     DefinitionDraftCreate,
     DefinitionLifecycle,
@@ -38,8 +39,30 @@ class DefinitionCompatibilityError(RuntimeError):
     pass
 
 
+class DefinitionApprovalRequiredError(DefinitionConflictError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        record_id: str | None = None,
+        reasons: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+        self.reasons = reasons
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionPublicationAssessment:
+    requires_independent_approval: bool = False
+    reasons: tuple[str, ...] = ()
+
+
 DefinitionValidator = Callable[[dict[str, Any]], dict[str, Any]]
-DefinitionPublicationGuard = Callable[[DefinitionRecord | None, DefinitionRecord, DefinitionPublishRequest], None]
+DefinitionPublicationAssessor = Callable[
+    [DefinitionRecord | None, DefinitionRecord],
+    DefinitionPublicationAssessment,
+]
 DefinitionChangeNotifier = Callable[[dict[str, Any]], None]
 DefinitionUsageProvider = Callable[[DefinitionReference], list[dict[str, Any]]]
 
@@ -49,7 +72,7 @@ class DefinitionKindSchema:
     kind: str
     schema_version: str
     validate: DefinitionValidator
-    validate_publish: DefinitionPublicationGuard | None = None
+    assess_publish: DefinitionPublicationAssessor | None = None
 
 
 class DefinitionSchemaRegistry:
@@ -311,6 +334,99 @@ class DefinitionRegistryService:
             raise DefinitionConflictError("multiple active definitions exist for one canonical slot")
         return values[0] if values else None
 
+    def _publication_assessment(
+        self,
+        active: DefinitionRecord | None,
+        candidate: DefinitionRecord,
+    ) -> DefinitionPublicationAssessment:
+        schema = self.schemas.get(
+            candidate.kind,
+            candidate.definition_schema_version,
+        )
+        if schema.assess_publish is None:
+            return DefinitionPublicationAssessment()
+        return schema.assess_publish(active, candidate)
+
+    def publication_assessment(
+        self,
+        record_id: str,
+    ) -> DefinitionPublicationAssessment:
+        records = self.store.load()
+        selected = next(
+            (record for record in records if record.record_id == record_id),
+            None,
+        )
+        if selected is None:
+            raise DefinitionNotFoundError(
+                f"definition record not found: {record_id}"
+            )
+        if selected.lifecycle not in {
+            DefinitionLifecycle.DRAFT,
+            DefinitionLifecycle.VALIDATED,
+        }:
+            raise DefinitionConflictError(
+                "publication assessment requires draft/validated definition"
+            )
+        selected = self._validated_record(selected)
+        active = self._active_same_slot(records, selected)
+        return self._publication_assessment(active, selected)
+
+    def approve_publication(
+        self,
+        record_id: str,
+        *,
+        actor: str,
+        reference: str,
+        reason: str,
+    ) -> DefinitionRecord:
+        approved: list[DefinitionRecord] = []
+
+        def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            selected = next(
+                (record for record in records if record.record_id == record_id),
+                None,
+            )
+            if selected is None:
+                raise DefinitionNotFoundError(
+                    f"definition record not found: {record_id}"
+                )
+            if selected.lifecycle not in {
+                DefinitionLifecycle.DRAFT,
+                DefinitionLifecycle.VALIDATED,
+            }:
+                raise DefinitionConflictError(
+                    "only draft/validated definitions can receive publication approval"
+                )
+            selected = self._validated_record(selected)
+            active = self._active_same_slot(records, selected)
+            assessment = self._publication_assessment(active, selected)
+            evidence = DefinitionPublicationApproval(
+                approved_by=actor,
+                reference=reference,
+                reason=reason,
+                candidate_checksum=selected.checksum,
+                active_record_id=active.record_id if active else None,
+                active_revision=active.revision if active else None,
+                assessment_reasons=assessment.reasons,
+            )
+            current = selected.model_copy(
+                update={
+                    "publication_approvals": (
+                        *selected.publication_approvals,
+                        evidence,
+                    )
+                }
+            )
+            approved.append(current)
+            return [
+                current if item.record_id == record_id else item
+                for item in records
+            ]
+
+        self.store.update(update)
+        self._notify("definition.publication_approved", approved[0])
+        return approved[0]
+
     def publish(self, record_id: str, request: DefinitionPublishRequest) -> DefinitionRecord:
         published: list[DefinitionRecord] = []
 
@@ -328,12 +444,22 @@ class DefinitionRegistryService:
                 and request.expected_active_revision != active_revision
             ):
                 raise DefinitionConflictError("active definition revision changed before publication")
-            schema = self.schemas.get(
-                selected.kind,
-                selected.definition_schema_version,
-            )
-            if schema.validate_publish is not None:
-                schema.validate_publish(active, selected, request)
+            assessment = self._publication_assessment(active, selected)
+            if assessment.requires_independent_approval:
+                valid_approvals = [
+                    approval
+                    for approval in selected.publication_approvals
+                    if approval.candidate_checksum == selected.checksum
+                    and approval.active_record_id == (active.record_id if active else None)
+                    and approval.active_revision == (active.revision if active else None)
+                    and approval.approved_by != request.actor
+                ]
+                if not valid_approvals:
+                    raise DefinitionApprovalRequiredError(
+                        "sensitive definition expansion requires independent approval",
+                        record_id=selected.record_id,
+                        reasons=assessment.reasons,
+                    )
             now = time.time()
             current = selected.model_copy(
                 update={
@@ -434,15 +560,25 @@ class DefinitionRegistryService:
             ]
 
         self.store.update(mark)
-        return self.publish(
-            draft.record_id,
-            DefinitionPublishRequest(
-                actor=request.actor,
-                reason=request.reason or f"rollback to revision {target.revision}",
-                expected_active_revision=request.expected_active_revision,
-                approval_metadata=request.approval_metadata,
-            ),
-        )
+        try:
+            return self.publish(
+                draft.record_id,
+                DefinitionPublishRequest(
+                    actor=request.actor,
+                    reason=request.reason or f"rollback to revision {target.revision}",
+                    expected_active_revision=request.expected_active_revision,
+                    approval_metadata=request.approval_metadata,
+                ),
+            )
+        except DefinitionApprovalRequiredError as exc:
+            raise DefinitionApprovalRequiredError(
+                (
+                    "rollback created a draft that requires independent publication "
+                    "approval before it can become active"
+                ),
+                record_id=draft.record_id,
+                reasons=exc.reasons,
+            ) from exc
 
     @staticmethod
     def _matches_context(record: DefinitionRecord, context: DefinitionContext) -> bool:
