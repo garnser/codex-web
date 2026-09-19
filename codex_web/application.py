@@ -67,6 +67,7 @@ from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
@@ -302,6 +303,12 @@ resource_catalog_service = ResourceCatalogService(resource_catalog_store)
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
+
+authority_role_service = install_authority_roles(
+    definition_registry_service,
+    resource_catalog_service,
+)
+app.state.authority_role_service = authority_role_service
 
 action_provider_state_store = ActionProviderStateStore(state_store)
 action_provider_registry = ActionProviderRegistry(action_provider_state_store)
