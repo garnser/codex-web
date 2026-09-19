@@ -184,6 +184,7 @@ class ExecutiveChatRequest(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     agent_id: str | None = None
     mode: Literal["advisor", "board"] = "advisor"
+    project_id: str | None = None
     company: CompanyContext | None = None
     include_runtime_context: bool = False
 
@@ -206,6 +207,7 @@ class ExecutiveChatResponse(BaseModel):
     model: str
     model_class: str | None = None
     model_invocation_ids: list[str] = Field(default_factory=list)
+    memory_retrieval_ids: list[str] = Field(default_factory=list)
 
 
 class DelegateRequest(BaseModel):
