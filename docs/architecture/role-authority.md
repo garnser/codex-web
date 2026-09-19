@@ -1,6 +1,6 @@
 # Canonical Role Authority
 
-Operational Roles are the M6 authorization contract for deciding whether an
+Operational Roles are the canonical authorization contract for deciding whether an
 authenticated actor may perform a capability at a requested authority level and
 scope.
 
@@ -74,7 +74,7 @@ constraints of existing grants.
 
 ## Canonical resources
 
-Resource-scoped evaluation resolves IDs through the M3 Resource Catalog.
+Resource-scoped evaluation resolves IDs through the canonical Resource Catalog.
 Definitions may constrain stable Resource IDs or their canonical type/risk/
 sensitivity metadata. The authority catalog does not duplicate resource facts.
 
@@ -89,7 +89,7 @@ A project-specific published catalog can therefore override a less-specific
 catalog using the same stable definition ID. The selected immutable
 `DefinitionReference` is included in every decision.
 
-M6 #108 extends administration/lifecycle UX and broader contract composition on
+Issue #108 extends administration/lifecycle UX and broader contract composition on
 the same registry. It must not introduce another Role store or evaluator.
 
 ## Decisions and provenance
