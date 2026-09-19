@@ -24,7 +24,7 @@ The intended tracking model is:
 - **Pull Request** = implementation and validation evidence linked to its issue(s).
 - **Architecture docs** = durable contracts, invariants, schemas, boundaries, and design rationale; they are not the source of truth for task completion.
 
-The original roadmap/foundation set is represented by issues `#97`–`#142`, with architecture-review additions `#155`–`#170`; later milestone implementation/follow-up issues extend that set rather than replacing it. Tracking bootstrap issue `#126` is the canonical issue index for the target Project and Milestones M1–M13. The roadmap now also includes canonical approvals (#338), generic measured outcomes (#339), and M13 Business Operations & Company Data (#340–#345). M3 is **Platform, Identity & Safe Execution Foundation** and is a prerequisite for later parallel execution, authority, orchestration, and production autonomy. Cross-milestone UI architecture/delivery is tracked by `#125` and `#127`, with milestone-specific UI work linked from `#127`. Until `#126` is closed, `[M<n>]` issue-title prefixes are the fallback milestone grouping. Once GitHub milestones/project fields exist, their metadata is authoritative and title prefixes are only descriptive.
+Roadmap grouping, dependency ordering, and delivery phase names live in GitHub milestone/project metadata. Historical `[M<n>]` prefixes may remain on issues for discoverability, but repository documentation must not use milestone numbers as durable architecture identifiers. Use capability/contract names for technical dependencies and issue/PR links only when provenance is useful. Cross-cutting UI architecture/delivery is tracked by `#125` and `#127`.
 
 ### Before starting substantial work
 
@@ -34,7 +34,7 @@ The original roadmap/foundation set is represented by issues `#97`–`#142`, wit
 4. If required work is not represented by an issue, create or update an issue before implementation rather than adding a TODO/checklist to an architecture document.
 5. If a change spans multiple independently deliverable concerns, split them into separate issues instead of making one issue an unbounded backlog.
 6. Do not create parallel identity/session, tenant, secret/key, resource, **definition**, work, permission, decision, policy, configuration, entitlement, model-provider, worker/execution-plane, extension/plugin, UI, provider/action, evidence, or execution systems when an existing canonical primitive can be extended.
-7. Before building later-milestone behavior, verify that applicable M3 foundation dependencies already exist or are implemented as part of the same delivery slice.
+7. Before building higher-layer behavior, verify that applicable platform, identity, authority, data-governance, and safe-execution foundation dependencies already exist or are implemented as part of the same delivery slice.
 8. When you encounter a mutable operational/domain catalog hard-coded in Python or JavaScript, evaluate whether it belongs in the canonical Definition Registry tracked by `#170` rather than adding more code-owned definitions.
 
 ### Definition vs code boundary
@@ -61,7 +61,7 @@ Executions and other durable reasoning/action records should reference the exact
 Every roadmap issue or PR must explicitly consider whether the change requires a user/operator UI adaptation. UI work is part of product delivery, not optional polish.
 
 1. If a change introduces or materially changes a first-class domain object, identity/session/token, tenant/workspace, mutable definition, secret/key reference, resource, policy, configuration/feature rollout, entitlement/quota, model/provider, worker/execution plane, extension/plugin, authoritative source, provider/action, approval, event/schedule, execution workspace/lease, artifact/evidence, release/upgrade, incident/recovery, audit record, or operator action, determine how users/operators inspect and manage it.
-2. Check `#127` and the milestone-specific UI issues before creating duplicate UI work.
+2. Check `#127` and its linked UI issues before creating duplicate UI work.
 3. If required UI work is not already tracked, create or update a linked GitHub issue before the backend/domain issue is closed.
 4. User/operator surfaces must expose canonical state, provenance, tenant/resource scope, ownership, effective definition/version where relevant, blockers, authority/denial reasons, triggers, next actions, and verification/results.
 5. Canonical codex-web state and synchronized external-provider/worker/extension state must be visibly distinguishable where both exist.
@@ -70,7 +70,7 @@ Every roadmap issue or PR must explicitly consider whether the change requires a
 8. Handle applicable loading, empty, error, denied, blocked, invalid/incompatible definition, stale definition/cache, stale/conflict, approval-waiting, unknown-outcome/reconciliation, revoked-session/token/secret/key, quarantined-worker/extension, expired-lease, version-skew/incompatible-upgrade, and success states.
 9. Never render stored secret or cryptographic key material back to the UI; display references/metadata and effective use permissions/status only.
 10. Preserve keyboard/accessibility behavior and responsive operation for supported workflows.
-11. Determine whether screenshots, contextual help, examples, or documentation tracked under M12 must be updated.
+11. Determine whether screenshots, contextual help, examples, or product/adoption documentation must be updated.
 
 A backend/domain slice may merge before its UI slice when that separation is intentional, but required UI follow-up must already be represented and linked in GitHub. Never leave UI adaptation as an implicit future task.
 
@@ -81,7 +81,7 @@ A backend/domain slice may merge before its UI slice when that separation is int
 3. Update architecture/contracts when implementation changes durable behavior or boundaries.
 4. Keep user/operator UI on the same canonical APIs/state/enforcement paths as runtime behavior; never introduce UI-only policy, definition, or execution truth.
 5. Mutable operational/domain definitions should be persisted and versioned through the canonical Definition Registry once available; do not add a second hard-coded or file-backed authoritative catalog for the same concept.
-6. External side effects must use canonical provider/action boundaries and durable action/reconciliation semantics once those M3 primitives are available; do not add new direct provider mutations that bypass them.
+6. External side effects must use canonical provider/action boundaries and durable action/reconciliation semantics once those canonical primitives are available; do not add new direct provider mutations that bypass them.
 7. Secrets must be passed by reference through a credential boundary, not copied into contracts, prompts, logs, issue bodies, definitions, or ordinary configuration. Cryptographic keys/key material must likewise remain behind the canonical key-management boundary.
 8. Untrusted executable work should cross the canonical control-plane/execution-plane worker boundary once available; do not give repository code unrestricted access to control-plane state, credentials, filesystem, or network simply because it is executed by an agent.
 9. Extensions/providers must use the shared extension/compatibility/lifecycle contracts once available. Installation, enablement, and authorization are separate operations; extensions may not self-grant authority.
