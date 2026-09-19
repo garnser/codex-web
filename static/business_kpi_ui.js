@@ -153,6 +153,7 @@ function renderOperatingView() {
           <div class="business-kpi-thresholds">${thresholdMarkup(item.thresholds)}</div>
           <dl>
             <dt>Freshness</dt><dd>${esc(item.freshness)}</dd>
+            <dt>Window</dt><dd>${esc(item.window_seconds ? `${item.window_seconds}s` : 'latest')}</dd>
             <dt>Revisions</dt><dd>KPI r${esc(item.kpi_revision)} · Metric r${esc(item.metric_revision)}</dd>
             <dt>Observations</dt><dd>${esc((item.observation_ids || []).join(', ') || 'none')}</dd>
             <dt>Fact keys</dt><dd>${esc((item.fact_keys || []).join(', ') || 'none')}</dd>
