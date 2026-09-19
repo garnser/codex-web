@@ -171,7 +171,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "usage",
                 ),
                 consultation_roles=("cto", "customer-success", "cfo"),
-                business_domains=("product", "customer_success",)
+                business_domains=("product",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -213,7 +213,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "execution",
                 ),
                 consultation_roles=("cto", "cpo", "cfo"),
-                business_domains=("operations", "cost", "customer_success",)
+                business_domains=("operations",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -259,7 +259,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "pricing",
                 ),
                 consultation_roles=("chief-of-staff", "cto", "cpo"),
-                business_domains=("finance", "cost", "revenue",)
+                business_domains=("finance", "cost",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -397,7 +397,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "expansion",
                 ),
                 consultation_roles=("cfo", "cpo", "customer-success"),
-                business_domains=("revenue", "customer_success",)
+                business_domains=("revenue",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -438,7 +438,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "content",
                 ),
                 consultation_roles=("cpo", "cro", "cfo"),
-                business_domains=("marketing", "revenue",)
+                business_domains=("marketing",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -480,7 +480,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "csat",
                 ),
                 consultation_roles=("cpo", "cro", "coo"),
-                business_domains=("customer_success", "product", "revenue",)
+                business_domains=("customer_success",)
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
