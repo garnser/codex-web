@@ -286,5 +286,13 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertNotIn("fetch(", source)
 
 
+    def test_work_item_operator_surfaces_exact_execution_definition_provenance(self) -> None:
+        source = (STATIC / "work_items_ui.js").read_text(encoding="utf-8")
+        self.assertIn("contract.definition_refs", source)
+        self.assertIn("Definition:", source)
+        self.assertIn("ref.checksum", source)
+        self.assertIn("ref.revision", source)
+
+
 if __name__ == "__main__":
     unittest.main()
