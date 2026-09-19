@@ -12,6 +12,8 @@ from codex_web.models import (
 )
 from codex_web.secrets import SecretStatus
 from codex_web.services.identity import IdentityService
+from codex_web.integrations.jira_client import JiraClient
+from codex_web.integrations.servicenow_client import ServiceNowClient
 from codex_web.services.jira_task_source import JiraTaskSource
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.servicenow_task_source import (
@@ -228,11 +230,16 @@ class BuiltInTaskSourceRuntime:
         host: Any,
         identity: IdentityService,
         secrets: SecretBroker,
+        *,
+        jira_client: JiraClient | None = None,
+        servicenow_client: ServiceNowClient | None = None,
     ) -> None:
         self.registry = registry
         self.host = host
         self.identity = identity
         self.secrets = secrets
+        self.jira_client = jira_client
+        self.servicenow_client = servicenow_client
 
     def _actor(self, scope: TenantScope) -> AuthenticationActor:
         return self.identity.bootstrap_service_actor(
@@ -283,12 +290,14 @@ class BuiltInTaskSourceRuntime:
                 configuration.source_instance,
                 secret,
                 username=settings.username,
+                client=self.jira_client,
             )
 
         projection = JiraTaskSource(
             configuration.source_instance,
             "__credential_not_loaded__",
             username=settings.username,
+            client=self.jira_client,
         )
         return SecretBoundTaskSource(
             source_type="jira",
@@ -319,6 +328,7 @@ class BuiltInTaskSourceRuntime:
                 table=settings.table,
                 fields=field_mapping,
                 canonical_state_values=settings.canonical_state_values,
+                client=self.servicenow_client,
             )
 
         projection = ServiceNowTaskSource(
@@ -327,6 +337,7 @@ class BuiltInTaskSourceRuntime:
             table=settings.table,
             fields=field_mapping,
             canonical_state_values=settings.canonical_state_values,
+            client=self.servicenow_client,
         )
         return SecretBoundTaskSource(
             source_type="servicenow",
@@ -417,10 +428,15 @@ def install_builtin_task_source_runtime(
     host: Any,
     identity: IdentityService,
     secrets: SecretBroker,
+    *,
+    jira_client: JiraClient | None = None,
+    servicenow_client: ServiceNowClient | None = None,
 ) -> BuiltInTaskSourceRuntime:
     return BuiltInTaskSourceRuntime(
         registry,
         host,
         identity,
         secrets,
+        jira_client=jira_client,
+        servicenow_client=servicenow_client,
     ).install()
