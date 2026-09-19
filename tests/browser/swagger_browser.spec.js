@@ -49,8 +49,11 @@ test("Swagger browser stays usable on a narrow mobile viewport", async ({ page }
 
   const drawer = page.locator("#swagger-browser-drawer");
   await expect(drawer).toBeVisible();
+  await expect.poll(async () => {
+    const box = await drawer.boundingBox();
+    return box?.x ?? 9999;
+  }).toBeLessThanOrEqual(1);
   const box = await drawer.boundingBox();
-  expect(box.x).toBeLessThanOrEqual(1);
   expect(box.width).toBeLessThanOrEqual(390);
   await expect(page.locator("#swagger-browser-close")).toBeVisible();
   await expect(page.locator("#swagger-openapi-json")).toBeVisible();
