@@ -20,6 +20,7 @@ from codex_web.data_governance import (
     GovernedDataCreate,
     GovernedDataRecord,
     GovernanceAction,
+    ExportAuthorizationRequest,
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.organizational_memory import (
@@ -174,7 +175,14 @@ class OrganizationalMemoryService:
             "organizational_memory",
             self._governance_action,
         )
-        self.rebuild_retrieval_index()
+        status = self.retrieval_backend.status()
+        if (
+            status.embedding_identity is not None
+            and not status.embedding_identity.local
+        ):
+            self._retrieval_index_dirty = True
+        else:
+            self.rebuild_retrieval_index()
 
     @staticmethod
     def _same_scope(
@@ -311,11 +319,46 @@ class OrganizationalMemoryService:
     def retrieval_status(self) -> RetrievalBackendStatus:
         return self.retrieval_backend.status()
 
-    def rebuild_retrieval_index(self) -> RetrievalBackendStatus:
+    def rebuild_retrieval_index(
+        self,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> RetrievalBackendStatus:
+        state = self.store.load()
+        indexable = [
+            item
+            for item in state.records
+            if self._indexable(item)
+        ]
+        status = self.retrieval_backend.status()
+        identity = status.embedding_identity
+        if identity is not None and not identity.local:
+            if actor is None:
+                self._retrieval_index_dirty = True
+                raise KnowledgeAuthorizationError(
+                    "external embedding index rebuild requires an authenticated "
+                    "administrator for canonical export authorization"
+                )
+            governed_ids = tuple(
+                item.governance_record_id
+                for item in indexable
+            )
+            manifest = self.governance.authorize_export(
+                ExportAuthorizationRequest(
+                    record_ids=governed_ids,
+                    max_classification=DataClassification.RESTRICTED,
+                ),
+                actor=actor,
+            )
+            allowed = {item.record_id for item in manifest.items}
+            indexable = [
+                item
+                for item in indexable
+                if item.governance_record_id in allowed
+            ]
         records = tuple(
             self._retrieval_document(item)
-            for item in self.store.load().records
-            if self._indexable(item)
+            for item in indexable
         )
         try:
             self.retrieval_backend.rebuild(records)
@@ -345,19 +388,27 @@ class OrganizationalMemoryService:
         except Exception:
             self._mark_index_dirty()
 
-    def _ensure_retrieval_index(self) -> RetrievalBackendStatus:
+    def _ensure_retrieval_index(
+        self,
+        *,
+        actor: AuthenticationActor,
+    ) -> RetrievalBackendStatus:
         status = self.retrieval_backend.status()
-        expected = sum(
-            1
-            for item in self.store.load().records
-            if self._indexable(item)
-        )
+        identity = status.embedding_identity
+        if identity is not None and not identity.local:
+            expected = status.document_count
+        else:
+            expected = sum(
+                1
+                for item in self.store.load().records
+                if self._indexable(item)
+            )
         if (
             self._retrieval_index_dirty
             or not status.healthy
             or status.document_count != expected
         ):
-            status = self.rebuild_retrieval_index()
+            status = self.rebuild_retrieval_index(actor=actor)
         if not status.healthy:
             raise KnowledgeValidationError(
                 "organizational memory retrieval index is unavailable: "
@@ -1143,7 +1194,7 @@ class OrganizationalMemoryService:
             item.id: (item, freshness)
             for item, freshness in authorized_rows
         }
-        retrieval_status = self._ensure_retrieval_index()
+        retrieval_status = self._ensure_retrieval_index(actor=actor)
         retrieval_request = RetrievalSearchRequest(
             text=query.text,
             organization_id=actor.organization_id,
@@ -1170,7 +1221,7 @@ class OrganizationalMemoryService:
             != canonical_by_id[hit.knowledge_id][0].content_sha256
         ]
         if stale_hits:
-            retrieval_status = self.rebuild_retrieval_index()
+            retrieval_status = self.rebuild_retrieval_index(actor=actor)
             hits = self.retrieval_backend.search(retrieval_request)
 
         scored: list[
