@@ -251,7 +251,8 @@ class CanonicalEventBus:
                 )
                 acknowledged += 1
                 continue
-            dispatched += await self._dispatch_local(canonical)
+            if delivery.backend_id != "in-process":
+                dispatched += await self._dispatch_local(canonical)
             acknowledged_delivery = await self.transport.acknowledge(
                 delivery,
                 consumer_id=consumer_id,
