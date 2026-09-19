@@ -473,6 +473,38 @@ class BusinessContextService:
     ) -> ExternalRecordRef:
         return self._external(self.store.load(), ref_id, self._scope(actor))
 
+    def find_external_record(
+        self,
+        *,
+        actor: AuthenticationActor,
+        system: str,
+        provider_instance: str | None,
+        object_type: str,
+        external_id: str,
+    ) -> ExternalRecordRef | None:
+        scope = self._scope(actor)
+        target = (
+            system.casefold(),
+            (provider_instance or "").casefold(),
+            object_type.casefold(),
+            external_id,
+        )
+        return next(
+            (
+                item
+                for item in self.store.load().external_records
+                if self._visible(item, scope)
+                and (
+                    item.system.casefold(),
+                    (item.provider_instance or "").casefold(),
+                    item.object_type.casefold(),
+                    item.external_id,
+                )
+                == target
+            ),
+            None,
+        )
+
     def list_external_records(
         self,
         *,
