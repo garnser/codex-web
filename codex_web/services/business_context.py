@@ -240,6 +240,7 @@ class BusinessContextService:
         payload: BusinessEntityCreate,
         *,
         actor: AuthenticationActor,
+        entity_id: str | None = None,
     ) -> BusinessEntity:
         now = float(self.clock())
         scope = self._scope(actor)
@@ -256,6 +257,7 @@ class BusinessContextService:
                     source_governance_ids.append(ref.governance_record_id)
 
         item = BusinessEntity(
+            **({"id": entity_id} if entity_id is not None else {}),
             organization_id=scope.organization_id,
             workspace_id=scope.workspace_id,
             entity_type=payload.entity_type,
@@ -270,6 +272,19 @@ class BusinessContextService:
         )
 
         def apply(current: BusinessContextState) -> BusinessContextState:
+            existing = next(
+                (
+                    row
+                    for row in current.entities
+                    if row.id == item.id
+                    and self._visible(row, scope)
+                ),
+                None,
+            )
+            if existing is not None:
+                raise BusinessContextConflictError(
+                    "business entity id already exists in workspace"
+                )
             current.entities.append(item)
             return current
 
