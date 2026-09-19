@@ -580,28 +580,6 @@ app.state.artifact_content_service = artifact_content_service
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 
-decision_store = DecisionStore(state_store)
-decision_service = DecisionService(
-    decision_store,
-    approval_request_service,
-    metric_service,
-    artifact_evidence_service,
-    canonical_event_ingestion,
-)
-decision_deliberation_service = DecisionDeliberationService(
-    decision_service,
-    model_gateway_service,
-)
-app.state.decision_store = decision_store
-app.state.decision_service = decision_service
-app.state.decision_deliberation_service = decision_deliberation_service
-app.include_router(
-    build_decisions_router(
-        decision_service,
-        decision_deliberation_service,
-    )
-)
-
 agent_runtime_usage_store = AgentRuntimeUsageStore(state_store)
 
 def _runtime_usage_attribution(session):
@@ -901,6 +879,28 @@ metric_service = MetricService(metric_store)
 app.state.metric_store = metric_store
 app.state.metric_service = metric_service
 app.include_router(build_metrics_router(metric_service))
+
+decision_store = DecisionStore(state_store)
+decision_service = DecisionService(
+    decision_store,
+    approval_request_service,
+    metric_service,
+    artifact_evidence_service,
+    canonical_event_ingestion,
+)
+decision_deliberation_service = DecisionDeliberationService(
+    decision_service,
+    model_gateway_service,
+)
+app.state.decision_store = decision_store
+app.state.decision_service = decision_service
+app.state.decision_deliberation_service = decision_deliberation_service
+app.include_router(
+    build_decisions_router(
+        decision_service,
+        decision_deliberation_service,
+    )
+)
 
 goal_store = GoalStore(state_store)
 goal_service = GoalService(goal_store, project_service, work_graph_service)
