@@ -94,7 +94,10 @@ from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEven
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_configuration import install_codex_worker_configuration
-from codex_web.services.codex_model_egress import endpoints_from_provider_base_urls
+from codex_web.services.agent_model_egress import (
+    AgentRuntimeModelEgressEndpoint,
+    model_egress_endpoints_from_base_urls,
+)
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
@@ -536,9 +539,17 @@ def _codex_model_egress_endpoints():
             for provider in active
         )
     )
-    return endpoints_from_provider_base_urls(
+    default_endpoints = (
+        (
+            AgentRuntimeModelEgressEndpoint("api.openai.com", 443),
+            AgentRuntimeModelEgressEndpoint("chatgpt.com", 443),
+        )
+        if include_first_party
+        else ()
+    )
+    return model_egress_endpoints_from_base_urls(
         [provider.base_url for provider in active],
-        include_default_openai=include_first_party,
+        default_endpoints=default_endpoints,
     )
 
 
