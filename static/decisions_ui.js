@@ -6,6 +6,7 @@ const state = {
   detail: null,
   revisions: [],
   events: [],
+  trace: null,
 };
 
 const esc = (value) => String(value ?? '')
@@ -141,14 +142,16 @@ async function loadDecision(decisionId) {
   host.innerHTML = '<div class="decision-empty">Loading Decision…</div>';
   try {
     const encoded = encodeURIComponent(decisionId);
-    const [detail, revisions, events] = await Promise.all([
+    const [detail, revisions, events, trace] = await Promise.all([
       request(`/api/decisions/${encoded}`),
       request(`/api/decisions/${encoded}/revisions`),
       request(`/api/decisions/${encoded}/events`),
+      request(`/api/decisions/${encoded}/trace`),
     ]);
     state.detail = detail;
     state.revisions = revisions?.items || [];
     state.events = events?.items || [];
+    state.trace = trace || null;
     renderDetail();
   } catch (error) {
     host.innerHTML = `<div class="decision-error">${esc(error.message || 'Failed to load Decision')}</div>`;
@@ -159,21 +162,89 @@ function renderEvidence(rows) {
   if (!rows?.length) return '<p class="decision-muted">No evidence references.</p>';
   return rows.map((item) => {
     if (item.kind === 'metric_snapshot') {
+      const href = `/api/metrics/${encodeURIComponent(item.metric_id)}/snapshots/${encodeURIComponent(item.metric_snapshot_id)}`;
       return `
         <article class="decision-subcard">
-          <strong>Metric snapshot ${esc(item.metric_snapshot_id)}</strong>
+          <strong>Metric snapshot <a class="decision-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(item.metric_snapshot_id)}</a></strong>
           <span>${freshnessBadge(item.metric_freshness)} · ${esc(item.observed_value ?? '—')} ${esc(item.unit || '')}</span>
           <small>metric ${esc(item.metric_id)} r${esc(item.metric_revision)} · observations: ${esc((item.observation_ids || []).join(', ') || 'none')}</small>
           <small>window: ${esc(fmtTime(item.window_start))} → ${esc(fmtTime(item.window_end))}</small>
           <small>${esc(item.summary || '')}</small>
         </article>`;
     }
+    const href = `/api/evidence/${encodeURIComponent(item.evidence_id)}`;
     return `
       <article class="decision-subcard">
-        <strong>Evidence ${esc(item.evidence_id)}</strong>
+        <strong>Evidence <a class="decision-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(item.evidence_id)}</a></strong>
         <small>${esc(item.summary || 'Canonical Evidence reference')}</small>
       </article>`;
   }).join('');
+}
+
+function renderTrace(decision) {
+  const trace = state.trace || {};
+  const goal = trace.goal?.goal || null;
+  const workLinks = decision.work_links || [];
+  const workItems = new Map((trace.work_items || []).map((item) => [item.ref, item]));
+  const intents = new Map(
+    (trace.action_intents || [])
+      .filter((item) => item?.intent?.id)
+      .map((item) => [item.intent.id, item]),
+  );
+  const goalLine = decision.goal_id
+    ? `<div class="decision-trace-node"><span>Goal</span><strong>${esc(goal?.title || decision.goal_id)}</strong><small>${esc(decision.goal_id)} · ${esc(goal?.status || 'linked')}</small></div>`
+    : '<div class="decision-trace-node"><span>Goal</span><strong>Not linked</strong><small>This Decision is workspace/project scoped.</small></div>';
+
+  const work = workLinks.length
+    ? workLinks.map((link) => {
+        const item = workItems.get(link.work_item_ref);
+        const intent = intents.get(link.action_intent_id)?.intent;
+        return `
+          <article class="decision-work-link">
+            <div class="decision-work-heading">
+              <strong>${esc(link.title)}</strong>
+              <span class="decision-work-state ${esc(link.state)}">${esc(link.state)}</span>
+            </div>
+            <p>${esc(link.description)}</p>
+            <div class="decision-grid">
+              <div><span>Project</span><strong>${esc(link.project_id)}</strong></div>
+              <div><span>ActionIntent</span><strong class="decision-break">${esc(link.action_intent_id || 'planned')}</strong></div>
+              <div><span>Work Item</span><strong>${esc(link.work_item_ref || 'not reconciled')}</strong></div>
+              <div><span>Work stage</span><strong>${esc(item?.current_stage || '—')}</strong></div>
+              <div><span>Outcome</span><strong>${esc(item?.terminal_outcome || intent?.status || '—')}</strong></div>
+              <div><span>Expected result</span><strong>${esc(link.expected_result || '—')}</strong></div>
+            </div>
+            ${link.last_error ? `<small class="decision-error">${esc(link.last_error)}</small>` : ''}
+          </article>`;
+      }).join('')
+    : '<p class="decision-muted">No canonical work has been generated from this Decision.</p>';
+
+  return `
+    <div class="decision-trace">
+      ${goalLine}
+      <div class="decision-trace-arrow">→</div>
+      <div class="decision-trace-node"><span>Decision</span><strong>${esc(decision.title)}</strong><small>${esc(decision.id)} · ${esc(decision.status)}</small></div>
+    </div>
+    <div class="decision-work-links">${work}</div>`;
+}
+
+function renderWorkForm(decision) {
+  if (decision.status !== 'approved') return '';
+  const nextIndex = (decision.work_links || []).length + 1;
+  const needsReconcile = (decision.work_links || []).some((item) => item.state !== 'succeeded');
+  return `
+    <form class="decision-work-form" data-item-id="work-${esc(nextIndex)}">
+      <div class="decision-work-form-grid">
+        <label><span>Project ID</span><input name="project_id" required value="${esc(decision.project_id || '')}"></label>
+        <label><span>Title</span><input name="title" required placeholder="Canonical work item title"></label>
+        <label class="decision-work-wide"><span>Description</span><textarea name="description" required rows="3" placeholder="What approved consequence should be carried out?"></textarea></label>
+        <label class="decision-work-wide"><span>Expected result</span><input name="expected_result" placeholder="Observable result"></label>
+      </div>
+      <div class="decision-actions">
+        <button type="submit" class="primary-button">Generate canonical work</button>
+        ${needsReconcile ? '<button type="button" class="ghost-button decision-reconcile-work">Reconcile work</button>' : ''}
+      </div>
+    </form>`;
 }
 
 function renderOptions(decision) {
@@ -330,6 +401,12 @@ function renderDetail() {
     </section>
 
     <section class="decision-card">
+      <h4>Goal → Decision → Work → Result trace</h4>
+      ${renderTrace(decision)}
+      ${renderWorkForm(decision)}
+    </section>
+
+    <section class="decision-card">
       <h4>Bounded deliberation</h4>
       <div class="decision-grid">
         <div><span>Calls</span><strong>${esc(usage.calls ?? 0)} / ${esc(decision.budget?.max_model_calls ?? '—')}</strong></div>
@@ -372,6 +449,36 @@ function renderDetail() {
         `).join('')}
       </div>
     </section>`;
+
+  const workForm = host.querySelector('.decision-work-form');
+  if (workForm) workForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(workForm);
+    const itemId = workForm.dataset.itemId;
+    const body = {
+      items: [{
+        id: itemId,
+        project_id: String(form.get('project_id') || '').trim(),
+        title: String(form.get('title') || '').trim(),
+        description: String(form.get('description') || '').trim(),
+        expected_result: String(form.get('expected_result') || '').trim() || null,
+        labels: [],
+        blocked_by_item_ids: [],
+      }],
+      reason: 'Generate approved Decision consequence as canonical work.',
+    };
+    await mutate(
+      `/api/decisions/${encodeURIComponent(decision.id)}/work`,
+      body,
+      'Generating canonical Decision work…',
+    );
+  });
+  const reconcileWork = host.querySelector('.decision-reconcile-work');
+  if (reconcileWork) reconcileWork.addEventListener('click', () => mutate(
+    `/api/decisions/${encodeURIComponent(decision.id)}/work/reconcile`,
+    {},
+    'Reconciling Decision work…',
+  ));
 
   const deliberate = host.querySelector('.decision-deliberate');
   if (deliberate) deliberate.addEventListener('click', () => mutate(
