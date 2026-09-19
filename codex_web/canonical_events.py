@@ -16,6 +16,7 @@ class CanonicalEventType(StrEnum):
     SCHEDULE = "schedule.due"
     APPROVAL = "approval.transition"
     ATTENTION = "attention.transition"
+    CONVERSATION = "conversation.event"
 
 
 def task_source_event_type(provider_event_type: str) -> CanonicalEventType:
