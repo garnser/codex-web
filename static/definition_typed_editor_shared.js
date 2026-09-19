@@ -52,11 +52,18 @@ export function textarea(cls, value, rows = 3) {
   return '<textarea class="' + cls + '" rows="' + rows + '">' + esc(value ?? '') + '</textarea>';
 }
 
-export function lifecycleSelect(value, cls = 'typed-role-lifecycle') {
+export function lifecycleSelect(
+  value,
+  cls = 'typed-role-lifecycle',
+  disabledValues = [],
+) {
+  const blocked = new Set(disabledValues);
   return '<select class="' + cls + '">'
     + ['active', 'deprecated', 'disabled'].map((item) => (
-      '<option value="' + item + '"' + (item === value ? ' selected' : '') + '>'
-      + item + '</option>'
+      '<option value="' + item + '"'
+      + (item === value ? ' selected' : '')
+      + (blocked.has(item) ? ' disabled' : '')
+      + '>' + item + '</option>'
     )).join('')
     + '</select>';
 }
