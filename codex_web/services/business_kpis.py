@@ -7,6 +7,7 @@ import time
 import uuid
 
 from codex_web.business_context import (
+    BusinessEntityLifecycle,
     FactFreshness,
 )
 from codex_web.business_kpis import (
@@ -405,6 +406,12 @@ class BusinessKPIService:
             findings.append("no business entities match the KPI term scope")
 
         for entity in entities:
+            if entity.lifecycle != BusinessEntityLifecycle.ACTIVE:
+                partial = True
+                findings.append(
+                    f"{entity.id}: business entity is {entity.lifecycle.value}"
+                )
+                continue
             resolved = self.business_context.resolve_fact(
                 entity.id,
                 term.fact_key,
@@ -809,6 +816,14 @@ class BusinessKPIService:
         latest = self.latest_refresh(item.id, actor=actor)
         if (
             latest is not None
+            and (
+                latest.kpi_revision != item.revision
+                or latest.metric_revision != metric_definition.revision
+            )
+        ):
+            latest = None
+        if (
+            latest is not None
             and latest.refreshed_at >= (evaluation.newest_observation_at or 0.0)
             and latest.observation_id is None
         ):
@@ -911,10 +926,12 @@ class BusinessKPIService:
             for item in items
             if item.readiness != BusinessKPIReadiness.CURRENT
         )
+        if not items:
+            blockers = ("no business KPI definitions configured",)
         return CompanyOperatingView(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
-            current=not blockers,
+            current=bool(items) and not blockers,
             items=items,
             blockers=blockers,
             evaluated_at=timestamp,
