@@ -4,8 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from codex_web.api.business_context import build_business_context_router
 from codex_web.business_context import (
     BusinessEntityCreate,
     BusinessEntityRelationshipCreate,
@@ -486,6 +489,188 @@ class BusinessContextTests(unittest.TestCase):
                 value="x" * 8001,
                 source=CompanyFactSource(source="crm.raw"),
             )
+
+
+class BusinessContextApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        state = SQLiteStateStore(Path(self.temp.name) / "api-state.sqlite3")
+        governance = DataGovernanceService(DataGovernanceStore(state))
+        self.service = BusinessContextService(
+            BusinessContextStore(state),
+            governance=governance,
+        )
+        for object_type in (
+            "business_entity",
+            "external_record_ref",
+            "company_fact",
+        ):
+            governance.register_action_handler(
+                object_type,
+                self.service.governance_action_handler,
+            )
+        self.actor = AuthenticationActor(
+            identity_id="admin",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_business_context_router(self.service))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self.temp.cleanup()
+
+    @staticmethod
+    def entity_body():
+        return {
+            "entity_type": "customer",
+            "name": "Northstar Retail",
+            "classification": "internal",
+            "links": {
+                "project_ids": ["project-a"],
+                "resource_ids": ["resource-a"],
+                "goal_ids": ["goal-a"],
+                "decision_ids": ["decision-a"],
+                "metric_ids": ["metric-a"],
+                "evidence_ids": ["evidence-a"],
+            },
+        }
+
+    def test_reads_allow_authenticated_actor_but_mutations_require_mfa(self) -> None:
+        listed = self.client.get("/api/business-context/entities")
+        denied = self.client.post(
+            "/api/business-context/entities",
+            json=self.entity_body(),
+        )
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn("mfa", denied.json()["detail"].lower())
+
+    def test_mfa_admin_can_create_query_and_resolve_business_context(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        created = self.client.post(
+            "/api/business-context/entities",
+            json=self.entity_body(),
+        )
+        self.assertEqual(created.status_code, 200)
+        entity_id = created.json()["item"]["id"]
+
+        external = self.client.post(
+            "/api/business-context/external-records",
+            json={
+                "system": "crm",
+                "provider": "salesforce",
+                "object_type": "account",
+                "external_id": "acct-1",
+                "business_entity_ids": [entity_id],
+            },
+        )
+        self.assertEqual(external.status_code, 200)
+        external_id = external.json()["item"]["id"]
+
+        fact = self.client.post(
+            "/api/business-context/facts",
+            json={
+                "business_entity_id": entity_id,
+                "key": "arr",
+                "value_type": "number",
+                "value": 1250,
+                "unit": "usd",
+                "source": {
+                    "source": "crm.arr",
+                    "provider": "salesforce",
+                    "external_record_ref_id": external_id,
+                    "authority": "authoritative",
+                },
+                "quality": "verified",
+                "freshness_seconds": 3600,
+            },
+        )
+        self.assertEqual(fact.status_code, 200)
+
+        current = self.client.get(
+            f"/api/business-context/entities/{entity_id}/facts/current",
+            params={"key": "arr"},
+        )
+        context = self.client.get(
+            f"/api/business-context/entities/{entity_id}/context"
+        )
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json()["item"]["selected"]["value"], 1250)
+        self.assertEqual(context.status_code, 200)
+        self.assertEqual(len(context.json()["facts"]), 1)
+        self.assertEqual(len(context.json()["external_records"]), 1)
+        self.assertEqual(
+            context.json()["entity"]["links"]["metric_ids"],
+            ["metric-a"],
+        )
+
+    def test_cross_tenant_api_lookup_returns_not_found(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        created = self.client.post(
+            "/api/business-context/entities",
+            json=self.entity_body(),
+        )
+        entity_id = created.json()["item"]["id"]
+
+        self.actor = AuthenticationActor(
+            identity_id="other-reader",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-b",
+            workspace_id="ws-b",
+            roles=(MembershipRole.MEMBER,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/business-context/entities/{entity_id}"
+            ).status_code,
+            404,
+        )
+        listed = self.client.get("/api/business-context/entities")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["count"], 0)
+
+    def test_business_data_admin_service_scope_supports_sync_automation(self) -> None:
+        self.actor = AuthenticationActor(
+            identity_id="business-sync",
+            principal_kind=PrincipalKind.SERVICE,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("business-data:admin",),
+        )
+        created = self.client.post(
+            "/api/business-context/entities",
+            json=self.entity_body(),
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["item"]["created_by"], "business-sync")
+
+        self.actor = self.actor.model_copy(
+            update={"service_scopes": ("business-data:read",)}
+        )
+        denied = self.client.post(
+            "/api/business-context/entities",
+            json={**self.entity_body(), "name": "Denied"},
+        )
+        self.assertEqual(denied.status_code, 403)
+
 
 
 if __name__ == "__main__":
