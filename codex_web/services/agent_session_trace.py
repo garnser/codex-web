@@ -111,13 +111,15 @@ class AgentSessionTraceService:
     def _verification_projection(item: Any) -> dict[str, Any]:
         return {
             "id": item.id,
-            "verification_type": item.verification_type.value,
+            "method": item.method,
             "result": item.result.value,
-            "summary": item.summary,
+            "independent": item.independent,
+            "findings": list(item.findings),
             "work_item_ref": item.work_item_ref,
+            "execution_id": item.execution_id,
             "verified_at": item.verified_at,
-            "lifecycle": item.lifecycle.value,
             "evidence_ids": list(item.evidence_ids),
+            "artifact_ids": list(item.artifact_ids),
         }
 
     def trace(
