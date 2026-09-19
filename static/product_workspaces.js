@@ -1,0 +1,547 @@
+const WORKSPACES = [
+  { id: "overview", label: "Overview", group: "Core", kind: "embedded", description: "Product-wide status vocabulary, explainability and shortcuts." },
+  { id: "inbox", label: "Inbox / Attention", group: "Core", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
+  { id: "projects", label: "Projects", group: "Core", kind: "focus", selector: "#projects", description: "Project selection and creation." },
+  { id: "threads", label: "Threads", group: "Core", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
+  { id: "work", label: "Work", group: "Work", kind: "embedded", description: "Canonical work graph and execution continuity." },
+  { id: "goals", label: "Goals", group: "Work", kind: "launcher", selector: "#goals-button", description: "Outcome definitions and progress." },
+  { id: "decisions", label: "Decisions", group: "Work", kind: "launcher", selector: "#decisions-button", description: "Canonical decisions and provenance." },
+  { id: "metrics", label: "Metrics / KPIs", group: "Work", kind: "launcher", selector: "#metrics-button", description: "Versioned measurements, observations and snapshots." },
+  { id: "company", label: "Company Operations", group: "Work", kind: "launcher", selector: "#company-operations-button", description: "Governed business entities, facts and operating KPIs." },
+  { id: "organization", label: "Organization / Roles", group: "Governance", kind: "embedded", description: "Organizations, workspaces, identities, sessions and Executive roles." },
+  { id: "definitions", label: "Definitions / Contracts", group: "Governance", kind: "embedded", description: "Definition lifecycle, exact revisions, compatibility and usage." },
+  { id: "resources", label: "Resources", group: "Governance", kind: "embedded", description: "Canonical resources and relationships." },
+  { id: "integrations", label: "Integrations / Extensions", group: "Platform", kind: "embedded", description: "Extensions, ActionProviders and input/source integrations." },
+  { id: "agents", label: "Agent Providers / Sessions", group: "Platform", kind: "embedded", description: "Model and execution-agent provider/runtime/session state." },
+  { id: "workers", label: "Workers / Execution", group: "Platform", kind: "embedded", description: "Execution workers, workspaces, leases and capability state." },
+  { id: "operations", label: "Operations / Observability", group: "Platform", kind: "embedded", description: "Logs, evidence, health, incidents, releases and recovery state." },
+  { id: "memory", label: "Memory", group: "Platform", kind: "launcher", selector: "#memory-button", description: "Governed organizational memory and retrieval." },
+  { id: "autonomy", label: "Autonomy", group: "Platform", kind: "embedded", description: "Autonomy controls, orchestration, ActionIntents and explainability." },
+  { id: "settings", label: "Settings / Security", group: "Platform", kind: "embedded", description: "Configuration, entitlements, secret references, keys and trust diagnostics." },
+];
+
+const CARD_RULES = [
+  [/^Work Graph$/i, "work"],
+  [/^Identity & Sessions$/i, "organization"],
+  [/^Resource Catalog$/i, "resources"],
+  [/^Definition Registry$/i, "definitions"],
+  [/^Extensions$/i, "integrations"],
+  [/^Input Plugin Pipeline$/i, "integrations"],
+  [/^Action Providers$/i, "integrations"],
+  [/^GitLab Routing$/i, "integrations"],
+  [/^Agent Channel Presence$/i, "integrations"],
+  [/^Model Gateway$/i, "agents"],
+  [/^Agent Providers & Sessions$/i, "agents"],
+  [/^Execution Workers$/i, "workers"],
+  [/^Execution Workspaces & Leases$/i, "workers"],
+  [/^Artifacts, Evidence & Verification$/i, "operations"],
+  [/^Operations & Observability$/i, "operations"],
+  [/^Structured Logs$/i, "operations"],
+  [/^Autonomy Control Center$/i, "autonomy"],
+  [/^Orchestration Inspector$/i, "autonomy"],
+  [/^ActionIntents & Side Effects$/i, "autonomy"],
+  [/^Entitlements & Usage$/i, "settings"],
+  [/^Configuration & Features$/i, "settings"],
+  [/^Secrets & Credentials$/i, "settings"],
+  [/^Encryption Keys$/i, "settings"],
+  [/^Security & Trust Diagnostics$/i, "settings"],
+];
+
+const DIRECT_ACTIONS = {
+  organization: [
+    { label: "Executive roles", selector: "#executive-management-button" },
+  ],
+  integrations: [
+    { label: "API browser", selector: "#swagger-browser-launch" },
+  ],
+};
+
+const CONCEPTS = [
+  ["definition", "Definition", "What behavior/contract revision exists."],
+  ["policy", "Authorization / policy", "Whether this identity/role may act."],
+  ["configuration", "Configuration / rollout", "Whether behavior is configured or enabled here."],
+  ["entitlement", "Entitlement", "Whether the tenant is allowed to use the capability."],
+  ["quota", "Budget / quota", "Whether bounded usage remains available."],
+  ["compatibility", "Compatibility / version skew", "Whether versions/contracts can interoperate."],
+  ["health", "Health / capability", "Whether the provider, worker or extension can serve the request."],
+  ["evidence", "Evidence / verification", "Whether required proof and verification exist."],
+];
+
+const EXPLAIN_STAGES = [
+  "Trigger / source",
+  "Identity / assurance",
+  "Owner / role",
+  "Definition revision",
+  "Model / agent routing",
+  "Policy / configuration / entitlement",
+  "Target resource",
+  "Execution contract / worker",
+  "Approval / quorum",
+  "ActionIntent / provider receipt",
+  "Evidence / verification",
+  "Result",
+];
+
+let activeWorkspace = "overview";
+
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function conceptBadge(kind, label = null) {
+  const match = CONCEPTS.find(([key]) => key === kind);
+  const text = label || match?.[1] || kind;
+  const span = document.createElement("span");
+  span.className = `product-concept-badge concept-${kind}`;
+  span.dataset.concept = kind;
+  span.textContent = text;
+  return span;
+}
+
+function statusBadge(status, label = null) {
+  const value = String(status || "unknown").toLowerCase();
+  let family = "neutral";
+  if (["active", "ready", "healthy", "fresh", "current", "succeeded", "verified", "available", "approved"].includes(value)) family = "positive";
+  else if (["pending", "degraded", "partial", "stale", "warning", "paused", "quota", "throttled"].includes(value)) family = "warning";
+  else if (["denied", "failed", "invalid", "blocked", "quarantined", "unavailable", "conflict", "revoked"].includes(value)) family = "negative";
+  const span = document.createElement("span");
+  span.className = `product-status-badge status-${family}`;
+  span.dataset.status = value;
+  span.textContent = label || value;
+  return span;
+}
+
+function provenanceTrail(stages) {
+  const root = document.createElement("ol");
+  root.className = "product-provenance-trail";
+  for (const stage of stages || []) {
+    const item = document.createElement("li");
+    const strong = document.createElement("strong");
+    strong.textContent = stage.label || stage.stage || "Stage";
+    item.appendChild(strong);
+    if (stage.detail) {
+      const small = document.createElement("small");
+      small.textContent = stage.detail;
+      item.appendChild(small);
+    }
+    root.appendChild(item);
+  }
+  return root;
+}
+
+function workspaceById(id) {
+  return WORKSPACES.find((item) => item.id === id) || WORKSPACES[0];
+}
+
+function setHash(id) {
+  const desired = `#workspace/${id}`;
+  if (window.location.hash !== desired) history.replaceState(null, "", desired);
+}
+
+function closeSwitcher() {
+  const dialog = document.getElementById("product-workspace-switcher");
+  if (dialog?.open) dialog.close();
+}
+
+function focusSidebar(selector) {
+  const target = document.querySelector(selector);
+  if (!target) return false;
+  if (document.body.classList.contains("sidebar-collapsed")) {
+    document.getElementById("sidebar-toggle")?.click();
+  }
+  closeSwitcher();
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  return true;
+}
+
+function launchExisting(selector) {
+  const target = document.querySelector(selector);
+  if (!target) return false;
+  closeSwitcher();
+  target.click();
+  return true;
+}
+
+function workspaceHost(id) {
+  return document.querySelector(`[data-product-workspace-host="${CSS.escape(id)}"]`);
+}
+
+function cardHeading(card) {
+  const heading = card.querySelector("h2");
+  if (!heading) return "";
+  const clone = heading.cloneNode(true);
+  clone.querySelectorAll(".context-help-link").forEach((node) => node.remove());
+  return (clone.textContent || "").trim();
+}
+
+function adoptCard(card) {
+  if (!(card instanceof HTMLElement)) return false;
+  if (!card.classList.contains("developer-card")) return false;
+  if (card.dataset.productWorkspace) return false;
+  const heading = cardHeading(card);
+  const rule = CARD_RULES.find(([pattern]) => pattern.test(heading));
+  if (!rule) return false;
+  const id = rule[1];
+  const host = workspaceHost(id);
+  if (!host) return false;
+  card.dataset.productWorkspace = id;
+  card.classList.add("product-adopted-card");
+  host.appendChild(card);
+  return true;
+}
+
+function adoptAll(root = document) {
+  root.querySelectorAll?.(".developer-card").forEach(adoptCard);
+}
+
+function refreshWorkspaceCards(id) {
+  const host = workspaceHost(id);
+  if (!host) return;
+  const selectors = [
+    "button[id^='refresh-']",
+    "button[data-acc-refresh]",
+    "button[data-orchestration-refresh]",
+    "button[data-refresh]",
+  ];
+  const clicked = new Set();
+  host.querySelectorAll(selectors.join(",")).forEach((button) => {
+    if (!(button instanceof HTMLButtonElement) || button.disabled || clicked.has(button)) return;
+    clicked.add(button);
+    button.click();
+  });
+}
+
+function setActiveInternal(id, { updateHash = true } = {}) {
+  activeWorkspace = id;
+  document.querySelectorAll("[data-product-workspace-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.productWorkspacePanel !== id;
+  });
+  document.querySelectorAll("[data-product-workspace-nav]").forEach((button) => {
+    const selected = button.dataset.productWorkspaceNav === id;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+  });
+  const item = workspaceById(id);
+  const title = document.querySelector("[data-product-workspace-title]");
+  const description = document.querySelector("[data-product-workspace-description]");
+  if (title) title.textContent = item.label;
+  if (description) description.textContent = item.description;
+  renderWorkspaceActions(id);
+  refreshWorkspaceCards(id);
+  if (updateHash) setHash(id);
+}
+
+function renderWorkspaceActions(id) {
+  const host = document.querySelector("[data-product-workspace-actions]");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const action of DIRECT_ACTIONS[id] || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost-button";
+    button.textContent = action.label;
+    button.addEventListener("click", () => launchExisting(action.selector));
+    host.appendChild(button);
+  }
+  if (id === "autonomy") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost-button";
+    button.textContent = "Explain an action";
+    button.addEventListener("click", () => {
+      const input = document.querySelector("[data-acc-intent]");
+      input?.focus();
+      input?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    host.appendChild(button);
+  }
+}
+
+function openInternalWorkspace(id) {
+  const dialog = document.getElementById("product-workspace-dialog");
+  if (!dialog) return false;
+  closeSwitcher();
+  setActiveInternal(id);
+  if (!dialog.open) dialog.showModal();
+  return true;
+}
+
+function openWorkspace(id) {
+  const item = workspaceById(id);
+  if (item.kind === "launcher") {
+    setHash(item.id);
+    return launchExisting(item.selector);
+  }
+  if (item.kind === "focus") {
+    setHash(item.id);
+    return focusSidebar(item.selector);
+  }
+  return openInternalWorkspace(item.id);
+}
+
+function overviewMarkup() {
+  return `
+    <div class="product-overview-grid">
+      <section class="product-overview-card">
+        <h3>Canonical UI vocabulary</h3>
+        <p>Unavailable actions should say <em>why</em>. These concepts remain distinct rather than collapsing into generic settings or “not allowed”.</p>
+        <div class="product-concept-grid">
+          ${CONCEPTS.map(([kind, label, detail]) => `
+            <div class="product-concept-row" data-concept-row="${esc(kind)}">
+              <span class="product-concept-badge concept-${esc(kind)}" data-concept="${esc(kind)}">${esc(label)}</span>
+              <small>${esc(detail)}</small>
+            </div>`).join("")}
+        </div>
+      </section>
+      <section class="product-overview-card">
+        <h3>Shared explainability path</h3>
+        <p>Canonical action explanations should trace stored state end-to-end; refresh and navigation do not require a model call.</p>
+        <ol class="product-provenance-trail">
+          ${EXPLAIN_STAGES.map((stage) => `<li><strong>${esc(stage)}</strong></li>`).join("")}
+        </ol>
+        <div class="product-explain-shortcut">
+          <input data-product-explain-id placeholder="action-intent-…" aria-label="ActionIntent ID">
+          <button type="button" class="ghost-button" data-product-explain>Open Explain Action</button>
+        </div>
+      </section>
+      <section class="product-overview-card product-overview-wide">
+        <h3>Scope & sensitive references</h3>
+        <p>Tenant/workspace scope, identity assurance and canonical references stay visible. Secret and cryptographic key material must never be rendered; UI surfaces only references and metadata.</p>
+        <div class="product-status-examples">
+          <span class="product-status-badge status-positive" data-status="current">current</span>
+          <span class="product-status-badge status-warning" data-status="partial">partial</span>
+          <span class="product-status-badge status-negative" data-status="blocked">blocked</span>
+          <span class="product-status-badge status-neutral" data-status="unknown">unknown</span>
+        </div>
+      </section>
+    </div>`;
+}
+
+function buildPanels() {
+  const root = document.querySelector("[data-product-workspace-panels]");
+  if (!root) return;
+  for (const workspace of WORKSPACES.filter((item) => item.kind === "embedded")) {
+    const panel = document.createElement("section");
+    panel.className = "product-workspace-panel";
+    panel.dataset.productWorkspacePanel = workspace.id;
+    panel.hidden = workspace.id !== "overview";
+    if (workspace.id === "overview") {
+      panel.innerHTML = overviewMarkup();
+    } else {
+      panel.innerHTML = `
+        <div class="product-workspace-host" data-product-workspace-host="${esc(workspace.id)}">
+          <div class="product-workspace-empty" data-product-workspace-empty>
+            Canonical ${esc(workspace.label)} surfaces will appear here as their modules load.
+          </div>
+        </div>`;
+    }
+    root.appendChild(panel);
+  }
+  root.querySelector("[data-product-explain]")?.addEventListener("click", () => {
+    const value = root.querySelector("[data-product-explain-id]")?.value?.trim() || "";
+    openInternalWorkspace("autonomy");
+    queueMicrotask(() => {
+      const input = document.querySelector("[data-acc-intent]");
+      if (input && value) {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      input?.focus();
+      if (value) document.querySelector("[data-acc-explain]")?.click();
+    });
+  });
+}
+
+function updateEmptyStates() {
+  document.querySelectorAll(".product-workspace-host").forEach((host) => {
+    const empty = host.querySelector(":scope > .product-workspace-empty");
+    const hasCard = Boolean(host.querySelector(":scope > .developer-card"));
+    if (empty) empty.hidden = hasCard;
+  });
+}
+
+function buildSwitcherNav(container) {
+  const groups = [...new Set(WORKSPACES.map((item) => item.group))];
+  for (const group of groups) {
+    const section = document.createElement("section");
+    section.className = "product-workspace-nav-group";
+    const heading = document.createElement("h3");
+    heading.textContent = group;
+    section.appendChild(heading);
+    const grid = document.createElement("div");
+    grid.className = "product-workspace-nav-grid";
+    for (const workspace of WORKSPACES.filter((item) => item.group === group)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "product-workspace-nav-item";
+      button.dataset.productWorkspaceNav = workspace.id;
+      button.innerHTML = `<strong>${esc(workspace.label)}</strong><small>${esc(workspace.description)}</small>`;
+      button.addEventListener("click", () => openWorkspace(workspace.id));
+      grid.appendChild(button);
+    }
+    section.appendChild(grid);
+    container.appendChild(section);
+  }
+}
+
+function buildShell() {
+  if (document.getElementById("product-workspace-dialog")) return;
+
+  const sidebar = document.querySelector(".sidebar");
+  const brand = sidebar?.querySelector(".brand");
+  if (sidebar && brand) {
+    const quick = document.createElement("nav");
+    quick.className = "product-workspace-quicknav";
+    quick.setAttribute("aria-label", "Product workspaces");
+    for (const id of ["inbox", "work", "goals", "company", "operations"]) {
+      const item = workspaceById(id);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.quickWorkspace = id;
+      button.textContent = item.label.replace(" / Attention", "").replace(" / Observability", "");
+      button.addEventListener("click", () => openWorkspace(id));
+      quick.appendChild(button);
+    }
+    const all = document.createElement("button");
+    all.type = "button";
+    all.dataset.workspaceSwitcherLaunch = "true";
+    all.textContent = "All workspaces";
+    quick.appendChild(all);
+    brand.insertAdjacentElement("afterend", quick);
+  }
+
+  const switcher = document.createElement("dialog");
+  switcher.id = "product-workspace-switcher";
+  switcher.className = "product-workspace-switcher";
+  switcher.innerHTML = `
+    <div class="product-switcher-shell">
+      <header>
+        <div><h2>Workspaces</h2><p>Navigate canonical product domains without leaving conversational Threads behind.</p></div>
+        <button type="button" class="icon-button" data-workspace-switcher-close aria-label="Close workspace switcher">×</button>
+      </header>
+      <div class="product-workspace-nav-groups" data-product-workspace-nav-groups></div>
+      <footer><small>Shortcut: Ctrl/⌘ K · canonical refresh/navigation does not invoke a model.</small></footer>
+    </div>`;
+  document.body.appendChild(switcher);
+  buildSwitcherNav(switcher.querySelector("[data-product-workspace-nav-groups]"));
+  switcher.querySelector("[data-workspace-switcher-close]").addEventListener("click", () => switcher.close());
+
+  const dialog = document.createElement("dialog");
+  dialog.id = "product-workspace-dialog";
+  dialog.className = "product-workspace-dialog";
+  dialog.innerHTML = `
+    <div class="product-workspace-shell">
+      <header class="product-workspace-header">
+        <div>
+          <small>Workspace</small>
+          <h2 data-product-workspace-title>Overview</h2>
+          <p data-product-workspace-description></p>
+        </div>
+        <div class="product-workspace-header-actions">
+          <div data-product-workspace-actions></div>
+          <button type="button" class="ghost-button" data-open-workspace-switcher>Switch workspace</button>
+          <button type="button" class="icon-button" data-product-workspace-close aria-label="Close workspace">×</button>
+        </div>
+      </header>
+      <div class="product-workspace-panels" data-product-workspace-panels></div>
+    </div>`;
+  document.body.appendChild(dialog);
+  buildPanels();
+  dialog.querySelector("[data-product-workspace-close]").addEventListener("click", () => dialog.close());
+  dialog.querySelector("[data-open-workspace-switcher]").addEventListener("click", () => {
+    if (!switcher.open) switcher.showModal();
+  });
+
+  document.querySelectorAll("[data-workspace-switcher-launch]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!switcher.open) switcher.showModal();
+    });
+  });
+
+  const topbar = document.querySelector(".topbar .controls");
+  if (topbar) {
+    const launch = document.createElement("button");
+    launch.type = "button";
+    launch.className = "ghost-button product-workspaces-launch";
+    launch.dataset.workspaceSwitcherLaunch = "topbar";
+    launch.textContent = "Workspaces";
+    launch.title = "Open product workspaces (Ctrl/⌘ K)";
+    launch.addEventListener("click", () => {
+      if (!switcher.open) switcher.showModal();
+    });
+    topbar.prepend(launch);
+  }
+
+  setActiveInternal("overview", { updateHash: false });
+}
+
+function installObservers() {
+  const observer = new MutationObserver((records) => {
+    let changed = false;
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        if (node.matches?.(".developer-card")) changed = adoptCard(node) || changed;
+        node.querySelectorAll?.(".developer-card").forEach((card) => {
+          changed = adoptCard(card) || changed;
+        });
+      }
+    }
+    if (changed) updateEmptyStates();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+function installKeyboard() {
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      const switcher = document.getElementById("product-workspace-switcher");
+      if (switcher && !switcher.open) {
+        switcher.showModal();
+        switcher.querySelector(".product-workspace-nav-item")?.focus();
+      }
+    }
+  });
+}
+
+function installHashRouting() {
+  const route = () => {
+    const match = window.location.hash.match(/^#workspace\/([a-z0-9-]+)$/);
+    if (!match) return;
+    const item = WORKSPACES.find((workspace) => workspace.id === match[1]);
+    if (item && item.id !== activeWorkspace) openWorkspace(item.id);
+  };
+  window.addEventListener("hashchange", route);
+  route();
+}
+
+function install() {
+  buildShell();
+  adoptAll(document);
+  updateEmptyStates();
+  installObservers();
+  installKeyboard();
+  installHashRouting();
+
+  window.CodexProductUI = Object.freeze({
+    openWorkspace,
+    conceptBadge,
+    statusBadge,
+    provenanceTrail,
+    concepts: Object.freeze(CONCEPTS.map(([key, label]) => ({ key, label }))),
+    explainStages: Object.freeze([...EXPLAIN_STAGES]),
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", install, { once: true });
+} else {
+  install();
+}

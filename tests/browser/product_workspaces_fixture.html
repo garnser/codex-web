@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product workspace fixture</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/product_workspaces.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-lockup"><strong>Codex Web</strong></div></div>
+    <section><div class="section-title">Projects</div><div id="projects" tabindex="-1">Project list</div></section>
+    <section class="threads-section"><div class="section-title">Threads</div><input id="thread-search" placeholder="Search threads"><div id="threads"></div></section>
+  </aside>
+  <button id="sidebar-toggle" type="button"></button>
+  <main class="main">
+    <header class="topbar"><div class="controls">
+      <button id="goals-button" type="button">Goals legacy launcher</button>
+      <button id="metrics-button" type="button">Metrics legacy launcher</button>
+      <button id="decisions-button" type="button">Decisions legacy launcher</button>
+      <button id="company-operations-button" type="button">Company legacy launcher</button>
+      <button id="memory-button" type="button">Memory legacy launcher</button>
+      <button id="executive-management-button" type="button">Executive legacy launcher</button>
+      <button id="swagger-browser-launch" type="button">API legacy launcher</button>
+      <button data-attention-launch type="button">Inbox legacy launcher</button>
+      <details id="developer-panel" class="developer-menu" open>
+        <summary>Developer</summary>
+        <div class="developer-content">
+          <div class="developer-grid">
+            <div class="developer-card" id="daemon-card"><h2>Daemon</h2><p>debug only</p></div>
+            <div class="developer-card" id="resource-card"><h2>Resource Catalog</h2><button id="refresh-resources">Refresh</button></div>
+            <div class="developer-card" id="work-card"><h2>Work Graph</h2><button id="refresh-work-graph">Refresh</button></div>
+            <div class="developer-card" id="definition-card"><h2>Definition Registry</h2><button id="refresh-definitions">Refresh</button></div>
+            <div class="developer-card" id="identity-card"><h2>Identity & Sessions</h2><button id="refresh-identity-admin">Refresh</button></div>
+            <div class="developer-card" id="extension-card"><h2>Extensions</h2><button id="refresh-extensions">Refresh</button></div>
+            <div class="developer-card" id="model-card"><h2>Model Gateway</h2><button id="refresh-model-gateway">Refresh</button></div>
+            <div class="developer-card" id="worker-card"><h2>Execution Workers</h2><button id="refresh-workers">Refresh</button></div>
+            <div class="developer-card" id="ops-card"><h2>Operations & Observability</h2><button id="refresh-ops">Refresh</button></div>
+            <div class="developer-card" id="settings-card"><h2>Configuration & Features</h2><button id="refresh-config">Refresh</button></div>
+            <div class="developer-card" id="autonomy-control-center-card">
+              <h2>Autonomy Control Center</h2>
+              <input data-acc-intent>
+              <button type="button" data-acc-explain>Explain Action</button>
+              <button type="button" data-acc-refresh>Refresh</button>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div></header>
+  </main>
+  <script>
+    for (const selector of [
+      '#goals-button', '#metrics-button', '#decisions-button',
+      '#company-operations-button', '#memory-button',
+      '#executive-management-button', '#swagger-browser-launch',
+      '[data-attention-launch]'
+    ]) {
+      document.querySelector(selector).addEventListener('click', (event) => {
+        event.currentTarget.dataset.clicked = String(Number(event.currentTarget.dataset.clicked || '0') + 1);
+      });
+    }
+    document.querySelector('[data-acc-explain]').addEventListener('click', (event) => {
+      event.currentTarget.dataset.clicked = String(Number(event.currentTarget.dataset.clicked || '0') + 1);
+    });
+    document.querySelectorAll('.developer-card button[id^="refresh-"], [data-acc-refresh]').forEach((button) => {
+      button.addEventListener('click', () => {
+        button.dataset.clicked = String(Number(button.dataset.clicked || '0') + 1);
+      });
+    });
+  </script>
+  <script src="/static/product_workspaces.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+.product-workspace-quicknav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface-soft)}
+.product-workspace-quicknav button{min-width:0;padding:6px 8px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.product-workspace-quicknav button:last-child{grid-column:1/-1}
+.product-workspaces-launch{white-space:nowrap}
+
+.product-workspace-switcher,.product-workspace-dialog{padding:0;border:1px solid var(--line);background:var(--surface);color:var(--text);box-shadow:var(--shadow-md)}
+.product-workspace-switcher::backdrop,.product-workspace-dialog::backdrop{background:rgba(0,0,0,.52)}
+.product-workspace-switcher{width:min(980px,94vw);max-height:min(820px,90vh);border-radius:16px}
+.product-switcher-shell{display:grid;grid-template-rows:auto 1fr auto;max-height:min(820px,90vh)}
+.product-switcher-shell>header,.product-workspace-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:16px 18px;border-bottom:1px solid var(--line)}
+.product-switcher-shell h2,.product-workspace-header h2{margin:0}.product-switcher-shell p,.product-workspace-header p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.product-switcher-shell>footer{padding:10px 18px;border-top:1px solid var(--line);color:var(--muted)}
+.product-workspace-nav-groups{overflow:auto;padding:14px;display:grid;gap:18px}
+.product-workspace-nav-group h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.product-workspace-nav-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.product-workspace-nav-item{display:grid;text-align:left;gap:4px;min-height:72px;padding:10px}
+.product-workspace-nav-item small{color:var(--muted);line-height:1.3}.product-workspace-nav-item.active{border-color:var(--accent-line);background:var(--accent-soft)}
+.product-workspace-nav-item[aria-current="page"] strong::before{content:"• ";color:var(--accent)}
+
+.product-workspace-dialog{width:min(1260px,97vw);height:min(900px,94vh);border-radius:16px}
+.product-workspace-shell{height:100%;display:grid;grid-template-rows:auto 1fr;min-height:0}
+.product-workspace-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.product-workspace-header-actions>div{display:flex;gap:8px;flex-wrap:wrap}
+.product-workspace-panels{overflow:auto;padding:14px;min-height:0}
+.product-workspace-panel{min-height:100%}
+.product-workspace-host{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.product-workspace-host>.developer-card{margin:0;min-width:0}
+.product-workspace-host>#autonomy-control-center-card,.product-workspace-host>#orchestration-inspector-card,.product-workspace-host>#agent-provider-card{grid-column:1/-1}
+.product-workspace-empty{grid-column:1/-1;padding:24px;border:1px dashed var(--line);border-radius:var(--radius);color:var(--muted);text-align:center}
+
+.product-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.product-overview-card{padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface-soft)}
+.product-overview-card h3{margin:0 0 6px}.product-overview-card p{margin:0 0 12px;color:var(--muted);font-size:12px;line-height:1.45}.product-overview-wide{grid-column:1/-1}
+.product-concept-grid{display:grid;gap:7px}.product-concept-row{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:9px;align-items:center}.product-concept-row small{color:var(--muted)}
+.product-concept-badge,.product-status-badge{display:inline-flex;align-items:center;width:max-content;max-width:100%;border:1px solid var(--line-strong);border-radius:999px;padding:3px 7px;font-size:10px;font-weight:700}
+.product-concept-badge::before,.product-status-badge::before{margin-right:5px;font-weight:900}
+.concept-definition::before{content:"D"}.concept-policy::before{content:"P"}.concept-configuration::before{content:"C"}.concept-entitlement::before{content:"E"}.concept-quota::before{content:"Q"}.concept-compatibility::before{content:"V"}.concept-health::before{content:"H"}.concept-evidence::before{content:"✓"}
+.concept-definition{border-style:solid}.concept-policy{border-style:double}.concept-configuration{border-style:dashed}.concept-entitlement{border-style:dotted}.concept-quota{border-width:2px}.concept-compatibility{border-top-width:3px}.concept-health{border-bottom-width:3px}.concept-evidence{border-left-width:3px}
+.product-status-badge.status-positive::before{content:"✓"}.product-status-badge.status-warning::before{content:"!"}.product-status-badge.status-negative::before{content:"×"}.product-status-badge.status-neutral::before{content:"?"}
+.status-positive{border-color:#4d9f73}.status-warning{border-color:#b2863d}.status-negative{border-color:#b85f5f}.status-neutral{border-color:var(--line-strong)}
+.product-status-examples{display:flex;gap:8px;flex-wrap:wrap}
+
+.product-provenance-trail{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;counter-reset:provenance}
+.product-provenance-trail li{counter-increment:provenance;display:grid;grid-template-columns:auto 1fr;gap:5px;align-items:start;padding:7px;border:1px solid var(--line);border-radius:7px;font-size:10px;min-width:0}
+.product-provenance-trail li::before{content:counter(provenance);display:grid;place-items:center;width:18px;height:18px;border-radius:999px;background:var(--surface);border:1px solid var(--line-strong);font-size:9px}
+.product-provenance-trail small{grid-column:2;color:var(--muted)}
+.product-explain-shortcut{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+.product-explain-shortcut input{min-width:0}
+
+.developer-grid>.developer-card[data-product-workspace]{display:none}
+
+@media(max-width:900px){
+  .product-workspace-nav-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .product-workspace-host,.product-overview-grid{grid-template-columns:1fr}
+  .product-overview-wide,.product-workspace-host>#autonomy-control-center-card,.product-workspace-host>#orchestration-inspector-card,.product-workspace-host>#agent-provider-card{grid-column:1}
+  .product-provenance-trail{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:700px){
+  .product-workspace-quicknav{grid-template-columns:repeat(3,minmax(0,1fr));padding:8px}
+  .product-workspace-quicknav button:last-child{grid-column:auto}
+  .product-workspace-switcher,.product-workspace-dialog{width:100vw;height:100vh;max-width:none;max-height:none;border-radius:0;border-left:0;border-right:0}
+  .product-switcher-shell{max-height:100vh;height:100vh}.product-workspace-nav-grid{grid-template-columns:1fr}
+  .product-workspace-header{align-items:center}.product-workspace-header p{display:none}.product-workspace-header-actions>div{display:none}
+  .product-workspace-panels{padding:8px}.product-provenance-trail{grid-template-columns:1fr}
+  .product-concept-row{grid-template-columns:1fr}.product-explain-shortcut{grid-template-columns:1fr}
+}

@@ -43,7 +43,7 @@ function helpDecorateHeading(heading) {
 
 function helpDecorate(root = document) {
   root.querySelectorAll?.(
-    "#developer-panel h2, #developer-panel h3, #autonomy-control-center-card h2, #autonomy-control-center-card h3"
+    "#developer-panel h2, #developer-panel h3, [data-product-workspace-host] h2, [data-product-workspace-host] h3, #autonomy-control-center-card h2, #autonomy-control-center-card h3"
   ).forEach(helpDecorateHeading);
 }
 
