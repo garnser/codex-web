@@ -14,7 +14,12 @@ from codex_web.definitions import (
     DefinitionRollbackRequest,
     DefinitionScope,
 )
-from codex_web.identity import AuthenticationAssurance, AuthenticationActor, PrincipalKind
+from codex_web.identity import (
+    AuthenticationAssurance,
+    AuthenticationActor,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.services.definitions import (
     DefinitionCompatibilityError,
     DefinitionConflictError,
