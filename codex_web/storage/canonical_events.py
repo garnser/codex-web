@@ -285,6 +285,20 @@ class CanonicalEventStore:
         )
         return result[0]
 
+    def inbox_seen(
+        self,
+        *,
+        backend_id: str,
+        delivery_id: str,
+        consumer_id: str,
+    ) -> bool:
+        return any(
+            item.transport_backend_id == backend_id
+            and item.transport_delivery_id == delivery_id
+            and item.consumer_id == consumer_id
+            for item in self.load().inbox
+        )
+
     def record_inbox_receipt(
         self,
         receipt: CanonicalEventInboxReceipt,
