@@ -313,7 +313,7 @@ class RuntimeSupervisor:
             self._spawn(
                 "slack-provider-owner",
                 self._singleton_service_loop(
-                    "slack-provider",
+                    "bot-runtime",
                     slack_provider_service.start,
                     slack_provider_service.stop,
                 ),
