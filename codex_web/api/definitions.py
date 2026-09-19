@@ -11,7 +11,6 @@ from codex_web.definitions import (
     DefinitionDraftCreate,
     DefinitionPublishRequest,
     DefinitionRecord,
-    DefinitionRetireRequest,
     DefinitionRollbackRequest,
     DefinitionScope,
 )
@@ -70,14 +69,6 @@ class DefinitionPublishHttpRequest(BaseModel):
     reason: str | None = None
     expected_active_revision: int | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class DefinitionRetireHttpRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    lifecycle: str = Field(pattern="^(deprecated|disabled)$")
-    reason: str = Field(min_length=1)
-    expected_active_revision: int | None = None
 
 
 class DefinitionRollbackHttpRequest(BaseModel):
@@ -510,44 +501,6 @@ def build_definitions_router(
                 record_id,
                 actor=actor.identity_id,
                 reason=payload.reason,
-            )
-        except (
-            DefinitionError,
-            DefinitionNotFoundError,
-            DefinitionConflictError,
-            DefinitionCompatibilityError,
-            AuthorizationError,
-            ValueError,
-        ) as exc:
-            raise _error(exc) from exc
-        return {"record": record.model_dump(mode="json")}
-
-    @router.post("/{record_id}/retire")
-    async def retire_definition(
-        record_id: str,
-        payload: DefinitionRetireHttpRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        actor = authenticated(request)
-        try:
-            existing = service.get_record(record_id)
-            require_visible(existing, actor)
-            require_mutation_actor(
-                actor,
-                scope_type=existing.scope_type,
-                scope_id=existing.scope_id,
-            )
-            record = service.retire(
-                DefinitionRetireRequest(
-                    definition_id=existing.definition_id,
-                    kind=existing.kind,
-                    scope_type=existing.scope_type,
-                    scope_id=existing.scope_id,
-                    lifecycle=payload.lifecycle,
-                    actor=actor.identity_id,
-                    reason=payload.reason,
-                    expected_active_revision=payload.expected_active_revision,
-                )
             )
         except (
             DefinitionError,
