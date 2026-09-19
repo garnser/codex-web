@@ -28,10 +28,24 @@ from codex_web.services.agent_routing_definitions import AgentRoutingDefinitionS
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.provider_capacity import ProviderCapacityService
 
 
 class AgentRoutingError(RuntimeError):
     pass
+
+
+class AgentCapacityRoutingError(AgentRoutingError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_at: float | None,
+        provider_keys: tuple[str, ...],
+    ) -> None:
+        self.retry_at = retry_at
+        self.provider_keys = provider_keys
+        super().__init__(message)
 
 
 class AgentRoutingService:
@@ -45,12 +59,14 @@ class AgentRoutingService:
         model_gateway: ModelGatewayService | None = None,
         configuration: ConfigurationService | None = None,
         role_defaults: AgentRoutingDefinitionService | None = None,
+        provider_capacity: ProviderCapacityService | None = None,
     ) -> None:
         self.providers = providers
         self.runtimes = runtimes
         self.model_gateway = model_gateway
         self.configuration = configuration
         self.role_defaults = role_defaults
+        self.provider_capacity = provider_capacity
 
     @staticmethod
     def _ordered(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -245,6 +261,7 @@ class AgentRoutingService:
             for index, runtime_id in enumerate(request.preferred_runtime_ids)
         }
         rejected: list[str] = []
+        capacity_blocks = []
         ranked: list[
             tuple[int, int, int, str, str, AgentRuntimeRouteCandidate]
         ] = []
@@ -350,6 +367,35 @@ class AgentRoutingService:
                     rejected.append(f"{key}:runtime_budget_exceeded")
                     continue
 
+            capacity_record = None
+            if self.provider_capacity is not None:
+                try:
+                    capacity_record = await self.provider_capacity.refresh_if_due(
+                        registration.provider_id,
+                        registration.runtime_id,
+                        actor=actor,
+                    )
+                except Exception:
+                    capacity_record = self.provider_capacity.get(
+                        registration.provider_id,
+                        registration.runtime_id,
+                        actor=actor,
+                    )
+                if (
+                    capacity_record is not None
+                    and capacity_record.blocks(float(self.provider_capacity.clock()))
+                ):
+                    rejected.append(
+                        f"{key}:capacity_{capacity_record.status.value}"
+                        + (
+                            f":retry_at={capacity_record.retry_at:.3f}"
+                            if capacity_record.retry_at is not None
+                            else ""
+                        )
+                    )
+                    capacity_blocks.append(capacity_record)
+                    continue
+
             runtime_health = await adapter.health()
             if runtime_health == AgentRuntimeHealth.UNAVAILABLE:
                 rejected.append(f"{key}:runtime_unavailable")
@@ -392,6 +438,16 @@ class AgentRoutingService:
                 sandbox_profiles=registration.sandbox_profiles,
                 network_profiles=registration.network_profiles,
                 estimated_session_cost_usd=registration.max_session_cost_usd,
+                capacity_status=(
+                    capacity_record.status
+                    if capacity_record is not None
+                    else __import__("codex_web.provider_capacity", fromlist=["ProviderCapacityStatus"]).ProviderCapacityStatus.AVAILABLE
+                ),
+                capacity_retry_at=(
+                    capacity_record.retry_at
+                    if capacity_record is not None
+                    else None
+                ),
                 routing_reason=(
                     f"provider_revision={provider_record.revision};"
                     f"capability_revision={registration.capability_revision};"
@@ -414,6 +470,19 @@ class AgentRoutingService:
         candidates = tuple(item[5] for item in ranked)
         if not candidates:
             detail = ",".join(rejected[:30]) or "no runtimes registered"
+            if capacity_blocks:
+                retries = [
+                    item.retry_at
+                    for item in capacity_blocks
+                    if item.retry_at is not None
+                ]
+                raise AgentCapacityRoutingError(
+                    f"no eligible agent runtime: {detail}",
+                    retry_at=min(retries) if retries else None,
+                    provider_keys=tuple(
+                        dict.fromkeys(item.key for item in capacity_blocks)
+                    ),
+                )
             raise AgentRoutingError(f"no eligible agent runtime: {detail}")
 
         if not request.allow_fallback:
@@ -433,6 +502,15 @@ class AgentRoutingService:
             runtime_candidates=candidates,
             model_route=model_route,
             fallback_allowed=request.allow_fallback,
+            earliest_capacity_retry_at=(
+                min(
+                    item.retry_at
+                    for item in capacity_blocks
+                    if item.retry_at is not None
+                )
+                if any(item.retry_at is not None for item in capacity_blocks)
+                else None
+            ),
             rejected_reasons=tuple(dict.fromkeys(rejected)),
             configuration_sources=configuration_sources,
             role_definition_ref=role_definition_ref,
