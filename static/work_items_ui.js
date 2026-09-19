@@ -6,6 +6,7 @@ const state = {
   projectId: '',
   items: [],
   selectedRef: '',
+  secrets: [],
 };
 
 const esc = (value) => String(value ?? '')
@@ -62,9 +63,27 @@ function ensureShell() {
       <details class="work-source-config" open>
         <summary>Authoritative task source</summary>
         <div class="work-source-grid">
-          <label>Type <input class="work-source-type" value="gitlab" /></label>
-          <label>Instance <input class="work-source-instance" placeholder="https://gitlab.example/api/v4" /></label>
-          <label>Scope <input class="work-source-scope" placeholder="group/project or group" /></label>
+          <label>Type <select class="work-source-type"></select></label>
+          <label>Instance <input class="work-source-instance" placeholder="Provider base URL" /></label>
+          <label>Scope <input class="work-source-scope" placeholder="Project, queue, or provider scope" /></label>
+        </div>
+        <div class="work-source-provider-fields" hidden>
+          <label class="work-source-secret-row">Credential
+            <select class="work-source-secret"></select>
+            <small>Canonical SecretReference metadata only; secret values are never loaded here.</small>
+          </label>
+          <label class="work-source-jira-username-row" hidden>Jira username / account email
+            <input class="work-source-jira-username" autocomplete="off" />
+          </label>
+          <label class="work-source-servicenow-table-row" hidden>ServiceNow table
+            <input class="work-source-servicenow-table" value="task" />
+          </label>
+          <label class="work-source-servicenow-active-row" hidden>ServiceNow active state value
+            <input class="work-source-servicenow-active" placeholder="Optional provider state value" />
+          </label>
+          <label class="work-source-servicenow-closed-row" hidden>ServiceNow closed state value
+            <input class="work-source-servicenow-closed" placeholder="Optional provider state value" />
+          </label>
         </div>
         <div class="work-source-actions">
           <button type="button" class="primary-button work-source-save">Save canonical source</button>
@@ -93,6 +112,9 @@ function ensureShell() {
     renderSourceConfig();
     await loadItems();
   });
+  dialog.querySelector('.work-source-type').addEventListener('change', (event) => {
+    renderProviderFields(event.target.value);
+  });
   dialog.querySelector('.work-source-save').addEventListener('click', saveSource);
   dialog.querySelector('.work-source-clear').addEventListener('click', clearSource);
   dialog.querySelector('.work-items-sync').addEventListener('click', syncSource);
@@ -108,12 +130,14 @@ function setStatus(message, isError = false) {
 async function refreshAll() {
   setStatus('Loading…');
   try {
-    const [projects, catalog] = await Promise.all([
+    const [projects, catalog, secretsPayload] = await Promise.all([
       request('/api/projects'),
       request('/api/task-sources'),
+      request('/api/secrets'),
     ]);
     state.projects = Array.isArray(projects) ? projects : [];
     state.catalog = catalog || { items: [], sync: {} };
+    state.secrets = Array.isArray(secretsPayload?.items) ? secretsPayload.items : [];
     if (!state.projectId || !state.projects.some((project) => project.id === state.projectId)) {
       state.projectId = state.projects[0]?.id || '';
     }
@@ -140,9 +164,58 @@ function selectedProject() {
 
 function catalogEntry(sourceType) {
   const entries = Array.isArray(state.catalog?.items) ? state.catalog.items : [];
-  return entries.find((entry) => entry.project_id === state.projectId)
+  return entries.find((entry) => entry.project_id === state.projectId && entry.source_type === sourceType)
+    || entries.find((entry) => entry.project_id == null && entry.source_type === sourceType)
     || entries.find((entry) => entry.source_type === sourceType)
     || null;
+}
+
+function renderSecretOptions(selectedId = '') {
+  const select = document.querySelector('.work-source-secret');
+  if (!select) return;
+  const options = state.secrets.map((item) => ({
+    id: String(item.id || ''),
+    label: item.name || item.label || item.id,
+    status: item.status || '',
+  })).filter((item) => item.id);
+  if (selectedId && !options.some((item) => item.id === selectedId)) {
+    options.unshift({ id: selectedId, label: selectedId, status: 'not listed' });
+  }
+  select.innerHTML = [
+    '<option value="">Select a canonical secret…</option>',
+    ...options.map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? 'selected' : ''}>${esc(item.label)}${item.status ? ` (${esc(item.status)})` : ''}</option>`),
+  ].join('');
+}
+
+function renderProviderFields(sourceType, config = null) {
+  const normalized = String(sourceType || '').toLowerCase();
+  const wrapper = document.querySelector('.work-source-provider-fields');
+  const secretRow = document.querySelector('.work-source-secret-row');
+  const jiraRow = document.querySelector('.work-source-jira-username-row');
+  const tableRow = document.querySelector('.work-source-servicenow-table-row');
+  const activeRow = document.querySelector('.work-source-servicenow-active-row');
+  const closedRow = document.querySelector('.work-source-servicenow-closed-row');
+  const isJira = normalized === 'jira';
+  const isServiceNow = normalized === 'servicenow';
+  const needsCredential = isJira || isServiceNow;
+  if (wrapper) wrapper.hidden = !needsCredential;
+  if (secretRow) secretRow.hidden = !needsCredential;
+  if (jiraRow) jiraRow.hidden = !isJira;
+  if (tableRow) tableRow.hidden = !isServiceNow;
+  if (activeRow) activeRow.hidden = !isServiceNow;
+  if (closedRow) closedRow.hidden = !isServiceNow;
+
+  renderSecretOptions(config?.credential_secret_id || '');
+  if (isJira) {
+    document.querySelector('.work-source-jira-username').value = config?.provider_settings?.username || '';
+  }
+  if (isServiceNow) {
+    const settings = config?.provider_settings || {};
+    const mapping = settings.canonical_state_values || {};
+    document.querySelector('.work-source-servicenow-table').value = settings.table || 'task';
+    document.querySelector('.work-source-servicenow-active').value = mapping.implementation_active || '';
+    document.querySelector('.work-source-servicenow-closed').value = mapping.closed || '';
+  }
 }
 
 function renderSourceConfig() {
@@ -154,13 +227,25 @@ function renderSourceConfig() {
   const instanceInput = document.querySelector('.work-source-instance');
   const scopeInput = document.querySelector('.work-source-scope');
   if (!typeInput || !instanceInput || !scopeInput) return;
-  typeInput.value = type;
+  const sourceTypes = [...new Set([
+    'gitlab',
+    'jira',
+    'servicenow',
+    ...(Array.isArray(state.catalog?.items) ? state.catalog.items.map((item) => item.source_type) : []),
+    type,
+  ].filter(Boolean))];
+  typeInput.innerHTML = sourceTypes.map((sourceType) => (
+    `<option value="${esc(sourceType)}" ${sourceType === type ? 'selected' : ''}>${esc(sourceType)}</option>`
+  )).join('');
   instanceInput.value = config?.source_instance || entry?.source_instance || '';
   scopeInput.value = config?.scope || '';
+  renderProviderFields(type, config);
   const caps = entry?.capabilities || [];
   const sync = state.catalog?.sync || {};
   document.querySelector('.work-source-capabilities').textContent = [
-    caps.length ? `Capabilities: ${caps.join(', ')}` : 'Capabilities unavailable until the adapter is connected',
+    entry ? `Adapter: ${entry.available ? 'ready' : 'not ready'}` : 'Adapter not registered',
+    caps.length ? `Capabilities: ${caps.join(', ')}` : 'Capabilities unavailable',
+    entry?.error ? `Adapter error: ${entry.error}` : '',
     sync.last_success_at ? `Last sync: ${fmtTime(sync.last_success_at)}` : 'No successful sync recorded',
     sync.last_error ? `Last error: ${sync.last_error}` : '',
   ].filter(Boolean).join(' · ');
@@ -175,11 +260,33 @@ async function saveSource() {
     setStatus('Source type, instance and scope are required', true);
     return;
   }
+  const payload = { source_type, source_instance, scope };
+  if (source_type === 'jira' || source_type === 'servicenow') {
+    const credential_secret_id = document.querySelector('.work-source-secret').value.trim();
+    if (!credential_secret_id) {
+      setStatus('A canonical credential SecretReference is required for this provider', true);
+      return;
+    }
+    payload.credential_secret_id = credential_secret_id;
+    if (source_type === 'jira') {
+      const username = document.querySelector('.work-source-jira-username').value.trim();
+      payload.provider_settings = { kind: 'jira' };
+      if (username) payload.provider_settings.username = username;
+    } else {
+      const table = document.querySelector('.work-source-servicenow-table').value.trim() || 'task';
+      const active = document.querySelector('.work-source-servicenow-active').value.trim();
+      const closed = document.querySelector('.work-source-servicenow-closed').value.trim();
+      const canonical_state_values = {};
+      if (active) canonical_state_values.implementation_active = active;
+      if (closed) canonical_state_values.closed = closed;
+      payload.provider_settings = { kind: 'servicenow', table, canonical_state_values };
+    }
+  }
   setStatus('Saving source…');
   try {
     await request(`/api/projects/${encodeURIComponent(state.projectId)}/task-source`, {
       method: 'PUT',
-      body: JSON.stringify({ source_type, source_instance, scope }),
+      body: JSON.stringify(payload),
     });
     await refreshAll();
     setStatus('Authoritative source saved');
