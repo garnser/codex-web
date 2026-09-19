@@ -5,10 +5,10 @@ Codex-web configuration is canonical runtime/deployment data with deterministic 
 ## Concept boundaries
 
 - **Configuration** selects typed runtime/deployment values and rollout state.
-- **Definitions** are reusable versioned domain/runtime descriptions managed by the Definition Registry (#170).
+- **Definitions** are reusable versioned domain/runtime descriptions managed by the Definition Registry.
 - **Policy** grants or denies authority and imposes constraints/approvals. Configuration cannot grant authority.
 - **Secrets** are referenced by stable secret IDs. Raw secret values are not configuration.
-- **Entitlements/quotas** describe hosted/service access and consumption boundaries (#164).
+- **Entitlements/quotas** describe hosted/service access and consumption boundaries.
 - **Canonical state** describes current domain/operational facts and is not overwritten by configuration precedence.
 
 A configuration value may reference a Definition Registry revision or secret reference, but it does not copy or become authoritative for the referenced object.
@@ -78,7 +78,7 @@ A `force_disabled` record is available only for kill-switch-capable flags, must 
 
 `secret_ref` accepts only a structured secret reference. It cannot hold a raw credential.
 
-`definition_ref` accepts only a stable Definition Registry ID and explicit revision. Runtime code must resolve that reference through #170 rather than embedding a copied definition in configuration.
+`definition_ref` accepts only a stable Definition Registry ID and explicit revision. Runtime code must resolve that reference through the Definition Registry rather than embedding a copied definition in configuration.
 
 As the secret broker and Definition Registry land, their canonical reference models may replace these narrow reference schemas without changing the rule that configuration contains references rather than protected/duplicated payloads.
 
@@ -95,7 +95,7 @@ The canonical service is exposed through `/api/configuration`:
 - `POST /resolve`
 - `GET /{record_id}/impact`
 
-The Platform Foundation administration UI (#141) should consume these APIs and must visually distinguish configuration/feature rollout from definitions, policy, secrets, entitlements, and current runtime state.
+The platform administration UI should consume these APIs and must visually distinguish configuration/feature rollout from definitions, policy, secrets, entitlements, and current runtime state.
 
 ## Migration rule
 
