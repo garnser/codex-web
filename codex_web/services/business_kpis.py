@@ -949,7 +949,9 @@ class BusinessKPIService:
         for kpi in self.list(actor=actor):
             metric_snapshot = self.metrics.capture_snapshot(
                 kpi.metric_id,
-                MetricSnapshotRequest(),
+                MetricSnapshotRequest(
+                    evaluated_at=captured_at,
+                ),
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
             )
@@ -994,6 +996,11 @@ class BusinessKPIService:
                         MetricSnapshotRequest(
                             window_start=binding.window_start,
                             window_end=binding.window_end,
+                            evaluated_at=(
+                                binding.window_end
+                                if binding.window_end is not None
+                                else captured_at
+                            ),
                         ),
                         scope=actor.tenant,
                         actor_id=actor.identity_id,
