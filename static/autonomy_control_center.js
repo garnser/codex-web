@@ -80,6 +80,7 @@ function accRender(card, data) {
   card.querySelector("[data-acc-mode]").textContent = control.mode || "unknown";
   card.querySelector("[data-acc-dry]").checked = Boolean(control.dry_run);
   card.querySelector("[data-acc-sim]").checked = Boolean(control.simulation);
+  const pauses = data.autonomy?.scoped_pauses || control.scoped_pauses || [];
 
   const tiles = [
     ["Mode", control.mode || "unknown"],
@@ -189,6 +190,24 @@ function accRender(card, data) {
   }).join("") + "<details><summary>Ownership / fencing</summary>" + accJson(replication.ownership?.responsibilities || {}) + "</details>";
 
   const metrics = data.audit?.metrics || {};
+  card.querySelector("[data-acc-scoped-pauses]").innerHTML = pauses.length ? pauses.map(function (item) {
+    return accRow(item.scope + " · " + item.scope_id,
+      item.reason + (item.expires_at ? " · expires " + item.expires_at : ""),
+      '<button type="button" class="ghost-button" data-acc-unpause="' + accEsc(item.id) + '">Remove pause</button>');
+  }).join("") : accEmpty("No active scoped pauses.");
+
+  const sim = data.simulation || {};
+  card.querySelector("[data-acc-simulation]").innerHTML =
+    accRow(
+      "Dry-run " + Boolean(sim.dry_run_enabled) + " · simulation " + Boolean(sim.simulation_enabled),
+      "Simulated actions " + (sim.simulated_action_count || 0) +
+        " · executed actions " + (sim.executed_action_count || 0) +
+        " · evaluation records " + (sim.evaluation_count || 0),
+      ""
+    ) +
+    "<details><summary>Recent simulated / dry-run cycles</summary>" + accJson(sim.simulated_cycles || []) + "</details>" +
+    "<details><summary>Recent executed/prepared cycles</summary>" + accJson(sim.executed_cycles || []) + "</details>";
+
   card.querySelector("[data-acc-audit]").innerHTML = accRow(
     "Audit integrity · " + (audit.status || "unknown"),
     "Root " + (audit.root_hash || "—") + " · checkpoint " + (audit.checkpoint_id || "—") + " · " + (audit.reason || "no integrity failure"),
@@ -220,6 +239,31 @@ function accRender(card, data) {
       }
     });
   });
+  card.querySelectorAll("[data-acc-unpause]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      accMutate(
+        card,
+        "/api/autonomy/scoped-pauses/" + encodeURIComponent(button.dataset.accUnpause),
+        { method: "DELETE" },
+        "Removing scoped pause…"
+      );
+    });
+  });
+  card.querySelector("[data-acc-add-pause]")?.addEventListener("click", function () {
+    const scope = card.querySelector("[data-acc-pause-scope]").value;
+    const scopeId = card.querySelector("[data-acc-pause-id]").value.trim();
+    const reason = card.querySelector("[data-acc-pause-reason]").value.trim();
+    if (!scopeId || !reason) {
+      accSetStatus(card, "Scoped pause requires a scope ID and reason.", true);
+      return;
+    }
+    accMutate(
+      card,
+      "/api/autonomy/scoped-pauses",
+      { method: "POST", body: JSON.stringify({ scope, scope_id: scopeId, reason }) },
+      "Applying scoped pause…"
+    );
+  });
   card.querySelector("[data-acc-verify-audit]")?.addEventListener("click", function () {
     accMutate(card, "/api/autonomy/audit/verify?publish_evidence=true", { method: "POST" }, "Verifying audit integrity…");
   });
@@ -235,6 +279,7 @@ function accRenderExplain(card, data) {
   const provider = data.provider_action || {};
   const evidence = data.evidence || [];
   const verification = data.verification || {};
+  const blast = data.blast_radius || {};
   const trigger = data.trigger;
   const chain =
     accStage("Trigger / request", trigger ? trigger.event_type + " · " + trigger.source + " · " + trigger.event_id : (action.request?.action_id || action.action_id || "recorded request")) +
@@ -244,7 +289,8 @@ function accRenderExplain(card, data) {
     accStage("Execution contract", (data.execution_contract?.execution_id || "none") + " · action " + (data.execution_contract?.action_definition?.action_id || provider.action_id || "unknown")) +
     accStage("ActionIntent", data.intent_id + " · " + (data.result?.status || action.status || "unknown") + " · resources " + ((action.resource_ids || []).join(", ") || "none")) +
     accStage("Provider action", (provider.provider_type || "?") + "/" + (provider.provider_instance || "?") + " · " + (provider.action_id || "?") + " · receipts " + ((provider.receipts || []).length)) +
-    accStage("Evidence / result", evidence.length + " evidence · " + ((verification.receipts || []).length) + " verification(s) · " + (data.result?.status || "unknown"));
+    accStage("Evidence / result", evidence.length + " evidence · " + ((verification.receipts || []).length) + " verification(s) · " + (data.result?.status || "unknown")) +
+    accStage("Blast radius", (blast.high_impact ? "HIGH IMPACT · " : "") + (blast.resource_count || 0) + " resource(s) · risk " + (blast.risk_class || "unknown") + " · provider " + (blast.provider || "unknown"));
   card.querySelector("[data-acc-explain-result]").innerHTML =
     '<div class="acc-chain">' + chain + "</div>" +
     '<div class="acc-actions">' + accLink("/api/action-intents/" + encodeURIComponent(data.intent_id) + "/history", "Action history") +
@@ -311,6 +357,8 @@ function accBuild() {
       '<section class="acc-section"><h3>Capacity & provider pressure</h3><div data-acc-capacity></div></section>' +
       '<section class="acc-section"><h3>Upgrade / migration</h3><div data-acc-upgrades></div></section>' +
       '<section class="acc-section"><h3>Execution plane & failover</h3><div data-acc-execution></div></section>' +
+      '<section class="acc-section"><h3>Scoped pause controls</h3><div class="acc-toolbar"><select data-acc-pause-scope><option value="project">Project</option><option value="identity">Agent / identity</option><option value="resource">Resource</option></select><input data-acc-pause-id placeholder="scope ID"><input data-acc-pause-reason placeholder="reason"><button type="button" class="ghost-button" data-acc-add-pause>Pause scope</button></div><div data-acc-scoped-pauses></div></section>' +
+      '<section class="acc-section"><h3>Simulation / dry-run comparison</h3><div data-acc-simulation></div></section>' +
       '<section class="acc-section acc-wide"><h3>Audit integrity & reliability</h3><div data-acc-audit></div></section>' +
       '<section class="acc-section acc-wide"><h3>Explain this action</h3><small>Trace exact stored provenance from trigger/request through Goal/Decision, authority/policy, execution contract, ActionIntent, provider receipt, Evidence and verification. No reasoning call is made.</small><div class="acc-explain"><input data-acc-intent placeholder="action-intent-…"><button type="button" class="ghost-button" data-acc-explain>Explain Action</button></div><div data-acc-explain-result>' + accEmpty("Enter an ActionIntent ID.") + "</div></section>" +
     "</div>";
