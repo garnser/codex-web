@@ -100,6 +100,8 @@ class ThreadService:
         *,
         project_id: str,
         sandbox: str,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
     ) -> ExecutionRuntimeBinding | None:
         if self.routing_service is None or self.control_actor is None:
             return None
@@ -109,6 +111,11 @@ class ThreadService:
                 required_sandbox_profile=sandbox,
                 required_network_profile="brokered-model-egress",
                 require_persistent_session=True,
+                allowed_provider_ids=((provider_id,) if provider_id else ()),
+                allowed_runtime_ids=((runtime_id,) if runtime_id else ()),
+                preferred_provider_ids=((provider_id,) if provider_id else ()),
+                preferred_runtime_ids=((runtime_id,) if runtime_id else ()),
+                allow_fallback=not bool(provider_id or runtime_id),
             ),
             actor=self.control_actor,
         )
@@ -357,6 +364,8 @@ class ThreadService:
         approval_policy: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
     ) -> dict[str, Any]:
         (
             binding_service,
@@ -370,6 +379,8 @@ class ThreadService:
         runtime_binding = await self._select_runtime_binding(
             project_id=project.id,
             sandbox=effective_sandbox,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
         )
         session_manager = self._manager_for_binding(runtime_binding)
         token = uuid.uuid4().hex
