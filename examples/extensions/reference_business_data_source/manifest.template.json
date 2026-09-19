@@ -1,0 +1,28 @@
+{
+  "id": "example-business-data-source",
+  "name": "Example Business Data Source",
+  "version": "0.1.0",
+  "publisher": "codex-web examples",
+  "compatibility": {
+    "codex_web": ">=0"
+  },
+  "entry_points": {
+    "business_data_source": "adapter:ExampleCRMSource"
+  },
+  "requested_capabilities": [
+    "business_data_source.read",
+    "business_data_source.sync",
+    "business_data_source.events"
+  ],
+  "configuration": {
+    "source_instance": {
+      "type": "string",
+      "required": true
+    },
+    "credential_ref": {
+      "type": "secret_reference",
+      "required": true
+    }
+  },
+  "notes": "Synthetic example. Installation does not grant external mutation authority."
+}
