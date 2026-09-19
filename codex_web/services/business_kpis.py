@@ -852,6 +852,47 @@ class BusinessKpiService:
             captured_at=evaluation.evaluated_at,
         )
 
+    def _operating_links(
+        self,
+        definition: BusinessKpiDefinition,
+        selected_fact_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        source_refs: list[str] = []
+        for fact_id in selected_fact_ids:
+            try:
+                fact = self.business_context.get_fact(fact_id, actor=actor)
+            except BusinessContextNotFoundError:
+                continue
+            if fact.source.external_record_ref_id:
+                source_refs.append(fact.source.external_record_ref_id)
+
+        goal_ids: list[str] = []
+        if self.goals is not None:
+            for goal in self.goals.list(scope=actor.tenant):
+                if any(
+                    item.metric_id == definition.metric_id
+                    for item in goal.success_criteria
+                ):
+                    goal_ids.append(goal.id)
+
+        decision_ids: list[str] = []
+        if self.decisions is not None:
+            for decision in self.decisions.list(actor=actor):
+                if any(
+                    item.kind == DecisionEvidenceKind.METRIC_SNAPSHOT
+                    and item.metric_id == definition.metric_id
+                    for item in decision.evidence
+                ):
+                    decision_ids.append(decision.id)
+
+        return (
+            tuple(dict.fromkeys(source_refs)),
+            tuple(dict.fromkeys(goal_ids)),
+            tuple(dict.fromkeys(decision_ids)),
+        )
+
     def operating_snapshot(
         self,
         *,
@@ -879,6 +920,11 @@ class BusinessKpiService:
                 and metric_snapshot.freshness != MetricFreshness.FRESH
                 else evaluation.freshness
             )
+            source_refs, goal_ids, decision_ids = self._operating_links(
+                definition,
+                evaluation.selected_fact_ids,
+                actor=actor,
+            )
             items.append(
                 BusinessKpiOperatingItem(
                     kpi_id=definition.id,
@@ -902,6 +948,9 @@ class BusinessKpiService:
                     freshness=freshness,
                     reasons=evaluation.reasons,
                     selected_fact_ids=evaluation.selected_fact_ids,
+                    source_external_record_ref_ids=source_refs,
+                    goal_ids=goal_ids,
+                    decision_ids=decision_ids,
                     target=evaluation.target,
                     trend=evaluation.trend,
                 )
