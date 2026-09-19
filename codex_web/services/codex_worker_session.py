@@ -23,10 +23,10 @@ from codex_web.services.agent_worker_session import (
     AssignmentRuntimeCredentialProvider,
     AssignmentRuntimeLaunchInput,
 )
-from codex_web.services.codex_model_egress import (
-    AssignmentBoundModelEgressBroker,
-    CODEX_MODEL_EGRESS_RELAY_SCRIPT,
-    CodexModelEgressEndpoint,
+from codex_web.services.agent_model_egress import (
+    AGENT_MODEL_EGRESS_RELAY_SCRIPT,
+    AgentRuntimeModelEgressEndpoint,
+    AssignmentBoundAgentModelEgressBroker,
 )
 from codex_web.services.local_execution_worker import (
     LocalExecutionWorkerRuntime,
@@ -79,7 +79,7 @@ class AssignmentBoundCodexSession:
         *,
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
-        egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
+        egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -105,7 +105,7 @@ class AssignmentBoundCodexSession:
         self.last_heartbeat_monotonic: float | None = None
         self.last_error: str | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
-        self.egress_broker: AssignmentBoundModelEgressBroker | None = None
+        self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
         self._start_lock = asyncio.Lock()
         self._stopping = False
 
@@ -221,7 +221,7 @@ class AssignmentBoundCodexSession:
         self,
         assignment: ExecutionAssignment,
         workspace_path: Path,
-        broker: AssignmentBoundModelEgressBroker | None,
+        broker: AssignmentBoundAgentModelEgressBroker | None,
     ):
         delegation_service = self.credential_provider
         if delegation_service is None:
@@ -255,7 +255,7 @@ class AssignmentBoundCodexSession:
                     "/usr/bin/python3",
                     "-u",
                     "-c",
-                    CODEX_MODEL_EGRESS_RELAY_SCRIPT,
+                    AGENT_MODEL_EGRESS_RELAY_SCRIPT,
                     str(broker.sandbox_socket_path),
                     "8787",
                     *launch_input.command,
@@ -320,12 +320,12 @@ class AssignmentBoundCodexSession:
 
     async def _start_egress_broker(
         self,
-    ) -> AssignmentBoundModelEgressBroker | None:
+    ) -> AssignmentBoundAgentModelEgressBroker | None:
         resolver = self.egress_endpoints_resolver
         if resolver is None:
             return None
         endpoints = resolver()
-        broker = AssignmentBoundModelEgressBroker(
+        broker = AssignmentBoundAgentModelEgressBroker(
             endpoints,
             validator=self._validate_egress_state,
         )
@@ -566,7 +566,7 @@ class AssignmentBoundCodexSessionManager:
         *,
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
-        egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
+        egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider | None = None,
     ) -> None:
         self.local_worker = local_worker
