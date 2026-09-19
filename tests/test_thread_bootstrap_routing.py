@@ -93,6 +93,15 @@ class _SessionManager:
         return SimpleNamespace(id=assignment_id)
 
 
+class _AgentSessions:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def adopt(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(id="agent-session-1")
+
+
 class _BootstrapBindings:
     def __init__(self, *, error=None) -> None:
         self.calls = []
@@ -106,7 +115,7 @@ class _BootstrapBindings:
 
 
 class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, *, session=None, bindings=None):
+    def _service(self, *, session=None, bindings=None, agent_sessions=None):
         host = _Host()
         binding_service = _BindingService()
         session = session or _Session()
@@ -119,6 +128,7 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
             session_manager=manager,
             bootstrap_bindings=bindings,
             control_actor=actor,
+            agent_sessions=agent_sessions,
         )
         return host, binding_service, manager, bindings, service
 
@@ -162,6 +172,30 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bound["execution_id"], planner.calls[0]["execution_id"])
         self.assertEqual(host.settings[0][0], "thread-created")
         self.assertEqual(host.events[-1]["type"], "thread_bootstrap_bound")
+
+    async def test_create_records_separate_canonical_agent_session_identity(self) -> None:
+        agent_sessions = _AgentSessions()
+        host, planner, manager, bindings, service = self._service(
+            agent_sessions=agent_sessions
+        )
+
+        response = await service.create(project_id="p1")
+
+        self.assertEqual(response["thread"]["id"], "thread-created")
+        self.assertEqual(response["agentSessionId"], "agent-session-1")
+        self.assertEqual(len(agent_sessions.calls), 1)
+        adopted = agent_sessions.calls[0]
+        self.assertEqual(adopted["provider_native_session_id"], "thread-created")
+        self.assertEqual(adopted["provider_id"], "openai")
+        self.assertEqual(adopted["runtime_id"], "codex")
+        self.assertEqual(
+            adopted["request"].assignment_id,
+            "assignment-bootstrap",
+        )
+        self.assertEqual(
+            host.events[-1]["agent_session_id"],
+            "agent-session-1",
+        )
 
     async def test_thread_start_failure_fails_assignment_and_never_uses_global_runtime(self) -> None:
         session = _Session(error=RuntimeError("start failed"))
