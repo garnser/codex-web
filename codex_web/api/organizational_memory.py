@@ -9,9 +9,11 @@ from codex_web.data_governance import DataClassification
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.organizational_memory import (
     KnowledgeCreate,
+    KnowledgeIngestBatch,
     KnowledgeInvalidate,
     KnowledgeLifecycle,
     KnowledgeObjectType,
+    KnowledgeProcedurePromotion,
     KnowledgeQuery,
     KnowledgeRevise,
 )
@@ -121,6 +123,7 @@ def build_organizational_memory_router(
             payload["content"] = None
             payload["canonical_refs"] = []
             payload["tags"] = []
+        payload["freshness"] = service.freshness(item).value
         return payload
 
     @router.get("")
@@ -162,6 +165,36 @@ def build_organizational_memory_router(
             raise translate(exc) from exc
         return {"item": view(item)}
 
+    @router.post("/ingest")
+    async def ingest_memory(
+        payload: KnowledgeIngestBatch,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = writer(request)
+        try:
+            rows = service.ingest(payload, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {
+            "items": [
+                {"status": status, "item": view(item)}
+                for status, item in rows
+            ],
+            "count": len(rows),
+        }
+
+    @router.post("/procedures/promote")
+    async def promote_memory_procedure(
+        payload: KnowledgeProcedurePromotion,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = writer(request)
+        try:
+            item = service.promote_procedure(payload, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"item": view(item)}
+
     @router.get("/index")
     async def retrieval_index_status(
         request: Request,
@@ -193,6 +226,21 @@ def build_organizational_memory_router(
         except Exception as exc:
             raise translate(exc) from exc
         return result.model_dump(mode="json")
+
+    @router.get("/retrievals")
+    async def retrieval_runs(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        actor = reader(request)
+        try:
+            rows = service.retrieval_runs(actor=actor, limit=limit)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {
+            "items": [item.model_dump(mode="json") for item in rows],
+            "count": len(rows),
+        }
 
     @router.get("/retrievals/{retrieval_id}")
     async def retrieval_run(

@@ -14,6 +14,7 @@ from codex_web.authority import (
     AuthorityLevel,
 )
 from codex_web.data_governance import (
+    CLASSIFICATION_RANK,
     ContextFilterRequest,
     DataCategory,
     DataClassification,
@@ -28,17 +29,23 @@ from codex_web.organizational_memory import (
     KnowledgeDeniedCandidate,
     KnowledgeEmbedding,
     KnowledgeFreshness,
+    KnowledgeIngestBatch,
     KnowledgeInvalidate,
     KnowledgeLifecycle,
+    KnowledgeProcedurePromotion,
+    KnowledgeProvenance,
     KnowledgeQuery,
     KnowledgeRecord,
     KnowledgeRelationship,
+    KnowledgeCanonicalRef,
     KnowledgeRelationshipCreate,
     KnowledgeRelationshipType,
     KnowledgeRetrievalItem,
     KnowledgeRetrievalResult,
     KnowledgeRetrievalRun,
     KnowledgeRevise,
+    KnowledgeSourceKind,
+    KnowledgeObjectType,
     OrganizationalMemoryState,
 )
 from codex_web.retrieval import (
@@ -637,7 +644,8 @@ class OrganizationalMemoryService:
         if query.object_types and item.object_type not in query.object_types:
             return False
         if query.project_ids and item.project_id not in query.project_ids:
-            return False
+            if not (query.include_company_scope and item.project_id is None):
+                return False
         if query.logical_keys and item.logical_key not in query.logical_keys:
             return False
         if query.tags and not set(query.tags).issubset(set(item.tags)):
@@ -769,6 +777,204 @@ class OrganizationalMemoryService:
         self.store.update_state(apply)
         self._index_upsert(record, actor=actor)
         return record
+
+    def ingest(
+        self,
+        batch: KnowledgeIngestBatch,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[tuple[str, KnowledgeRecord], ...]:
+        """Deterministically ingest normalized, provenance-bearing source snapshots.
+
+        Source adapters are responsible for reading Git/code-host/provider data.
+        This boundary owns canonical dedupe/versioning so retries never create a
+        second memory identity for the same logical key.
+        """
+
+        results: list[tuple[str, KnowledgeRecord]] = []
+        for payload in batch.items:
+            existing = [
+                item
+                for item in self.store.list(
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                )
+                if item.logical_key == payload.logical_key
+            ]
+            if not existing:
+                results.append(("created", self.create(payload, actor=actor)))
+                continue
+
+            current = next(
+                (
+                    item
+                    for item in existing
+                    if item.lifecycle == KnowledgeLifecycle.CURRENT
+                ),
+                None,
+            )
+            if current is None:
+                raise KnowledgeConflictError(
+                    f"knowledge logical_key has no current revision: {payload.logical_key}"
+                )
+            incoming_digest = KnowledgeRecord.digest_payload(
+                title=payload.title,
+                summary=payload.summary,
+                content=payload.content,
+                canonical_refs=payload.canonical_refs,
+                tags=payload.tags,
+            )
+            provenance_unchanged = (
+                current.provenance.source_kind == payload.provenance.source_kind
+                and current.provenance.source_ref == payload.provenance.source_ref
+                and current.provenance.source_revision == payload.provenance.source_revision
+                and current.provenance.evidence_ids == payload.provenance.evidence_ids
+                and current.provenance.source_governance_record_ids
+                == payload.provenance.source_governance_record_ids
+            )
+            metadata_unchanged = (
+                current.object_type == payload.object_type
+                and current.project_id == payload.project_id
+                and current.classification == payload.classification
+                and current.retention_expires_at == payload.retention_expires_at
+                and current.retention_action == payload.retention_action
+                and current.deny_model_context == payload.deny_model_context
+                and current.required_role_ids == payload.required_role_ids
+                and current.review_after == payload.review_after
+                and current.valid_until == payload.valid_until
+            )
+            if (
+                current.content_sha256 == incoming_digest
+                and provenance_unchanged
+                and metadata_unchanged
+            ):
+                results.append(("unchanged", current))
+                continue
+
+            revised = self.revise(
+                current.id,
+                KnowledgeRevise(
+                    title=payload.title,
+                    summary=payload.summary,
+                    content=payload.content,
+                    tags=payload.tags,
+                    canonical_refs=payload.canonical_refs,
+                    relationships=payload.relationships,
+                    provenance=payload.provenance,
+                    classification=payload.classification,
+                    retention_expires_at=payload.retention_expires_at,
+                    retention_action=payload.retention_action,
+                    deny_model_context=payload.deny_model_context,
+                    required_role_ids=payload.required_role_ids,
+                    review_after=payload.review_after,
+                    valid_until=payload.valid_until,
+                    reason=batch.reason,
+                ),
+                actor=actor,
+            )
+            results.append(("revised", revised))
+        return tuple(results)
+
+    def promote_procedure(
+        self,
+        payload: KnowledgeProcedurePromotion,
+        *,
+        actor: AuthenticationActor,
+    ) -> KnowledgeRecord:
+        """Create governed reusable procedure memory from independently verified sources."""
+
+        sources = tuple(
+            self.get(knowledge_id, actor=actor)
+            for knowledge_id in payload.source_knowledge_ids
+        )
+        source_projects = {item.project_id for item in sources if item.project_id is not None}
+        project_id = payload.project_id
+        if project_id is None and len(source_projects) == 1:
+            project_id = next(iter(source_projects))
+        if project_id is not None and any(
+            item.project_id not in {None, project_id} for item in sources
+        ):
+            raise KnowledgeValidationError(
+                "procedure promotion sources must be company-scoped or match the target project"
+            )
+
+        classification = max(
+            (item.classification for item in sources),
+            key=lambda value: CLASSIFICATION_RANK[value],
+        )
+        expiry_values = [
+            item.retention_expires_at
+            for item in sources
+            if item.retention_expires_at is not None
+        ]
+        retention_expires_at = min(expiry_values) if expiry_values else None
+        retention_action = (
+            GovernanceAction.DELETE
+            if any(item.retention_action == GovernanceAction.DELETE for item in sources)
+            else GovernanceAction.REDACT
+        )
+        required_roles = tuple(
+            dict.fromkeys(
+                role_id
+                for item in sources
+                for role_id in item.required_role_ids
+            )
+        )
+        source_governance_ids = tuple(
+            dict.fromkeys(item.governance_record_id for item in sources)
+        )
+        source_refs = tuple(
+            KnowledgeCanonicalRef(
+                object_type="organizational_memory",
+                object_id=item.id,
+                relation="derived_from",
+            )
+            for item in sources
+        )
+        relationships = tuple(
+            KnowledgeRelationshipCreate(
+                target_knowledge_id=item.id,
+                relationship_type=KnowledgeRelationshipType.DERIVED_FROM,
+                note="verified recurring solution promoted to reusable procedure",
+            )
+            for item in sources
+        )
+        promotion_ref = hashlib.sha256(
+            (
+                payload.logical_key
+                + ":"
+                + ":".join(payload.source_knowledge_ids)
+                + ":"
+                + ":".join(payload.evidence_ids)
+            ).encode("utf-8")
+        ).hexdigest()
+        return self.create(
+            KnowledgeCreate(
+                logical_key=payload.logical_key,
+                object_type=KnowledgeObjectType.PROCEDURE,
+                title=payload.title,
+                summary=payload.summary,
+                content=payload.content,
+                project_id=project_id,
+                tags=tuple(dict.fromkeys((*payload.tags, "procedure", "known-pattern"))),
+                canonical_refs=source_refs,
+                relationships=relationships,
+                provenance=KnowledgeProvenance(
+                    source_kind=KnowledgeSourceKind.EVIDENCE,
+                    source_ref=f"memory-procedure-promotion:{promotion_ref}",
+                    authored_by=actor.identity_id,
+                    observed_at=float(self.clock()),
+                    evidence_ids=payload.evidence_ids,
+                    source_governance_record_ids=source_governance_ids,
+                ),
+                classification=classification,
+                retention_expires_at=retention_expires_at,
+                retention_action=retention_action,
+                deny_model_context=any(item.deny_model_context for item in sources),
+                required_role_ids=required_roles,
+            ),
+            actor=actor,
+        )
 
     def revise(
         self,
@@ -1147,6 +1353,34 @@ class OrganizationalMemoryService:
         rows.sort(key=lambda item: (item.created_at, item.id))
         return tuple(rows)
 
+    def freshness(self, item: KnowledgeRecord) -> KnowledgeFreshness:
+        return self._freshness(item)
+
+    def retrieval_runs(
+        self,
+        *,
+        actor: AuthenticationActor,
+        limit: int = 100,
+    ) -> tuple[KnowledgeRetrievalRun, ...]:
+        allowed, reasons = self._can_read(
+            actor,
+            project_id=None,
+            classification=DataClassification.INTERNAL,
+        )
+        if not allowed:
+            raise KnowledgeAuthorizationError(
+                "organizational memory retrieval inspection denied: "
+                + "; ".join(reasons)
+            )
+        rows = [
+            row
+            for row in self.store.load().retrieval_runs
+            if row.organization_id == actor.organization_id
+            and row.workspace_id == actor.workspace_id
+        ]
+        rows.sort(key=lambda row: (row.created_at, row.id), reverse=True)
+        return tuple(rows[: max(1, min(limit, 500))])
+
     def retrieval_run(
         self,
         retrieval_id: str,
@@ -1292,7 +1526,11 @@ class OrganizationalMemoryService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             allowed_knowledge_ids=tuple(canonical_by_id),
-            project_ids=query.project_ids,
+            project_ids=(
+                ()
+                if query.include_company_scope
+                else query.project_ids
+            ),
             object_types=tuple(item.value for item in query.object_types),
             lifecycles=tuple(
                 dict.fromkeys(

@@ -240,6 +240,57 @@ class KnowledgeInvalidate(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class KnowledgeIngestBatch(BaseModel):
+    """Normalized authorized source snapshots to ingest into canonical memory."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    items: tuple[KnowledgeCreate, ...] = Field(min_length=1, max_length=100)
+    reason: str = Field(
+        default="ingest authorized knowledge source snapshot",
+        min_length=1,
+        max_length=4000,
+    )
+
+
+class KnowledgeProcedurePromotion(BaseModel):
+    """Promote verified recurring knowledge into a reusable procedure."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_knowledge_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
+    logical_key: str = Field(
+        min_length=1,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+    )
+    title: str = Field(min_length=1, max_length=1000)
+    summary: str = Field(min_length=1, max_length=8000)
+    content: str = Field(min_length=1, max_length=200000)
+    project_id: str | None = Field(default=None, max_length=500)
+    tags: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def normalize(self) -> "KnowledgeProcedurePromotion":
+        self.source_knowledge_ids = tuple(
+            dict.fromkeys(value.strip() for value in self.source_knowledge_ids if value.strip())
+        )
+        self.evidence_ids = tuple(
+            dict.fromkeys(value.strip() for value in self.evidence_ids if value.strip())
+        )
+        self.tags = tuple(
+            dict.fromkeys(value.strip().lower() for value in self.tags if value.strip())
+        )
+        if not self.source_knowledge_ids:
+            raise ValueError("at least one source knowledge record is required")
+        if not self.evidence_ids:
+            raise ValueError("verified procedure promotion requires evidence")
+        if len(self.tags) > MAX_MEMORY_TAGS:
+            raise ValueError(f"knowledge supports at most {MAX_MEMORY_TAGS} tags")
+        return self
+
+
 class KnowledgeRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -338,6 +389,7 @@ class KnowledgeQuery(BaseModel):
     text: str = Field(default="", max_length=20000)
     object_types: tuple[KnowledgeObjectType, ...] = ()
     project_ids: tuple[str, ...] = ()
+    include_company_scope: bool = False
     logical_keys: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     relationship_target_ids: tuple[str, ...] = ()
