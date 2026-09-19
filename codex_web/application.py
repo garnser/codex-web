@@ -1341,6 +1341,7 @@ company_operations_service = CompanyOperationsService(
     approval_request_service,
     action_intent_service,
     artifact_evidence_service,
+    extension_service,
 )
 app.state.company_operations_service = company_operations_service
 app.include_router(build_company_operations_router(company_operations_service))
