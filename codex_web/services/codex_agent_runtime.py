@@ -4,6 +4,7 @@ from typing import Any
 
 from codex_web.agent_runtime import (
     AgentRuntimeHealth,
+    AgentRuntimeListRequest,
     AgentRuntimeResult,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
@@ -61,6 +62,26 @@ class CodexAgentRuntimeAdapter:
                 str(turn.get("id")) if turn.get("id") else None
             ),
             payload=payload,
+        )
+
+    async def list_sessions(
+        self,
+        request: AgentRuntimeListRequest,
+    ) -> AgentRuntimeResult:
+        params: dict[str, Any] = {
+            "limit": request.limit,
+            "archived": request.archived,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+            "sourceKinds": ["appServer", "cli", "vscode", "exec"],
+        }
+        if request.workspace_cwd:
+            params["cwd"] = request.workspace_cwd
+        if request.search:
+            params["searchTerm"] = request.search
+        response = await self.transport.request("thread/list", params)
+        return AgentRuntimeResult(
+            payload=response if isinstance(response, dict) else {},
         )
 
     async def create_session(
