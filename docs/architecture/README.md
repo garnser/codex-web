@@ -31,25 +31,11 @@ The policy defines deterministic-first execution, event-driven activation, minim
 
 ## Delivery tracking
 
-Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#170`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M13.
+Actionable work is tracked in GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests. This architecture index intentionally does not reproduce milestone names, numbers, phase ordering, or completion state.
 
-Milestone dependency order is:
+Technical dependencies in durable documentation should be expressed in terms of canonical capabilities and contracts—for example identity and tenancy, data governance, authority, eventing, scheduling, safe execution, evidence, model routing, and production qualification. Link an issue or PR when implementation provenance is useful, but do not make a roadmap phase number part of the technical contract.
 
-1. M1 — Executive Contract Foundation
-2. M2 — Work Item Lifecycle + Task Sources
-3. M3 — Platform, Identity & Safe Execution Foundation
-4. M4 — Dependency-Aware Work Graphs
-5. M5 — First-Class Goals
-6. M6 — Role Authority + Permission Contracts
-7. M7 — Event-Driven Autonomous Orchestration
-8. M8 — First-Class Decisions + Measured Outcomes
-9. M9 — Executive Management
-10. M10 — Organizational Memory
-11. M11 — Controlled Production Autonomy
-12. M12 — Product Documentation + Adoption
-13. M13 — Business Operations & Company Data
-
-M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, **versioned database-backed operational definitions**, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
+The platform foundation is intentionally reusable across higher-level capabilities. Identity/tenancy, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, worker trust/isolation, artifacts/evidence, ActionIntent reconciliation, compatibility/versioning, model governance, observability, typed configuration, entitlements/quotas, extensions, versioned definitions, security trust boundaries, and data governance must be consumed rather than reimplemented locally.
 
 ### Definitions are data; engines remain code
 
@@ -70,7 +56,7 @@ Keep the following concepts distinct even when their administration surfaces are
 
 Executions, decisions, evaluations, and audits should retain the exact definition IDs/revisions that influenced them so historical behavior remains reproducible after definitions change.
 
-M7 adds deterministic time/scheduling (#158), canonical ApprovalRequests/quorum/separation-of-duties (#338), autonomous replay/evaluation (#159), and a canonical human-attention queue (#160) on top of the event-driven orchestration boundary. Replay/evaluation must pin the exact Definition Registry revisions used historically. M8 adds generic provenance-aware Metric/KPI definitions and observations (#339) for measured Goal/Decision evidence. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew (including definition/engine compatibility), audit integrity, and distributed failover where enabled. M13 then adds governed business entities/CompanyFacts/external-record references, provider-neutral business-data synchronization, business KPI catalogs, Executive consumption, and Company Operations UI (#340–#345) without turning codex-web into a replacement CRM/billing/accounting system.
+Event-driven orchestration adds deterministic scheduling (#158), canonical ApprovalRequests/quorum/separation-of-duties (#338), autonomous replay/evaluation (#159), and a canonical human-attention queue (#160). Replay/evaluation must pin the exact Definition Registry revisions used historically. Measured Goal/Decision evidence uses generic provenance-aware Metric/KPI definitions and observations (#339). Production qualification covers releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew, audit integrity, and distributed failover where enabled. Governed business operations add business entities/CompanyFacts/external-record references, provider-neutral business-data synchronization, business KPI catalogs, Executive consumption, and Company Operations UI (#340–#345) without turning codex-web into a replacement CRM/billing/accounting system.
 
 Use GitHub tracking as follows:
 
@@ -120,7 +106,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Model gateway and prompt governance](model-gateway.md) — stable model classes, provider/model registry, deterministic routing/fallback, secret references, prompt revisions, and invocation attribution.
 - [Storage scaling](storage-scaling.md)
 
-Additional M3/M7/M11 architecture contracts should be added as their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
+Additional architecture contracts should be added when their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
 
 ## Design review expectation
 
@@ -149,4 +135,4 @@ The target architecture is:
 
 - [BusinessDataSource synchronization](business-data-sources.md) — provider-neutral capabilities, normalized events, bounded sync/backfill, cursor safety, tombstones, drift and read-only external authority.
 
-- [Business KPI catalogs and operating views](business-kpis.md) — explicit versioned CompanyFact formulas projected into M8 Metrics, role-oriented starter packs, deterministic current/trend/threshold state and exact Goal/Decision snapshot provenance.
+- [Business KPI catalogs and operating views](business-kpis.md) — explicit versioned CompanyFact formulas projected into canonical Metrics, role-oriented starter packs, deterministic current/trend/threshold state and exact Goal/Decision snapshot provenance.
