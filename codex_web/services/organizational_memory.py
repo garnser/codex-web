@@ -40,6 +40,13 @@ from codex_web.organizational_memory import (
     KnowledgeRevise,
     OrganizationalMemoryState,
 )
+from codex_web.retrieval import (
+    LocalVectorRetrievalBackend,
+    RetrievalBackend,
+    RetrievalBackendStatus,
+    RetrievalIndexDocument,
+    RetrievalSearchRequest,
+)
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.storage.organizational_memory import (
@@ -151,17 +158,23 @@ class OrganizationalMemoryService:
         authority: AuthorityRoleService,
         *,
         encoder: DeterministicSemanticEncoder | None = None,
+        retrieval_backend: RetrievalBackend | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
         self.governance = governance
         self.authority = authority
         self.encoder = encoder or DeterministicSemanticEncoder()
+        self.retrieval_backend = (
+            retrieval_backend or LocalVectorRetrievalBackend()
+        )
+        self._retrieval_index_dirty = False
         self.clock = clock
         self.governance.register_action_handler(
             "organizational_memory",
             self._governance_action,
         )
+        self.rebuild_retrieval_index()
 
     @staticmethod
     def _same_scope(
@@ -266,6 +279,91 @@ class OrganizationalMemoryService:
                 refs,
             )
         )
+
+
+    def _retrieval_document(
+        self,
+        item: KnowledgeRecord,
+    ) -> RetrievalIndexDocument:
+        return RetrievalIndexDocument(
+            knowledge_id=item.id,
+            canonical_version=item.version,
+            content_sha256=item.content_sha256,
+            organization_id=item.organization_id,
+            workspace_id=item.workspace_id,
+            project_id=item.project_id,
+            object_type=item.object_type.value,
+            lifecycle=item.lifecycle.value,
+            title=item.title,
+            summary=item.summary,
+            content=item.content,
+            tags=item.tags,
+            indexed_text=self._text_for_index(item),
+        )
+
+    @staticmethod
+    def _indexable(item: KnowledgeRecord) -> bool:
+        return item.lifecycle not in {
+            KnowledgeLifecycle.REDACTED,
+            KnowledgeLifecycle.DELETED,
+        }
+
+    def retrieval_status(self) -> RetrievalBackendStatus:
+        return self.retrieval_backend.status()
+
+    def rebuild_retrieval_index(self) -> RetrievalBackendStatus:
+        records = tuple(
+            self._retrieval_document(item)
+            for item in self.store.load().records
+            if self._indexable(item)
+        )
+        try:
+            self.retrieval_backend.rebuild(records)
+        except Exception:
+            self._retrieval_index_dirty = True
+            raise
+        self._retrieval_index_dirty = False
+        return self.retrieval_backend.status()
+
+    def _mark_index_dirty(self) -> None:
+        self._retrieval_index_dirty = True
+
+    def _index_upsert(self, item: KnowledgeRecord) -> None:
+        try:
+            if self._indexable(item):
+                self.retrieval_backend.upsert(
+                    self._retrieval_document(item)
+                )
+            else:
+                self.retrieval_backend.delete(item.id)
+        except Exception:
+            self._mark_index_dirty()
+
+    def _index_delete(self, knowledge_id: str) -> None:
+        try:
+            self.retrieval_backend.delete(knowledge_id)
+        except Exception:
+            self._mark_index_dirty()
+
+    def _ensure_retrieval_index(self) -> RetrievalBackendStatus:
+        status = self.retrieval_backend.status()
+        expected = sum(
+            1
+            for item in self.store.load().records
+            if self._indexable(item)
+        )
+        if (
+            self._retrieval_index_dirty
+            or not status.healthy
+            or status.document_count != expected
+        ):
+            status = self.rebuild_retrieval_index()
+        if not status.healthy:
+            raise KnowledgeValidationError(
+                "organizational memory retrieval index is unavailable: "
+                + str(status.last_error or "unhealthy backend")
+            )
+        return status
 
     def _embedding_for(self, item: KnowledgeRecord) -> KnowledgeEmbedding:
         vector = self.encoder.encode(self._text_for_index(item))
