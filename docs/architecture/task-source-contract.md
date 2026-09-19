@@ -66,7 +66,7 @@ Creation is resolved from the canonical project's singular `TaskSourceConfigurat
 
 `WorkItemService.create_authoritative(...)` is an internal execution seam: it resolves the configured source, requires CREATE, performs the provider creation, and only then projects the returned snapshot into canonical Work Item state. Missing authority configuration, unsupported creation, source-resolution failure, or provider failure therefore cannot create a local shadow Work Item.
 
-Creating an external task is a privileged side effect. Product flows such as Goal decomposition must not expose `create_authoritative(...)` as a direct user mutation or call provider transports themselves. Once the M3 action primitives exist, the initiating flow must first persist the authorized operation through the canonical ActionIntent/ActionProvider boundary, then use this seam as the bounded provider execution handler. Provider identity/receipt/evidence remains attributable to that action.
+Creating an external task is a privileged side effect. Product flows such as Goal decomposition must not expose `create_authoritative(...)` as a direct user mutation or call provider transports themselves. The code-owned `task-source/authoritative` ActionProvider now supplies that bridge: `task-source.create` is prepared and persisted as an ActionIntent before execution delegates to this seam. The action accepts only provider-neutral creation facts, returns the real projected Work Item ref/source identity, and intentionally does not claim cross-provider idempotency or rollback semantics. Provider identity/receipt/evidence therefore remains attributable to the durable action.
 
 ## Normalized facts
 
