@@ -202,6 +202,7 @@ class ReleaseRecord(BaseModel):
     policy_fingerprint: str
     evidence_ids: tuple[str, ...] = ()
     rollback_release_id: str | None = None
+    contains_state_migration: bool = False
     migration_evidence_id: str | None = None
     release_notes_artifact_id: str | None = None
     promotions: tuple[ReleasePromotion, ...] = ()
@@ -231,6 +232,7 @@ class ReleaseCreate(BaseModel):
     signing_credential_ref: str | None = None
     evidence_ids: tuple[str, ...] = ()
     rollback_release_id: str | None = None
+    contains_state_migration: bool = False
     migration_evidence_id: str | None = None
     release_notes_artifact_id: str | None = None
     policy: ReleasePolicy = Field(default_factory=ReleasePolicy)
