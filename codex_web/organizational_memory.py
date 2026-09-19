@@ -259,6 +259,7 @@ class KnowledgeRecord(BaseModel):
     classification: DataClassification
     governance_record_id: str
     retention_expires_at: float | None = None
+    retention_action: GovernanceAction = GovernanceAction.REDACT
     deny_model_context: bool = False
     required_role_ids: tuple[str, ...] = ()
     review_after: float | None = None
