@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
   let actor = null;
   let records = [];
   let schemas = [];
@@ -36,19 +37,6 @@
         : (actor.service_scopes || []).includes("definitions:admin");
     }
     if (!elevatedHuman()) return false;
-    return scopeType !== "global" || actor.assurance === "local_trusted";
-  }
-
-  function canApprove(scopeType) {
-    if (!actor) return false;
-    if (actor.principal_kind === "service") {
-      return scopeType === "global"
-        ? (actor.service_scopes || []).includes("definitions:global-approve")
-        : (actor.service_scopes || []).includes("definitions:approve");
-    }
-    const elevated = ["mfa", "local_trusted"].includes(actor.assurance)
-      && (actor.roles || []).some((role) => ["owner", "admin", "approver"].includes(role));
-    if (!elevated) return false;
     return scopeType !== "global" || actor.assurance === "local_trusted";
   }
 
@@ -127,7 +115,7 @@
 
   function actionButtons(record) {
     const manageable = canManage(record.scope_type);
-    const approvable = canApprove(record.scope_type);
+    const approvable = approvalUi.canApprove(actor, record.scope_type);
     if (!manageable && !approvable) {
       return '<small>Lifecycle mutation/approval unavailable for the current actor/assurance.</small>';
     }
@@ -228,73 +216,20 @@
     }
   }
 
-  async function publicationAssessment(record) {
-    return apiRequest(
-      `/api/definitions/${encodeURIComponent(record.record_id)}/publication-assessment`,
-    );
-  }
-
-  async function approveRecord(record) {
-    let assessment;
-    try {
-      assessment = await publicationAssessment(record);
-    } catch (error) {
-      setStatus(`Publication assessment failed: ${error.message}`);
-      return;
-    }
-    const reasons = assessment.reasons?.length
-      ? assessment.reasons.join(" · ")
-      : "No sensitive expansion detected; approval is optional.";
-    const reference = window.prompt(
-      `Approval reference for ${record.definition_id} r${record.revision}.\n\nClassifier: ${reasons}`,
-      "",
-    );
-    if (reference === null || !reference.trim()) return;
-    const reason = window.prompt(
-      "Approval reason (this becomes durable evidence tied to the candidate checksum and current active revision):",
-      "",
-    );
-    if (reason === null || !reason.trim()) return;
-    if (!window.confirm(
-      `Record publication approval as ${actor?.identity_id || "current actor"}? A sensitive publication still requires a different identity to perform the final publish.`,
-    )) return;
-    try {
-      const response = await apiRequest(
-        `/api/definitions/${encodeURIComponent(record.record_id)}/publication-approvals`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            reference: reference.trim(),
-            reason: reason.trim(),
-          }),
-        },
-      );
-      const count = response.record?.publication_approvals?.length || 0;
-      setStatus(`Recorded durable publication approval for ${record.definition_id} r${record.revision}; ${count} approval(s) now attached.`);
-      document.getElementById("refresh-definitions")?.click();
-    } catch (error) {
-      setStatus(`Publication approval failed: ${error.message}`);
-    }
-  }
-
   async function publishRecord(record) {
     const active = activeFor(record);
-    let assessment = null;
+    let approvalContext;
     try {
-      assessment = await publicationAssessment(record);
+      approvalContext = await approvalUi.publicationGate(record, actor);
     } catch (error) {
       setStatus(`Publication assessment failed: ${error.message}`);
       return;
     }
-    const independentApprovals = (assessment.approvals || []).filter(
-      (item) => item.approved_by !== actor?.identity_id,
-    );
-    if (assessment.requires_independent_approval && !independentApprovals.length) {
-      setStatus(
-        `Sensitive publication requires independent approval before publish: ${(assessment.reasons || []).join(" · ")}`,
-      );
+    if (approvalContext.blockedMessage) {
+      setStatus(approvalContext.blockedMessage);
       return;
     }
+    const { assessment, independentApprovals } = approvalContext;
     let impactCount = 0;
     if (active) {
       try {
@@ -327,9 +262,10 @@
     const impact = active
       ? ` Active r${active.revision} will be superseded; ${impactCount < 0 ? "usage impact could not be loaded" : `${impactCount} tenant-visible usage reference(s) currently point to it`}.`
       : " No active revision currently occupies this canonical slot.";
-    const gate = assessment.requires_independent_approval
-      ? ` Sensitive expansion classifier: ${(assessment.reasons || []).join(" · ")}. Independent approval evidence: ${independentApprovals.length}.`
-      : " No sensitive authority expansion was detected by the code-owned classifier.";
+    const gate = approvalUi.publicationGateSummary(
+      assessment,
+      independentApprovals,
+    );
     if (!window.confirm(
       `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${gate} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
     )) return;
@@ -400,11 +336,12 @@
       setStatus(`Rollback published as new r${response.record.revision}; target history r${record.revision} remains immutable.`);
       document.getElementById("refresh-definitions")?.click();
     } catch (error) {
-      if (error.detail?.code === "definition_approval_required" && error.detail?.record_id) {
-        setStatus(
-          `Rollback prepared draft ${error.detail.record_id}, but activation requires independent approval: ${(error.detail.reasons || []).join(" · ")}. Refresh, record approval on that draft, then publish it.`,
-        );
-        document.getElementById("refresh-definitions")?.click();
+      const recovery = approvalUi.rollbackApprovalRecovery(error);
+      if (recovery) {
+        setStatus(recovery.message);
+        if (recovery.refresh) {
+          document.getElementById("refresh-definitions")?.click();
+        }
       } else {
         setStatus(`Definition rollback failed: ${error.message}`);
       }
@@ -418,7 +355,17 @@
     button.disabled = true;
     try {
       if (action === "validate") await validateRecord(record);
-      else if (action === "approve") await approveRecord(record);
+      else if (action === "approve") {
+        try {
+          const message = await approvalUi.recordPublicationApproval(record, actor);
+          if (message) {
+            setStatus(message);
+            document.getElementById("refresh-definitions")?.click();
+          }
+        } catch (error) {
+          setStatus(`Publication approval failed: ${error.message}`);
+        }
+      }
       else if (action === "publish") await publishRecord(record);
       else if (action === "quarantine") await quarantineRecord(record);
       else if (action === "rollback") await rollbackRecord(record);
