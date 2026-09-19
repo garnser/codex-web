@@ -80,6 +80,8 @@ Candidates are authority- and governance-filtered before their content can enter
 
 Embedding providers carry versioned provider/model identity, model revision, dimensions, capability revision, locality, and residency tags. This uses the same provider/model identity vocabulary as the canonical model layer without creating a second durable provider registry.
 
+Non-local identities are validated against the active canonical ModelGateway provider/model registry before indexing: the provider and model must exist and be active, the model must declare the `embedding` capability and matching dimensions/revision, and the declared embedding residency must be represented by canonical provider/model configuration.
+
 The default provider is offline/local and deterministic. Changing its model revision makes the vector index unhealthy until it is rebuilt, preventing incompatible vectors from being silently mixed.
 
 For an external embedding provider, indexing is fail-closed:
