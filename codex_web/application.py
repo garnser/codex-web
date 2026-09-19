@@ -27,6 +27,7 @@ from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.business_context import build_business_context_router
 from codex_web.api.business_data_sources import build_business_data_sources_router
 from codex_web.api.business_kpis import build_business_kpis_router
+from codex_web.api.company_operations import build_company_operations_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.evaluations import build_evaluations_router
@@ -161,6 +162,7 @@ from codex_web.services.business_data_sources import (
     BusinessDataSourceService,
 )
 from codex_web.services.business_kpis import BusinessKPIService
+from codex_web.services.company_operations import CompanyOperationsService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
@@ -1326,6 +1328,22 @@ executive_management_service = ExecutiveManagementService(
 app.state.executive_activation_store = executive_activation_store
 app.state.executive_management_service = executive_management_service
 app.include_router(build_executive_management_router(executive_management_service))
+
+company_operations_service = CompanyOperationsService(
+    business_context_service,
+    business_data_source_service,
+    business_kpi_service,
+    goal_service,
+    decision_service,
+    executive_management_service,
+    attention_service,
+    provider_capacity_service,
+    approval_request_service,
+    action_intent_service,
+    artifact_evidence_service,
+)
+app.state.company_operations_service = company_operations_service
+app.include_router(build_company_operations_router(company_operations_service))
 
 def _executive_role_definition_usage(reference):
     if reference.kind != "executive-role-catalog":
