@@ -235,6 +235,51 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_explicit_runtime_choice_is_forced_through_canonical_routing(self) -> None:
+        host = _Host()
+        planner = _BindingService()
+        default_manager = _SessionManager(_Session())
+        claude_manager = _SessionManager(_Session())
+        bindings = _BootstrapBindings()
+        actor = SimpleNamespace(identity_id="control")
+        selected = ExecutionRuntimeBinding(
+            provider_id="anthropic",
+            runtime_id="claude-code",
+            capability_revision=1,
+        )
+        routing = _RoutingService(selected)
+
+        service = ThreadService(
+            host,
+            binding_service=planner,
+            session_manager=default_manager,
+            bootstrap_bindings=bindings,
+            control_actor=actor,
+            routing_service=routing,
+            session_managers={
+                ("openai", "codex"): default_manager,
+                ("anthropic", "claude-code"): claude_manager,
+            },
+            runtime_adapter_factory=lambda _binding, session: _AlternateAdapter(session),
+        )
+
+        await service.create(
+            project_id="p1",
+            provider_id="anthropic",
+            runtime_id="claude-code",
+        )
+
+        request, _actor = routing.calls[0]
+        self.assertEqual(request.allowed_provider_ids, ("anthropic",))
+        self.assertEqual(request.allowed_runtime_ids, ("claude-code",))
+        self.assertEqual(request.preferred_provider_ids, ("anthropic",))
+        self.assertEqual(request.preferred_runtime_ids, ("claude-code",))
+        self.assertFalse(request.allow_fallback)
+        self.assertEqual(
+            planner.calls[0]["runtime_binding"],
+            selected,
+        )
+
     async def test_create_routes_selected_non_codex_runtime_without_using_default_manager(self) -> None:
         host = _Host()
         planner = _BindingService()
