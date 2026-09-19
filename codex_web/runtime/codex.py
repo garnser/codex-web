@@ -271,6 +271,41 @@ class CodexRuntime:
             self.pending_approval_rpc_ids[public_id] = message_id
             if self.metrics:
                 self.metrics.increment("codex.approvals_requested")
+
+            registrar = getattr(
+                self.host,
+                "_register_canonical_approval_request",
+                None,
+            )
+            if callable(registrar):
+                try:
+                    await registrar(public_message)
+                except Exception as exc:
+                    self.pending_approvals.pop(public_id, None)
+                    self.pending_approval_rpc_ids.pop(public_id, None)
+                    result = self.host._approval_result(
+                        message["method"],
+                        "decline",
+                    )
+                    await self._send({"id": message_id, "result": result})
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "codex.approval_registration_failed",
+                        "Native approval was denied because canonical registration failed",
+                        request_id=public_id,
+                        method=message.get("method"),
+                        error=str(exc),
+                    )
+                    await self.host.hub.publish(
+                        {
+                            "type": "approval.registration_failed",
+                            "id": public_id,
+                            "error": str(exc),
+                        }
+                    )
+                    return
+
             await self.host._record_bot_approval_request(public_message)
             await self.host.hub.publish(
                 {"type": "approval.request", "request": public_message}
