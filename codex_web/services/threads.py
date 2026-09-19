@@ -435,8 +435,13 @@ class ThreadService:
             worker_id=status.worker_id,
             model=model or project.model,
         )
+        effective_runtime_binding = getattr(
+            binding,
+            "runtime_binding",
+            runtime_binding,
+        )
         runtime_adapter = self._adapter_for_binding(
-            binding.runtime_binding,
+            effective_runtime_binding,
             session,
         )
         try:
@@ -447,7 +452,15 @@ class ThreadService:
                 await session_manager.complete(
                     binding.assignment_id,
                     succeeded=False,
-                    failure_code="codex_thread_start_failed",
+                    failure_code=(
+                        "codex_thread_start_failed"
+                        if effective_runtime_binding is None
+                        or (
+                            effective_runtime_binding.provider_id == "openai"
+                            and effective_runtime_binding.runtime_id == "codex"
+                        )
+                        else "agent_thread_start_failed"
+                    ),
                     failure_message=str(exc)[:500],
                 )
             raise
@@ -463,7 +476,15 @@ class ThreadService:
                 await session_manager.complete(
                     binding.assignment_id,
                     succeeded=False,
-                    failure_code="codex_thread_id_missing",
+                    failure_code=(
+                        "codex_thread_id_missing"
+                        if effective_runtime_binding is None
+                        or (
+                            effective_runtime_binding.provider_id == "openai"
+                            and effective_runtime_binding.runtime_id == "codex"
+                        )
+                        else "agent_thread_id_missing"
+                    ),
                     failure_message="thread/start returned no canonical thread id",
                 )
             raise HTTPException(
@@ -485,7 +506,15 @@ class ThreadService:
                 await session_manager.complete(
                     binding.assignment_id,
                     succeeded=False,
-                    failure_code="codex_thread_binding_failed",
+                    failure_code=(
+                        "codex_thread_binding_failed"
+                        if effective_runtime_binding is None
+                        or (
+                            effective_runtime_binding.provider_id == "openai"
+                            and effective_runtime_binding.runtime_id == "codex"
+                        )
+                        else "agent_thread_binding_failed"
+                    ),
                     failure_message=(
                         "returned Codex thread could not be durably bound "
                         "to its bootstrap execution"
