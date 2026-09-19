@@ -1,7 +1,5 @@
 # Canonical ApprovalRequest
 
-Issue: #338.
-
 ApprovalRequest is the reusable approval primitive for Codex command/file execution, sensitive Definition publication, Goals, Decisions, ActionIntents, releases, recovery and later production controls. Feature-specific approval state machines are not authoritative.
 
 ## Invariants
@@ -16,7 +14,7 @@ ApprovalRequest is the reusable approval primitive for Codex command/file execut
 - Approval consumption is attributable and, where required, atomic with the guarded mutation.
 - Approval lifecycle transitions emit canonical events.
 - Browser/operator UI is a projection over the canonical API. It does not maintain independent lifecycle, quorum or authorization truth.
-- Human-attention routing and notification delivery belong to #160. AttentionItems may point to an ApprovalRequest but may not duplicate its approval/quorum state.
+- Human-attention routing and notification delivery use the canonical Attention domain. AttentionItems may point to an ApprovalRequest but may not duplicate its approval/quorum state.
 
 ## Lifecycle
 
