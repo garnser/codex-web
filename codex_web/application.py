@@ -72,6 +72,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
+from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -91,6 +92,7 @@ from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_configuration import install_codex_worker_configuration
 from codex_web.services.codex_model_egress import endpoints_from_provider_base_urls
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
@@ -147,6 +149,7 @@ from codex_web.services.work_items import WorkItemService
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_providers import AgentProviderStore
+from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.attention import AttentionStore
 from codex_web.storage.autonomy import AutonomyStateStore
@@ -297,6 +300,13 @@ app.include_router(build_secrets_router(secret_broker))
 app.state.secret_state_store = secret_state_store
 app.state.secret_broker = secret_broker
 app.state.local_secret_backend = local_secret_backend
+
+agent_session_store = AgentSessionStore(state_store)
+agent_runtime_registry = AgentRuntimeRegistry()
+agent_session_service = AgentSessionService(agent_session_store, agent_runtime_registry)
+app.state.agent_session_store = agent_session_store
+app.state.agent_runtime_registry = agent_runtime_registry
+app.state.agent_session_service = agent_session_service
 
 model_gateway_store = ModelGatewayStore(state_store)
 model_gateway_service = ModelGatewayService(
@@ -596,6 +606,7 @@ thread_service = ThreadService(
     session_manager=assignment_bound_codex_session_manager,
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
+    agent_sessions=agent_session_service,
 )
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
@@ -717,6 +728,8 @@ action_intent_service.recover_stale_claims()
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
+agent_runtime_registry.register(CodexAgentRuntimeAdapter(codex_runtime))
+app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(
     app,
