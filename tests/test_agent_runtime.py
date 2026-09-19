@@ -52,6 +52,7 @@ class _Runtime:
         AgentProviderCapability.AGENT_EXECUTION,
         AgentProviderCapability.PERSISTENT_SESSIONS,
         AgentProviderCapability.INTERRUPT_CANCEL,
+        AgentProviderCapability.NATIVE_CONTEXT_COMPACTION,
     )
 
     def __init__(self) -> None:
@@ -89,6 +90,10 @@ class _Runtime:
 
     async def interrupt(self, provider_native_session_id):
         self.calls.append(("interrupt", provider_native_session_id))
+        return AgentRuntimeResult(provider_native_session_id=provider_native_session_id)
+
+    async def compact_session(self, provider_native_session_id):
+        self.calls.append(("compact", provider_native_session_id))
         return AgentRuntimeResult(provider_native_session_id=provider_native_session_id)
 
 
@@ -207,6 +212,23 @@ class AgentSessionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(KeyError):
             self.service.get(created.id, _actor("org-b", "workspace-b"))
+
+    async def test_compaction_is_server_side_capability_checked(self) -> None:
+        created = await self.service.create(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            request=AgentRuntimeSessionRequest(project_id="project-a"),
+            actor=self.actor,
+        )
+
+        result = await self.service.compact(created.id, actor=self.actor)
+
+        self.assertEqual(result.provider_native_session_id, "native-1")
+        self.assertIn(("compact", "native-1"), self.runtime.calls)
+
+        self.runtime.capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        with self.assertRaises(AgentRuntimeUnsupportedCapability):
+            await self.service.compact(created.id, actor=self.actor)
 
     async def test_turn_interrupt_and_close_use_provider_native_id(self) -> None:
         created = await self.service.create(
