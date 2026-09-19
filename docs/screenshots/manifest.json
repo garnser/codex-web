@@ -133,7 +133,7 @@
     },
     {
       "name": "company-operations",
-      "fixture": "tests/browser/company_operations_fixture.html",
+      "fixture": "tests/browser/company_operations_docs_fixture.html",
       "title": "Company Operations business-data diagnostics",
       "landmarks": [
         "Company Operations",
