@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 7 evaluation contract.** Evaluation is an offline qualification
+**Canonical autonomy evaluation and replay contract.** Evaluation is an offline qualification
 boundary for event-driven autonomy. It is deliberately separate from live
 provider execution.
 
@@ -121,7 +121,7 @@ scenario, fixture, replay backend, checksum and assertion outcome. Named suite
 runs aggregate run/comparison IDs and Evidence IDs with one deterministic
 qualification result.
 
-M11 autonomy policy can therefore require a named passing suite without
+production autonomy policy can therefore require a named passing suite without
 re-running an LLM to decide whether qualification exists.
 
 ## API
