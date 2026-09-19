@@ -28,7 +28,20 @@
 .work-source-config summary { cursor: pointer; font-weight: 650; margin-bottom: 10px; }
 .work-source-grid { display: grid; grid-template-columns: 1fr 2fr 2fr; gap: 10px; }
 .work-source-grid label { display: grid; gap: 5px; font-size: .8rem; }
-.work-source-grid input { width: 100%; box-sizing: border-box; }
+.work-source-grid input, .work-source-grid select { width: 100%; box-sizing: border-box; }
+.work-source-provider-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 9px;
+}
+.work-source-provider-fields[hidden], .work-source-provider-fields label[hidden] { display: none; }
+.work-source-provider-fields label { display: grid; gap: 5px; font-size: .8rem; }
+.work-source-provider-fields input, .work-source-provider-fields select { width: 100%; box-sizing: border-box; }
+.work-source-provider-fields small { opacity: .65; }
 .work-source-actions { margin-top: 10px; flex-wrap: wrap; }
 .work-source-capabilities { opacity: .7; }
 .work-items-layout { display: grid; grid-template-columns: minmax(250px, 330px) 1fr; min-height: 0; flex: 1; }
@@ -63,6 +76,6 @@
   .work-items-dialog { width: 100vw; height: 100vh; border-radius: 0; }
   .work-items-layout, .work-detail-columns { grid-template-columns: 1fr; }
   .work-items-list { max-height: 230px; border-right: 0; border-bottom: 1px solid var(--border, #ddd); }
-  .work-source-grid, .work-kv-wide { grid-template-columns: 1fr; }
+  .work-source-grid, .work-source-provider-fields, .work-kv-wide { grid-template-columns: 1fr; }
   .work-diagnostic, .work-history-event { grid-template-columns: 1fr; gap: 2px; }
 }
