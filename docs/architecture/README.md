@@ -92,7 +92,9 @@ If architecture changes materially while implementing an issue, update the relev
 - [Canonical event bus](canonical-events.md) — versioned event ingress, durable idempotency, correlation, deterministic filtering, and provider normalization before autonomy.
 - [Durable scheduler](durable-scheduler.md) — persistent one-shot/recurring timers, timezone and misfire semantics, fenced leases, crash-safe idempotent firing, and zero-LLM idle behavior.
 - [Canonical ApprovalRequest](approval-requests.md) — exact target binding, deterministic quorum/separation-of-duties, scheduler-backed expiry, idempotent decisions and atomic consumption.
-- [Canonical human attention](attention.md) — durable deduped operator intervention state, source-domain references, scheduler-backed escalation and provider-neutral delivery.\n- [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
+- [Canonical human attention](attention.md) — durable deduped operator intervention state, source-domain references, scheduler-backed escalation and provider-neutral delivery.
+- [Canonical Agent Providers](agent-providers.md) — provider-neutral model/execution identity, declared-vs-granted capabilities, deterministic discovery and extension/model provenance.
+- [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
