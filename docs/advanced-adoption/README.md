@@ -32,3 +32,7 @@ See [Adoption Levels 1–5](adoption-levels.md) for prerequisites, capabilities,
 ## Worked scenarios
 
 See [Worked examples](../examples/README.md) for feature/bug work, blockers and handoffs, Goals/Decisions/Executive analysis, provider/action/isolation flows, and intentionally failing autonomy scenarios.
+
+## Business Operations expansion
+
+For engineering-first deployments adding CRM/billing/support/analytics context, use [Adopt Business Operations after engineering-only codex-web](business-operations.md). It stages read/sync sources, KPIs, Goals/Decisions, advisory Executive roles and finally governed external Actions.
