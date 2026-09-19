@@ -24,6 +24,7 @@ from codex_web.business_kpis import (
     BusinessKPISnapshotItem,
     BusinessKPITargetBinding,
     BusinessKPITargetBindingCreate,
+    BusinessKPITargetSnapshot,
     BusinessKPITargetKind,
     BusinessKPITermAggregation,
     BusinessKPITermEvaluation,
@@ -943,6 +944,8 @@ class BusinessKPIService:
         actor: AuthenticationActor,
     ) -> CompanyOperatingSnapshot:
         items: list[BusinessKPISnapshotItem] = []
+        target_rows: list[BusinessKPITargetSnapshot] = []
+        captured_at = float(self.clock())
         for kpi in self.list(actor=actor):
             metric_snapshot = self.metrics.capture_snapshot(
                 kpi.metric_id,
@@ -980,22 +983,66 @@ class BusinessKPIService:
                     ),
                 )
             )
+            for binding in bindings:
+                bound_snapshot = metric_snapshot
+                if (
+                    binding.window_start is not None
+                    or binding.window_end is not None
+                ):
+                    bound_snapshot = self.metrics.capture_snapshot(
+                        kpi.metric_id,
+                        MetricSnapshotRequest(
+                            window_start=binding.window_start,
+                            window_end=binding.window_end,
+                        ),
+                        scope=actor.tenant,
+                        actor_id=actor.identity_id,
+                    )
+                target_rows.append(
+                    BusinessKPITargetSnapshot(
+                        organization_id=actor.organization_id,
+                        workspace_id=actor.workspace_id,
+                        binding_id=binding.id,
+                        target_kind=binding.target_kind,
+                        target_id=binding.target_id,
+                        kpi_id=kpi.id,
+                        kpi_revision=kpi.revision,
+                        metric_id=kpi.metric_id,
+                        metric_revision=bound_snapshot.metric_revision,
+                        metric_snapshot_id=bound_snapshot.id,
+                        observation_ids=bound_snapshot.observation_ids,
+                        value=bound_snapshot.value,
+                        unit=bound_snapshot.unit,
+                        freshness=bound_snapshot.freshness,
+                        window_start=bound_snapshot.window_start,
+                        window_end=bound_snapshot.window_end,
+                        captured_by=actor.identity_id,
+                        captured_at=captured_at,
+                    )
+                )
         snapshot = CompanyOperatingSnapshot(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             items=tuple(items),
             captured_by=actor.identity_id,
-            captured_at=float(self.clock()),
+            captured_at=captured_at,
         )
 
         def apply(state: BusinessKPIState) -> BusinessKPIState:
             state.operating_snapshots.append(snapshot)
+            state.target_snapshots.extend(target_rows)
             if len(state.operating_snapshots) > self.MAX_SNAPSHOTS:
                 state.operating_snapshots = sorted(
                     state.operating_snapshots,
                     key=lambda item: item.captured_at,
                     reverse=True,
                 )[: self.MAX_SNAPSHOTS]
+            if len(state.target_snapshots) > self.MAX_SNAPSHOTS * 20:
+                state.target_snapshots = sorted(
+                    state.target_snapshots,
+                    key=lambda item: item.captured_at,
+                    reverse=True,
+                )[: self.MAX_SNAPSHOTS * 20]
             return state
 
         self.store.update(apply)
@@ -1025,20 +1072,17 @@ class BusinessKPIService:
         target_id: str,
         *,
         actor: AuthenticationActor,
-    ) -> tuple[BusinessKPISnapshotItem, ...]:
+    ) -> tuple[BusinessKPITargetSnapshot, ...]:
         if target_kind == BusinessKPITargetKind.GOAL:
             self.goals.get(target_id, scope=actor.tenant)
         else:
             self.decisions.get(target_id, actor=actor)
-        rows: list[BusinessKPISnapshotItem] = []
-        snapshots = self.operating_snapshots(actor=actor, limit=self.MAX_SNAPSHOTS)
-        for snapshot in snapshots:
-            for item in snapshot.items:
-                target_ids = (
-                    item.goal_ids
-                    if target_kind == BusinessKPITargetKind.GOAL
-                    else item.decision_ids
-                )
-                if target_id in target_ids:
-                    rows.append(item)
+        rows = [
+            item
+            for item in self.store.load().target_snapshots
+            if self._same_scope(item, actor)
+            and item.target_kind == target_kind
+            and item.target_id == target_id
+        ]
+        rows.sort(key=lambda item: (item.captured_at, item.id), reverse=True)
         return tuple(rows)
