@@ -41,6 +41,12 @@ try {
   for (const capture of manifest.captures) {
     const url = `${base}/${capture.fixture}`;
     await page.goto(url, { waitUntil: "networkidle" });
+    if (capture.open_selector) {
+      const trigger = page.locator(capture.open_selector);
+      await trigger.waitFor({ state: "visible" });
+      await trigger.click();
+      await page.waitForTimeout(50);
+    }
     const text = await page.locator("body").innerText();
     for (const marker of manifest.forbidden_markers || []) {
       if (text.includes(marker)) {
