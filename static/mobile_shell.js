@@ -3,7 +3,8 @@ const MOBILE_QUERY = '(max-width: 900px)';
 function ensureMobileShell() {
   const sidebar = document.querySelector('.sidebar');
   const topbar = document.querySelector('.topbar');
-  if (!sidebar || !topbar || document.querySelector('#mobile-nav-toggle')) return;
+  const main = document.querySelector('.main');
+  if (!sidebar || !topbar || !main || document.querySelector('#mobile-nav-toggle')) return;
 
   if (!sidebar.id) sidebar.id = 'primary-sidebar';
 
@@ -24,6 +25,17 @@ function ensureMobileShell() {
   backdrop.tabIndex = -1;
   backdrop.setAttribute('aria-label', 'Close navigation');
 
+  const close = document.createElement('button');
+  close.id = 'mobile-nav-close';
+  close.className = 'icon-button mobile-nav-close';
+  close.type = 'button';
+  close.textContent = '×';
+  close.title = 'Close navigation';
+  close.setAttribute('aria-label', 'Close navigation');
+  const brand = sidebar.querySelector('.brand');
+  if (brand) brand.appendChild(close);
+  else sidebar.prepend(close);
+
   topbar.prepend(toggle);
   document.body.appendChild(backdrop);
 
@@ -34,6 +46,18 @@ function ensureMobileShell() {
     const next = mobile && Boolean(open);
     document.body.classList.toggle('mobile-nav-open', next);
     toggle.setAttribute('aria-expanded', String(next));
+    main.inert = next;
+    if (next) {
+      main.setAttribute('aria-hidden', 'true');
+      sidebar.setAttribute('role', 'dialog');
+      sidebar.setAttribute('aria-modal', 'true');
+      sidebar.setAttribute('aria-label', 'Navigation');
+    } else {
+      main.removeAttribute('aria-hidden');
+      sidebar.removeAttribute('role');
+      sidebar.removeAttribute('aria-modal');
+      sidebar.removeAttribute('aria-label');
+    }
     toggle.textContent = next ? '×' : '☰';
     toggle.title = next ? 'Close navigation' : 'Open navigation';
     toggle.setAttribute('aria-label', toggle.title);
@@ -54,15 +78,12 @@ function ensureMobileShell() {
     }
 
     if (next) {
-      const first = sidebar.querySelector(
-        'button:not(.icon-button):not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, button:not([disabled])'
-      );
       window.setTimeout(() => {
-        if (first && document.body.contains(first)) {
-          first.focus({ preventScroll: true });
+        if (document.body.contains(close)) {
+          close.focus({ preventScroll: true });
         }
       }, 0);
-    } else if (restoreFocus && mobile && document.activeElement && sidebar.contains(document.activeElement)) {
+    } else if (restoreFocus && mobile) {
       toggle.focus({ preventScroll: true });
     }
   };
@@ -70,8 +91,14 @@ function ensureMobileShell() {
   const syncMode = () => {
     setOpen(false, { restoreFocus: false });
     if (!media.matches) {
+      main.inert = false;
+      main.removeAttribute('aria-hidden');
+      sidebar.inert = false;
       sidebar.removeAttribute('inert');
       sidebar.removeAttribute('aria-hidden');
+      sidebar.removeAttribute('role');
+      sidebar.removeAttribute('aria-modal');
+      sidebar.removeAttribute('aria-label');
     }
   };
 
@@ -79,6 +106,7 @@ function ensureMobileShell() {
     setOpen(!document.body.classList.contains('mobile-nav-open'));
   });
   backdrop.addEventListener('click', () => setOpen(false));
+  close.addEventListener('click', () => setOpen(false));
 
   sidebar.addEventListener('click', (event) => {
     if (!media.matches) return;
