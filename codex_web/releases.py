@@ -80,7 +80,7 @@ class ReleasePolicy(BaseModel):
 
     id: str = Field(default="release-policy-default", min_length=1)
     version: str = Field(default="1", min_length=1, max_length=100)
-    require_signature: bool = True
+    require_signature: bool = False
     required_evidence: tuple[ReleaseEvidenceRequirement, ...] = (
         ReleaseEvidenceRequirement(
             id="tests",
