@@ -11,7 +11,7 @@ from codex_web.approval_requests import ApprovalRequestStatus
 from codex_web.attention import TERMINAL_ATTENTION_STATUSES
 from codex_web.company_operations import (
     CompanyFactDiagnostic,
-    CompanyOperationExplainStage,
+    CompanyOperationsExplainStage,
     CompanyOperationsCounts,
     CompanyOperationsExplain,
     CompanyOperationsHealth,
