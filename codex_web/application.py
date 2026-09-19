@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from codex_web.api.action_intents import build_action_intents_router
+from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.approval_requests import build_approval_requests_router
@@ -70,6 +71,7 @@ from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -144,6 +146,7 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_items import WorkItemService
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.attention import AttentionStore
 from codex_web.storage.autonomy import AutonomyStateStore
@@ -481,6 +484,16 @@ app.include_router(
 app.state.extension_state_store = extension_state_store
 app.state.extension_package_catalog = extension_package_catalog
 app.state.extension_service = extension_service
+
+agent_provider_store = AgentProviderStore(state_store)
+agent_provider_service = AgentProviderService(
+    agent_provider_store,
+    model_gateway=model_gateway_store,
+    extensions=extension_state_store,
+)
+app.include_router(build_agent_providers_router(agent_provider_service))
+app.state.agent_provider_store = agent_provider_store
+app.state.agent_provider_service = agent_provider_service
 
 codex_auth_delegation_service = CodexAuthDelegationService(secret_broker)
 app.state.codex_auth_delegation_service = codex_auth_delegation_service
