@@ -49,7 +49,7 @@ function ensureMobileShell() {
     if (next) {
       requestAnimationFrame(() => {
         const first = sidebar.querySelector(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary'
+          'button:not(.icon-button):not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, button:not([disabled])'
         );
         first?.focus({ preventScroll: true });
       });
