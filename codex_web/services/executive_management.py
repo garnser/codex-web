@@ -1106,6 +1106,53 @@ class ExecutiveManagementService:
         role: ExecutiveRoleDefinition,
     ) -> dict[str, Any]:
         visible = set(role.observable_information)
+        role_domains = {
+            value.casefold()
+            for value in role.business_domains
+        }
+
+        def business_rows(
+            rows: tuple[dict[str, Any], ...],
+            object_type: ExecutiveObjectType,
+        ) -> list[dict[str, Any]]:
+            if object_type not in visible:
+                return []
+            selected: list[dict[str, Any]] = []
+            for row in rows:
+                raw_classification = str(
+                    row.get("classification")
+                    or DataClassification.INTERNAL.value
+                )
+                try:
+                    classification = DataClassification(raw_classification)
+                except ValueError:
+                    continue
+                if (
+                    CLASSIFICATION_RANK[classification]
+                    > CLASSIFICATION_RANK[role.max_data_classification]
+                ):
+                    continue
+                domains = {
+                    str(value).casefold()
+                    for value in row.get("domains", ())
+                }
+                if not domains and row.get("domain"):
+                    domains.add(str(row["domain"]).casefold())
+                if role_domains and domains and not (role_domains & domains):
+                    continue
+                selected.append(row)
+                if len(selected) >= role.max_context_items:
+                    break
+            return selected
+
+        business_visible = bool(
+            visible
+            & {
+                ExecutiveObjectType.BUSINESS_ENTITY,
+                ExecutiveObjectType.BUSINESS_FACT,
+                ExecutiveObjectType.BUSINESS_KPI,
+            }
+        )
         return {
             "goals": (
                 list(context.goals)
@@ -1130,6 +1177,23 @@ class ExecutiveManagementService:
             "evidence": (
                 list(context.evidence)
                 if ExecutiveObjectType.EVIDENCE in visible
+                else []
+            ),
+            "business_entities": business_rows(
+                context.business_entities,
+                ExecutiveObjectType.BUSINESS_ENTITY,
+            ),
+            "business_facts": business_rows(
+                context.business_facts,
+                ExecutiveObjectType.BUSINESS_FACT,
+            ),
+            "business_kpis": business_rows(
+                context.business_kpis,
+                ExecutiveObjectType.BUSINESS_KPI,
+            ),
+            "business_context_denials": (
+                list(context.business_context_denials)
+                if business_visible
                 else []
             ),
             "memory": (
@@ -1158,11 +1222,16 @@ class ExecutiveManagementService:
                 "trigger_ref": activation.trigger_ref,
                 "event_type": activation.event_type,
                 "project_id": activation.project_id,
+                "business_entity_ids": activation.business_entity_ids,
+                "business_kpi_ids": activation.business_kpi_ids,
+                "business_domains": activation.business_domains,
             },
             "role": {
                 "id": role.id,
                 "title": role.title,
                 "responsibilities": role.responsibilities,
+                "business_domains": role.business_domains,
+                "max_data_classification": role.max_data_classification.value,
                 "authority": role.authority.model_dump(mode="json"),
             },
             "canonical_context": ExecutiveManagementService._filter_context(
@@ -1199,9 +1268,17 @@ class ExecutiveManagementService:
             "or external action was created or changed. Do not invent measurements. "
             "When a factual claim or recommendation relies on Organizational Memory, "
             "include the exact [memory:<id>@v<version>] citation supplied in canonical "
-            "context. External side effects are forbidden. Return exactly one JSON object and "
-            "no markdown with keys summary, recommendation, risks, assumptions, "
-            "disagreement, proposals. proposals is an array of objects with kind, "
+            "context. When governed business entities, facts, or KPIs are supplied, put the "
+            "exact citation markers that materially informed the recommendation into "
+            "context_refs; never cite a marker that is absent from canonical context. Treat "
+            "stale, missing, partial, conflicting, or governance-denied business state as "
+            "uncertainty, never as current fact. External side effects are forbidden: CRM "
+            "updates, customer communications, subscription/admin changes, campaigns, "
+            "finance/ops actions and similar effects must flow through canonical Decision/Work/"
+            "Approval/ActionIntent paths and authorized ActionProviders, never direct Executive "
+            "provider calls. Return exactly one JSON object and no markdown with keys summary, "
+            "recommendation, risks, assumptions, disagreement, context_refs, proposals. "
+            "proposals is an array of objects with kind, "
             "title, rationale, payload. Allowed proposal kinds for this role are: "
             f"{allowed}. A work proposal payload must include decision_id, items and "
             "reason and is only eligible after that Decision is canonically approved. "
@@ -1213,6 +1290,9 @@ class ExecutiveManagementService:
     def _parse_role_output(
         text: str,
         role: ExecutiveRoleDefinition,
+        *,
+        available_context_refs: tuple[str, ...] = (),
+        require_business_context_ref: bool = False,
     ) -> ExecutiveRoleOutput:
         try:
             raw = json.loads(text)
@@ -1237,6 +1317,18 @@ class ExecutiveManagementService:
                 f"Executive role {role.id} proposed disallowed kinds: "
                 + ", ".join(sorted(set(disallowed)))
             )
+        allowed_refs = set(available_context_refs)
+        unknown_refs = sorted(set(output.context_refs) - allowed_refs)
+        if unknown_refs:
+            raise ExecutiveConsultationError(
+                f"Executive role {role.id} cited unavailable canonical context: "
+                + ", ".join(unknown_refs)
+            )
+        if require_business_context_ref and not output.context_refs:
+            raise ExecutiveConsultationError(
+                f"Executive role {role.id} must cite at least one supplied governed "
+                "business context reference"
+            )
         return output
 
     async def _consult_role(
@@ -1250,6 +1342,19 @@ class ExecutiveManagementService:
         max_cost_usd: float,
     ) -> ExecutiveConsultation:
         started = float(self.clock())
+        filtered_context = self._filter_context(activation.context, role)
+        business_rows = [
+            *filtered_context.get("business_entities", []),
+            *filtered_context.get("business_facts", []),
+            *filtered_context.get("business_kpis", []),
+        ]
+        available_context_refs = tuple(
+            dict.fromkeys(
+                str(item.get("citation"))
+                for item in business_rows
+                if item.get("citation")
+            )
+        )
         try:
             response = await self.model_gateway.invoke(
                 ModelInvocationRequest(
@@ -1283,7 +1388,12 @@ class ExecutiveManagementService:
         return ExecutiveConsultation(
             role_id=role.id,
             role_definition=activation.role_catalog,
-            output=self._parse_role_output(response.text, role),
+            output=self._parse_role_output(
+                response.text,
+                role,
+                available_context_refs=available_context_refs,
+                require_business_context_ref=bool(business_rows),
+            ),
             model_invocation_id=response.invocation.id,
             started_at=started,
             completed_at=float(self.clock()),
