@@ -36,7 +36,7 @@ draft ──→ active ──→ completed
   └─────────┴───────┴──→ cancelled
 ```
 
-`completed` and `cancelled` are terminal in the Goal lifecycle foundation. Completion verification is added by #106; this foundation does not invoke a model to decide lifecycle state.
+`completed` and `cancelled` are terminal in the Goal lifecycle foundation. Completion verification is handled by the canonical Goal evaluation path; lifecycle state is not decided by an unconstrained model call.
 
 Human mutations require tenant administrator authority plus MFA/step-up assurance. Service automation requires the explicit `goals:admin` scope. Reads remain tenant-scoped canonical projections.
 
@@ -47,7 +47,7 @@ A criterion can be:
 - `manual` — a structured required statement awaiting later verification; or
 - `metric` — a metric key plus `eq`, `gte`, or `lte` operator and a target value.
 
-Metric criteria are deliberately provider-neutral. The Goal record defines the expected outcome; #106 owns bounded evaluation/completion verification and may attach canonical measurements/evidence without changing the criterion contract.
+Metric criteria are deliberately provider-neutral. The Goal record defines the expected outcome; bounded Goal evaluation/completion verification may attach canonical measurements and Evidence without changing the criterion contract.
 
 ## Goal budgets
 
@@ -77,7 +77,7 @@ Binding validation is deterministic and tenant-scoped:
 
 This lets one Goal produce work across multiple projects while keeping the originating outcome inspectable. The service also provides reverse lookup from a canonical Work Item ref to every visible Goal whose bound project/subgraph contains it. Reverse lookup is derived from the same Goal binding plus Work Graph edges; codex-web does not write a second mutable Goal-owner field into Work Item state merely for navigation.
 
-#106 will use these bindings when committing proposed decomposition so generated work remains attributable to the originating Goal.
+Goal decomposition uses these bindings when committing proposed work so generated Work Items remain attributable to the originating Goal.
 
 ## Deterministic progress
 
@@ -115,7 +115,7 @@ Historical scope, criteria, budget, and relationship changes can therefore be in
 
 ## Bounded decomposition proposal and review contract
 
-Issue #106 persists decomposition as canonical proposal state **before** any model output may become Work Items. The first slice is deterministic and model-independent:
+Goal decomposition persists canonical proposal state **before** any model output may become Work Items. The proposal boundary is deterministic and model-independent:
 
 - a proposal is scoped to one exact Goal revision;
 - it records the Goal's reasoning-budget snapshot plus explicit maximum planning depth and proposed-item count;
@@ -178,7 +178,7 @@ accepted without replaying chat or invoking a model.
 
 The Goal domain provides bounded decomposition, review, durable ActionIntent-backed
 commit, bidirectional Work Graph traceability, and deterministic completion
-verification. The remaining #106 product slice is the Goal workspace/UI that
+verification. The Goal workspace/UI then
 projects these canonical contracts for operators without introducing client-side
 shadow state.
 

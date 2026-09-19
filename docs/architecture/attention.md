@@ -1,7 +1,5 @@
 # Canonical Human Attention
 
-Issue: #160.
-
 AttentionItem is the durable operator-inbox primitive for states that require human intervention. It represents the need for attention, not a copy of the source domain's state.
 
 ## Invariants

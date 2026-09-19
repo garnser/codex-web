@@ -41,13 +41,13 @@ Pause, resume and cancel buttons call the canonical /api/schedules transition en
 
 ## Evaluation and replay inspector
 
-The evaluation section consumes the canonical #159 persisted records and shows scenario ID/version, replay fixture/checksum, replay backend/mode, exact Definition Registry revisions, exact AgentProvider/AgentRuntime capability revision, model/provider version, prompt-template version/checksum, policy fingerprint, deterministic assertion failures, usage, candidate-vs-baseline regressions, failure injection, suite results, and Evidence IDs.
+The evaluation section consumes the canonical evaluation/replay persisted records and shows scenario ID/version, replay fixture/checksum, replay backend/mode, exact Definition Registry revisions, exact AgentProvider/AgentRuntime capability revision, model/provider version, prompt-template version/checksum, policy fingerprint, deterministic assertion failures, usage, candidate-vs-baseline regressions, failure injection, suite results, and Evidence IDs.
 
 Opening or refreshing this section never runs a replay. Evaluation execution remains an explicit operation on the evaluation API/CI path.
 
 ## Approval and human intervention
 
-The inspector lists canonical ApprovalRequests and Attention items for the current tenant/workspace and deep-links them to their owning APIs. Approval truth remains in #338; the inspector exposes target/version, policy/authority source, assurance requirement, quorum and human decisions without calculating a separate UI quorum. Human-intervention truth remains in #160; the inspector shows owner, severity, source, due/escalation state and deep-link without creating a feature-local notification lifecycle.
+The inspector lists canonical ApprovalRequests and Attention items for the current tenant/workspace and deep-links them to their owning APIs. Approval truth remains in the canonical ApprovalRequest domain; the inspector exposes target/version, policy/authority source, assurance requirement, quorum and human decisions without calculating a separate UI quorum. Human-intervention truth remains in the canonical Attention domain; the inspector shows owner, severity, source, due/escalation state and deep-link without creating a feature-local notification lifecycle.
 
 ## Operator controls
 

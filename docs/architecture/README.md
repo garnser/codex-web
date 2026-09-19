@@ -39,7 +39,7 @@ The platform foundation is intentionally reusable across higher-level capabiliti
 
 ### Definitions are data; engines remain code
 
-Mutable operational/domain definitions that need to be shared by runtime, APIs, UI, workers, audit, and replay should be represented as canonical versioned data rather than hard-coded Python catalogs. Issue `#170` owns this Definition Registry foundation and starts with the role/execution-contract catalog currently encoded in `codex_web/execution_contracts.py`.
+Mutable operational/domain definitions that need to be shared by runtime, APIs, UI, workers, audit, and replay should be represented as canonical versioned data rather than hard-coded Python catalogs. The Definition Registry is the canonical foundation for these definitions, including the role/execution-contract catalog currently encoded in `codex_web/execution_contracts.py`.
 
 Examples of data-oriented definitions include role contracts, expected work, refusal rules, required artifacts, handoff targets, failure conditions, role-selection metadata, workflow/ruleset templates, model-class catalogs, and other operational catalogs intended to evolve without a source edit/deploy.
 
@@ -56,7 +56,7 @@ Keep the following concepts distinct even when their administration surfaces are
 
 Executions, decisions, evaluations, and audits should retain the exact definition IDs/revisions that influenced them so historical behavior remains reproducible after definitions change.
 
-Event-driven orchestration adds deterministic scheduling (#158), canonical ApprovalRequests/quorum/separation-of-duties (#338), autonomous replay/evaluation (#159), and a canonical human-attention queue (#160). Replay/evaluation must pin the exact Definition Registry revisions used historically. Measured Goal/Decision evidence uses generic provenance-aware Metric/KPI definitions and observations (#339). Production qualification covers releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew, audit integrity, and distributed failover where enabled. Governed business operations add business entities/CompanyFacts/external-record references, provider-neutral business-data synchronization, business KPI catalogs, Executive consumption, and Company Operations UI (#340–#345) without turning codex-web into a replacement CRM/billing/accounting system.
+Event-driven orchestration includes deterministic scheduling, canonical ApprovalRequests with quorum and separation-of-duties, autonomous replay/evaluation, and a canonical human-attention queue. Replay/evaluation must pin the exact Definition Registry revisions used historically. Measured Goal/Decision evidence uses generic provenance-aware Metric/KPI definitions and observations. Production qualification covers releases and supply-chain integrity, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew, audit integrity, and distributed failover where enabled. Governed business operations add business entities, CompanyFacts, external-record references, provider-neutral business-data synchronization, business KPI catalogs, Executive consumption, and Company Operations UI without turning codex-web into a replacement CRM, billing, or accounting system.
 
 Use GitHub tracking as follows:
 
@@ -123,9 +123,9 @@ Any design or PR that adds or materially increases LLM activity should explicitl
 
 Any design or PR that adds external side effects should additionally identify the acting identity/tenant, target canonical resource, provider/action capability, credential reference, idempotency/reconciliation behavior, required authority, trust-boundary treatment, execution-worker boundary where applicable, and resulting evidence/verification.
 
-Any design or PR that adds or materially changes mutable operational definitions should identify whether the content belongs in the Definition Registry (#170), the definition schema/version used, migration/bootstrap behavior, exact revision attribution, UI/admin impact, and why any remaining hard-coded value must stay code-owned.
+Any design or PR that adds or materially changes mutable operational definitions should identify whether the content belongs in the Definition Registry, the definition schema/version used, migration/bootstrap behavior, exact revision attribution, UI/admin impact, and why any remaining hard-coded value must stay code-owned.
 
-Any design or PR that adds executable worker behavior, durable sensitive data, an extension point, or production upgrade behavior should additionally identify the applicable worker trust/fencing model (#166), encryption/key policy (#167), extension lifecycle/compatibility model (#169), and upgrade/version-skew contract (#168) instead of introducing a local substitute.
+Any design or PR that adds executable worker behavior, durable sensitive data, an extension point, or production upgrade behavior should additionally identify the applicable worker trust/fencing model, encryption/key policy, extension lifecycle/compatibility model, and upgrade/version-skew contract instead of introducing a local substitute.
 
 The target architecture is:
 

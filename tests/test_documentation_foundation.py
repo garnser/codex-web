@@ -56,6 +56,10 @@ REQUIRED_DOCS = (
 )
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+INTERNAL_ISSUE_REF_RE = re.compile(
+    r"(?<![\\w./-])#\\d+\\b|https?://github\\.com/garnser/codex-web/issues/\\d+\\b",
+    re.IGNORECASE,
+)
 
 
 def _markdown_files() -> list[Path]:
@@ -106,6 +110,27 @@ class DocumentationFoundationTests(unittest.TestCase):
             broken,
             [],
             "broken relative documentation links:\n" + "\n".join(broken),
+        )
+
+    def test_documentation_has_no_internal_issue_references(self) -> None:
+        references: list[str] = []
+        sources = sorted(DOCS.rglob("*.md")) + [
+            ROOT / "README.md",
+            ROOT / "EXECUTIVE.md",
+            ROOT / "DOCKER.md",
+        ]
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if INTERNAL_ISSUE_REF_RE.search(line):
+                    references.append(
+                        f"{source.relative_to(ROOT)}:{line_number}: {line.strip()}"
+                    )
+        self.assertEqual(
+            references,
+            [],
+            "internal GitHub issue references in user documentation:\\n"
+            + "\\n".join(references),
         )
 
     def test_getting_started_documents_verification_and_recovery(self) -> None:

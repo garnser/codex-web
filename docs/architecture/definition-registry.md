@@ -94,9 +94,9 @@ The resolver uses a revision-aware in-process cache. Every registry mutation inv
 
 Definition schemas are registered in code with a `kind`, schema version and validator/normalizer. Unknown schema versions are rejected. Records can additionally specify minimum/maximum compatible engine versions.
 
-The registry store itself is versioned using the platform compatibility/migration primitives from #138. Unsupported persisted-store versions or missing migration paths fail visibly.
+The registry store itself is versioned using the canonical platform compatibility/migration primitives. Unsupported persisted-store versions or missing migration paths fail visibly.
 
-Application upgrades must validate active definition schemas/engine compatibility before protected work resumes; #168 owns full upgrade/version-skew orchestration.
+Application upgrades must validate active definition schemas/engine compatibility before protected work resumes; The safe-upgrade/version-skew contract owns full upgrade orchestration.
 
 ## Operational Role authority definitions
 
@@ -224,7 +224,7 @@ The canonical administration API is under `/api/definitions`:
 - `GET /export`;
 - `POST /import`.
 
-The Platform Foundation UI (#141) should build browse/search, history, draft/validate/publish/supersede/rollback, diff, provenance, compatibility, usage/reference and impact experiences on these APIs. Raw SQLite editing is not a supported administration path.
+The platform administration UI should build browse/search, history, draft/validate/publish/supersede/rollback, diff, provenance, compatibility, usage/reference and impact experiences on these APIs. Raw SQLite editing is not a supported administration path.
 
 ## Security boundary
 

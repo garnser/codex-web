@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical data-governance foundation for issue #140.
+Canonical data-governance foundation.
 
 This contract establishes one canonical metadata and enforcement boundary for data classification, retention, privacy actions, legal holds, export authorization, residency constraints, and model-context filtering.
 
@@ -136,7 +136,7 @@ Mutating governance operations require a tenant administrator or a service princ
 
 ## Definition Registry relationship
 
-Retention-policy and residency-policy definitions are expected to be versioned mutable definitions once the Definition Registry (#170) is available. This foundation therefore stores an opaque `retention_policy_ref` on governed records rather than creating a competing mutable policy-definition store.
+Retention-policy and residency-policy definitions are expected to be versioned mutable definitions once the Definition Registry is available. This foundation therefore stores an opaque `retention_policy_ref` on governed records rather than creating a competing mutable policy-definition store.
 
 Classification ordering, credential/secret model-context exclusions, tenant isolation, and the requirement that source-domain deletion actually succeed before completion are code-owned structural controls.
 
@@ -159,6 +159,6 @@ This foundation is intentionally domain-neutral. Existing domains should adopt i
 3. call the context filter before model/provider routing;
 4. implement domain action handlers for redaction/anonymization/delete;
 5. use export authorization before domain content export;
-6. expose governance status and action blockers in the Platform Foundation administration UI (#141).
+6. expose governance status and action blockers in the platform administration UI.
 
 A domain is not allowed to claim governed deletion is complete until its source payload handler has actually succeeded.

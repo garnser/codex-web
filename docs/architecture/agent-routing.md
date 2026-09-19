@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture contract for issue #351. Runtime and model selection are deterministic application logic; model reasoning is never used to choose a provider.
+Runtime and model selection are deterministic application logic; model reasoning is never used to choose a provider.
 
 ## Boundaries
 
@@ -56,4 +56,4 @@ Project/workspace/role preferences are configuration or definition inputs to the
 
 ## UI impact
 
-Issue #354 owns the operator surface. It should display requested capabilities, candidate providers/runtimes, the selected model versus selected execution runtime, health/degradation, fallback reason, and exact provider/runtime capability revisions. Credentials remain references only.
+The Agent Providers/runtime operator surface should display requested capabilities, candidate providers/runtimes, the selected model versus selected execution runtime, health/degradation, fallback reason, and exact provider/runtime capability revisions. Credentials remain references only.

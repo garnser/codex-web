@@ -119,13 +119,12 @@ audit/admin scope.
 
 ## UI and related production domains
 
-Issue #121 owns the Autonomy Control Center and explain-action UI over this
+The Autonomy Control Center and explain-action UI consume this
 canonical audit. It should trace event -> policy/authority -> approval ->
 ActionIntent -> receipt/evidence/verification -> outcome and show integrity,
 reliability, error-budget and safety-signal state without reimplementing audit
 logic in the browser.
 
-Release (#161), Incident (#162), recovery (#163), capacity (#165), upgrade
-(#168) and replicated ownership (#142) domains should publish canonical Evidence
+Release, Incident, recovery, capacity, upgrade, and replicated-ownership domains should publish canonical Evidence
 and/or safety signals into this boundary rather than introducing local
 production-autonomy readiness flags.

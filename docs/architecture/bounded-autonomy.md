@@ -39,7 +39,7 @@ Deterministic observation
 ```
 
 The controller never calls an ActionProvider directly. External effects are
-represented as `ActionIntentCreate` records and cross the existing #137
+represented as `ActionIntentCreate` records and cross the canonical
 ActionIntent boundary. A denied authority/security decision results in a
 blocked autonomy cycle and no provider execution.
 
@@ -162,4 +162,4 @@ unacknowledged handoff and updating typed canonical state, remain model-free.
 
 ## UI follow-up
 
-Issue #121 owns the unified Autonomy Control Center and explain-action UI. It should consume canonical autonomy policy/cycle, ApprovalRequest, ActionIntent, Evidence and readiness state rather than inventing browser-local safety or authorization truth.
+The unified Autonomy Control Center and explain-action UI should consume canonical autonomy policy/cycle, ApprovalRequest, ActionIntent, Evidence and readiness state rather than inventing browser-local safety or authorization truth.
