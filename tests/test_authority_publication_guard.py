@@ -25,6 +25,7 @@ from codex_web.authority import (
 from codex_web.definitions import (
     DefinitionDraftCreate,
     DefinitionPublishRequest,
+    DefinitionRollbackRequest,
     DefinitionScope,
 )
 from codex_web.identity import (
@@ -379,6 +380,101 @@ class AuthorityPublicationGuardTests(unittest.TestCase):
                     publication_approval_id=approval.id,
                 ),
             )
+
+    def test_free_form_approval_metadata_cannot_replace_canonical_evidence(self) -> None:
+        expanded = self._changed(
+            lambda p: p["roles"][1]["grants"][0].update(
+                {"max_model_calls": 5}
+            )
+        )
+        draft = self._draft(expanded)
+        with self.assertRaisesRegex(
+            DefinitionConflictError,
+            "requires approved preflight evidence",
+        ):
+            self.service.publish(
+                draft.record_id,
+                DefinitionPublishRequest(
+                    actor=self.publisher,
+                    expected_active_revision=self.active.revision,
+                    approval_metadata={
+                        "publication_approval_id": "forged",
+                        "approved_by": "forged-approver",
+                    },
+                ),
+            )
+
+    def test_expansive_rollback_is_guarded_and_leaves_reviewable_draft(self) -> None:
+        expanded = self._changed(
+            lambda p: p["roles"][1]["grants"][0].update(
+                {"max_amount_usd": 200}
+            )
+        )
+        expansion_draft = self._draft(expanded)
+        approval = self.service.record_publication_approval(
+            expansion_draft.record_id,
+            actor=self.approver,
+            reason="approve temporary expansion",
+        )
+        expanded_active = self.service.publish(
+            expansion_draft.record_id,
+            DefinitionPublishRequest(
+                actor=self.publisher,
+                expected_active_revision=self.active.revision,
+                publication_approval_id=approval.id,
+            ),
+        )
+
+        restricted = self._changed(
+            lambda p: p["roles"][1]["grants"][0].update(
+                {"max_amount_usd": 50}
+            )
+        )
+        restricted_draft = self._draft(restricted, actor="other-creator")
+        restricted_active = self.service.publish(
+            restricted_draft.record_id,
+            DefinitionPublishRequest(
+                actor="other-publisher",
+                expected_active_revision=expanded_active.revision,
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            DefinitionConflictError,
+            "requires approved preflight evidence",
+        ):
+            self.service.rollback(
+                DefinitionRollbackRequest(
+                    definition_id=AUTHORITY_ROLE_CATALOG_ID,
+                    kind=AUTHORITY_ROLE_CATALOG_KIND,
+                    scope_type=DefinitionScope.WORKSPACE,
+                    scope_id="ws-a",
+                    target_revision=expanded_active.revision,
+                    actor="rollback-publisher",
+                    expected_active_revision=restricted_active.revision,
+                )
+            )
+
+        drafts = [
+            item
+            for item in self.service.list_records(
+                kind=AUTHORITY_ROLE_CATALOG_KIND,
+                definition_id=AUTHORITY_ROLE_CATALOG_ID,
+                scope_type=DefinitionScope.WORKSPACE,
+                scope_id="ws-a",
+            )
+            if item.lifecycle.value == "draft"
+            and item.rollback_of_record_id == expanded_active.record_id
+        ]
+        self.assertEqual(len(drafts), 1)
+        rollback_preflight = self.service.publication_preflight(
+            drafts[0].record_id
+        )
+        self.assertTrue(rollback_preflight.requires_approval)
+        self.assertIn(
+            "authority.max_amount_usd_increased",
+            rollback_preflight.change_classes,
+        )
 
     def test_approval_can_publish_exact_sensitive_preflight_only_once_current(self) -> None:
         expanded = self._changed(
