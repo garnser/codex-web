@@ -103,10 +103,15 @@ class EvaluationEventFixture(BaseModel):
             if isinstance(value, dict):
                 for key, item in value.items():
                     normalized = str(key).strip().lower()
-                    if normalized in sensitive or any(
-                        fragment in normalized
-                        for fragment in ("password", "secret", "private_key")
-                    ):
+                    safe_reference = normalized.endswith(("_ref", "_id"))
+                    sensitive_name = (
+                        normalized in sensitive
+                        or normalized.endswith("_token")
+                        or normalized.endswith("_password")
+                        or normalized.endswith("_secret")
+                        or "private_key" in normalized
+                    )
+                    if sensitive_name and not safe_reference:
                         raise ValueError(
                             f"evaluation fixtures cannot persist sensitive key {path}.{key}"
                         )
