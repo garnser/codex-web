@@ -13,13 +13,63 @@ from codex_web.models import BotBinding, Project, ThreadRunSettings
 from codex_web.services.thread_recovery import ThreadRecoveryService, install_thread_recovery_service
 
 
+
+def recovery_service(
+    host,
+    *,
+    project: Project | None = None,
+    runtime_request=None,
+    settings=None,
+    naming=None,
+    thread_index=None,
+):
+    project = project or Project(
+        id="home",
+        name="Home",
+        path="/tmp/project",
+        sandbox="workspace-write",
+        approval_policy="on-request",
+    )
+    projects = SimpleNamespace(
+        get=lambda _project_id: project,
+        params=lambda _project, values=None: values or {},
+    )
+    settings = settings or SimpleNamespace(
+        get=lambda _thread_id: ThreadRunSettings(),
+        remember=lambda *_args, **kwargs: ThreadRunSettings(**kwargs),
+        retarget=lambda *_args: None,
+    )
+    naming = naming or SimpleNamespace(set_name=AsyncMock())
+    thread_index = thread_index or SimpleNamespace(
+        load=lambda: [],
+        upsert=Mock(),
+        remove=Mock(),
+    )
+    if runtime_request is None:
+        runtime_request = AsyncMock(return_value={})
+    return ThreadRecoveryService(
+        host,
+        projects=projects,
+        settings=settings,
+        naming=naming,
+        thread_index=thread_index,
+        runtime_request=runtime_request,
+        event_sink=getattr(host, "_append_bot_event", lambda _event: None),
+        truncate_text=getattr(
+            host,
+            "_truncate_text",
+            lambda value, limit: str(value)[:limit],
+        ),
+    )
+
+
 class ThreadRecoveryServiceTests(unittest.TestCase):
     def test_replacement_chain_is_collapsed_to_latest_thread(self) -> None:
         host = SimpleNamespace(
             THREAD_REPLACEMENTS={"thread-a": "thread-b", "thread-b": "thread-c"},
             THREAD_TERMINAL_FAILURES={},
         )
-        service = ThreadRecoveryService(host)
+        service = recovery_service(host)
 
         self.assertEqual(service.replacement_thread_id("thread-a"), "thread-c")
         self.assertEqual(service.replacement_thread_id("thread-b"), "thread-c")
@@ -30,7 +80,7 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
             THREAD_REPLACEMENTS={"old": "new"},
             THREAD_TERMINAL_FAILURES={},
         )
-        service = ThreadRecoveryService(host)
+        service = recovery_service(host)
 
         with self.assertRaises(HTTPException) as raised:
             service.raise_if_thread_replaced("old")
@@ -40,7 +90,7 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail["newThreadId"], "new")
 
     def test_active_turn_stale_timeout_defaults_invalid_and_clamps(self) -> None:
-        service = ThreadRecoveryService(SimpleNamespace())
+        service = recovery_service(SimpleNamespace())
 
         with patch.dict(os.environ, {"CODEX_WEB_ACTIVE_TURN_STALE_SECONDS": ""}, clear=False):
             self.assertEqual(service.active_turn_stale_seconds(), 120.0)
@@ -60,7 +110,7 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
             _append_bot_event=append_event,
             _clear_thread_active=clear_active,
         )
-        service = ThreadRecoveryService(host)
+        service = recovery_service(host)
 
         with (
             patch("codex_web.services.thread_recovery.time.time", return_value=1000.0),
@@ -85,7 +135,38 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         app = FastAPI()
         host = SimpleNamespace()
 
-        service = install_thread_recovery_service(app, host)
+        host._append_bot_event = Mock()
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        projects = SimpleNamespace(
+            get=lambda _project_id: Project(
+                id="home",
+                name="Home",
+                path="/tmp/project",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            ),
+            params=lambda _project, values=None: values or {},
+        )
+        settings = SimpleNamespace(
+            get=lambda _thread_id: ThreadRunSettings(),
+            remember=lambda *_args, **kwargs: ThreadRunSettings(**kwargs),
+            retarget=lambda *_args: None,
+        )
+        naming = SimpleNamespace(set_name=AsyncMock())
+        thread_index = SimpleNamespace(
+            load=lambda: [],
+            upsert=Mock(),
+            remove=Mock(),
+        )
+        service = install_thread_recovery_service(
+            app,
+            host,
+            projects=projects,
+            settings=settings,
+            naming=naming,
+            thread_index=thread_index,
+            runtime_request=AsyncMock(return_value={}),
+        )
 
         self.assertIs(app.state.thread_recovery_service, service)
         self.assertIs(host._replace_stale_bot_thread.__self__, service)
@@ -153,7 +234,25 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
             _append_bot_event=Mock(),
             _truncate_text=lambda text, limit=500: text[:limit],
         )
-        service = ThreadRecoveryService(host)
+        settings = SimpleNamespace(
+            get=lambda _thread_id: ThreadRunSettings(),
+            remember=Mock(return_value=ThreadRunSettings()),
+            retarget=lambda *_args: None,
+        )
+        naming = SimpleNamespace(set_name=AsyncMock())
+        thread_index = SimpleNamespace(
+            load=lambda: [],
+            upsert=Mock(),
+            remove=Mock(),
+        )
+        service = recovery_service(
+            host,
+            project=project,
+            runtime_request=request,
+            settings=settings,
+            naming=naming,
+            thread_index=thread_index,
+        )
 
         result = await service.replace_stale_bot_thread(binding, "thread not found")
 
