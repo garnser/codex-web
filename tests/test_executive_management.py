@@ -198,6 +198,43 @@ class _Evidence:
         raise AssertionError(f"unexpected Evidence lookup: {evidence_id}")
 
 
+class _Memory:
+    def __init__(self) -> None:
+        self.queries = []
+
+    def search(self, query, *, actor):
+        self.queries.append((query, actor))
+        provenance = SimpleNamespace(
+            source_kind=SimpleNamespace(value="repository"),
+            source_ref="repo://architecture/ADR-12",
+            model_dump=lambda mode=None: {
+                "source_kind": "repository",
+                "source_ref": "repo://architecture/ADR-12",
+                "source_revision": "abc123",
+            },
+        )
+        item = SimpleNamespace(
+            knowledge_id="knowledge-policy-a",
+            logical_key="policy/database",
+            version=3,
+            object_type=SimpleNamespace(value="policy"),
+            project_id=None,
+            title="Database standard",
+            summary="Use PostgreSQL for transactional services.",
+            context_excerpt="PostgreSQL is the approved company database standard.",
+            tags=("database",),
+            provenance=provenance,
+            classification=SimpleNamespace(value="internal"),
+            freshness=SimpleNamespace(value="fresh"),
+            score=0.94,
+            reasons=("semantic:0.9400", "lexical:1.0000"),
+        )
+        return SimpleNamespace(
+            retrieval_id="memory-retrieval-executive-a",
+            items=(item,),
+        )
+
+
 class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -411,6 +448,59 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
             "executive.goal.materialize",
         )
         self.assertTrue(stored.authority_reasons)
+
+
+    async def test_canonical_executive_context_retrieves_memory_and_preserves_citation(self):
+        memory = _Memory()
+        self.service.organizational_memory = memory
+        activation = self.service.create(
+            ExecutiveActivationCreate(
+                subject="Database architecture",
+                request="Choose the database for a new transactional service.",
+                project_id="project-a",
+                requested_role_ids=("cto",),
+                budget=ExecutiveReasoningBudget(
+                    max_input_tokens=12000,
+                    max_output_tokens=3000,
+                    max_model_calls=1,
+                    max_cost_usd=2,
+                ),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(
+            activation.context.memory_retrieval_ids,
+            ("memory-retrieval-executive-a",),
+        )
+        self.assertEqual(
+            activation.context.memory[0]["citation"],
+            "[memory:knowledge-policy-a@v3]",
+        )
+        query, query_actor = memory.queries[0]
+        self.assertEqual(query.project_ids, ("project-a",))
+        self.assertTrue(query.include_company_scope)
+        self.assertEqual(query_actor.identity_id, self.actor.identity_id)
+
+        completed = await self.service.consult(
+            activation.id,
+            actor=self.actor,
+        )
+        self.assertEqual(completed.status, ExecutiveActivationStatus.COMPLETED)
+        request = next(
+            item
+            for item in self.gateway.requests
+            if item.purpose == "executive-role:cto"
+        )
+        self.assertIn(
+            "[memory:knowledge-policy-a@v3]",
+            request.messages[0].content,
+        )
+        self.assertIn(
+            "[memory:<id>@v<version>]",
+            request.system_prompt,
+        )
+
 
 
 if __name__ == "__main__":
