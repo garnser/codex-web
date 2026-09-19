@@ -16,3 +16,4 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 
 - [Operator runbooks](runbooks.md) — startup/shutdown, release, incidents, recovery, workers/extensions, keys, capacity and replicated failover.
 - [Documentation and release readiness](release-readiness.md) — verified procedures, screenshot refresh, deprecation and tracked documentation gaps.
+- [Company Operations diagnostics](company-operations.md) — canonical business state, source/extension health, fact/KPI conflicts, consequence explain chains and deterministic recovery guidance.

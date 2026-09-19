@@ -1,0 +1,55 @@
+{
+  "fixture": "company-operations-synthetic-v1",
+  "synthetic": true,
+  "organization": "Example Co",
+  "workspace": "demo",
+  "entities": [
+    {
+      "id": "business-entity-demo-customer",
+      "type": "customer",
+      "name": "Northstar Demo Retail"
+    }
+  ],
+  "external_records": [
+    {
+      "id": "external-record-demo-crm",
+      "provider": "reference-crm",
+      "object_type": "account",
+      "external_id": "demo-account-001"
+    }
+  ],
+  "facts": [
+    {
+      "key": "arr",
+      "provider_values": [
+        {"provider": "reference-crm", "value": 1200, "authority": "authoritative"},
+        {"provider": "reference-billing", "value": 1150, "authority": "secondary"}
+      ],
+      "expected_resolution": "conflict-with-authoritative-selection"
+    }
+  ],
+  "source_state": {
+    "provider_capacity": "throttled",
+    "retry_at_offset_seconds": 300,
+    "cursor": "42",
+    "checkpoint": "42",
+    "expected_drift_conflicts": 1
+  },
+  "kpi": {
+    "key": "arr",
+    "readiness": "partial",
+    "reason": "conflicting provider values"
+  },
+  "action": {
+    "risk_class": "high",
+    "resource_ids": ["resource-demo-billing"],
+    "approval_status": "pending",
+    "intent_status": "requires_reconciliation",
+    "provider_receipt_outcome": "unknown"
+  },
+  "notes": [
+    "All values and names are synthetic.",
+    "The fixture intentionally contains failure/recovery states.",
+    "No credentials or real provider endpoints are included."
+  ]
+}

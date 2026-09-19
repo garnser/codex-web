@@ -279,6 +279,7 @@ class BusinessDataSourceService:
             source_type=payload.source_type,
             source_instance=payload.source_instance,
             provider_id=payload.provider_id,
+            extension_installation_id=payload.extension_installation_id,
             scope=payload.scope,
             object_type=payload.object_type,
             entity_type=payload.entity_type,
