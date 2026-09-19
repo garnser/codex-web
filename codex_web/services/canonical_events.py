@@ -4,12 +4,18 @@ import hashlib
 import inspect
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from codex_web.canonical_events import CanonicalEventType, task_source_event_type
+from codex_web.canonical_events import (
+    CanonicalEventInboxReceipt,
+    CanonicalEventType,
+    task_source_event_type,
+)
 from codex_web.compatibility import CANONICAL_EVENT_CONTRACT, CanonicalEventEnvelope
+from codex_web.event_transport import EventTransport, EventTransportHealth
 from codex_web.services.task_sources import TaskSourceEvent
 from codex_web.storage.canonical_events import CanonicalEventStore
 
@@ -23,6 +29,8 @@ class CanonicalEventDelivery:
     event: CanonicalEventEnvelope
     inserted: bool
     dispatched: int
+    transport_delivery_id: str | None = None
+    transport_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +43,20 @@ class _Subscription:
 class CanonicalEventBus:
     """Durable canonical ingress plus deterministic in-process dispatch."""
 
-    def __init__(self, store: CanonicalEventStore) -> None:
+    def __init__(
+        self,
+        store: CanonicalEventStore,
+        *,
+        transport: EventTransport | None = None,
+        instance_id: str | None = None,
+        outbox_max_attempts: int = 10,
+        outbox_backoff_seconds: float = 1.0,
+    ) -> None:
         self.store = store
+        self.transport = transport
+        self.instance_id = instance_id or f"control-plane-{uuid.uuid4().hex}"
+        self.outbox_max_attempts = max(1, int(outbox_max_attempts))
+        self.outbox_backoff_seconds = max(0.0, float(outbox_backoff_seconds))
         self._subscriptions: list[_Subscription] = []
 
     def subscribe(
@@ -65,6 +85,59 @@ class CanonicalEventBus:
 
         return unsubscribe
 
+    async def _dispatch_local(
+        self,
+        event: CanonicalEventEnvelope,
+    ) -> int:
+        dispatched = 0
+        for subscription in tuple(self._subscriptions):
+            if (
+                subscription.event_types is not None
+                and event.event_type not in subscription.event_types
+            ):
+                continue
+            if subscription.predicate is not None and not subscription.predicate(event):
+                continue
+            outcome = subscription.handler(event)
+            if inspect.isawaitable(outcome):
+                await outcome
+            dispatched += 1
+        return dispatched
+
+    async def _publish_transport(
+        self,
+        event: CanonicalEventEnvelope,
+        *,
+        attempt: int,
+    ) -> tuple[str | None, bool]:
+        if self.transport is None:
+            return None, False
+        now = time.time()
+        try:
+            delivery = await self.transport.publish(
+                event,
+                attempt=max(1, attempt),
+            )
+        except Exception as exc:
+            self.store.mark_outbox_failed(
+                event.event_id,
+                error_code=f"{type(exc).__name__}",
+                now=now,
+                max_attempts=self.outbox_max_attempts,
+                backoff_seconds=(
+                    self.outbox_backoff_seconds
+                    * (2 ** max(0, attempt - 1))
+                ),
+            )
+            return None, True
+        self.store.mark_outbox_published(
+            event.event_id,
+            backend_id=delivery.backend_id,
+            delivery_id=delivery.transport_message_id or delivery.id,
+            now=now,
+        )
+        return delivery.transport_message_id or delivery.id, False
+
     async def publish(
         self,
         event: CanonicalEventEnvelope,
@@ -75,24 +148,138 @@ class CanonicalEventBus:
         persisted, inserted = self.store.record_if_new(
             event,
             idempotency_key=idempotency_key,
+            enqueue_transport=self.transport is not None,
         )
         if not inserted:
             return CanonicalEventDelivery(persisted, False, 0)
 
+        # Canonical state is already committed before either local handlers or
+        # transport publication run.
+        dispatched = await self._dispatch_local(persisted)
+        transport_delivery_id = None
+        transport_pending = False
+        if self.transport is not None:
+            outbox = self.store.load().outbox.get(persisted.event_id)
+            attempt = (outbox.attempts + 1) if outbox is not None else 1
+            transport_delivery_id, transport_pending = await self._publish_transport(
+                persisted,
+                attempt=attempt,
+            )
+        return CanonicalEventDelivery(
+            persisted,
+            True,
+            dispatched,
+            transport_delivery_id=transport_delivery_id,
+            transport_pending=transport_pending,
+        )
+
+    async def dispatch_outbox_once(
+        self,
+        *,
+        limit: int = 100,
+        now: float | None = None,
+    ) -> dict[str, int]:
+        if self.transport is None:
+            return {"attempted": 0, "published": 0, "pending": 0}
+        current = time.time() if now is None else float(now)
+        rows = self.store.pending_outbox(now=current, limit=limit)
+        published = 0
+        for row in rows:
+            event = self.store.event(row.event_id)
+            if event is None:
+                self.store.mark_outbox_failed(
+                    row.event_id,
+                    error_code="canonical_event_missing",
+                    now=current,
+                    max_attempts=1,
+                    backoff_seconds=0,
+                )
+                continue
+            _delivery_id, pending = await self._publish_transport(
+                event,
+                attempt=row.attempts + 1,
+            )
+            if not pending:
+                published += 1
+        return {
+            "attempted": len(rows),
+            "published": published,
+            "pending": self.store.outbox_status().get("pending", 0),
+        }
+
+    async def consume_transport_once(
+        self,
+        consumer_id: str,
+        *,
+        limit: int = 100,
+        timeout_seconds: float = 1.0,
+    ) -> dict[str, int]:
+        """Dispatch shared transport messages only after canonical-state lookup.
+
+        A broker message can wake a replica, but it cannot create canonical
+        truth. If the referenced event is absent from shared state the message
+        is rejected/dead-lettered.
+        """
+
+        if self.transport is None:
+            return {"received": 0, "dispatched": 0, "acknowledged": 0}
+        deliveries = await self.transport.consume(
+            consumer_id,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
         dispatched = 0
-        for subscription in tuple(self._subscriptions):
-            if (
-                subscription.event_types is not None
-                and persisted.event_type not in subscription.event_types
+        acknowledged = 0
+        for delivery in deliveries:
+            canonical = self.store.event(delivery.canonical_event_id)
+            if canonical is None:
+                await self.transport.negative_acknowledge(
+                    delivery,
+                    consumer_id=consumer_id,
+                    reason="canonical_event_missing",
+                    retry=False,
+                )
+                continue
+            if self.store.inbox_seen(
+                backend_id=delivery.backend_id,
+                delivery_id=delivery.transport_message_id or delivery.id,
+                consumer_id=consumer_id,
             ):
+                await self.transport.acknowledge(
+                    delivery,
+                    consumer_id=consumer_id,
+                )
+                acknowledged += 1
                 continue
-            if subscription.predicate is not None and not subscription.predicate(persisted):
-                continue
-            outcome = subscription.handler(persisted)
-            if inspect.isawaitable(outcome):
-                await outcome
-            dispatched += 1
-        return CanonicalEventDelivery(persisted, True, dispatched)
+            dispatched += await self._dispatch_local(canonical)
+            acknowledged_delivery = await self.transport.acknowledge(
+                delivery,
+                consumer_id=consumer_id,
+            )
+            self.store.record_inbox_receipt(
+                CanonicalEventInboxReceipt(
+                    event_id=canonical.event_id,
+                    transport_backend_id=delivery.backend_id,
+                    transport_delivery_id=(
+                        delivery.transport_message_id
+                        or acknowledged_delivery.transport_message_id
+                        or delivery.id
+                    ),
+                    consumer_id=consumer_id,
+                )
+            )
+            acknowledged += 1
+        return {
+            "received": len(deliveries),
+            "dispatched": dispatched,
+            "acknowledged": acknowledged,
+        }
+
+    async def transport_health(self) -> EventTransportHealth | None:
+        if self.transport is None:
+            return None
+        return await self.transport.health()
+
 
 
 class CanonicalEventIngestionService:
