@@ -126,6 +126,55 @@ class DefinitionRegistryTests(unittest.TestCase):
         self.assertEqual(resolved.record_id, rollback.record_id)
         self.assertGreaterEqual(len(self.events), 6)
 
+    def test_derived_draft_pins_same_slot_source_provenance(self) -> None:
+        source = self.service.publish(
+            self._draft().record_id,
+            DefinitionPublishRequest(actor="publisher"),
+        )
+        payload = execution_role_catalog_seed_payload()
+        payload["roles"][2]["description"] = "Typed editor derived revision."
+
+        derived = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id=EXECUTION_ROLE_CATALOG_ID,
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                payload=payload,
+                actor="typed-editor",
+                reason="typed edit",
+                derived_from_record_id=source.record_id,
+            )
+        )
+
+        self.assertEqual(derived.derived_from_record_id, source.record_id)
+        self.assertGreater(derived.revision, source.revision)
+
+        with self.assertRaises(DefinitionNotFoundError):
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id=EXECUTION_ROLE_CATALOG_ID,
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    payload=payload,
+                    actor="typed-editor",
+                    derived_from_record_id="missing-source",
+                )
+            )
+
+        with self.assertRaises(DefinitionConflictError):
+            self.service.create_draft(
+                DefinitionDraftCreate(
+                    definition_id=EXECUTION_ROLE_CATALOG_ID,
+                    kind=EXECUTION_ROLE_CATALOG_KIND,
+                    definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                    scope_type="project",
+                    scope_id="project-a",
+                    payload=payload,
+                    actor="typed-editor",
+                    derived_from_record_id=source.record_id,
+                )
+            )
+
     def test_publish_uses_optimistic_active_revision(self) -> None:
         first = self._draft()
         active = self.service.publish(
