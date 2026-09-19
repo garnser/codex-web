@@ -24,6 +24,7 @@ from codex_web.identity import (
 from codex_web.metrics import (
     MetricAggregation,
     MetricDefinitionCreate,
+    MetricDefinitionUpdate,
     MetricFreshness,
     MetricObservationCreate,
     MetricSnapshotRequest,
