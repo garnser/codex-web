@@ -1134,11 +1134,45 @@ class OrganizationalMemoryService:
                     )
                 )
 
-        embedding_by_id = {
-            item.knowledge_id: item
-            for item in state.embeddings
+        authorized_rows = [
+            (item, freshness)
+            for item, freshness in lifecycle_filtered
+            if item.governance_record_id in governance_allowed
+        ]
+        canonical_by_id = {
+            item.id: (item, freshness)
+            for item, freshness in authorized_rows
         }
-        query_vector = self.encoder.encode(query.text)
+        retrieval_status = self._ensure_retrieval_index()
+        retrieval_request = RetrievalSearchRequest(
+            text=query.text,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            allowed_knowledge_ids=tuple(canonical_by_id),
+            project_ids=query.project_ids,
+            object_types=tuple(item.value for item in query.object_types),
+            lifecycles=tuple(
+                dict.fromkeys(
+                    item.lifecycle.value
+                    for item, _freshness in authorized_rows
+                )
+            ),
+            limit=query.budget.candidate_limit,
+        )
+        hits = self.retrieval_backend.search(retrieval_request)
+        stale_hits = [
+            hit
+            for hit in hits
+            if hit.knowledge_id not in canonical_by_id
+            or hit.canonical_version
+            != canonical_by_id[hit.knowledge_id][0].version
+            or hit.content_sha256
+            != canonical_by_id[hit.knowledge_id][0].content_sha256
+        ]
+        if stale_hits:
+            retrieval_status = self.rebuild_retrieval_index()
+            hits = self.retrieval_backend.search(retrieval_request)
+
         scored: list[
             tuple[
                 float,
@@ -1150,28 +1184,15 @@ class OrganizationalMemoryService:
             ]
         ] = []
 
-        for item, freshness in lifecycle_filtered:
-            if item.governance_record_id not in governance_allowed:
+        for hit in hits:
+            row = canonical_by_id.get(hit.knowledge_id)
+            if row is None:
                 continue
-            semantic = (
-                self._semantic_score(
-                    query_vector,
-                    embedding_by_id.get(item.id),
-                )
-                if query.text
-                else 1.0
-            )
-            lexical = (
-                self._lexical_score(query.text, item)
-                if query.text
-                else 1.0
-            )
-            score = 0.72 * semantic + 0.28 * lexical
-            reasons: list[str] = []
-            if semantic > 0:
-                reasons.append(f"semantic:{semantic:.3f}")
-            if lexical > 0:
-                reasons.append(f"lexical:{lexical:.3f}")
+            item, freshness = row
+            semantic = hit.vector_score
+            lexical = hit.lexical_score
+            score = hit.score
+            reasons = list(hit.reasons)
             if query.logical_keys and item.logical_key in query.logical_keys:
                 score += 0.15
                 reasons.append("logical_key")
@@ -1285,6 +1306,23 @@ class OrganizationalMemoryService:
                     lexical_score=round(lexical, 6),
                     estimated_tokens=estimated,
                     reasons=reasons,
+                    retrieval_backend_id=retrieval_status.backend_id,
+                    retrieval_index_revision=retrieval_status.index_revision,
+                    embedding_provider_id=(
+                        retrieval_status.embedding_identity.provider_id
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
+                    embedding_model_id=(
+                        retrieval_status.embedding_identity.model_id
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
+                    embedding_model_revision=(
+                        retrieval_status.embedding_identity.model_revision
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
                 )
             )
             remaining -= estimated
@@ -1319,6 +1357,23 @@ class OrganizationalMemoryService:
             candidate_count=candidate_count,
             top_k=query.budget.top_k,
             max_context_tokens=query.budget.max_context_tokens,
+            retrieval_backend_id=retrieval_status.backend_id,
+            retrieval_index_revision=retrieval_status.index_revision,
+            embedding_provider_id=(
+                retrieval_status.embedding_identity.provider_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_id=(
+                retrieval_status.embedding_identity.model_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_revision=(
+                retrieval_status.embedding_identity.model_revision
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
             created_at=now,
         )
 
@@ -1339,6 +1394,23 @@ class OrganizationalMemoryService:
             candidate_count=candidate_count,
             top_k=query.budget.top_k,
             max_context_tokens=query.budget.max_context_tokens,
+            retrieval_backend_id=retrieval_status.backend_id,
+            retrieval_index_revision=retrieval_status.index_revision,
+            embedding_provider_id=(
+                retrieval_status.embedding_identity.provider_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_id=(
+                retrieval_status.embedding_identity.model_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_revision=(
+                retrieval_status.embedding_identity.model_revision
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
         )
 
     def _governance_action(
