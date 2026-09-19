@@ -570,12 +570,14 @@ class AssignmentBoundCodexSessionManager:
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
+        credential_provider: AssignmentRuntimeCredentialProvider | None = None,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = watchdog_interval_seconds
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.credential_provider = credential_provider
         self.sessions: dict[str, AssignmentBoundCodexSession] = {}
         self._lock = asyncio.Lock()
 
@@ -596,6 +598,7 @@ class AssignmentBoundCodexSessionManager:
                 runtime_factory=self.runtime_factory,
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
                 egress_endpoints_resolver=self.egress_endpoints_resolver,
+                credential_provider=self.credential_provider,
             )
             await session.start()
             self.sessions[assignment_id] = session
