@@ -16,6 +16,97 @@ The product direction is intentionally broader than "chat with a coding agent": 
 
 > **Code implements engines and invariants. Definitions describe reusable behavior. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
 
+## Why companies would use Codex Web
+
+Most AI coding tools optimize the work of an individual developer. Codex Web is being designed for a broader problem: **how an organization can safely delegate work to AI agents without giving up control, provenance, or accountability**.
+
+The aim is to provide a governed layer between company intent and execution. A request can begin as a software issue, operational event, security finding, support request, product goal, or management decision and then move through the same controlled lifecycle: determine scope and authority, delegate the right work, execute within bounded environments, require approval where necessary, and preserve evidence of what happened.
+
+That makes Codex Web useful as more than a coding interface:
+
+| Corporate use case | What Codex Web can provide |
+| --- | --- |
+| **Software delivery** | Turn structured work into delegated implementation, validation, review, and evidence while preserving normal repository and CI workflows. |
+| **IT operations** | Route operational events into controlled investigation and remediation workflows instead of relying only on alerts and manual runbooks. |
+| **Security operations** | Let agents investigate and prepare remediation while keeping sensitive actions behind explicit identity, policy, approval, credential, and execution boundaries. |
+| **Service and internal requests** | Convert requests from external channels into governed work with ownership, deduplication, status, and auditable outcomes. |
+| **Product and executive workflows** | Connect goals and decisions to the work they create so strategy can eventually be traced through implementation to measured outcomes. |
+| **Regulated change management** | Capture approvals, artifacts, provider receipts, validation, and execution evidence as part of the workflow rather than reconstructing them after the fact. |
+
+### Governed autonomy instead of unrestricted agents
+
+The corporate value is not simply that an AI agent can perform more actions. It is that the organization can decide **which actor may do what, to which resource, under which policy, with which credentials, in which execution environment, and with what approval and evidence requirements**.
+
+A typical target flow is:
+
+```text
+Goal / Issue / Event / Request
+             |
+             v
+        Codex Web
+             |
+     Identity + Scope
+             |
+   Policy + Authority
+             |
+   Work / Decision graph
+             |
+      Agent delegation
+             |
+       ActionIntent
+        /        \
+   Auto-execute  Approval
+        \        /
+             v
+    Bounded execution
+             |
+      Evidence + result
+             |
+       Outcome / KPI
+```
+
+Low-risk work can become increasingly automatic while higher-risk actions remain approval-gated or denied. The same model supports a progression from interactive assistance to controlled autonomy without requiring a company to replace its existing systems of record.
+
+### One control plane, replaceable agents
+
+Codex is the current execution plane, but the architecture is intentionally moving toward provider-neutral model, agent, task-source, action-provider, and worker boundaries. The long-term goal is for companies to choose different models or execution agents for different roles while Codex Web remains responsible for canonical state, policy, orchestration, approvals, evidence, and lifecycle control.
+
+This means a future deployment could use different agents for implementation, security review, documentation, operations, or analysis without rebuilding company process around each provider.
+
+### Traceability from intent to outcome
+
+A key long-term benefit is organizational traceability. Instead of a code change existing only because "ticket #481 requested it," Codex Web is moving toward links such as:
+
+```text
+Goal
+  -> Decision
+     -> Work graph
+        -> Work item
+           -> Agent execution
+              -> Action / pull request / deployment
+                 -> Evidence
+                    -> Measured outcome
+```
+
+That creates a foundation for answering questions such as:
+
+- Why was this change made?
+- Which decision authorized it?
+- Which agent or person performed it?
+- Which policy and definition versions governed the action?
+- What evidence showed that it succeeded?
+- Did the resulting work improve the intended KPI?
+
+### Fits around existing corporate systems
+
+Codex Web is not intended to replace source control, CI/CD, monitoring, IAM, support, CRM, billing, or other authoritative platforms. It is designed to sit above and between them as a **governed AI work and decision control plane**.
+
+External systems remain authoritative where configured. Codex Web coordinates work across them, keeps canonical execution state and provenance, and routes external mutations through controlled provider/action boundaries.
+
+> **In corporate terms, the long-term product is an AI-native organizational control plane: a system for turning goals, decisions, requests, and operational events into governed work executed by humans and AI agents, with approvals, evidence, and outcomes attached.**
+
+Some of these capabilities exist today; others are explicitly roadmap work. The sections below distinguish the current implementation from the M1-M13 target architecture, and GitHub Issues/Milestones remain the delivery source of truth.
+
 ## What exists today
 
 ### Unified Codex execution UI
