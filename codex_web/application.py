@@ -73,6 +73,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
+from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
@@ -688,6 +689,22 @@ approval_service = ApprovalService(
     canonical_requester=codex_approval_requester,
     compatibility_actor=approval_compatibility_actor,
 )
+def _assignment_runtime_adapter(binding, session):
+    key = (binding.provider_id, binding.runtime_id)
+    if key == ("openai", "codex"):
+        return CodexAgentRuntimeAdapter(session)
+    if key == ("anthropic", "claude-code"):
+        return ClaudeAgentRuntimeAdapter(session)
+    raise RuntimeError(
+        f"unsupported assignment-bound agent runtime: {binding.provider_id}/{binding.runtime_id}"
+    )
+
+
+assignment_session_managers = {
+    ("openai", "codex"): assignment_bound_codex_session_manager,
+    ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
+}
+
 thread_service = ThreadService(
     core,
     binding_service=turn_execution_binding_service,
@@ -695,6 +712,9 @@ thread_service = ThreadService(
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
     agent_sessions=agent_session_service,
+    routing_service=agent_routing_service,
+    session_managers=assignment_session_managers,
+    runtime_adapter_factory=_assignment_runtime_adapter,
 )
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
@@ -816,13 +836,30 @@ action_intent_service.recover_stale_claims()
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
+codex_agent_adapter = CodexAgentRuntimeAdapter(codex_runtime)
 agent_runtime_registry.register(
-    CodexAgentRuntimeAdapter(codex_runtime),
+    codex_agent_adapter,
     capability_revision=1,
     sandbox_profiles=("read-only", "workspace-write"),
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
+if not any(
+    provider.id == "openai"
+    and provider.organization_id == identity_service.local_trusted_actor().organization_id
+    and provider.workspace_id == identity_service.local_trusted_actor().workspace_id
+    for provider in agent_provider_store.list()
+):
+    agent_provider_service.upsert(
+        AgentProviderUpsert(
+            id="openai",
+            display_name="OpenAI Codex",
+            declared_capabilities=codex_agent_adapter.capabilities,
+            granted_capabilities=codex_agent_adapter.capabilities,
+            health=AgentProviderHealth.HEALTHY,
+        ),
+        actor=identity_service.local_trusted_actor(),
+    )
 
 class _ClaudeRegistryTransport:
     """Resolve the assignment-bound Claude session named in canonical requests."""
@@ -887,6 +924,9 @@ turn_execution_service = install_turn_execution_service(
     session_manager=assignment_bound_codex_session_manager,
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
+    routing_service=agent_routing_service,
+    session_managers=assignment_session_managers,
+    runtime_adapter_factory=_assignment_runtime_adapter,
 )
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
