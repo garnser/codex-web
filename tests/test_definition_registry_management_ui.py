@@ -102,5 +102,25 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         self.assertNotIn("localStorage", javascript)
 
 
+    def test_authority_policy_explorer_uses_canonical_read_and_simulation_apis(self) -> None:
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (
+            ROOT / "static" / "authority_policy_explorer.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="authority-policy-explorer-panel"', html)
+        self.assertIn('id="authority-explorer-load"', html)
+        self.assertIn('id="authority-impact-load"', html)
+        self.assertIn('id="authority-sim-run"', html)
+        self.assertIn("/api/authority/effective", javascript)
+        self.assertIn("/api/authority/impact/", javascript)
+        self.assertIn("/api/authority/simulate", javascript)
+        self.assertIn("Canonical reasons", javascript)
+        self.assertIn("Effective permission matrix", javascript)
+        self.assertNotIn("/publish", javascript)
+        self.assertNotIn("localStorage", javascript)
+        self.assertNotIn("fetch(", javascript)
+
+
 if __name__ == "__main__":
     unittest.main()
