@@ -306,6 +306,52 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].status, "failed")
         self.assertEqual(len(rows[0].attempts), 1)
 
+    async def test_input_budget_is_enforced_after_plugin_composition(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+        self.service.input_pipeline = InputPluginPipeline(
+            [
+                InputPluginRegistration(
+                    plugin=_GatewayInputPlugin(),
+                    phase=InputPhase.COMPOSE,
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ModelRoutingError,
+            "input token budget exceeded",
+        ):
+            await self.service.invoke(
+                self._request(max_input_tokens=20),
+                actor=self.actor,
+            )
+
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_goal_usage_aggregates_gateway_attempt_usage(self) -> None:
+        self._provider("p1")
+        self._model("m1")
+
+        for _ in range(2):
+            await self.service.invoke(
+                self._request(goal_id="goal-budget-test"),
+                actor=self.actor,
+            )
+
+        usage = self.service.goal_usage(
+            "goal-budget-test",
+            actor=self.actor,
+        )
+        self.assertEqual(usage.calls, 2)
+        self.assertEqual(usage.input_tokens, 200)
+        self.assertEqual(usage.output_tokens, 40)
+        self.assertGreater(usage.cost_usd, 0.0)
+        self.assertEqual(
+            self.service.goal_usage("other-goal", actor=self.actor).calls,
+            0,
+        )
+
     async def test_secret_reference_is_resolved_only_at_provider_boundary(self) -> None:
         secret = self.secret_broker.create(
             SecretCreate(

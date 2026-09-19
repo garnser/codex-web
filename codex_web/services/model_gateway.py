@@ -27,6 +27,7 @@ from codex_web.model_gateway import (
     ModelDefinitionUpsert,
     ModelGatewayState,
     ModelInvocationAttempt,
+    ModelGoalUsage,
     ModelInvocationRecord,
     ModelInvocationRequest,
     ModelInvocationResponse,
@@ -547,6 +548,14 @@ class ModelGatewayService:
             request,
             rendered_system_prompt=rendered_system_prompt,
         )
+        if (
+            request.max_input_tokens is not None
+            and input_tokens > request.max_input_tokens
+        ):
+            raise ModelRoutingError(
+                "estimated input token budget exceeded: "
+                f"{input_tokens} > {request.max_input_tokens}"
+            )
         requested_residency = set(policy.required_residency_tags) | set(
             request.required_residency_tags
         )
@@ -953,6 +962,33 @@ class ModelGatewayService:
         if final_error is not None:
             raise ModelProviderUnavailableError(str(final_error)) from final_error
         raise ModelProviderUnavailableError("no model attempt could run within budget")
+
+    def goal_usage(
+        self,
+        goal_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelGoalUsage:
+        rows = [
+            item
+            for item in self.store.load().invocations
+            if item.goal_id == goal_id and self._same_scope(item, actor)
+        ]
+        input_tokens = 0
+        output_tokens = 0
+        cost_usd = 0.0
+        for row in rows:
+            for attempt in row.attempts:
+                input_tokens += int(attempt.input_tokens or 0)
+                output_tokens += int(attempt.output_tokens or 0)
+                cost_usd += float(attempt.actual_cost_usd or 0.0)
+        return ModelGoalUsage(
+            goal_id=goal_id,
+            calls=len(rows),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
 
     def invocations(
         self,
