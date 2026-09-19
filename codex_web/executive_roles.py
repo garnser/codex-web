@@ -320,11 +320,12 @@ class ExecutiveRoleOutput(BaseModel):
     risks: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()
     disagreement: tuple[str, ...] = ()
+    context_refs: tuple[str, ...] = ()
     proposals: tuple[ExecutiveProposalDraft, ...] = ()
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutiveRoleOutput":
-        for field_name in ("risks", "assumptions", "disagreement"):
+        for field_name in ("risks", "assumptions", "disagreement", "context_refs"):
             object.__setattr__(
                 self,
                 field_name,
