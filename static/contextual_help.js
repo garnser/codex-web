@@ -5,6 +5,7 @@ const helpDocsBase =
 const helpTopics = [
   { pattern: /definition|contract/i, path: "administration/definition-registry.md", label: "Definitions help" },
   { pattern: /attention|inbox/i, path: "troubleshooting/operator-matrix.md", label: "Attention help" },
+  { pattern: /company kpi|business kpi|metric \/ kpi/i, path: "architecture/business-kpis.md", label: "Business KPI help" },
   { pattern: /observability|structured logs|operations/i, path: "operations/runbooks.md#health-logs-and-observability", label: "Operations help" },
   { pattern: /worker|execution plane/i, path: "operations/runbooks.md#execution-worker-drain-quarantine-and-replacement", label: "Worker help" },
   { pattern: /extension|plugin/i, path: "extensions/developer-guide.md", label: "Extension help" },
