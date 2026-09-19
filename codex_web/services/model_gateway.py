@@ -640,23 +640,6 @@ class ModelGatewayService:
             }:
                 rejected.append(f"{model.id}:provider_disabled")
                 continue
-            if self.provider_capacity is not None:
-                blocked = self.provider_capacity.blocking_record(
-                    provider.id,
-                    None,
-                    actor=actor,
-                )
-                if blocked is not None:
-                    rejected.append(
-                        f"{model.id}:capacity_{blocked.status.value}"
-                        + (
-                            f":retry_at={blocked.retry_at:.3f}"
-                            if blocked.retry_at is not None
-                            else ""
-                        )
-                    )
-                    capacity_blocks.append(blocked)
-                    continue
             if policy.allowed_provider_ids and provider.id not in policy.allowed_provider_ids:
                 rejected.append(f"{model.id}:provider_not_allowed")
                 continue
@@ -686,6 +669,23 @@ class ModelGatewayService:
                     continue
                 if cost > effective_max_cost:
                     rejected.append(f"{model.id}:budget_exceeded")
+                    continue
+            if self.provider_capacity is not None:
+                blocked = self.provider_capacity.blocking_record(
+                    provider.id,
+                    None,
+                    actor=actor,
+                )
+                if blocked is not None:
+                    rejected.append(
+                        f"{model.id}:capacity_{blocked.status.value}"
+                        + (
+                            f":retry_at={blocked.retry_at:.3f}"
+                            if blocked.retry_at is not None
+                            else ""
+                        )
+                    )
+                    capacity_blocks.append(blocked)
                     continue
             preference = preferred.get(provider.id, len(preferred))
             degraded_penalty = 10000 if provider.status == ModelProviderStatus.DEGRADED else 0
