@@ -32,7 +32,7 @@ test('metric explorer shows freshness, provenance and immutable snapshots', asyn
     evaluated_at: 1890000010,
   };
 
-  await page.route('**/api/metrics**', async (route) => {
+  await page.route(/\\/api\\/metrics(?:[/?].*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     let body;
@@ -101,7 +101,7 @@ test('metric explorer shows freshness, provenance and immutable snapshots', asyn
 });
 
 test('metric explorer renders missing data explicitly and is responsive', async ({ page }) => {
-  await page.route('**/api/metrics**', async (route) => {
+  await page.route(/\\/api\\/metrics(?:[/?].*)?$/, async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     const definition = {
