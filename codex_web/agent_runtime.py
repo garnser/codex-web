@@ -46,6 +46,7 @@ class AgentRuntimeSessionRequest(BaseModel):
     sandbox: str | None = None
     approval_policy: str | None = None
     workspace_cwd: str | None = None
+    sandbox_policy: dict[str, Any] | None = None
     execution_id: str | None = None
     assignment_id: str | None = None
     execution_workspace_id: str | None = None
