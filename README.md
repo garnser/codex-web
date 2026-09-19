@@ -287,4 +287,4 @@ Before substantial work, read:
 
 Use focused tests while iterating and treat CI as the authoritative clean-environment merge gate.
 
-Delivery status, priorities, dependencies, and completion belong in **GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests**. The README intentionally does not duplicate roadmap or project-history state.
+Delivery status, priorities, dependencies, and completion belong in **GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests**.
