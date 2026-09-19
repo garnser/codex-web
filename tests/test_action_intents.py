@@ -47,6 +47,8 @@ from codex_web.identity import (
 from codex_web.models import WorkItemState
 from codex_web.resources import ResourceCreate, ResourceType
 from codex_web.services.action_intents import ActionIntentService, ActionIntentUnsafeRetryError
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
@@ -54,6 +56,7 @@ from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.entitlements import EntitlementStore
@@ -136,6 +139,7 @@ class _SlowProvider:
                     idempotency=True,
                 ),
                 required_resource_types=(ResourceType.OTHER,),
+                required_authority=("action.test.write",),
                 timeout_seconds=1.0,
                 retry_max_attempts=3,
             ),
@@ -179,6 +183,7 @@ class _NonIdempotentUnknownProvider:
                     idempotency=False,
                 ),
                 required_resource_types=(ResourceType.OTHER,),
+                required_authority=("action.test.write",),
                 retry_max_attempts=3,
             ),
         )
@@ -234,6 +239,13 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             ResourceCreate(resource_type=ResourceType.OTHER, name="Target"),
             actor=self.actor,
         )
+        self.definition_registry = DefinitionRegistryService(
+            DefinitionRegistryStore(self.sqlite)
+        )
+        self.authority = install_authority_roles(
+            self.definition_registry,
+            self.resources,
+        )
         self.registry = ActionProviderRegistry(ActionProviderStateStore(self.sqlite))
         self.reference = ReferenceActionProvider()
         self.registry.register(self.reference)
@@ -265,6 +277,8 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             artifact_evidence=self.artifacts,
             work_item_host=self.host,
             entitlements=self.entitlements,
+            authority=self.authority,
+            identity=self.identity,
         )
         self.binding = self.registry.bind(
             ActionProviderBindingCreate(
@@ -379,7 +393,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             0,
         )
 
-    async def test_entitlement_does_not_override_authority_denial(self) -> None:
+    async def test_entitlement_does_not_override_policy_denial(self) -> None:
         self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
         self.entitlements.set_capability(
             "external_actions",
@@ -387,7 +401,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
         intent = self._create(
-            authority_decision=ActionDecisionSnapshot(
+            policy_decision=ActionDecisionSnapshot(
                 outcome=ActionDecisionOutcome.DENY,
                 source="policy:test",
                 reason="not authorized",
@@ -397,10 +411,44 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intent.status, ActionIntentStatus.CANCELLED)
         self.assertEqual(self.reference.values, {})
 
+    async def test_caller_authority_allow_or_deny_does_not_replace_canonical_decision(self) -> None:
+        for caller_outcome in (
+            ActionDecisionOutcome.ALLOW,
+            ActionDecisionOutcome.DENY,
+        ):
+            with self.subTest(caller_outcome=caller_outcome):
+                intent = self._create(
+                    authority_decision=ActionDecisionSnapshot(
+                        outcome=caller_outcome,
+                        source="approval:caller-assertion",
+                        reason="caller assertion must not authorize",
+                    ),
+                )
+                self.assertEqual(intent.status, ActionIntentStatus.PENDING)
+                self.assertEqual(
+                    intent.authority_decision.outcome,
+                    ActionDecisionOutcome.ALLOW,
+                )
+                self.assertEqual(
+                    intent.authority_decision.source,
+                    "canonical:role-authority",
+                )
+                self.assertNotEqual(
+                    intent.authority_decision.source,
+                    "approval:caller-assertion",
+                )
+                self.assertTrue(intent.authority_decision.definition_refs)
+
     async def test_intent_is_durable_before_any_provider_side_effect(self) -> None:
         intent = self._create()
 
         self.assertEqual(intent.status, ActionIntentStatus.PENDING)
+        self.assertEqual(intent.authority_decision.source, "canonical:role-authority")
+        self.assertEqual(
+            intent.authority_decision.capabilities,
+            ("action.reference.set",),
+        )
+        self.assertTrue(intent.authority_decision.definition_refs)
         self.assertEqual(self.reference.values, {})
         history = self.service.history(intent.id, self.actor)
         self.assertEqual(history["receipts"], [])
