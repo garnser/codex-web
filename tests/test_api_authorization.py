@@ -160,6 +160,10 @@ class ApiAuthorizationTests(unittest.TestCase):
         async def create_project():
             return {}
 
+        @app.post("/api/configuration/drafts")
+        async def create_configuration():
+            return {}
+
         install_api_authorization(app, FakeAuthority())
         schema = app.openapi()
 
@@ -185,8 +189,14 @@ class ApiAuthorizationTests(unittest.TestCase):
             write["x-codex-authorization"]["access"],
             "admin",
         )
+        self.assertNotIn(
+            "required_assurance",
+            write["x-codex-authorization"],
+        )
+
+        sensitive = schema["paths"]["/api/configuration/drafts"]["post"]
         self.assertEqual(
-            write["x-codex-authorization"]["required_assurance"],
+            sensitive["x-codex-authorization"]["required_assurance"],
             "mfa",
         )
 
