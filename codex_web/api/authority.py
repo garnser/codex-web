@@ -21,6 +21,7 @@ from codex_web.services.identity import (
     IdentityError,
     IdentityService,
 )
+from codex_web.services.projects import ProjectNotFoundError, ProjectService
 from codex_web.services.work_items import WorkItemService
 
 
@@ -34,7 +35,7 @@ class AuthoritySimulationHttpRequest(BaseModel):
 
 
 def _error(exc: Exception) -> HTTPException:
-    if isinstance(exc, DefinitionNotFoundError):
+    if isinstance(exc, (DefinitionNotFoundError, ProjectNotFoundError)):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (DefinitionConflictError,)):
         return HTTPException(status_code=409, detail=str(exc))
@@ -50,6 +51,7 @@ def build_authority_router(
     authority: AuthorityRoleService,
     identity: IdentityService,
     work_items: WorkItemService,
+    projects: ProjectService,
 ) -> APIRouter:
     router = APIRouter(tags=["authority-policy"])
 
@@ -70,6 +72,8 @@ def build_authority_router(
         project_id: str | None,
     ) -> str | None:
         if not work_item_ref:
+            if project_id:
+                projects.get(project_id, actor.tenant)
             return project_id
         item = work_items.get(work_item_ref)
         if (
@@ -80,7 +84,10 @@ def build_authority_router(
         item_project = item.get("project_id")
         if project_id and item_project and project_id != item_project:
             raise ValueError("work item project conflicts with requested project")
-        return item_project or project_id
+        effective_project = item_project or project_id
+        if effective_project:
+            projects.get(effective_project, actor.tenant)
+        return effective_project
 
     def require_record_visible(record, actor, *, project_id: str | None = None) -> None:
         if record.scope_type == DefinitionScope.GLOBAL:
@@ -95,11 +102,12 @@ def build_authority_router(
             and record.scope_id == actor.workspace_id
         ):
             return
-        if (
-            record.scope_type == DefinitionScope.PROJECT
-            and project_id is not None
-            and record.scope_id == project_id
-        ):
+        if record.scope_type == DefinitionScope.PROJECT:
+            if project_id is not None and record.scope_id != project_id:
+                raise AuthorizationError(
+                    "authority definition does not match requested project context"
+                )
+            projects.get(str(record.scope_id), actor.tenant)
             return
         raise AuthorizationError("authority definition is outside tenant/project scope")
 
@@ -129,6 +137,7 @@ def build_authority_router(
                     DefinitionError,
                     IdentityError,
                     AuthorizationError,
+                    ProjectNotFoundError,
                     LookupError,
                     ValueError,
                 ),
