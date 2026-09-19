@@ -12,9 +12,15 @@ from typing import Any
 
 from fastapi import Request
 
+from codex_web.autonomy import (
+    AutonomyCycleOutcome,
+    AutonomyObservation,
+    AutonomyReasoningResult,
+)
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.services.canonical_events import CanonicalEventIngestionService
+from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.models import GitLabProjectRoutingSettings, GitLabRoutingSettings, WorkItemState
 
@@ -28,10 +34,12 @@ class GitLabService:
         gitlab: GitLabClient | None = None,
         *,
         canonical_events: CanonicalEventIngestionService | None = None,
+        autonomy_controller: AutonomyController | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.canonical_events = canonical_events
+        self.autonomy_controller = autonomy_controller
         self._event_ids: dict[str, float] = {}
 
     def event_target_agents(
@@ -776,19 +784,59 @@ class GitLabService:
             bindings.extend((None, binding) for binding in master_bindings)
 
         results: list[dict[str, Any]] = []
-        for agent, binding in bindings:
-            prompt = h._format_gitlab_event_prompt(payload, agent)
-            result = await h._dispatch_event_to_binding(binding, prompt, source="gitlab")
-            notice = await h._send_gitlab_event_notice(binding, payload, agent, result)
-            results.append(
-                {
-                    "agent": agent,
-                    "threadId": result.get("threadId"),
-                    "queued": result.get("queued", False),
-                    "ok": result.get("ok", False),
-                    "slackNoticeSent": notice.get("sent", False),
-                }
+
+        async def dispatch_reasoning(*_args) -> AutonomyReasoningResult:
+            for agent, binding in bindings:
+                prompt = h._format_gitlab_event_prompt(payload, agent)
+                result = await h._dispatch_event_to_binding(
+                    binding,
+                    prompt,
+                    source="gitlab",
+                )
+                notice = await h._send_gitlab_event_notice(
+                    binding,
+                    payload,
+                    agent,
+                    result,
+                )
+                results.append(
+                    {
+                        "agent": agent,
+                        "threadId": result.get("threadId"),
+                        "queued": result.get("queued", False),
+                        "ok": result.get("ok", False),
+                        "slackNoticeSent": notice.get("sent", False),
+                    }
+                )
+            return AutonomyReasoningResult(
+                summary="GitLab event routed through bounded autonomy"
             )
+
+        autonomy_cycle = None
+        if self.autonomy_controller is not None and canonical_delivery is not None:
+            autonomy_cycle = await self.autonomy_controller.process(
+                canonical_delivery.event,
+                AutonomyObservation(
+                    deterministic_resolved=False,
+                    reasoning_score=1.0,
+                    reason="configured GitLab routing requires agent reasoning",
+                ),
+                cycle_key=f"gitlab-route:{project_id}:{canonical_delivery.event.event_type}",
+                reasoner=dispatch_reasoning,
+            )
+            if autonomy_cycle.outcome != AutonomyCycleOutcome.COMPLETED:
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "ignored": True,
+                    "reason": f"autonomy_{autonomy_cycle.outcome.value}",
+                    "autonomyReason": autonomy_cycle.reason,
+                    "autonomyCycleId": autonomy_cycle.id,
+                    "eventId": event_id,
+                    "canonicalEventId": canonical_delivery.event.event_id,
+                }
+        else:
+            await dispatch_reasoning()
 
         h._append_bot_event(
             {
@@ -871,6 +919,7 @@ def install_gitlab_service(
     gitlab: GitLabClient | None = None,
     *,
     canonical_events: CanonicalEventIngestionService | None = None,
+    autonomy_controller: AutonomyController | None = None,
 ) -> GitLabService:
     """Install one GitLab domain service and preserve legacy host entrypoints."""
 
@@ -879,11 +928,14 @@ def install_gitlab_service(
         service = existing
         if canonical_events is not None:
             service.canonical_events = canonical_events
+        if autonomy_controller is not None:
+            service.autonomy_controller = autonomy_controller
     else:
         service = GitLabService(
             host,
             gitlab,
             canonical_events=canonical_events,
+            autonomy_controller=autonomy_controller,
         )
         app.state.gitlab_service = service
 
