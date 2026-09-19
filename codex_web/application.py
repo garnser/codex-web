@@ -1409,6 +1409,7 @@ core.executive_service = install_executive_integrated(
     core,
     model_gateway=model_gateway_service,
     executive_roles=executive_role_definition_service,
+    organizational_memory=organizational_memory_service,
 )
 
 
