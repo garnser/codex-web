@@ -688,6 +688,22 @@ approval_service = ApprovalService(
     canonical_requester=codex_approval_requester,
     compatibility_actor=approval_compatibility_actor,
 )
+def _assignment_runtime_adapter(binding, session):
+    key = (binding.provider_id, binding.runtime_id)
+    if key == ("openai", "codex"):
+        return CodexAgentRuntimeAdapter(session)
+    if key == ("anthropic", "claude-code"):
+        return ClaudeAgentRuntimeAdapter(session)
+    raise RuntimeError(
+        f"unsupported assignment-bound agent runtime: {binding.provider_id}/{binding.runtime_id}"
+    )
+
+
+assignment_session_managers = {
+    ("openai", "codex"): assignment_bound_codex_session_manager,
+    ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
+}
+
 thread_service = ThreadService(
     core,
     binding_service=turn_execution_binding_service,
@@ -695,6 +711,9 @@ thread_service = ThreadService(
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
     agent_sessions=agent_session_service,
+    routing_service=agent_routing_service,
+    session_managers=assignment_session_managers,
+    runtime_adapter_factory=_assignment_runtime_adapter,
 )
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
@@ -887,6 +906,9 @@ turn_execution_service = install_turn_execution_service(
     session_manager=assignment_bound_codex_session_manager,
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
+    routing_service=agent_routing_service,
+    session_managers=assignment_session_managers,
+    runtime_adapter_factory=_assignment_runtime_adapter,
 )
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
