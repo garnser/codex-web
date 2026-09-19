@@ -96,6 +96,7 @@ class BusinessDataSnapshot:
     display_name: str | None = None
     external_url: str | None = None
     source_updated_at: float | None = None
+    source_sequence: int | None = None
     source_revision: str | None = None
     tombstone: bool = False
 
@@ -201,6 +202,7 @@ class BusinessDataSourceEvent:
                     display_name=self.snapshot.display_name,
                     external_url=self.snapshot.external_url,
                     source_updated_at=self.snapshot.source_updated_at,
+                    source_sequence=self.snapshot.source_sequence,
                     source_revision=self.snapshot.source_revision,
                     tombstone=True,
                 ),
