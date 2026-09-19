@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 11 production-release contract. Releases are canonical records that bind
+Canonical production-release contract. Releases are canonical records that bind
 one immutable build artifact/digest to its source revision, SBOM, provenance,
 signature state, policy revision, evidence, approvals, promotion targets and
 known-good rollback artifact.
