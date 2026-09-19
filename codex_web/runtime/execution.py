@@ -21,6 +21,19 @@ from codex_web.services.thread_bootstrap_bindings import (
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 
 
+class _ThreadRuntimeTransport:
+    def __init__(self, service: "TurnExecutionService", thread_id: str) -> None:
+        self.service = service
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        return await self.service.request_for_thread(
+            self.thread_id,
+            method,
+            params or {},
+        )
+
+
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
@@ -850,10 +863,11 @@ class TurnExecutionService:
                     project = h._project(active.project_id)
             if project is None:
                 with contextlib.suppress(Exception):
-                    thread_response = await h.codex.request(
-                        "thread/read",
-                        {"threadId": thread_id, "includeTurns": False},
-                    )
+                    thread_response = (
+                        await CodexAgentRuntimeAdapter(
+                            _ThreadRuntimeTransport(self, thread_id)
+                        ).read_session(thread_id)
+                    ).payload
                     thread = (
                         thread_response.get("thread", thread_response)
                         if isinstance(thread_response, dict)
