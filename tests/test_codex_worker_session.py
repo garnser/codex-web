@@ -134,6 +134,8 @@ class _FakeDelegationService:
         self.validation_error: Exception | None = None
         self.now = 1_800_000_000.0
         self.secret = "worker-codex-token-do-not-persist"
+        self.use_calls = 0
+        self.validate_calls = 0
 
     def _delegation(self, assignment, worker_id, fence):
         return CodexAuthDelegation(
@@ -156,6 +158,7 @@ class _FakeDelegationService:
         consumer,
         subcommand=("app-server",),
     ):
+        self.use_calls += 1
         delegation = self._delegation(assignment, worker_id, fence)
         return consumer(
             CodexDelegatedLaunch(
@@ -178,6 +181,7 @@ class _FakeDelegationService:
         )
 
     def validate_current(self, delegation, assignment, *, actor) -> None:
+        self.validate_calls += 1
         if self.validation_error is not None:
             raise self.validation_error
         if assignment.id != delegation.assignment_id:
@@ -371,6 +375,41 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(launch["access_token_present"])
             self.assertNotIn(self.delegation.secret, repr(session.status().public()))
+        finally:
+            await session.stop()
+
+    async def test_explicit_runtime_credential_provider_isolated_from_worker_default(self) -> None:
+        assignment = self._create_assignment()
+        injected = _FakeDelegationService()
+        injected.secret = "runtime-specific-token-do-not-persist"
+        session = AssignmentBoundCodexSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+            runtime_factory=_FakeCodexRuntime,
+            credential_provider=injected,
+            watchdog_interval_seconds=60,
+            clock=lambda: injected.now,
+            monotonic=lambda: injected.now,
+        )
+
+        await session.start()
+        try:
+            launch = self.backend.spawned[0]
+            self.assertEqual(injected.use_calls, 1)
+            self.assertEqual(self.delegation.use_calls, 0)
+            self.assertEqual(
+                launch["environment"]["CODEX_ACCESS_TOKEN"],
+                injected.secret,
+            )
+            self.assertNotEqual(
+                launch["environment"]["CODEX_ACCESS_TOKEN"],
+                self.delegation.secret,
+            )
+            session.validate_current()
+            self.assertGreaterEqual(injected.validate_calls, 1)
+            self.assertEqual(self.delegation.validate_calls, 0)
+            self.assertNotIn(injected.secret, repr(session.status().public()))
         finally:
             await session.stop()
 
