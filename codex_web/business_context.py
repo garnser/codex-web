@@ -214,7 +214,7 @@ class ExternalRecordRefCreate(BaseModel):
 
     system: str = Field(min_length=1, max_length=200)
     provider: str = Field(min_length=1, max_length=200)
-    provider_instance: str | None = Field(default=None, max_length=200)
+    provider_instance: str | None = Field(default=None, max_length=1000)
     object_type: str = Field(min_length=1, max_length=200)
     external_id: str = Field(min_length=1, max_length=1000)
     display_name: str | None = Field(default=None, max_length=500)
