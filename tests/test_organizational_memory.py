@@ -196,15 +196,15 @@ class OrganizationalMemoryTests(unittest.TestCase):
                 budget=KnowledgeRetrievalBudget(
                     top_k=1,
                     candidate_limit=5,
-                    max_context_tokens=96,
+                    max_context_tokens=128,
                 ),
             ),
             actor=self.actor,
         )
 
         self.assertEqual(len(result.items), 1)
-        self.assertLessEqual(result.packed_tokens, 96)
-        self.assertLessEqual(result.items[0].estimated_tokens, 96)
+        self.assertLessEqual(result.packed_tokens, 128)
+        self.assertLessEqual(result.items[0].estimated_tokens, 128)
         self.assertIn("truncated by memory retrieval budget", result.items[0].context_excerpt)
 
     def test_governance_classification_and_deny_model_context_fail_closed(self) -> None:
