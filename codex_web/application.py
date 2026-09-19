@@ -1580,14 +1580,38 @@ turn_execution_service = install_turn_execution_service(
     ownership=replicated_ownership_service,
 )
 
+async def _existing_thread_runtime_request(method, params):
+    values = dict(params or {})
+    thread_id = str(values.get("threadId") or "").strip()
+    if not thread_id:
+        raise RuntimeError(f"{method} requires threadId")
+    return await turn_execution_service.request_for_thread(
+        thread_id,
+        method,
+        values,
+    )
+
+
+async def _thread_recovery_runtime_request(method, params):
+    values = dict(params or {})
+    thread_id = str(values.get("threadId") or "").strip()
+    if method != "thread/start" and thread_id:
+        return await turn_execution_service.request_for_thread(
+            thread_id,
+            method,
+            values,
+        )
+    return await core.codex.request(method, values)
+
+
 thread_naming_service = ThreadNamingService(
-    turn_execution_service.request_for_thread,
+    _existing_thread_runtime_request,
     thread_index_repository,
     core._load_bot_bindings,
     event_sink=core._append_bot_event,
 )
 thread_resume_service = ThreadResumeService(
-    turn_execution_service.request_for_thread,
+    _existing_thread_runtime_request,
     thread_index_repository,
     bot_binding_selection_service,
     event_sink=core._append_bot_event,
@@ -1616,12 +1640,12 @@ thread_recovery_service = install_thread_recovery_service(
     settings=thread_execution_settings_service,
     naming=thread_naming_service,
     thread_index=thread_index_repository,
-    runtime_request=turn_execution_service.request_for_thread,
+    runtime_request=_thread_recovery_runtime_request,
 )
 
 thread_bot_collaboration_service = ThreadBotCollaborationService(
     project_runtime_service,
-    turn_execution_service.request_for_thread,
+    _existing_thread_runtime_request,
     load_bindings=core._load_bot_bindings,
     save_bindings=core._save_bot_bindings,
     load_connections=core._load_bot_connections,
