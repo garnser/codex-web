@@ -20,6 +20,7 @@ from codex_web.authority_seed import authority_role_catalog_seed_payload
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
+    DefinitionRecord,
     reference_for,
 )
 from codex_web.identity import AuthenticationActor
@@ -28,6 +29,7 @@ from codex_web.services.definitions import (
     DefinitionConflictError,
     DefinitionError,
     DefinitionKindSchema,
+    DefinitionPublicationGuardResult,
     DefinitionRegistryService,
 )
 from codex_web.resources import ResourceLifecycle
@@ -35,6 +37,340 @@ from codex_web.services.resources import (
     ResourceCatalogError,
     ResourceCatalogService,
 )
+
+
+def _set_scope_expands(before: tuple, after: tuple) -> bool:
+    """Return True when an allow-list becomes less restrictive."""
+
+    if not before:
+        return False
+    if not after:
+        return True
+    return not set(after).issubset(set(before))
+
+
+def _limit_expands(before: float | int | None, after: float | int | None) -> bool:
+    if before is None:
+        return False
+    if after is None:
+        return True
+    return after > before
+
+
+def _approval_expands(before, after) -> bool:
+    if after.count < before.count:
+        return True
+    if before.count == 0:
+        return False
+    if not before.role_ids:
+        return False
+    if not after.role_ids:
+        return True
+    return not set(after.role_ids).issubset(set(before.role_ids))
+
+
+def assess_authority_role_publication(
+    selected: DefinitionRecord,
+    active: DefinitionRecord | None,
+) -> DefinitionPublicationGuardResult:
+    """Classify whether an authority catalog revision expands operational power."""
+
+    classes: list[str] = []
+    reasons: list[str] = []
+    sensitive = False
+
+    def mark(change_class: str, reason: str, *, expansion: bool = False) -> None:
+        nonlocal sensitive
+        classes.append(change_class)
+        reasons.append(reason)
+        sensitive = sensitive or expansion
+
+    try:
+        candidate = AuthorityRoleCatalogDefinition.model_validate(selected.payload)
+        previous = (
+            AuthorityRoleCatalogDefinition.model_validate(active.payload)
+            if active is not None
+            else None
+        )
+    except Exception as exc:
+        return DefinitionPublicationGuardResult(
+            change_classes=("authority.comparison_ambiguous",),
+            reasons=(
+                "authority catalog comparison could not be proven safe: "
+                f"{type(exc).__name__}: {exc}",
+            ),
+            requires_approval=True,
+        )
+
+    if previous is None:
+        return DefinitionPublicationGuardResult(
+            change_classes=("authority.catalog_created",),
+            reasons=(
+                "new authority catalog slot can introduce operational authority",
+            ),
+            requires_approval=True,
+        )
+
+    before_roles = {item.id: item for item in previous.roles}
+    after_roles = {item.id: item for item in candidate.roles}
+    for role_id in sorted(set(after_roles) - set(before_roles)):
+        mark(
+            "authority.role_added",
+            f"role added: {role_id}",
+            expansion=True,
+        )
+    for role_id in sorted(set(before_roles) - set(after_roles)):
+        mark(
+            "authority.role_removed",
+            f"role removed: {role_id}",
+        )
+
+    for role_id in sorted(set(before_roles) & set(after_roles)):
+        before_role = before_roles[role_id]
+        after_role = after_roles[role_id]
+        added_inherits = sorted(set(after_role.inherits) - set(before_role.inherits))
+        removed_inherits = sorted(set(before_role.inherits) - set(after_role.inherits))
+        if added_inherits:
+            mark(
+                "authority.inheritance_added",
+                f"role {role_id} inherits additional roles: "
+                + ", ".join(added_inherits),
+                expansion=True,
+            )
+        if removed_inherits:
+            mark(
+                "authority.inheritance_removed",
+                f"role {role_id} removed inherited roles: "
+                + ", ".join(removed_inherits),
+            )
+
+        before_grants = {item.id: item for item in before_role.grants}
+        after_grants = {item.id: item for item in after_role.grants}
+        for grant_id in sorted(set(after_grants) - set(before_grants)):
+            mark(
+                "authority.grant_added",
+                f"role {role_id} grant added: {grant_id}",
+                expansion=True,
+            )
+        for grant_id in sorted(set(before_grants) - set(after_grants)):
+            mark(
+                "authority.grant_removed",
+                f"role {role_id} grant removed: {grant_id}",
+            )
+
+        for grant_id in sorted(set(before_grants) & set(after_grants)):
+            before = before_grants[grant_id]
+            after = after_grants[grant_id]
+            prefix = f"role {role_id} grant {grant_id}"
+
+            if before.capability != after.capability:
+                mark(
+                    "authority.capability_changed",
+                    f"{prefix} capability changed from {before.capability} "
+                    f"to {after.capability}",
+                    expansion=True,
+                )
+            if AUTHORITY_LEVEL_RANK[after.level] > AUTHORITY_LEVEL_RANK[before.level]:
+                mark(
+                    "authority.level_increased",
+                    f"{prefix} level increased from {before.level.value} "
+                    f"to {after.level.value}",
+                    expansion=True,
+                )
+            elif AUTHORITY_LEVEL_RANK[after.level] < AUTHORITY_LEVEL_RANK[before.level]:
+                mark(
+                    "authority.level_reduced",
+                    f"{prefix} level reduced from {before.level.value} "
+                    f"to {after.level.value}",
+                )
+
+            for field_name, label in (
+                ("project_ids", "project"),
+                ("resource_ids", "resource"),
+                ("resource_types", "resource type"),
+                ("resource_risks", "resource risk"),
+                ("resource_sensitivities", "resource sensitivity"),
+                ("environments", "environment"),
+            ):
+                before_values = tuple(getattr(before, field_name))
+                after_values = tuple(getattr(after, field_name))
+                if _set_scope_expands(before_values, after_values):
+                    mark(
+                        f"authority.{field_name}_expanded",
+                        f"{prefix} {label} scope expanded",
+                        expansion=True,
+                    )
+                elif before_values != after_values:
+                    mark(
+                        f"authority.{field_name}_changed",
+                        f"{prefix} {label} scope changed without broadening",
+                    )
+
+            if (
+                "production" not in {item.value for item in before.environments}
+                and "production" in {item.value for item in after.environments}
+            ):
+                mark(
+                    "authority.production_scope_added",
+                    f"{prefix} added production environment authority",
+                    expansion=True,
+                )
+
+            for field_name, label in (
+                ("max_amount_usd", "monetary"),
+                ("max_input_tokens", "input-token"),
+                ("max_output_tokens", "output-token"),
+                ("max_model_calls", "model-call"),
+            ):
+                before_limit = getattr(before, field_name)
+                after_limit = getattr(after, field_name)
+                if _limit_expands(before_limit, after_limit):
+                    mark(
+                        f"authority.{field_name}_increased",
+                        f"{prefix} {label} ceiling increased or removed",
+                        expansion=True,
+                    )
+                elif before_limit != after_limit:
+                    mark(
+                        f"authority.{field_name}_reduced",
+                        f"{prefix} {label} ceiling reduced",
+                    )
+
+            if (
+                AUTHORITY_AUTONOMY_RISK_RANK[after.max_autonomous_risk]
+                > AUTHORITY_AUTONOMY_RISK_RANK[before.max_autonomous_risk]
+            ):
+                mark(
+                    "authority.autonomy_risk_increased",
+                    f"{prefix} autonomous-risk ceiling increased from "
+                    f"{before.max_autonomous_risk.value} to "
+                    f"{after.max_autonomous_risk.value}",
+                    expansion=True,
+                )
+            elif (
+                AUTHORITY_AUTONOMY_RISK_RANK[after.max_autonomous_risk]
+                < AUTHORITY_AUTONOMY_RISK_RANK[before.max_autonomous_risk]
+            ):
+                mark(
+                    "authority.autonomy_risk_reduced",
+                    f"{prefix} autonomous-risk ceiling reduced",
+                )
+
+            if _approval_expands(before.approvals, after.approvals):
+                mark(
+                    "authority.approval_requirement_reduced",
+                    f"{prefix} approval requirement became less restrictive",
+                    expansion=True,
+                )
+            elif before.approvals != after.approvals:
+                mark(
+                    "authority.approval_requirement_tightened",
+                    f"{prefix} approval requirement became more restrictive",
+                )
+
+    def binding_key(item):
+        return item.id
+
+    before_bindings = {binding_key(item): item for item in previous.bindings}
+    after_bindings = {binding_key(item): item for item in candidate.bindings}
+    for binding_id in sorted(set(after_bindings) - set(before_bindings)):
+        mark(
+            "authority.binding_added",
+            f"role binding added: {binding_id}",
+            expansion=True,
+        )
+    for binding_id in sorted(set(before_bindings) - set(after_bindings)):
+        mark(
+            "authority.binding_removed",
+            f"role binding removed: {binding_id}",
+        )
+    for binding_id in sorted(set(before_bindings) & set(after_bindings)):
+        before = before_bindings[binding_id]
+        after = after_bindings[binding_id]
+        if (
+            before.role_id != after.role_id
+            or before.subject_kind != after.subject_kind
+            or before.subject_id != after.subject_id
+            or before.organization_id != after.organization_id
+            or before.workspace_id != after.workspace_id
+        ):
+            mark(
+                "authority.binding_target_changed",
+                f"role binding {binding_id} target/role changed",
+                expansion=True,
+            )
+        elif _set_scope_expands(before.project_ids, after.project_ids):
+            mark(
+                "authority.binding_project_scope_expanded",
+                f"role binding {binding_id} project scope expanded",
+                expansion=True,
+            )
+        elif before.project_ids != after.project_ids:
+            mark(
+                "authority.binding_project_scope_reduced",
+                f"role binding {binding_id} project scope reduced",
+            )
+
+    before_delegations = {item.id: item for item in previous.delegations}
+    after_delegations = {item.id: item for item in candidate.delegations}
+    for delegation_id in sorted(set(after_delegations) - set(before_delegations)):
+        mark(
+            "authority.delegation_added",
+            f"delegation added: {delegation_id}",
+            expansion=True,
+        )
+    for delegation_id in sorted(set(before_delegations) - set(after_delegations)):
+        mark(
+            "authority.delegation_removed",
+            f"delegation removed: {delegation_id}",
+        )
+    for delegation_id in sorted(set(before_delegations) & set(after_delegations)):
+        before = before_delegations[delegation_id]
+        after = after_delegations[delegation_id]
+        if (
+            before.role_id != after.role_id
+            or before.delegate_identity_id != after.delegate_identity_id
+            or before.delegated_by_identity_id != after.delegated_by_identity_id
+            or before.organization_id != after.organization_id
+            or before.workspace_id != after.workspace_id
+        ):
+            mark(
+                "authority.delegation_target_changed",
+                f"delegation {delegation_id} target/role changed",
+                expansion=True,
+            )
+        if _set_scope_expands(before.project_ids, after.project_ids):
+            mark(
+                "authority.delegation_project_scope_expanded",
+                f"delegation {delegation_id} project scope expanded",
+                expansion=True,
+            )
+        elif before.project_ids != after.project_ids:
+            mark(
+                "authority.delegation_project_scope_reduced",
+                f"delegation {delegation_id} project scope reduced",
+            )
+        if after.expires_at > before.expires_at:
+            mark(
+                "authority.delegation_expiry_extended",
+                f"delegation {delegation_id} expiry extended",
+                expansion=True,
+            )
+        elif after.expires_at < before.expires_at:
+            mark(
+                "authority.delegation_expiry_reduced",
+                f"delegation {delegation_id} expiry reduced",
+            )
+
+    if not classes:
+        classes.append("authority.equivalent")
+        reasons.append("authority catalog has no effective privilege-shape changes")
+
+    return DefinitionPublicationGuardResult(
+        change_classes=tuple(classes),
+        reasons=tuple(reasons),
+        requires_approval=sensitive,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,4 +837,8 @@ def install_authority_roles(
         )
     service = AuthorityRoleService(registry, resources)
     service.bootstrap()
+    registry.register_publication_guard(
+        AUTHORITY_ROLE_CATALOG_KIND,
+        assess_authority_role_publication,
+    )
     return service
