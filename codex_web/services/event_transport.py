@@ -178,7 +178,7 @@ class RedisStreamsEventTransport:
         self.group = group
         self.dead_letter_stream = dead_letter_stream
         self.max_attempts = max(1, int(max_attempts))
-        self.claim_idle_ms = max(1000, int(claim_idle_ms))
+        self.claim_idle_ms = max(1, int(claim_idle_ms))
         self.backend_id = f"redis-streams:{stream}:{group}"
         self._group_ready = False
 
