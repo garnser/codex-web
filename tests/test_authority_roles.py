@@ -33,9 +33,11 @@ from codex_web.identity import (
 )
 from codex_web.resources import (
     ResourceCreate,
+    ResourceLifecycle,
     ResourceRisk,
     ResourceSensitivity,
     ResourceType,
+    ResourceUpdate,
 )
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.definitions import DefinitionRegistryService
@@ -253,16 +255,32 @@ class AuthorityRoleServiceTests(unittest.TestCase):
                 "environment is outside grant",
             ),
             (
+                {"amount_usd": None},
+                "explicit monetary amount",
+            ),
+            (
                 {"amount_usd": 101.0},
                 "monetary amount exceeds grant",
+            ),
+            (
+                {"input_tokens": None},
+                "explicit input-token budget",
             ),
             (
                 {"input_tokens": 1001},
                 "input-token budget exceeds grant",
             ),
             (
+                {"output_tokens": None},
+                "explicit output-token budget",
+            ),
+            (
                 {"output_tokens": 501},
                 "output-token budget exceeds grant",
+            ),
+            (
+                {"model_calls": None},
+                "explicit model-call budget",
             ),
             (
                 {"model_calls": 3},
@@ -310,6 +328,20 @@ class AuthorityRoleServiceTests(unittest.TestCase):
         self.assertIn("resource types outside grant", combined)
         self.assertIn("resource risk outside grant", combined)
         self.assertIn("resource sensitivity outside grant", combined)
+
+        self.resources.update(
+            self.repo.id,
+            ResourceUpdate(lifecycle=ResourceLifecycle.DISABLED),
+            actor=self.admin,
+        )
+        inactive = self.service.evaluate(
+            self._request(resource_ids=(self.repo.id,)),
+            actor=self.actor,
+        )
+        self.assertEqual(inactive.outcome.value, "deny")
+        self.assertTrue(
+            any("not active for privileged use" in reason for reason in inactive.reasons)
+        )
 
     def test_inheritance_and_team_bindings_preserve_grant_origin(self):
         team_binding = self._binding(
