@@ -112,9 +112,14 @@ class DocumentationFoundationTests(unittest.TestCase):
             "broken relative documentation links:\n" + "\n".join(broken),
         )
 
-    def test_user_documentation_has_no_internal_issue_references(self) -> None:
+    def test_documentation_has_no_internal_issue_references(self) -> None:
         references: list[str] = []
-        for source in _markdown_files():
+        sources = sorted(DOCS.rglob("*.md")) + [
+            ROOT / "README.md",
+            ROOT / "EXECUTIVE.md",
+            ROOT / "DOCKER.md",
+        ]
+        for source in sources:
             text = source.read_text(encoding="utf-8")
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if INTERNAL_ISSUE_REF_RE.search(line):
