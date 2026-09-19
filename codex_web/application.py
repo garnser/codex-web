@@ -159,6 +159,9 @@ from codex_web.services.input_plugin_definitions import install_input_plugin_def
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.orchestration_inspector import OrchestrationInspectorService
 from codex_web.services.organizational_memory import OrganizationalMemoryService
+from codex_web.services.retrieval_embedding import (
+    ModelGatewayEmbeddingIdentityValidator,
+)
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
@@ -438,6 +441,9 @@ organizational_memory_service = OrganizationalMemoryService(
     organizational_memory_store,
     data_governance_service,
     authority_role_service,
+    embedding_identity_validator=ModelGatewayEmbeddingIdentityValidator(
+        model_gateway_service
+    ),
 )
 app.state.organizational_memory_store = organizational_memory_store
 app.state.organizational_memory_service = organizational_memory_service
