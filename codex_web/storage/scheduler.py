@@ -186,7 +186,6 @@ class SchedulerStore:
                         item.lease_owner is None
                         or item.lease_expires_at is None
                         or item.lease_expires_at <= now
-                        or item.lease_owner == owner_id
                     )
                 ),
                 key=lambda item: (float(item.next_run_at or 0.0), item.id),
