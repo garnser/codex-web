@@ -29,6 +29,7 @@ from codex_web.services.business_data_sources import BusinessDataSourceService
 from codex_web.services.business_kpis import BusinessKPIService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.executive_management import ExecutiveManagementService
+from codex_web.services.extensions import ExtensionService
 from codex_web.services.goals import GoalService
 from codex_web.services.provider_capacity import ProviderCapacityService
 
@@ -64,6 +65,7 @@ class CompanyOperationsService:
         approvals: ApprovalRequestService,
         action_intents: ActionIntentService,
         artifact_evidence: ArtifactEvidenceService,
+        extension_service: ExtensionService | None = None,
         *,
         clock=time.time,
     ) -> None:
@@ -78,6 +80,7 @@ class CompanyOperationsService:
         self.approvals = approvals
         self.action_intents = action_intents
         self.artifact_evidence = artifact_evidence
+        self.extension_service = extension_service
         self.clock = clock
 
     @staticmethod
@@ -165,6 +168,34 @@ class CompanyOperationsService:
     ) -> tuple[CompanySourceDiagnostic, ...]:
         rows: list[CompanySourceDiagnostic] = []
         for source in self.business_data_sources.list(actor=actor):
+            extension = None
+            extension_grants = ()
+            if source.extension_installation_id:
+                if self.extension_service is None:
+                    extension_issue = "extension installation is linked but ExtensionService is unavailable"
+                else:
+                    try:
+                        extension = self.extension_service.get(
+                            source.extension_installation_id,
+                            actor,
+                        )
+                        extension_grants = tuple(
+                            grant
+                            for grant in self.extension_service.grants(
+                                source.extension_installation_id,
+                                actor,
+                            )
+                            if grant.active
+                        )
+                        extension_issue = None
+                    except Exception as exc:
+                        extension_issue = (
+                            "linked extension installation unavailable: "
+                            + str(exc)
+                        )
+            else:
+                extension_issue = None
+
             capacity = self.provider_capacity.get(
                 source.provider_id,
                 source.id,
@@ -185,6 +216,17 @@ class CompanyOperationsService:
                 issues.append(source.last_error)
             if source.credential_ref is None:
                 issues.append("credential reference is not configured")
+            if extension_issue:
+                issues.append(extension_issue)
+            if extension is not None and extension.lifecycle.value != "enabled":
+                issues.append(
+                    f"linked extension lifecycle is {extension.lifecycle.value}"
+                )
+            if extension is not None and extension.incompatible_reason:
+                issues.append(
+                    "linked extension is incompatible: "
+                    + extension.incompatible_reason
+                )
             if capacity is not None and capacity.status.value != "available":
                 detail = capacity.status.value
                 if capacity.reason:
@@ -198,7 +240,18 @@ class CompanyOperationsService:
                 issues.append(
                     f"{source.stale_events} stale/out-of-order event(s) observed"
                 )
-            if source.status.value in {"quarantined", "paused"}:
+            if (
+                source.status.value in {"quarantined", "paused"}
+                or (
+                    extension is not None
+                    and extension.lifecycle.value in {
+                        "quarantined",
+                        "incompatible",
+                        "disabled",
+                        "removed",
+                    }
+                )
+            ):
                 health = CompanyOperationsHealth.BLOCKED
             elif source.last_error or (
                 capacity is not None
@@ -214,6 +267,32 @@ class CompanyOperationsService:
                     source_type=source.source_type,
                     provider_id=source.provider_id,
                     provider_instance=source.source_instance,
+                    extension_installation_id=source.extension_installation_id,
+                    extension_id=(
+                        extension.manifest.id if extension is not None else None
+                    ),
+                    extension_version=(
+                        extension.manifest.version if extension is not None else None
+                    ),
+                    extension_lifecycle=(
+                        extension.lifecycle.value if extension is not None else None
+                    ),
+                    extension_health=(
+                        extension.health_status.value if extension is not None else None
+                    ),
+                    extension_requested_capabilities=(
+                        tuple(extension.manifest.capabilities.requested)
+                        if extension is not None
+                        else ()
+                    ),
+                    extension_granted_capabilities=tuple(
+                        grant.capability for grant in extension_grants
+                    ),
+                    extension_configuration_record_ids=(
+                        tuple(extension.configuration_record_ids)
+                        if extension is not None
+                        else ()
+                    ),
                     object_type=source.object_type,
                     entity_type=source.entity_type.value,
                     status=source.status.value,
