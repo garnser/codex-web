@@ -556,8 +556,8 @@ class ThreadService:
                     canonical_session.id if canonical_session is not None else None
                 ),
                 "runtime_binding": (
-                    binding.runtime_binding.model_dump(mode="json")
-                    if binding.runtime_binding is not None
+                    effective_runtime_binding.model_dump(mode="json")
+                    if effective_runtime_binding is not None
                     else None
                 ),
             }
