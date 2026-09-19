@@ -128,6 +128,7 @@ class ApprovalRequestCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     target: ApprovalTarget
+    project_id: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=1, max_length=4000)
     policy_source: str | None = Field(default=None, max_length=500)
     authority_source: str | None = Field(default=None, max_length=500)
@@ -186,6 +187,7 @@ class ApprovalRequest(BaseModel):
     requester_identity_id: str
     requester_principal_kind: PrincipalKind
     requester_session_id: str | None = None
+    project_id: str | None = None
     target: ApprovalTarget
     target_fingerprint: str
     reason: str
@@ -230,6 +232,7 @@ class ApprovalRequest(BaseModel):
             requester_identity_id=requester_identity_id,
             requester_principal_kind=requester_principal_kind,
             requester_session_id=requester_session_id,
+            project_id=payload.project_id,
             target=payload.target,
             target_fingerprint=payload.target.fingerprint(),
             reason=payload.reason,
