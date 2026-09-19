@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from codex_web import application
-from codex_web.models import QueuedTurn, ThreadRunSettings, TurnCreate
+from codex_web.models import Project, QueuedTurn, ThreadRunSettings, TurnCreate
 from codex_web.services.turns import TurnService
 
 
@@ -19,54 +19,117 @@ def _path_tags(path: str) -> set[str]:
     }
 
 
-class _TurnHost:
+class _Projects:
     def __init__(self) -> None:
-        self.events: list[dict] = []
-        self.published: list[str] = []
-        self.remembered: dict | None = None
-        self.queued = QueuedTurn(
-            id="queued-1",
-            thread_id="thread-1",
-            project_id="home",
-            message="queued message",
-            created_at=time.time(),
-        )
-
-    def _raise_if_thread_replaced(self, thread_id):
-        return None
-
-    def _project(self, project_id):
-        return SimpleNamespace(
-            id=project_id or "home",
+        self.project = Project(
+            id="home",
+            name="Home",
+            path="/tmp/home",
             sandbox="workspace-write",
             approval_policy="on-request",
-            model=None,
         )
 
-    def _thread_run_settings(self, thread_id):
+    def get(self, project_id):
+        return self.project
+
+    @staticmethod
+    def params(project, overrides=None):
+        return {
+            "cwd": project.path,
+            **{
+                key: value
+                for key, value in (overrides or {}).items()
+                if value is not None
+            },
+        }
+
+
+class _Settings:
+    def __init__(self) -> None:
+        self.remembered = None
+
+    def get(self, thread_id):
         return ThreadRunSettings()
 
-    def _effective_developer_instructions(self, thread_id, value):
-        return value
-
-    def _remember_thread_run_settings(self, thread_id, **kwargs):
+    def remember(self, thread_id, **kwargs):
         self.remembered = kwargs
         return ThreadRunSettings(**kwargs)
 
-    def _project_params(self, project, params):
-        return params
+    @staticmethod
+    def effective_developer_instructions(thread_id, value):
+        return value
 
-    def _release_stale_active_turn(self, thread_id, source):
+
+class _Recovery:
+    def raise_if_thread_replaced(self, thread_id):
+        return None
+
+    def release_stale_active_turn(self, thread_id, reason):
+        return None
+
+    def replacement_thread_id(self, thread_id):
+        return None
+
+    async def replace_stale_bot_thread(self, binding, reason):
+        return binding
+
+    async def replace_stale_web_thread(self, thread_id, project, reason):
+        return "replacement-thread"
+
+
+class _Resume:
+    @staticmethod
+    def handoff_timeout():
+        return 3.0
+
+    @staticmethod
+    def is_timeout_error(exc):
         return False
 
-    def _thread_is_active(self, thread_id):
-        return True
+    @staticmethod
+    def is_stale_thread_error(exc):
+        return False
 
-    def _thread_queue_depth(self, thread_id):
-        return 1
+    def schedule(self, thread_id, project_id, params):
+        raise AssertionError("forced resume was not expected")
 
-    def _enqueue_turn(self, **kwargs):
-        self.queued = QueuedTurn(
+
+class _Bindings:
+    @staticmethod
+    def for_thread(thread_id):
+        return []
+
+
+class _QueuePolicy:
+    def __init__(self) -> None:
+        self.queued = [
+            QueuedTurn(
+                id="queued-1",
+                thread_id="thread-1",
+                project_id="home",
+                message="queued message",
+                created_at=time.time(),
+            )
+        ]
+
+    def queue(self, thread_id):
+        return list(self.queued)
+
+    def depth(self, thread_id):
+        return len(self.queued)
+
+    def record_steer(self, thread_id):
+        return None
+
+
+class _Execution:
+    def __init__(self, queue_policy: _QueuePolicy) -> None:
+        self.queue_policy = queue_policy
+        self.published = []
+        self.active = True
+
+    def enqueue_turn(self, **kwargs):
+        queued = QueuedTurn(
             id="queued-1",
             thread_id=kwargs["thread_id"],
             project_id=kwargs["project_id"],
@@ -75,31 +138,73 @@ class _TurnHost:
             approval_policy=kwargs["approval_policy"],
             model=kwargs["model"],
             reasoning_effort=kwargs["reasoning_effort"],
+            execution_id=kwargs.get("execution_id"),
             created_at=time.time(),
         )
-        return self.queued
+        self.queue_policy.queued = [queued]
+        return queued
 
-    def _append_bot_event(self, event):
-        self.events.append(event)
-
-    async def _publish_queue_status(self, thread_id):
+    async def publish_queue_status(self, thread_id):
         self.published.append(thread_id)
 
-    def _truncate_text(self, value, limit):
-        return str(value)[:limit]
+    def thread_is_active(self, thread_id):
+        return self.active
 
-    def _thread_queue(self, thread_id):
-        return [self.queued]
+    async def start_thread_turn_now(self, thread_id, **kwargs):
+        return {"turn": {"id": "turn-1"}}
+
+    def wait_for_thread_capacity(self, **kwargs):
+        return None
+
+    def schedule_queue_drain(self, thread_id):
+        return None
+
+    def pop_latest_queued_turn(self, thread_id):
+        return self.queue_policy.queued.pop() if self.queue_policy.queued else None
+
+    def pop_queued_turn(self, thread_id, queued_id):
+        for index, item in enumerate(self.queue_policy.queued):
+            if item.id == queued_id:
+                return self.queue_policy.queued.pop(index)
+        return None
+
+    def requeue_turn_front(self, queued):
+        self.queue_policy.queued.insert(0, queued)
+
+    def clear_thread_active(self, thread_id):
+        self.active = False
+
+    async def request_for_thread(self, thread_id, method, params=None):
+        return {}
 
 
 class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
+    def _service(self):
+        queue = _QueuePolicy()
+        execution = _Execution(queue)
+        events = []
+        settings = _Settings()
+        service = TurnService(
+            projects=_Projects(),
+            settings=settings,
+            recovery=_Recovery(),
+            resume_runtime=_Resume(),
+            bindings=_Bindings(),
+            queue_policy=queue,
+            execution=execution,
+            event_sink=events.append,
+            truncate_text=lambda value, limit: str(value)[:limit],
+            binding_public=lambda binding: binding.model_dump(),
+        )
+        return service, queue, execution, events, settings
+
     def test_turn_routes_are_owned_by_turn_domain(self) -> None:
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/turns"))
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/queue"))
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["turns"], 0)
 
     async def test_non_forced_resume_is_a_read_only_noop(self) -> None:
-        service = TurnService(_TurnHost())
+        service, _queue, _execution, _events, settings = self._service()
 
         result = await service.resume(
             "thread-1",
@@ -113,21 +218,24 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["skipped"])
         self.assertEqual(result["reason"], "web_load_uses_thread_read")
+        self.assertEqual(settings.remembered["sandbox"], "workspace-write")
 
     async def test_start_queues_when_thread_is_already_active(self) -> None:
-        host = _TurnHost()
-        service = TurnService(host)
+        service, queue, execution, events, _settings = self._service()
 
-        result = await service.start("thread-1", TurnCreate(message="next task", project_id="home"))
+        result = await service.start(
+            "thread-1",
+            TurnCreate(message="next task", project_id="home"),
+        )
 
         self.assertTrue(result["queued"])
         self.assertEqual(result["queuedId"], "queued-1")
-        self.assertEqual(host.queued.message, "next task")
-        self.assertEqual(host.events[-1]["type"], "web_turn_queued")
-        self.assertEqual(host.published, ["thread-1"])
+        self.assertEqual(queue.queued[0].message, "next task")
+        self.assertEqual(events[-1]["type"], "web_turn_queued")
+        self.assertEqual(execution.published, ["thread-1"])
 
     def test_queue_snapshot_is_presentational(self) -> None:
-        service = TurnService(_TurnHost())
+        service, _queue, _execution, _events, _settings = self._service()
 
         result = service.queue("thread-1")
 
