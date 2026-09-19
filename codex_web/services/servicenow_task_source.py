@@ -349,8 +349,8 @@ class ServiceNowTaskSource:
             payload[self.fields.body] = request.body
         if request.owners:
             payload[self.fields.assignee] = request.owners[0]
-        if scope:
-            payload["u_codex_scope"] = scope
+        if not str(scope or "").strip():
+            raise ValueError("ServiceNow task creation scope must not be empty")
         record = await self.client.create_record(
             self.api_base,
             self.table,
