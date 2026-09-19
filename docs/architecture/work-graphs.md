@@ -1,6 +1,6 @@
 # Dependency-aware Work Graphs
 
-This document defines the canonical M4 work-graph domain for codex-web.
+This document defines the canonical work-graph domain for codex-web.
 
 The graph is deterministic application state and logic. It does **not** require an
 LLM to decide whether work is runnable, blocked, structurally invalid, or affected
@@ -16,7 +16,7 @@ Keep these responsibilities distinct:
   dependency-failure behavior.
 - **Readiness, runnable work, progress, and critical path** are derived on read.
   They are not persisted as a second mutable truth.
-- **Execution workspace/lease state** remains the M3 execution-isolation
+- **Execution workspace/lease state** remains owned by the canonical execution-isolation
   boundary. A runnable graph node is not permission to bypass worker/workspace,
   authority, policy, or ActionIntent checks.
 
@@ -199,6 +199,6 @@ Relationship edits round-trip through the API; cycle/conflict errors are shown
 as rejection rather than being accepted into browser-local state.
 
 Graph-runnable remains only one prerequisite. Neither the API nor UI turns
-readiness into execution authority: M3 identity/policy/approval/resource,
+readiness into execution authority: canonical identity/policy/approval/resource,
 entitlement, worker capability/fenced lease, isolated execution workspace, and
 ActionIntent/provider boundaries still apply.
