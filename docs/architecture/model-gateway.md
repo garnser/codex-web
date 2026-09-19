@@ -98,7 +98,7 @@ Every gateway invocation records metadata sufficient for audit/cost/replay attri
 - work/goal/decision/execution references;
 - ordered provider/model attempts;
 - exact selected provider, model, concrete model name and model version;
-- provider request ID when available;
+- provider request ID and provider stop reason when available;
 - token usage and computed cost when available;
 - success/failure timestamps.
 
@@ -106,11 +106,13 @@ Prompt text, user messages, model output and secret values are deliberately excl
 
 ## Adapter boundary
 
-`ModelProviderAdapter` is provider-neutral. The reference `OpenAIModelProviderAdapter` supports:
+`ModelProviderAdapter` is provider-neutral. The built-in adapters support:
 
-- native OpenAI Responses API;
-- OpenAI-compatible chat-completions endpoints;
-- Ollama's OpenAI-compatible endpoint.
+- native OpenAI Responses API via `OpenAIModelProviderAdapter`;
+- OpenAI-compatible chat-completions endpoints and Ollama through the same OpenAI adapter;
+- native Anthropic Messages API via `AnthropicModelProviderAdapter`.
+
+The Anthropic adapter maps canonical system prompts, user/assistant messages, output bounds, reasoning effort, provider request identity, stop reason and token usage without exposing Anthropic request objects to orchestration code. Provider/model names remain registry data rather than role logic. Unsupported canonical semantics fail explicitly instead of being silently dropped.
 
 Provider errors are classified into transient vs terminal failures so fallback remains explicit and bounded.
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+import httpx
+
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
     ModelInvocationRequest,
@@ -164,4 +166,132 @@ class OpenAIModelProviderAdapter:
                 output_tokens=getattr(usage, "completion_tokens", None),
             ),
             provider_request_id=getattr(response, "id", None),
+        )
+
+
+class AnthropicModelProviderAdapter:
+    """Native Anthropic Messages API adapter for the canonical ModelGateway."""
+
+    adapter_type = "anthropic"
+    default_base_url = "https://api.anthropic.com"
+    api_version = "2023-06-01"
+
+    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._transport = transport
+
+    @staticmethod
+    def _classify_status(status_code: int, message: str) -> ModelProviderAdapterError:
+        detail = f"Anthropic API {status_code}: {message}"
+        if status_code in {408, 409, 429} or status_code >= 500:
+            return ModelProviderTransientError(detail)
+        return ModelProviderAdapterError(detail)
+
+    @staticmethod
+    def _messages(request: ModelInvocationRequest) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        for item in request.messages:
+            if item.role not in {"user", "assistant"}:
+                raise ModelProviderAdapterError(
+                    f"Anthropic adapter does not support message role: {item.role}"
+                )
+            messages.append({"role": item.role, "content": item.content})
+        return messages
+
+    async def invoke(
+        self,
+        provider: ModelProviderRecord,
+        model: ModelDefinitionRecord,
+        request: ModelInvocationRequest,
+        *,
+        credential: str | None,
+    ) -> ModelProviderResult:
+        if provider.credential_required and not credential:
+            raise ModelProviderAdapterError("provider credential is required")
+        if request.text_verbosity:
+            raise ModelProviderAdapterError(
+                "Anthropic adapter does not support canonical text_verbosity"
+            )
+
+        payload: dict[str, Any] = {
+            "model": model.concrete_model,
+            "messages": self._messages(request),
+            "max_tokens": min(request.max_output_tokens, model.max_output_tokens),
+        }
+        if request.system_prompt:
+            payload["system"] = request.system_prompt
+        if request.reasoning_effort:
+            if request.reasoning_effort not in {"low", "medium", "high"}:
+                raise ModelProviderAdapterError(
+                    f"unsupported Anthropic reasoning effort: {request.reasoning_effort}"
+                )
+            payload["thinking"] = {"type": "adaptive"}
+            payload["output_config"] = {"effort": request.reasoning_effort}
+
+        headers = {
+            "anthropic-version": self.api_version,
+            "content-type": "application/json",
+        }
+        if credential:
+            headers["x-api-key"] = credential
+        base_url = (provider.base_url or self.default_base_url).rstrip("/") + "/"
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=base_url,
+                headers=headers,
+                timeout=request.timeout_seconds,
+                transport=self._transport,
+            ) as client:
+                response = await client.post("v1/messages", json=payload)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise ModelProviderTransientError(
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelProviderAdapterError(
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if response.status_code >= 400:
+            try:
+                body = response.json()
+                error = body.get("error") if isinstance(body, dict) else None
+                message = (
+                    error.get("message")
+                    if isinstance(error, dict)
+                    else response.text
+                )
+            except ValueError:
+                message = response.text
+            raise self._classify_status(response.status_code, str(message or "request failed"))
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ModelProviderAdapterError(
+                "Anthropic API returned invalid JSON"
+            ) from exc
+        if not isinstance(body, dict):
+            raise ModelProviderAdapterError("Anthropic API returned an invalid response")
+
+        blocks = body.get("content") or []
+        text_parts = [
+            str(block.get("text") or "")
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        request_id = response.headers.get("request-id") or body.get("id")
+        return ModelProviderResult(
+            text="\n".join(part for part in text_parts if part).strip(),
+            usage=ModelProviderUsage(
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+            ),
+            provider_request_id=str(request_id) if request_id else None,
+            stop_reason=(
+                str(body["stop_reason"])
+                if body.get("stop_reason") is not None
+                else None
+            ),
         )
