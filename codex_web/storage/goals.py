@@ -23,7 +23,7 @@ GOAL_MIGRATIONS.register(
     "1.1",
     lambda payload: {
         **payload,
-        "schema_version": GOAL_CONTRACT.current,
+        "schema_version": "1.1",
         "goals": [
             {
                 **item,
@@ -35,6 +35,31 @@ GOAL_MIGRATIONS.register(
         "completion_evaluations": list(
             payload.get("completion_evaluations", [])
         ),
+    },
+)
+
+
+GOAL_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": GOAL_CONTRACT.current,
+        "goals": [
+            {
+                **item,
+                "success_criteria": [
+                    {
+                        **criterion,
+                        "metric_id": criterion.get("metric_id"),
+                        "metric_snapshot_id": criterion.get("metric_snapshot_id"),
+                        "metric_window_seconds": criterion.get("metric_window_seconds"),
+                    }
+                    for criterion in item.get("success_criteria", [])
+                ],
+            }
+            for item in payload.get("goals", [])
+        ],
     },
 )
 

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.compatibility import ContractSpec
 
 
-GOAL_CONTRACT = ContractSpec("goal-state", "1.1", ("1.0", "1.1"), deprecated=("1.0",))
+GOAL_CONTRACT = ContractSpec("goal-state", "1.2", ("1.0", "1.1", "1.2"), deprecated=("1.0",))
 
 
 class GoalStatus(StrEnum):
@@ -86,6 +86,9 @@ class GoalSuccessCriterion(BaseModel):
     description: str = Field(min_length=1)
     kind: GoalCriterionKind = GoalCriterionKind.MANUAL
     metric_key: str | None = None
+    metric_id: str | None = None
+    metric_snapshot_id: str | None = None
+    metric_window_seconds: int | None = Field(default=None, ge=1)
     operator: GoalCriterionOperator | None = None
     target_value: str | int | float | bool | None = None
     unit: str | None = None
@@ -94,8 +97,10 @@ class GoalSuccessCriterion(BaseModel):
     @model_validator(mode="after")
     def validate_metric(self) -> "GoalSuccessCriterion":
         if self.kind == GoalCriterionKind.METRIC:
-            if not self.metric_key:
-                raise ValueError("metric success criterion requires metric_key")
+            if not self.metric_id and not self.metric_key:
+                raise ValueError("metric success criterion requires metric_id or legacy metric_key")
+            if self.metric_snapshot_id and not self.metric_id:
+                raise ValueError("metric_snapshot_id requires canonical metric_id")
             if self.operator is None:
                 raise ValueError("metric success criterion requires operator")
             if self.target_value is None:

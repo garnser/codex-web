@@ -26,6 +26,7 @@ from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.goals import build_goals_router
+from codex_web.api.metrics import build_metrics_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
@@ -136,6 +137,7 @@ from codex_web.services.gitlab import install_gitlab_service
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
+from codex_web.services.metrics import MetricService
 from codex_web.services.goal_decomposition_commit import (
     GoalDecompositionCommitService,
 )
@@ -190,6 +192,7 @@ from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.goals import GoalStore
+from codex_web.storage.metrics import MetricStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -867,6 +870,12 @@ work_graph_service = WorkGraphService(
 app.state.work_graph_store = work_graph_store
 app.state.work_graph_service = work_graph_service
 app.include_router(build_work_graph_router(work_graph_service, project_service))
+metric_store = MetricStore(state_store)
+metric_service = MetricService(metric_store)
+app.state.metric_store = metric_store
+app.state.metric_service = metric_service
+app.include_router(build_metrics_router(metric_service))
+
 goal_store = GoalStore(state_store)
 goal_service = GoalService(goal_store, project_service, work_graph_service)
 goal_decomposition_store = GoalDecompositionStore(state_store)

@@ -174,12 +174,21 @@ function keyValues(values) {
 function renderCriteria(goal) {
   const rows = goal.success_criteria || [];
   if (!rows.length) return '<p class="goal-muted">No success criteria recorded.</p>';
-  return rows.map((item) => `
-    <div class="goal-subcard">
-      <strong>${esc(item.description)}</strong>
-      <small>${esc(item.kind)}${item.metric_key ? ` · ${esc(item.metric_key)} ${esc(item.operator)} ${esc(item.target_value)} ${esc(item.unit || '')}` : ''} · ${item.required ? 'required' : 'optional'}</small>
-    </div>
-  `).join('');
+  return rows.map((item) => {
+    const metricRef = item.metric_id || item.metric_key;
+    const metricDetail = metricRef
+      ? ` · ${esc(metricRef)} ${esc(item.operator)} ${esc(item.target_value)} ${esc(item.unit || '')}`
+      : '';
+    const snapshot = item.metric_snapshot_id
+      ? ` · snapshot ${esc(item.metric_snapshot_id)}`
+      : '';
+    return `
+      <div class="goal-subcard">
+        <strong>${esc(item.description)}</strong>
+        <small>${esc(item.kind)}${metricDetail}${snapshot} · ${item.required ? 'required' : 'optional'}</small>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderMetadataList(rows, emptyText, formatter) {
