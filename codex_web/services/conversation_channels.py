@@ -27,6 +27,7 @@ from codex_web.storage.conversation_channels import ConversationChannelStore
 
 ConversationRouteHandler = Callable[[BotInboundMessage], Awaitable[dict[str, Any]]]
 ConversationChannelFactory = Callable[[], ConversationChannel]
+ConversationChannelProviderFactory = Callable[[str], ConversationChannel]
 ConversationChannelAvailability = Callable[[], bool]
 
 
@@ -62,6 +63,7 @@ class ConversationChannelRegistry:
                 str | None,
             ],
         ] = {}
+        self._provider_factories: dict[str, ConversationChannelProviderFactory] = {}
 
     @staticmethod
     def _key(provider_type: str, provider_instance: str) -> tuple[str, str]:
@@ -86,6 +88,16 @@ class ConversationChannelRegistry:
             installation_id,
         )
 
+    def register_provider(
+        self,
+        provider_type: str,
+        factory: ConversationChannelProviderFactory,
+    ) -> None:
+        provider = str(provider_type or "").strip().casefold()
+        if not provider:
+            raise ValueError("conversation channel provider type is required")
+        self._provider_factories[provider] = factory
+
     def unregister(self, provider_type: str, provider_instance: str) -> None:
         self._entries.pop(self._key(provider_type, provider_instance), None)
 
@@ -97,15 +109,19 @@ class ConversationChannelRegistry:
         key = self._key(provider_type, provider_instance)
         entry = self._entries.get(key)
         if entry is None:
-            raise ConversationChannelNotFoundError(
-                f"conversation channel adapter is not registered: {provider_type}/{provider_instance}"
-            )
-        factory, available, _installation_id = entry
-        if available is not None and not available():
-            raise ConversationChannelUnavailableError(
-                f"conversation channel adapter is not enabled: {provider_type}/{provider_instance}"
-            )
-        adapter = factory()
+            provider_factory = self._provider_factories.get(key[0])
+            if provider_factory is None:
+                raise ConversationChannelNotFoundError(
+                    f"conversation channel adapter is not registered: {provider_type}/{provider_instance}"
+                )
+            adapter = provider_factory(provider_instance)
+        else:
+            factory, available, _installation_id = entry
+            if available is not None and not available():
+                raise ConversationChannelUnavailableError(
+                    f"conversation channel adapter is not enabled: {provider_type}/{provider_instance}"
+                )
+            adapter = factory()
         try:
             CONVERSATION_CHANNEL_CONTRACT.require(adapter.contract_version)
         except (ContractCompatibilityError, ValueError) as exc:
