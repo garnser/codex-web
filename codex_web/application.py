@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
@@ -116,6 +117,11 @@ from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
+from codex_web.services.coordination import StateStoreCoordinationBackend
+from codex_web.services.event_transport import (
+    EventTransportRuntime,
+    build_event_transport,
+)
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
@@ -236,7 +242,7 @@ from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import build_state_store
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.thread_index import install_thread_index_repository
 from codex_web.secret_backends import LocalFileSecretBackend
@@ -254,10 +260,72 @@ core._state_file_lock = state_file_lock
 core._atomic_write_text = atomic_write_text
 
 project_repository = ProjectRepository(PROJECTS_FILE)
-state_store = SQLiteStateStore(STATE_DB_FILE)
+state_store = build_state_store(
+    sqlite_path=STATE_DB_FILE,
+    backend=os.environ.get("CODEX_WEB_STATE_BACKEND", "sqlite"),
+    postgres_dsn=os.environ.get("CODEX_WEB_POSTGRES_DSN"),
+)
+event_transport = build_event_transport(
+    os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
+    redis_url=os.environ.get("CODEX_WEB_REDIS_URL"),
+    redis_stream=os.environ.get("CODEX_WEB_REDIS_STREAM", "codex-web:events"),
+    redis_group=os.environ.get("CODEX_WEB_REDIS_GROUP", "codex-web"),
+)
+instance_id = (
+    os.environ.get("CODEX_WEB_INSTANCE_ID")
+    or f"control-plane-{os.getpid()}"
+)
+coordination_backend = StateStoreCoordinationBackend(
+    state_store,
+    backend_id=f"coordination:{state_store.status().get('backend', 'unknown')}",
+)
+deployment_mode = os.environ.get(
+    "CODEX_WEB_DEPLOYMENT_MODE",
+    "local",
+).strip().casefold()
+if deployment_mode not in {"local", "single", "replicated"}:
+    raise RuntimeError(
+        f"unsupported CODEX_WEB_DEPLOYMENT_MODE: {deployment_mode}"
+    )
+if deployment_mode == "replicated":
+    if not bool(state_store.status().get("shared", False)):
+        raise RuntimeError(
+            "replicated deployment requires a shared StateStore backend"
+        )
+    if not coordination_backend.shared:
+        raise RuntimeError(
+            "replicated deployment requires shared CoordinationBackend"
+        )
+    if (
+        event_transport is None
+        or not bool(event_transport.capabilities.durable)
+        or not bool(event_transport.capabilities.consumer_groups)
+    ):
+        raise RuntimeError(
+            "replicated deployment requires durable consumer-group EventTransport"
+        )
+
 canonical_event_store = CanonicalEventStore(state_store)
-canonical_event_bus = CanonicalEventBus(canonical_event_store)
+canonical_event_bus = CanonicalEventBus(
+    canonical_event_store,
+    transport=event_transport,
+    instance_id=instance_id,
+)
 canonical_event_ingestion = CanonicalEventIngestionService(canonical_event_bus)
+event_transport_runtime = (
+    EventTransportRuntime(
+        canonical_event_bus,
+        consumer_id=instance_id,
+    )
+    if event_transport is not None
+    else None
+)
+app.state.state_store = state_store
+app.state.deployment_mode = deployment_mode
+app.state.instance_id = instance_id
+app.state.coordination_backend = coordination_backend
+app.state.event_transport = event_transport
+app.state.event_transport_runtime = event_transport_runtime
 app.state.canonical_event_store = canonical_event_store
 app.state.canonical_event_bus = canonical_event_bus
 app.state.canonical_event_ingestion = canonical_event_ingestion
