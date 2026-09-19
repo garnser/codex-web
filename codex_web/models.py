@@ -110,8 +110,14 @@ class TaskSourceConfiguration(BaseModel):
     source_type: str = Field(min_length=1)
     source_instance: str = Field(min_length=1)
     scope: str = Field(min_length=1)
-    credential_secret_id: str | None = None
-    provider_settings: TaskSourceProviderSettings | None = None
+    credential_secret_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    provider_settings: TaskSourceProviderSettings | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_builtin_provider_binding(self) -> "TaskSourceConfiguration":
