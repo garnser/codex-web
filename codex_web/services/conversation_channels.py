@@ -204,6 +204,19 @@ class ConversationChannelService:
         return event.model_dump(mode="json")
 
     @staticmethod
+    def _message_state_key(
+        actor: AuthenticationActor,
+        event: ConversationChannelEvent,
+    ) -> str:
+        return "::".join(
+            (
+                actor.organization_id,
+                actor.workspace_id,
+                event.message.stable_key(),
+            )
+        )
+
+    @staticmethod
     def _message_text(event: ConversationChannelEvent) -> str:
         parts: list[str] = []
         if (event.text or "").strip():
@@ -331,7 +344,15 @@ class ConversationChannelService:
             )
             state.receipts[canonical_event_id] = updated
             if message_state is not None:
-                state.messages[message_state.message.stable_key()] = message_state
+                state.messages[
+                    "::".join(
+                        (
+                            message_state.organization_id,
+                            message_state.workspace_id,
+                            message_state.message.stable_key(),
+                        )
+                    )
+                ] = message_state
             if len(state.receipts) > self.MAX_RECEIPTS:
                 rows = sorted(
                     state.receipts.values(),
@@ -346,7 +367,13 @@ class ConversationChannelService:
                     reverse=True,
                 )[: self.MAX_MESSAGES]
                 state.messages = {
-                    item.message.stable_key(): item
+                    "::".join(
+                        (
+                            item.organization_id,
+                            item.workspace_id,
+                            item.message.stable_key(),
+                        )
+                    ): item
                     for item in rows
                 }
             saved.append(updated)
@@ -416,7 +443,9 @@ class ConversationChannelService:
                 }
             )
 
-        current = self.store.load().messages.get(event.message.stable_key())
+        current = self.store.load().messages.get(
+            self._message_state_key(actor, event)
+        )
         if current is not None and self._is_stale(current, event):
             return self._finish(
                 canonical_id,
