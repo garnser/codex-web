@@ -32,6 +32,11 @@
       .agent-session-actions{display:flex;gap:6px;flex-wrap:wrap}
       .agent-session-actions button{min-height:30px}
       .agent-session-actions button:disabled{opacity:.45;cursor:not-allowed}
+      .agent-session-trace{border-top:1px dashed var(--border,var(--line,#313744));padding-top:6px}
+      .agent-session-trace summary{cursor:pointer;font-size:10px;font-weight:800}
+      .agent-trace-body{display:grid;gap:5px;margin-top:6px;font-size:10px;color:var(--muted,#9aa4b5)}
+      .agent-trace-links{display:flex;gap:6px;flex-wrap:wrap}
+      .agent-trace-links a{font-size:10px}
       .agent-route-explainer{grid-column:1/-1;border-top:1px solid var(--border,var(--line,#313744));padding-top:10px;display:grid;gap:7px}
       .agent-route-form{display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) auto;gap:7px}
       .agent-route-form input{min-width:0;height:36px;border:1px solid var(--line,#313744);border-radius:7px;background:var(--input-bg,var(--surface));color:var(--text);padding:7px 9px}
@@ -133,6 +138,59 @@
     return item;
   }
 
+  function traceSummaryLine(label, value) {
+    return textNode('div', 'agent-provider-note', `${label}: ${value || 'none'}`);
+  }
+
+  function renderTrace(host, trace) {
+    host.replaceChildren();
+    const assignment = trace.assignment;
+    const workspace = trace.execution_workspace;
+    const worker = trace.worker;
+    const runtimeEvents = trace.runtime_events || [];
+    const intents = trace.action_intents || [];
+    const evidence = trace.evidence || [];
+    const verifications = trace.verifications || [];
+
+    host.append(
+      traceSummaryLine('Assignment', assignment ? `${assignment.id} · ${assignment.status} · fence ${assignment.fence}` : 'none'),
+      traceSummaryLine('Worker', worker ? `${worker.id} · ${worker.lifecycle} · ${worker.version}` : 'none'),
+      traceSummaryLine('Workspace', workspace ? `${workspace.id} · ${workspace.status} · ${workspace.branch_name || workspace.path || 'no path'}` : 'none'),
+      traceSummaryLine('Runtime events', runtimeEvents.length ? runtimeEvents.map((item) => `${item.provider_native_turn_id || item.id}:${item.terminal_outcome}/${item.telemetry_completeness}`).join(' · ') : 'none'),
+      traceSummaryLine('ActionIntents', intents.length ? intents.map((item) => `${item.id}:${item.status}`).join(' · ') : 'none'),
+      traceSummaryLine('Evidence', evidence.length ? evidence.map((item) => `${item.id}:${item.result}`).join(' · ') : 'none'),
+      traceSummaryLine('Verification', verifications.length ? verifications.map((item) => `${item.id}:${item.result}`).join(' · ') : 'none'),
+    );
+
+    const links = document.createElement('div');
+    links.className = 'agent-trace-links';
+    for (const [href, label] of [
+      ['#execution-assignment-list', 'Assignments'],
+      ['#execution-workspace-list', 'Workspaces'],
+      ['#action-intent-list', 'ActionIntents'],
+      ['#artifact-list', 'Artifacts & evidence'],
+    ]) {
+      const link = document.createElement('a');
+      link.href = href;
+      link.textContent = label;
+      links.appendChild(link);
+    }
+    host.appendChild(links);
+  }
+
+  async function loadTrace(session, details) {
+    const host = details.querySelector('.agent-trace-body');
+    if (details.dataset.loaded === 'true') return;
+    host.textContent = 'Loading canonical execution trace…';
+    try {
+      const response = await apiRequest(`/api/agent-sessions/${encodeURIComponent(session.id)}/trace`);
+      renderTrace(host, response.trace || {});
+      details.dataset.loaded = 'true';
+    } catch (error) {
+      host.textContent = `Execution trace unavailable: ${error.message}`;
+    }
+  }
+
   function sessionView(session, refresh) {
     const item = document.createElement('article');
     item.className = 'agent-session-item';
@@ -212,6 +270,19 @@
     approvals.title = 'Approval decisions are owned by codex-web ApprovalRequest state';
     actions.appendChild(approvals);
     item.appendChild(actions);
+
+    const traceDetails = document.createElement('details');
+    traceDetails.className = 'agent-session-trace';
+    const traceSummary = document.createElement('summary');
+    traceSummary.textContent = 'Canonical execution trace';
+    const traceBody = document.createElement('div');
+    traceBody.className = 'agent-trace-body';
+    traceBody.textContent = 'Open to link assignment, worker/workspace, runtime usage, ActionIntents and evidence.';
+    traceDetails.append(traceSummary, traceBody);
+    traceDetails.addEventListener('toggle', () => {
+      if (traceDetails.open) loadTrace(session, traceDetails);
+    });
+    item.appendChild(traceDetails);
     return item;
   }
 
