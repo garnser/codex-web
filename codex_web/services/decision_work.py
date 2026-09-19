@@ -70,10 +70,6 @@ class DecisionWorkService:
     def _correlation_id(decision_id: str, item_id: str) -> str:
         return f"decision:{decision_id}:work:{item_id}"
 
-    @staticmethod
-    def _idempotency_key(decision_id: str, item_id: str) -> str:
-        return f"decision-work:{decision_id}:{item_id}"
-
     def _binding(
         self,
         project_id: str,
@@ -139,9 +135,27 @@ class DecisionWorkService:
                 ),
                 "labels": list(item.labels),
             },
-            idempotency_key=self._idempotency_key(decision.id, item_id),
             correlation_id=correlation_id,
             requested_by=actor.identity_id,
+        )
+
+    def _existing_intent(
+        self,
+        decision: Decision,
+        link: DecisionWorkLink,
+        *,
+        actor: AuthenticationActor,
+    ):
+        return next(
+            (
+                item
+                for item in self.action_intents.list(actor)
+                if item.decision_id == decision.id
+                and item.correlation_id == link.correlation_id
+                and item.project_id == link.project_id
+                and item.action_id == TASK_SOURCE_CREATE_ACTION_ID
+            ),
+            None,
         )
 
     @staticmethod
@@ -282,16 +296,22 @@ class DecisionWorkService:
             request = self._request(planned, link, actor=actor)
             try:
                 self.action_providers.binding(link.binding_id, actor)
-                intent = self.action_intents.create(
-                    ActionIntentCreate(
-                        binding_id=link.binding_id,
-                        request=request,
-                        goal_id=planned.goal_id,
-                        decision_id=planned.id,
-                        verification_required=False,
-                    ),
+                intent = self._existing_intent(
+                    planned,
+                    link,
                     actor=actor,
                 )
+                if intent is None:
+                    intent = self.action_intents.create(
+                        ActionIntentCreate(
+                            binding_id=link.binding_id,
+                            request=request,
+                            goal_id=planned.goal_id,
+                            decision_id=planned.id,
+                            verification_required=False,
+                        ),
+                        actor=actor,
+                    )
                 changed.append(
                     link.model_copy(
                         update={
