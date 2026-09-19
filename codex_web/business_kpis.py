@@ -428,6 +428,9 @@ class BusinessKpiOperatingItem(BaseModel):
     freshness: MetricFreshness
     reasons: tuple[str, ...] = ()
     selected_fact_ids: tuple[str, ...] = ()
+    source_external_record_ref_ids: tuple[str, ...] = ()
+    goal_ids: tuple[str, ...] = ()
+    decision_ids: tuple[str, ...] = ()
     target: BusinessKpiTargetEvaluation | None = None
     trend: BusinessKpiTrend = Field(default_factory=BusinessKpiTrend)
 
