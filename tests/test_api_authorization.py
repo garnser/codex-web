@@ -119,6 +119,13 @@ class APIAuthorizationUnitTests(unittest.TestCase):
             classify_api_policy("/api/metrics", "GET").kind,
             APIAuthorizationKind.AUTHENTICATED,
         )
+        self.assertEqual(
+            classify_api_policy(
+                "/api/identity/sessions/revoke-others",
+                "POST",
+            ).kind,
+            APIAuthorizationKind.AUTHENTICATED,
+        )
         admin = classify_api_policy("/api/secrets", "POST")
         self.assertEqual(admin.kind, APIAuthorizationKind.ADMIN)
         self.assertEqual(
@@ -140,6 +147,20 @@ class APIAuthorizationUnitTests(unittest.TestCase):
         self.assertEqual(
             operational.authority_level,
             AuthorityLevel.EXECUTE,
+        )
+
+    def test_unknown_mutation_family_fails_closed_during_install(self) -> None:
+        app = FastAPI()
+
+        @app.post("/api/new-unclassified-domain")
+        async def unclassified():
+            return {"ok": True}
+
+        with self.assertRaises(RuntimeError) as caught:
+            install_api_authorization(app, authority=FakeAuthority())
+        self.assertIn(
+            "POST /api/new-unclassified-domain",
+            str(caught.exception),
         )
 
     def test_runtime_enforces_auth_admin_stepup_and_operational_authority(self) -> None:
@@ -243,6 +264,15 @@ class APIAuthorizationUnitTests(unittest.TestCase):
             self.assertEqual(
                 operational["x-codex-authorization"]["authority_level"],
                 "execute",
+            )
+
+            self.assertIn(
+                "**Authorization:**",
+                operational["description"],
+            )
+            self.assertIn(
+                "capability=`work_items.operator`",
+                operational["description"],
             )
 
             schemes = schema["components"]["securitySchemes"]
