@@ -170,6 +170,82 @@ class ConversationChannelRegistry:
             )
         return tuple(rows)
 
+    def provider_contracts(self) -> tuple[dict[str, Any], ...]:
+        rows: list[dict[str, Any]] = []
+        providers = set(self._provider_factories)
+        providers.update(provider for provider, _instance in self._entries)
+        described = self.describe()
+        for provider in sorted(providers):
+            provider_factory = self._provider_factories.get(provider)
+            if provider_factory is not None:
+                try:
+                    adapter = provider_factory("capability-probe")
+                    rows.append(
+                        {
+                            "provider_type": provider,
+                            "contract_version": adapter.contract_version,
+                            "capabilities": tuple(
+                                sorted(
+                                    item.value
+                                    for item in adapter.capabilities.supported
+                                )
+                            ),
+                            "available": True,
+                            "error": None,
+                        }
+                    )
+                except Exception as exc:
+                    rows.append(
+                        {
+                            "provider_type": provider,
+                            "contract_version": None,
+                            "capabilities": (),
+                            "available": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                continue
+
+            entries = [
+                row
+                for row in described
+                if row["provider_type"] == provider
+            ]
+            capabilities = sorted(
+                {
+                    capability
+                    for row in entries
+                    if row.get("enabled")
+                    for capability in row.get("capabilities", ())
+                }
+            )
+            rows.append(
+                {
+                    "provider_type": provider,
+                    "contract_version": next(
+                        (
+                            row.get("contract_version")
+                            for row in entries
+                            if row.get("contract_version")
+                        ),
+                        None,
+                    ),
+                    "capabilities": tuple(capabilities),
+                    "available": any(
+                        bool(row.get("enabled")) for row in entries
+                    ),
+                    "error": next(
+                        (
+                            row.get("error")
+                            for row in entries
+                            if row.get("error")
+                        ),
+                        None,
+                    ),
+                }
+            )
+        return tuple(rows)
+
 
 class ConversationChannelService:
     """Canonical, deterministic inbound channel normalization and routing boundary."""
@@ -676,80 +752,7 @@ class ConversationChannelService:
         return await self.ingest(event, actor=actor)
 
     def provider_capabilities(self) -> tuple[dict[str, Any], ...]:
-        rows: list[dict[str, Any]] = []
-        providers = set(self.registry._provider_factories)
-        providers.update(provider for provider, _instance in self.registry._entries)
-        for provider in sorted(providers):
-            if provider in self.registry._provider_factories:
-                try:
-                    adapter = self.registry._provider_factories[provider](
-                        "capability-probe"
-                    )
-                    rows.append(
-                        {
-                            "provider_type": provider,
-                            "contract_version": adapter.contract_version,
-                            "capabilities": tuple(
-                                sorted(
-                                    item.value
-                                    for item in adapter.capabilities.supported
-                                )
-                            ),
-                            "available": True,
-                            "error": None,
-                        }
-                    )
-                except Exception as exc:
-                    rows.append(
-                        {
-                            "provider_type": provider,
-                            "contract_version": None,
-                            "capabilities": (),
-                            "available": False,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
-                    continue
-            else:
-                entries = [
-                    row
-                    for row in self.registry.describe()
-                    if row["provider_type"] == provider
-                ]
-                capabilities = sorted(
-                    {
-                        capability
-                        for row in entries
-                        if row.get("enabled")
-                        for capability in row.get("capabilities", ())
-                    }
-                )
-                rows.append(
-                    {
-                        "provider_type": provider,
-                        "contract_version": next(
-                            (
-                                row.get("contract_version")
-                                for row in entries
-                                if row.get("contract_version")
-                            ),
-                            None,
-                        ),
-                        "capabilities": tuple(capabilities),
-                        "available": any(
-                            bool(row.get("enabled")) for row in entries
-                        ),
-                        "error": next(
-                            (
-                                row.get("error")
-                                for row in entries
-                                if row.get("error")
-                            ),
-                            None,
-                        ),
-                    }
-                )
-        return tuple(rows)
+        return self.registry.provider_contracts()
 
     def receipts(
         self,
