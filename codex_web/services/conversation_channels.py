@@ -524,6 +524,35 @@ class ConversationChannelService:
             ),
         )
 
+    @staticmethod
+    def legacy_routing_result(
+        receipt: ConversationProjectionReceipt,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = dict(receipt.routing_result)
+        result["conversationOutcome"] = receipt.outcome.value
+        result["canonicalEventId"] = receipt.canonical_event_id
+        if receipt.thread_id is not None:
+            result.setdefault("threadId", receipt.thread_id)
+        if receipt.queued_id is not None:
+            result.setdefault("queuedId", receipt.queued_id)
+        if receipt.outcome == ConversationProjectionOutcome.DUPLICATE:
+            result["duplicate"] = True
+            result.setdefault("ok", True)
+        elif receipt.outcome == ConversationProjectionOutcome.REQUIRES_RECONCILIATION:
+            result["ok"] = False
+            result["requiresReconciliation"] = True
+            result["error"] = receipt.reason
+        elif receipt.outcome in {
+            ConversationProjectionOutcome.STALE,
+            ConversationProjectionOutcome.UPDATED,
+            ConversationProjectionOutcome.DELETED,
+            ConversationProjectionOutcome.REACTION,
+            ConversationProjectionOutcome.IGNORED,
+        }:
+            result.setdefault("ok", True)
+            result["routed"] = False
+        return result
+
     async def ingest_raw(
         self,
         provider_type: str,
