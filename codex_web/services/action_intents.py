@@ -1053,7 +1053,51 @@ class ActionIntentService:
     ) -> ActionIntent:
         self._require_worker(actor)
         pending = self._intent(intent_id, actor)
-        allowed, reason = self._recheck_security(pending, actor=actor)
+        try:
+            requester = self._requester_actor(pending)
+            _, _, current_definition, current_request = self.execution.resolve_contract(
+                pending.binding_id,
+                pending.request,
+                actor=actor,
+            )
+            authority_recheck = self._canonical_authority_snapshot(
+                definition=current_definition,
+                request=current_request,
+                actor=requester,
+            )
+        except Exception as exc:
+            authority_recheck = ActionDecisionSnapshot(
+                decision_id=f"authority-recheck-{uuid.uuid4().hex}",
+                outcome=ActionDecisionOutcome.DENY,
+                source="canonical:role-authority",
+                reason=(
+                    "authority recheck unavailable: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                capabilities=pending.authority_decision.capabilities,
+                reasons=(
+                    "canonical requester/authority recheck failed",
+                ),
+                evaluated_at=time.time(),
+            )
+        pending = self._persist_authority_recheck(
+            pending.id,
+            authority_recheck,
+        )
+        if authority_recheck.outcome != ActionDecisionOutcome.ALLOW:
+            return self._set_status(
+                intent_id,
+                ActionIntentStatus.CANCELLED,
+                error=(
+                    authority_recheck.reason
+                    or "canonical Role authority denied action at execution"
+                ),
+            )
+        allowed, reason = self._recheck_security(
+            pending,
+            actor=actor,
+            authority_decision=authority_recheck,
+        )
         if not allowed:
             return self._set_status(
                 intent_id,
