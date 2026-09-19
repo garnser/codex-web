@@ -15,6 +15,7 @@ test("Autonomy Control Center renders canonical M11 readiness without triggering
   await expect(card).toContainText("1.0.0 → 1.1.0");
   await expect(card).toContainText("state-store:postgresql");
   await expect(card).toContainText("Audit integrity · verified");
+  await expect(card).toContainText("Simulated actions 2 · executed actions 1 · evaluation records 3");
 
   const requests = await page.evaluate(() => window.__accRequests);
   expect(requests.filter((item) => item.path === "/api/autonomy/control-center")).toHaveLength(1);
@@ -35,6 +36,7 @@ test("Explain Action follows exact canonical stored provenance without model cal
   await expect(card).toContainText("execution-1 · action deploy.release");
   await expect(card).toContainText("gitlab/prod · deploy.release · receipts 1");
   await expect(card).toContainText("1 evidence · 1 verification(s) · succeeded");
+  await expect(card).toContainText("HIGH IMPACT · 1 resource(s) · risk high · provider gitlab/prod");
 
   const requests = await page.evaluate(() => window.__accRequests);
   expect(requests.some((item) => item.path === "/api/autonomy/control-center/actions/intent-1/explain" && item.method === "GET")).toBeTruthy();
@@ -60,6 +62,26 @@ test("Control Center mutations use canonical autonomy and approval APIs", async 
   expect(body.idempotency_key).toContain("control-center:approval-1:approve:");
 });
 
+test("Control Center can create and remove canonical scoped pauses", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  const card = page.locator("#autonomy-control-center-card");
+
+  await card.locator("[data-acc-pause-scope]").selectOption("project");
+  await card.locator("[data-acc-pause-id]").fill("project-alpha");
+  await card.locator("[data-acc-pause-reason]").fill("migration window");
+  await card.locator("[data-acc-add-pause]").click();
+
+  await expect(card).toContainText("project · project-alpha");
+  await expect(card).toContainText("migration window");
+
+  await card.locator("[data-acc-unpause='pause-1']").click();
+  await expect(card).toContainText("No active scoped pauses.");
+
+  const requests = await page.evaluate(() => window.__accRequests);
+  expect(requests.some((item) => item.path === "/api/autonomy/scoped-pauses" && item.method === "POST")).toBeTruthy();
+  expect(requests.some((item) => item.path === "/api/autonomy/scoped-pauses/pause-1" && item.method === "DELETE")).toBeTruthy();
+});
+
 test("Autonomy Control Center remains usable at phone width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
@@ -73,5 +95,5 @@ test("Autonomy Control Center remains usable at phone width", async ({ page }) =
 
   await card.locator("[data-acc-intent]").fill("intent-1");
   await card.locator("[data-acc-explain]").click();
-  await expect(card.locator(".acc-chain .acc-stage")).toHaveCount(8);
+  await expect(card.locator(".acc-chain .acc-stage")).toHaveCount(9);
 });
