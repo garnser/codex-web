@@ -259,11 +259,9 @@ class ThreadService:
                 "turns": [],
             }
             with contextlib.suppress(Exception):
-                thread_response = await self.host._codex_request_for_thread(
-                    indexed.id,
-                    "thread/read",
-                    {"threadId": indexed.id, "includeTurns": False},
-                )
+                thread_response = (
+                    await self._codex_adapter(indexed.id).read_session(indexed.id)
+                ).payload
                 thread = thread_response.get("thread", thread_response) if isinstance(thread_response, dict) else {}
                 item.update(thread)
                 item["name"] = indexed.name
