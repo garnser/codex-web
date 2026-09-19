@@ -13,7 +13,7 @@ from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurn
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
@@ -42,7 +42,7 @@ class TurnExecutionService:
         host: Any,
         *,
         binding_service: TurnExecutionBindingService | None = None,
-        session_manager: AssignmentBoundCodexSessionManager | None = None,
+        session_manager: AssignmentBoundAgentSessionManager | None = None,
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
         control_actor: AuthenticationActor | None = None,
     ) -> None:
@@ -65,7 +65,7 @@ class TurnExecutionService:
 
     def _require_worker_routing(self) -> tuple[
         TurnExecutionBindingService,
-        AssignmentBoundCodexSessionManager,
+        AssignmentBoundAgentSessionManager,
     ]:
         if self.binding_service is None or self.session_manager is None:
             raise HTTPException(
@@ -1033,7 +1033,7 @@ def install_turn_execution_service(
     host: Any,
     *,
     binding_service: TurnExecutionBindingService | None = None,
-    session_manager: AssignmentBoundCodexSessionManager | None = None,
+    session_manager: AssignmentBoundAgentSessionManager | None = None,
     bootstrap_bindings: ThreadBootstrapBindingService | None = None,
     control_actor: AuthenticationActor | None = None,
 ) -> TurnExecutionService:

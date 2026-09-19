@@ -22,7 +22,7 @@ from codex_web.identity import (
 from codex_web.models import ApprovalSlackMessage
 from codex_web.services.approval_requests import ApprovalRequestService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.storage.approval_requests import ApprovalRequestNotFoundError
 
 
@@ -39,7 +39,7 @@ class ApprovalService:
         self,
         host: Any,
         *,
-        assignment_sessions: AssignmentBoundCodexSessionManager | None = None,
+        assignment_sessions: AssignmentBoundAgentSessionManager | None = None,
         canonical: ApprovalRequestService | None = None,
         canonical_requester: AuthenticationActor | None = None,
         compatibility_actor: AuthenticationActor | None = None,

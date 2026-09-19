@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import subprocess
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +17,7 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
 )
 from codex_web.runtime.codex import CodexRuntime
+from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionStatus
 from codex_web.services.codex_auth_delegation import (
     CodexAuthDelegation,
     CodexDelegatedLaunch,
@@ -41,26 +41,8 @@ class AssignmentBoundCodexSessionStaleError(AssignmentBoundCodexSessionError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class AssignmentBoundCodexSessionStatus:
-    assignment_id: str
-    worker_id: str
-    fence: int | None
-    running: bool
-    ready: bool
-    last_error: str | None
-    delegation_expires_at: float | None
-
-    def public(self) -> dict[str, str | int | float | bool | None]:
-        return {
-            "assignment_id": self.assignment_id,
-            "worker_id": self.worker_id,
-            "fence": self.fence,
-            "running": self.running,
-            "ready": self.ready,
-            "last_error": self.last_error,
-            "delegation_expires_at": self.delegation_expires_at,
-        }
+# Compatibility alias while callers migrate to the provider-neutral worker-session contract.
+AssignmentBoundCodexSessionStatus = AssignmentBoundAgentSessionStatus
 
 
 class _OneShotProcessFactory:
@@ -132,14 +114,14 @@ class AssignmentBoundCodexSession:
         proc = self.runtime.proc if self.runtime is not None else None
         running = bool(proc is not None and proc.poll() is None)
         ready = bool(running and self.runtime is not None and self.runtime.ready.is_set())
-        return AssignmentBoundCodexSessionStatus(
+        return AssignmentBoundAgentSessionStatus(
             assignment_id=self.assignment_id,
             worker_id=self.worker_id,
             fence=self.fence,
             running=running,
             ready=ready,
             last_error=self.last_error,
-            delegation_expires_at=(
+            credential_expires_at=(
                 self.delegation.expires_at if self.delegation is not None else None
             ),
         )
