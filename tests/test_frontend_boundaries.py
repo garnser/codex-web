@@ -253,6 +253,22 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
+    def test_typed_definition_editor_modules_have_focused_budgets(self) -> None:
+        budgets = {
+            "definition_typed_editor.js": 12_000,
+            "definition_typed_authority_editor.js": 13_000,
+            "definition_typed_execution_editor.js": 6_000,
+            "definition_typed_editor_shared.js": 4_000,
+        }
+        for name, limit in budgets.items():
+            with self.subTest(name=name):
+                source_path = STATIC / name
+                self.assertLessEqual(source_path.stat().st_size, limit)
+                self.assertNotIn("fetch(", source_path.read_text())
+        coordinator = (STATIC / "definition_typed_editor.js").read_text()
+        self.assertIn("api_client.js", coordinator)
+        self.assertIn("apiRequest", coordinator)
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
