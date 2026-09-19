@@ -62,6 +62,14 @@ class AuthorityRoleServiceTests(unittest.TestCase):
             roles=(MembershipRole.ADMIN,),
             assurance=AuthenticationAssurance.LOCAL_TRUSTED,
         )
+        self.approver = AuthenticationActor(
+            identity_id="authority-test-approver",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.APPROVER,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED,
+        )
         self.actor = AuthenticationActor(
             identity_id="developer-a",
             principal_kind=PrincipalKind.HUMAN,
@@ -108,12 +116,22 @@ class AuthorityRoleServiceTests(unittest.TestCase):
                 reason="test authority catalog",
             )
         )
+        preflight = self.registry.publication_preflight(draft.record_id)
+        approval_id = None
+        if preflight.requires_approval:
+            approval = self.registry.record_publication_approval(
+                draft.record_id,
+                actor=self.approver,
+                reason="approve authority test catalog",
+            )
+            approval_id = approval.id
         return self.registry.publish(
             draft.record_id,
             DefinitionPublishRequest(
-                actor="test",
+                actor="test-publisher",
                 reason="activate test authority catalog",
                 expected_active_revision=active.revision,
+                publication_approval_id=approval_id,
             ),
         )
 
