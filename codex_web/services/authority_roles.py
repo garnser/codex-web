@@ -501,7 +501,6 @@ def install_authority_roles(
                 schema_version=AUTHORITY_ROLE_CATALOG_SCHEMA_VERSION,
                 validate=validate_authority_role_catalog,
                 assess_publish=assess_authority_catalog_publication,
-                allow_retire=False,
             )
         )
     service = AuthorityRoleService(registry, resources)
