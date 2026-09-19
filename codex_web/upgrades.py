@@ -188,6 +188,7 @@ class UpgradePreflight(BaseModel):
     incompatible_extension_ids: tuple[str, ...] = ()
     incompatible_definition_record_ids: tuple[str, ...] = ()
     definition_baseline: tuple[UpgradeDefinitionBaseline, ...] = ()
+    evidence_id: str | None = None
     evaluated_at: float = Field(default_factory=time.time)
 
 
