@@ -853,6 +853,8 @@ autonomy_audit_service = AutonomyAuditService(
     autonomy_store=autonomy_state_store,
     action_intents=action_intent_service,
     evidence=artifact_evidence_service,
+    canonical_events=canonical_event_ingestion,
+    scheduler=scheduler_service,
 )
 autonomy_policy_service = AutonomyPolicyService(
     autonomy_state_store,
