@@ -31,7 +31,7 @@ The policy defines deterministic-first execution, event-driven activation, minim
 
 ## Delivery tracking
 
-Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#170`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M12.
+Actionable autonomous-company work is tracked in GitHub Issues. The original roadmap/foundation set spans issues `#97`–`#142`; subsequent architecture reviews added `#155`–`#170`. Tracking bootstrap issue `#126` is the canonical index for the target GitHub Project and Milestones M1–M13.
 
 Milestone dependency order is:
 
@@ -42,11 +42,12 @@ Milestone dependency order is:
 5. M5 — First-Class Goals
 6. M6 — Role Authority + Permission Contracts
 7. M7 — Event-Driven Autonomous Orchestration
-8. M8 — First-Class Decisions
+8. M8 — First-Class Decisions + Measured Outcomes
 9. M9 — Executive Management
 10. M10 — Organizational Memory
 11. M11 — Controlled Production Autonomy
 12. M12 — Product Documentation + Adoption
+13. M13 — Business Operations & Company Data
 
 M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, **versioned database-backed operational definitions**, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
 
@@ -69,7 +70,7 @@ Keep the following concepts distinct even when their administration surfaces are
 
 Executions, decisions, evaluations, and audits should retain the exact definition IDs/revisions that influenced them so historical behavior remains reproducible after definitions change.
 
-M7 adds deterministic time/scheduling, autonomous replay/evaluation, and a canonical human-attention queue on top of the event-driven orchestration boundary. Replay/evaluation must pin the exact Definition Registry revisions used historically. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew (including definition/engine compatibility), audit integrity, and distributed failover where enabled.
+M7 adds deterministic time/scheduling (#158), canonical ApprovalRequests/quorum/separation-of-duties (#338), autonomous replay/evaluation (#159), and a canonical human-attention queue (#160) on top of the event-driven orchestration boundary. Replay/evaluation must pin the exact Definition Registry revisions used historically. M8 adds generic provenance-aware Metric/KPI definitions and observations (#339) for measured Goal/Decision evidence. M11 adds production qualification around releases/supply chain, incidents, backup/disaster recovery, capacity/backpressure, safe upgrades/version skew (including definition/engine compatibility), audit integrity, and distributed failover where enabled. M13 then adds governed business entities/CompanyFacts/external-record references, provider-neutral business-data synchronization, business KPI catalogs, Executive consumption, and Company Operations UI (#340–#345) without turning codex-web into a replacement CRM/billing/accounting system.
 
 Use GitHub tracking as follows:
 
