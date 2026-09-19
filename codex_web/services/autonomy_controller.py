@@ -214,6 +214,25 @@ class AutonomyController:
 
         control = self.store.load().control
         started_at = time.time()
+        project_value = event.payload.get("project_id") if isinstance(event.payload, dict) else None
+        event_project_id = (
+            project_value.strip()
+            if isinstance(project_value, str) and project_value.strip()
+            else None
+        )
+        event_level = control.policy.level
+        event_policy_fingerprint = control.policy.fingerprint()
+        event_budget = control.policy.budget
+        if self.policy is not None and actor is not None:
+            effective_event_policy, _event_roles = self.policy.effective(
+                actor=actor,
+                project_id=event_project_id,
+                action_id=None,
+                now=started_at,
+            )
+            event_level = effective_event_policy.level
+            event_policy_fingerprint = effective_event_policy.policy_fingerprint
+            event_budget = effective_event_policy.budget
 
         if control.mode != "active":
             cycle = self._cycle(
@@ -250,6 +269,21 @@ class AutonomyController:
                 depth=depth,
                 outcome=AutonomyCycleOutcome.DETERMINISTIC,
                 reason=observation.reason,
+                started_at=started_at,
+            )
+            self.store.append_cycle(cycle)
+            return cycle
+
+        if event_level == AutonomyLevel.OBSERVE:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.SKIPPED,
+                reason="autonomy_level_observe",
+                autonomy_level=event_level,
+                policy_fingerprint=event_policy_fingerprint,
                 started_at=started_at,
             )
             self.store.append_cycle(cycle)
