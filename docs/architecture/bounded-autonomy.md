@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 11 controlled-autonomy policy over the Milestone 7 control plane.** The autonomy controller consumes canonical event facts, separates deterministic observation/reasoning/execution, and applies one persisted effective autonomy policy before any autonomous external side effect.
+**Controlled-production-autonomy policy over the canonical event-driven control plane.** The autonomy controller consumes canonical event facts, separates deterministic observation/reasoning/execution, and applies one persisted effective autonomy policy before any autonomous external side effect.
 
 ## Cycle contract
 
@@ -119,7 +119,7 @@ dead-lettered.
 ## Observability, audit, and attribution
 
 The canonical autonomy-cycle state remains the immediate control-plane record.
-Every terminal cycle path is additionally appended to the tamper-evident M11
+Every terminal cycle path is additionally appended to the tamper-evident autonomy
 autonomy audit described in [autonomy-audit.md](autonomy-audit.md). Runtime logs
 and dashboard counters remain telemetry and cannot substitute for that audit.
 
@@ -162,4 +162,4 @@ unacknowledged handoff and updating typed canonical state, remain model-free.
 
 ## UI follow-up
 
-Issue #121 owns the unified M11 Autonomy Control Center and explain-action UI. It should consume canonical autonomy policy/cycle, ApprovalRequest, ActionIntent, Evidence and readiness state rather than inventing browser-local safety or authorization truth.
+Issue #121 owns the unified Autonomy Control Center and explain-action UI. It should consume canonical autonomy policy/cycle, ApprovalRequest, ActionIntent, Evidence and readiness state rather than inventing browser-local safety or authorization truth.
