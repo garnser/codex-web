@@ -103,6 +103,7 @@ from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorer
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.autonomy_policy import AutonomyPolicyService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -821,13 +822,27 @@ app.include_router(
 )
 
 autonomy_state_store = AutonomyStateStore(state_store)
+autonomy_policy_service = AutonomyPolicyService(
+    autonomy_state_store,
+    authority=authority_role_service,
+    resources=resource_catalog_service,
+    evidence=artifact_evidence_service,
+    approvals=approval_request_service,
+)
 autonomy_controller = AutonomyController(
     autonomy_state_store,
     action_intents=action_intent_service,
+    policy=autonomy_policy_service,
 )
 app.state.autonomy_state_store = autonomy_state_store
+app.state.autonomy_policy_service = autonomy_policy_service
 app.state.autonomy_controller = autonomy_controller
-app.include_router(build_autonomy_router(autonomy_controller))
+app.include_router(
+    build_autonomy_router(
+        autonomy_controller,
+        autonomy_policy_service,
+    )
+)
 
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,
