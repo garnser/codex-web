@@ -185,10 +185,6 @@ class EvaluationService:
             if len(override_keys) != len(set(override_keys)):
                 raise EvaluationError("candidate definition overrides contain duplicate slots")
             if fixture.mode == EvaluationRunMode.CANDIDATE:
-                if not fixture.definition_overrides:
-                    raise EvaluationError(
-                        "candidate replay fixture requires exact candidate definition overrides"
-                    )
                 unknown = set(override_keys) - historical_keys
                 if unknown:
                     raise EvaluationError(
@@ -264,10 +260,26 @@ class EvaluationService:
         )
 
     @staticmethod
+    def _effective_runtime(
+        scenario: EvaluationScenario,
+        fixture: EvaluationReplayFixture,
+    ):
+        return fixture.runtime_override or scenario.runtime
+
+    @staticmethod
+    def _effective_models(
+        scenario: EvaluationScenario,
+        fixture: EvaluationReplayFixture,
+    ):
+        return fixture.model_overrides or scenario.models
+
+    @staticmethod
     def _assertions(
         scenario: EvaluationScenario,
         trace: EvaluationTrace,
         definitions: tuple[DefinitionReference, ...],
+        runtime,
+        models,
     ) -> tuple[EvaluationAssertionResult, ...]:
         expected = scenario.expected
         budget = scenario.budget
@@ -345,6 +357,21 @@ class EvaluationService:
             f"{len(actual_definitions)} resolved definitions",
             None if actual_definitions == expected_definitions else "exact definition set mismatch",
         )
+
+        if runtime is not None:
+            add(
+                EvaluationAssertionKind.RUNTIME_PIN,
+                trace.runtime == runtime,
+                runtime.model_dump_json(),
+                trace.runtime.model_dump_json() if trace.runtime is not None else "none",
+            )
+        if models:
+            add(
+                EvaluationAssertionKind.MODEL_PINS,
+                tuple(trace.models) == tuple(models),
+                "|".join(item.model_dump_json() for item in models),
+                "|".join(item.model_dump_json() for item in trace.models) or "none",
+            )
 
         action_kinds = [item.action_kind for item in trace.actions]
         add(
@@ -445,6 +472,16 @@ class EvaluationService:
                 f"interventions <= {expected.max_interventions}",
                 f"interventions = {trace.intervention_count}",
             )
+        if expected.min_quality_score is not None:
+            add(
+                EvaluationAssertionKind.QUALITY_SCORE,
+                (
+                    trace.quality_score is not None
+                    and trace.quality_score >= expected.min_quality_score
+                ),
+                f">= {expected.min_quality_score}",
+                trace.quality_score if trace.quality_score is not None else "unavailable",
+            )
         return tuple(rows)
 
     def _comparison(
@@ -514,6 +551,38 @@ class EvaluationService:
         if definition_changed and not thresholds.allow_definition_resolution_changes:
             reasons.append("definition resolution changed outside allowed regression policy")
 
+        runtime_changed = baseline.runtime != candidate.runtime
+        if runtime_changed and not thresholds.allow_runtime_changes:
+            reasons.append("runtime pin changed outside allowed regression policy")
+
+        baseline_models = tuple(
+            (
+                item.provider_id,
+                item.model_id,
+                item.model_version,
+                item.prompt_template_id,
+                item.prompt_template_version,
+                item.prompt_template_checksum_sha256,
+                item.policy_fingerprint_sha256,
+            )
+            for item in baseline.models
+        )
+        candidate_models = tuple(
+            (
+                item.provider_id,
+                item.model_id,
+                item.model_version,
+                item.prompt_template_id,
+                item.prompt_template_version,
+                item.prompt_template_checksum_sha256,
+                item.policy_fingerprint_sha256,
+            )
+            for item in candidate.models
+        )
+        model_changed = baseline_models != candidate_models
+        if model_changed and not thresholds.allow_model_prompt_changes:
+            reasons.append("model/prompt pin changed outside allowed regression policy")
+
         comparison = EvaluationComparison(
             organization_id=candidate.organization_id,
             workspace_id=candidate.workspace_id,
@@ -537,6 +606,8 @@ class EvaluationService:
                 - len(baseline.trace.policy_violations)
             ),
             definition_resolution_changed=definition_changed,
+            runtime_changed=runtime_changed,
+            model_or_prompt_changed=model_changed,
             regression_reasons=tuple(reasons),
             passed=not reasons,
             created_at=float(self.clock()),
@@ -606,6 +677,8 @@ class EvaluationService:
                 f"evaluation replay backend is not registered: {request.backend_id}"
             )
         definitions = self._effective_definitions(scenario, fixture)
+        runtime = self._effective_runtime(scenario, fixture)
+        models = self._effective_models(scenario, fixture)
         self._validate_definition_set(
             definitions,
             actor=actor,
@@ -614,7 +687,13 @@ class EvaluationService:
         started = float(self.clock())
         trace = await backend.replay(scenario, fixture, actor=actor)
         completed = float(self.clock())
-        assertions = self._assertions(scenario, trace, definitions)
+        assertions = self._assertions(
+            scenario,
+            trace,
+            definitions,
+            runtime,
+            models,
+        )
         run = EvaluationRun(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -630,8 +709,8 @@ class EvaluationService:
             starting_state=scenario.starting_state,
             event_ids=tuple(item.event_id for item in scenario.events),
             definitions=definitions,
-            runtime=trace.runtime or scenario.runtime,
-            models=trace.models or scenario.models,
+            runtime=runtime,
+            models=models,
             trace=trace,
             assertions=assertions,
             passed=all(item.passed for item in assertions),
