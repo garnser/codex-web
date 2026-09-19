@@ -23,10 +23,6 @@ from codex_web.services.agent_worker_session import (
     AssignmentRuntimeCredentialProvider,
     AssignmentRuntimeLaunchInput,
 )
-from codex_web.services.codex_auth_delegation import (
-    CodexAuthDelegation,
-    CodexDelegatedLaunch,
-)
 from codex_web.services.codex_model_egress import (
     AssignmentBoundModelEgressBroker,
     CODEX_MODEL_EGRESS_RELAY_SCRIPT,
