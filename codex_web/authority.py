@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from enum import IntEnum, StrEnum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -20,12 +20,21 @@ AUTHORITY_ROLE_CATALOG_ID = "authority.roles.default"
 AUTHORITY_ROLE_CATALOG_SCHEMA_VERSION = "1.0"
 
 
-class AuthorityLevel(IntEnum):
-    READ = 10
-    RECOMMEND = 20
-    PREPARE = 30
-    EXECUTE = 40
-    APPROVE = 50
+class AuthorityLevel(StrEnum):
+    READ = "read"
+    RECOMMEND = "recommend"
+    PREPARE = "prepare"
+    EXECUTE = "execute"
+    APPROVE = "approve"
+
+
+AUTHORITY_LEVEL_RANK: dict[AuthorityLevel, int] = {
+    AuthorityLevel.READ: 10,
+    AuthorityLevel.RECOMMEND: 20,
+    AuthorityLevel.PREPARE: 30,
+    AuthorityLevel.EXECUTE: 40,
+    AuthorityLevel.APPROVE: 50,
+}
 
 
 class AuthorityEnvironment(StrEnum):
@@ -35,11 +44,19 @@ class AuthorityEnvironment(StrEnum):
     PRODUCTION = "production"
 
 
-class AuthorityAutonomyRisk(IntEnum):
-    LOW = 10
-    MEDIUM = 20
-    HIGH = 30
-    CRITICAL = 40
+class AuthorityAutonomyRisk(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+AUTHORITY_AUTONOMY_RISK_RANK: dict[AuthorityAutonomyRisk, int] = {
+    AuthorityAutonomyRisk.LOW: 10,
+    AuthorityAutonomyRisk.MEDIUM: 20,
+    AuthorityAutonomyRisk.HIGH: 30,
+    AuthorityAutonomyRisk.CRITICAL: 40,
+}
 
 
 class AuthorityDecisionOutcome(StrEnum):
