@@ -32,6 +32,7 @@ from codex_web.decisions import (
     DecisionStatus,
     DecisionSupersedeRequest,
     DecisionUpdate,
+    DecisionWorkLink,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.metrics import MetricFreshness
@@ -43,6 +44,7 @@ from codex_web.services.approval_requests import (
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 from codex_web.services.metrics import MetricError, MetricService
+from codex_web.services.goals import GoalError, GoalService
 from codex_web.storage.decisions import (
     DecisionConflictError,
     DecisionNotFoundError,
@@ -104,6 +106,7 @@ class DecisionService:
         metrics: MetricService,
         artifact_evidence: ArtifactEvidenceService,
         canonical_events: CanonicalEventIngestionService | None = None,
+        goals: GoalService | None = None,
         *,
         clock=time.time,
     ) -> None:
@@ -112,6 +115,7 @@ class DecisionService:
         self.metrics = metrics
         self.artifact_evidence = artifact_evidence
         self.canonical_events = canonical_events
+        self.goals = goals
         self.clock = clock
 
     @staticmethod
@@ -135,6 +139,23 @@ class DecisionService:
         raise DecisionAuthorizationError(
             "Decision initiator or administrator required"
         )
+
+    def _validate_goal(
+        self,
+        goal_id: str | None,
+        *,
+        actor: AuthenticationActor,
+    ) -> None:
+        if goal_id is None:
+            return
+        if self.goals is None:
+            raise DecisionValidationError(
+                "Goal-linked Decisions require the canonical Goal service"
+            )
+        try:
+            self.goals.get(goal_id, scope=actor.tenant)
+        except GoalError as exc:
+            raise DecisionValidationError(str(exc)) from exc
 
     @staticmethod
     def _budget(
@@ -281,12 +302,14 @@ class DecisionService:
         *,
         actor: AuthenticationActor,
     ) -> Decision:
+        self._validate_goal(payload.goal_id, actor=actor)
         evidence = self._resolve_evidence(payload.evidence, actor=actor)
         now = float(self.clock())
         decision = Decision(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             project_id=payload.project_id,
+            goal_id=payload.goal_id,
             title=payload.title,
             question=payload.question,
             initiator_identity_id=actor.identity_id,
@@ -385,6 +408,12 @@ class DecisionService:
                 f"found {current.revision}"
             )
 
+        goal_id = (
+            payload.goal_id
+            if "goal_id" in payload.model_fields_set
+            else current.goal_id
+        )
+        self._validate_goal(goal_id, actor=actor)
         evidence = (
             self._resolve_evidence(payload.evidence, actor=actor)
             if payload.evidence is not None
@@ -404,6 +433,7 @@ class DecisionService:
         changes = {
             "title": payload.title if payload.title is not None else current.title,
             "question": payload.question if payload.question is not None else current.question,
+            "goal_id": goal_id,
             "participants": (
                 payload.participants
                 if payload.participants is not None
@@ -814,6 +844,56 @@ class DecisionService:
         await self._emit(
             updated,
             transition="superseded",
+            actor_id=actor.identity_id,
+        )
+        return updated
+
+    async def record_work_links(
+        self,
+        decision_id: str,
+        work_links: tuple[DecisionWorkLink, ...],
+        *,
+        actor: AuthenticationActor,
+        reason: str,
+    ) -> Decision:
+        current = self.get(decision_id, actor=actor)
+        self._require_edit(current, actor)
+        if current.status != DecisionStatus.APPROVED:
+            raise DecisionStateError(
+                "Decision work can only be recorded after canonical approval"
+            )
+        ids = [item.item_id for item in work_links]
+        if len(set(ids)) != len(ids):
+            raise DecisionValidationError("Decision work link item ids must be unique")
+
+        def apply(state: DecisionState, stored: Decision):
+            if stored.status != DecisionStatus.APPROVED:
+                raise DecisionStateError(
+                    "Decision work can only be recorded after canonical approval"
+                )
+            now = float(self.clock())
+            updated = stored.model_copy(
+                update={
+                    "work_links": work_links,
+                    "updated_at": now,
+                    "revision": stored.revision + 1,
+                }
+            )
+            return (
+                self._append_history(
+                    state,
+                    updated,
+                    actor_id=actor.identity_id,
+                    reason=reason,
+                    event_type="decision.work_links_updated",
+                ),
+                updated,
+            )
+
+        updated = self.store.update(decision_id, apply)
+        await self._emit(
+            updated,
+            transition="work_links_updated",
             actor_id=actor.identity_id,
         )
         return updated

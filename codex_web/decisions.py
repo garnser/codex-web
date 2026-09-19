@@ -50,6 +50,16 @@ class DecisionReviewOutcome(StrEnum):
     UNKNOWN = "unknown"
 
 
+class DecisionWorkState(StrEnum):
+    PLANNED = "planned"
+    QUEUED = "queued"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNCERTAIN = "uncertain"
+    REQUIRES_RECONCILIATION = "requires_reconciliation"
+
+
 class DecisionBudget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -228,6 +238,80 @@ class DecisionActionRef(BaseModel):
         return self
 
 
+class DecisionWorkItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    id: str = Field(min_length=1, max_length=300)
+    project_id: str = Field(min_length=1, max_length=500)
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1, max_length=8000)
+    expected_result: str | None = Field(default=None, max_length=4000)
+    owner_identity_id: str | None = Field(default=None, min_length=1, max_length=500)
+    labels: tuple[str, ...] = ()
+    parent_item_id: str | None = Field(default=None, min_length=1, max_length=300)
+    blocked_by_item_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def normalize(self) -> "DecisionWorkItemRequest":
+        object.__setattr__(self, "labels", tuple(dict.fromkeys(self.labels)))
+        object.__setattr__(
+            self,
+            "blocked_by_item_ids",
+            tuple(dict.fromkeys(self.blocked_by_item_ids)),
+        )
+        if self.id == self.parent_item_id or self.id in self.blocked_by_item_ids:
+            raise ValueError("Decision work item cannot depend on itself")
+        return self
+
+
+class DecisionWorkCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    items: tuple[DecisionWorkItemRequest, ...]
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_items(self) -> "DecisionWorkCommitRequest":
+        if not self.items:
+            raise ValueError("Decision work commit requires at least one item")
+        ids = {item.id for item in self.items}
+        if len(ids) != len(self.items):
+            raise ValueError("Decision work item ids must be unique")
+        for item in self.items:
+            if item.parent_item_id is not None and item.parent_item_id not in ids:
+                raise ValueError(
+                    f"Decision work parent does not exist: {item.parent_item_id}"
+                )
+            unknown = sorted(set(item.blocked_by_item_ids) - ids)
+            if unknown:
+                raise ValueError(
+                    "Decision work blockers do not exist: " + ", ".join(unknown)
+                )
+        return self
+
+
+class DecisionWorkLink(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    item_id: str
+    project_id: str
+    title: str
+    description: str
+    expected_result: str | None = None
+    owner_identity_id: str | None = None
+    labels: tuple[str, ...] = ()
+    correlation_id: str
+    binding_id: str
+    action_intent_id: str | None = None
+    work_item_ref: str | None = None
+    state: DecisionWorkState = DecisionWorkState.PLANNED
+    parent_item_id: str | None = None
+    blocked_by_item_ids: tuple[str, ...] = ()
+    last_error: str | None = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class DecisionPostExecutionReviewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -255,6 +339,7 @@ class DecisionCreate(BaseModel):
     question: str = Field(min_length=1, max_length=12000)
     title: str = Field(min_length=1, max_length=500)
     project_id: str | None = Field(default=None, max_length=500)
+    goal_id: str | None = Field(default=None, max_length=500)
     participants: tuple[DecisionParticipant, ...]
     evidence: tuple[DecisionEvidenceInput, ...] = ()
     assumptions: tuple[str, ...] = ()
@@ -296,6 +381,7 @@ class DecisionUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=500)
     question: str | None = Field(default=None, min_length=1, max_length=12000)
+    goal_id: str | None = Field(default=None, max_length=500)
     participants: tuple[DecisionParticipant, ...] | None = None
     evidence: tuple[DecisionEvidenceInput, ...] | None = None
     assumptions: tuple[str, ...] | None = None
@@ -343,6 +429,7 @@ class Decision(BaseModel):
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
     project_id: str | None = None
+    goal_id: str | None = None
     title: str = Field(min_length=1)
     question: str = Field(min_length=1)
     initiator_identity_id: str = Field(min_length=1)
@@ -365,6 +452,7 @@ class Decision(BaseModel):
     expires_at: float | None = None
     superseded_by_decision_id: str | None = None
     post_execution_reviews: tuple[DecisionPostExecutionReview, ...] = ()
+    work_links: tuple[DecisionWorkLink, ...] = ()
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     revision: int = Field(default=1, ge=1)
@@ -395,6 +483,7 @@ class Decision(BaseModel):
             "id": self.id,
             "revision": self.revision,
             "project_id": self.project_id,
+            "goal_id": self.goal_id,
             "title": self.title,
             "question": self.question,
             "participants": [item.model_dump(mode="json") for item in self.participants],

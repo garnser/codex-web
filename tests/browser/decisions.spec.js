@@ -6,6 +6,7 @@ function decision(status = 'awaiting_approval') {
     organization_id: 'org-a',
     workspace_id: 'ws-a',
     project_id: 'project-a',
+    goal_id: 'goal-a',
     title: 'Choose rollout strategy',
     question: 'Which bounded rollout strategy should we use?',
     initiator_identity_id: 'owner-a',
@@ -116,6 +117,7 @@ function decision(status = 'awaiting_approval') {
     expires_at: null,
     superseded_by_decision_id: null,
     post_execution_reviews: [],
+    work_links: [],
     revision: 3,
     created_at: 1889999000,
     updated_at: 1890000010,
@@ -189,6 +191,85 @@ async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval'
         }),
       });
     }
+    if (path === '/api/decisions/decision-a/trace' && method === 'GET') {
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          goal: {
+            goal: {
+              id: 'goal-a',
+              title: 'Improve governed delivery',
+              status: 'active',
+            },
+          },
+          decision: current,
+          work_items: (current.work_links || [])
+            .filter((item) => item.work_item_ref)
+            .map((item) => ({
+              ref: item.work_item_ref,
+              goal_id: 'goal-a',
+              decision_id: 'decision-a',
+              current_stage: 'implementation_active',
+              terminal_outcome: null,
+            })),
+          action_intents: (current.work_links || [])
+            .filter((item) => item.action_intent_id)
+            .map((item) => ({
+              intent: {
+                id: item.action_intent_id,
+                status: item.state === 'succeeded' ? 'succeeded' : 'pending',
+                goal_id: 'goal-a',
+                decision_id: 'decision-a',
+              },
+              receipts: [],
+              verifications: [],
+              inbox: [],
+            })),
+          post_execution_reviews: current.post_execution_reviews || [],
+        }),
+      });
+    }
+    if (path === '/api/decisions/decision-a/work' && method === 'POST') {
+      const body = route.request().postDataJSON();
+      posts.push({ action: 'work', body });
+      const item = body.items[0];
+      current = {
+        ...current,
+        work_links: [
+          ...(current.work_links || []),
+          {
+            item_id: item.id,
+            project_id: item.project_id,
+            title: item.title,
+            description: item.description,
+            expected_result: item.expected_result,
+            owner_identity_id: null,
+            labels: item.labels || [],
+            correlation_id: `decision:decision-a:work:${item.id}`,
+            binding_id: 'binding-a',
+            action_intent_id: `intent-${item.id}`,
+            work_item_ref: null,
+            state: 'queued',
+            parent_item_id: null,
+            blocked_by_item_ids: [],
+            last_error: null,
+            created_at: 1890000030,
+            updated_at: 1890000030,
+          },
+        ],
+      };
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: current }),
+      });
+    }
+    if (path === '/api/decisions/decision-a/work/reconcile' && method === 'POST') {
+      posts.push({ action: 'work-reconcile', body: route.request().postDataJSON() });
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: current }),
+      });
+    }
     if (path === '/api/decisions/decision-a/approval/finalize' && method === 'POST') {
       posts.push({ action: 'finalize', body: route.request().postDataJSON() });
       current = {
@@ -249,6 +330,9 @@ test('Decision workspace exposes canonical evidence, bounded reasoning and Appro
   await expect(dialog).toContainText('approval-a');
   await expect(dialog).toContainText('abc123');
   await expect(dialog).toContainText('decision.awaiting_approval');
+  await expect(dialog).toContainText('Improve governed delivery');
+  await expect(dialog.locator('a[href="/api/evidence/evidence-a"]')).toHaveText('evidence-a');
+  await expect(dialog.locator('a[href="/api/metrics/metric-a/snapshots/metric-snapshot-a"]')).toHaveText('metric-snapshot-a');
 
   await dialog.locator('.decision-finalize').click();
   await expect.poll(() => posts.some((item) => item.action === 'finalize')).toBeTruthy();
@@ -275,4 +359,32 @@ test('Decision workspace uses canonical mutation endpoints and remains usable on
 
   const box = await dialog.boundingBox();
   expect(box.width).toBeLessThanOrEqual(390);
+});
+
+
+test('approved Decision generates work only through canonical Decision work endpoint', async ({ page }) => {
+  const posts = [];
+  await mockDecisionApis(page, posts, 'approved');
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+
+  const dialog = page.locator('#decisions-dialog');
+  await expect(dialog).toContainText('Goal → Decision → Work → Result trace');
+  await expect(dialog).toContainText('Improve governed delivery');
+
+  const form = dialog.locator('.decision-work-form');
+  await form.locator('input[name="project_id"]').fill('project-a');
+  await form.locator('input[name="title"]').fill('Implement approved consequence');
+  await form.locator('textarea[name="description"]').fill('Create work from the approved Decision.');
+  await form.locator('input[name="expected_result"]').fill('Canonical work is visible.');
+  await form.locator('button[type="submit"]').click();
+
+  await expect.poll(() => posts.some((item) => item.action === 'work')).toBeTruthy();
+  const post = posts.find((item) => item.action === 'work');
+  expect(post.body.items).toHaveLength(1);
+  expect(post.body.items[0].project_id).toBe('project-a');
+  expect(post.body.items[0].title).toBe('Implement approved consequence');
+  expect(post.body.reason).toContain('canonical work');
+  await expect(dialog).toContainText('intent-work-1');
+  await expect(dialog.locator('.decision-work-state.queued')).toHaveText('queued');
 });

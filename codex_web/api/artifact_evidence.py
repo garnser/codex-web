@@ -70,6 +70,25 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    @router.get("/api/artifacts/{artifact_id}")
+    async def get_artifact(
+        artifact_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.get_artifact(
+                artifact_id,
+                actor=request_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (ArtifactEvidenceError, AuthorizationError, TenantIsolationError),
+            ):
+                raise _error(exc) from exc
+            raise
+
     @router.get("/api/artifacts")
     async def list_artifacts(
         request: Request,
@@ -318,6 +337,25 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
                 for item in service.content.health()
             ]
         }
+
+    @router.get("/api/evidence/{evidence_id}")
+    async def get_evidence(
+        evidence_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.get_evidence(
+                evidence_id,
+                actor=request_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (ArtifactEvidenceError, AuthorizationError, TenantIsolationError),
+            ):
+                raise _error(exc) from exc
+            raise
 
     @router.get("/api/evidence")
     async def list_evidence(

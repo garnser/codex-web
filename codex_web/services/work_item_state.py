@@ -712,6 +712,58 @@ class WorkItemStateMachine:
         self.host._save_work_item_states(states)
         return state
 
+    def bind_provenance(
+        self,
+        ref: str,
+        *,
+        goal_id: str | None,
+        decision_id: str,
+        action_intent_id: str,
+        actor_id: str,
+    ) -> WorkItemState:
+        state = self._work_item_state(ref)
+        if state.decision_id not in {None, decision_id}:
+            raise HTTPException(
+                status_code=409,
+                detail="work item is already attributed to a different Decision",
+            )
+        if state.goal_id not in {None, goal_id}:
+            raise HTTPException(
+                status_code=409,
+                detail="work item is already attributed to a different Goal",
+            )
+        if (
+            state.originating_action_intent_id is not None
+            and state.originating_action_intent_id != action_intent_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="work item is already attributed to a different ActionIntent",
+            )
+        now = time.time()
+        state = state.model_copy(
+            update={
+                "goal_id": goal_id,
+                "decision_id": decision_id,
+                "originating_action_intent_id": action_intent_id,
+                "updated_at": now,
+                "last_meaningful_update_at": now,
+            }
+        )
+        self._append_work_item_event(
+            self._work_item_event(
+                ref,
+                "work_item_provenance_bound",
+                actor=actor_id,
+                payload={
+                    "goal_id": goal_id,
+                    "decision_id": decision_id,
+                    "action_intent_id": action_intent_id,
+                },
+            )
+        )
+        return self._save_work_item_state(state)
+
     def _structured_handoff(
         self,
         ref: str,

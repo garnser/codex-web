@@ -214,6 +214,22 @@ class ArtifactEvidenceService:
                     }
                 )
 
+    def get_artifact(
+        self,
+        artifact_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> Artifact:
+        return self._artifact(self.store.load(), artifact_id, actor)
+
+    def get_evidence(
+        self,
+        evidence_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> Evidence:
+        return self._evidence(self.store.load(), evidence_id, actor)
+
     def list_artifacts(
         self,
         actor: AuthenticationActor,

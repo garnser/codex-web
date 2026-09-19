@@ -213,6 +213,9 @@ class WorkItemState(BaseModel):
     organization_id: str = "local"
     workspace_id: str = "default"
     project_id: str | None = None
+    goal_id: str | None = None
+    decision_id: str | None = None
+    originating_action_intent_id: str | None = None
     resource_ids: list[str] = Field(default_factory=list)
     project_path: str | None = None
     source_identity: TaskSourceIdentity | None = None
