@@ -28,6 +28,10 @@ function actor(identity, roles) {
 }
 
 async function hydrate(page) {
+  await page.waitForFunction(
+    () => document.documentElement.dataset.definitionPublicationManagementReady === 'true',
+  );
+  await expect(page.locator('#definition-lifecycle-assurance')).toContainText('Current actor');
   await page.evaluate((item) => {
     window.dispatchEvent(new CustomEvent('codex:definition-registry-rendered', {
       detail: {
