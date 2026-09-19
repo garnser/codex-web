@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+from contextvars import ContextVar
 from pathlib import Path
 
 from codex_web.models import Project
@@ -22,6 +24,10 @@ class ProjectRepository:
         self.path = path
         self.workspace_mapper = workspace_mapper or WorkspaceMapper.from_environment()
         self.store = store
+        self._snapshot: ContextVar[list[dict[str, object]] | None] = ContextVar(
+            "codex_web_projects_snapshot",
+            default=None,
+        )
 
     def resolve_path(self, value: str | Path) -> Path:
         return self.workspace_mapper.runtime_path(value)
@@ -74,11 +80,60 @@ class ProjectRepository:
             self._write_payload(normalized_payload)
         elif not self.path.exists():
             self._write_payload(normalized_payload)
+        self._snapshot.set(copy.deepcopy(normalized_payload))
         return projects
 
     def save(self, projects: list[Project]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._storage_payload(projects)
+        merged = payload
         if self.store is not None:
-            self.store.put(self.namespace, payload)
-        self._write_payload(payload)
+            base = self._snapshot.get()
+            if base is None:
+                self.store.put(self.namespace, payload)
+            else:
+                base_by_id = {
+                    str(item.get("id")): item
+                    for item in base
+                    if item.get("id")
+                }
+                payload_by_id = {
+                    str(item.get("id")): item
+                    for item in payload
+                    if item.get("id")
+                }
+                changed = {
+                    item_id: item
+                    for item_id, item in payload_by_id.items()
+                    if base_by_id.get(item_id) != item
+                }
+                deleted = set(base_by_id) - set(payload_by_id)
+                payload_order = [
+                    str(item.get("id"))
+                    for item in payload
+                    if item.get("id")
+                ]
+
+                def merge(current):
+                    current_rows = list(current) if isinstance(current, list) else []
+                    result = []
+                    seen = set()
+                    for item in current_rows:
+                        item_id = str(item.get("id") or "")
+                        if not item_id or item_id in deleted:
+                            continue
+                        result.append(changed.get(item_id, item))
+                        seen.add(item_id)
+                    for item_id in payload_order:
+                        if item_id in changed and item_id not in seen:
+                            result.append(changed[item_id])
+                            seen.add(item_id)
+                    return result
+
+                merged = self.store.update(
+                    self.namespace,
+                    merge,
+                    default=[],
+                )
+        self._snapshot.set(copy.deepcopy(merged))
+        self._write_payload(merged)
