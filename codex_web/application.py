@@ -979,6 +979,7 @@ executive_management_service = ExecutiveManagementService(
     work_item_service,
     work_graph_service,
     artifact_evidence_service,
+    organizational_memory_service,
 )
 app.state.executive_activation_store = executive_activation_store
 app.state.executive_management_service = executive_management_service
