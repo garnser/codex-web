@@ -434,6 +434,34 @@ class UpgradeService:
         if plan.require_drain and not plan.maintenance_mode:
             warnings.append("maintenance_mode_not_entered")
 
+        preflight_evidence = self.evidence.create_evidence(
+            EvidenceCreate(
+                project_id=plan.project_id,
+                evidence_type=EvidenceType.POLICY_EVALUATION,
+                provider="codex-web",
+                source="upgrade-preflight",
+                result=(
+                    EvidenceResult.PASS
+                    if not blockers
+                    else EvidenceResult.FAIL
+                ),
+                summary=(
+                    f"Upgrade preflight {'passed' if not blockers else 'failed'} "
+                    f"for {plan.current_app_version}->{plan.target_app_version}"
+                ),
+                metadata={
+                    "upgrade_plan_id": plan.id,
+                    "source_app_version": plan.current_app_version,
+                    "target_app_version": plan.target_app_version,
+                    "state_schema_version": state_schema,
+                    "blocker_count": len(blockers),
+                    "active_action_intents": active_actions,
+                    "active_worker_assignments": active_assignments,
+                    "definition_baseline_count": len(baseline),
+                },
+            ),
+            actor=actor,
+        )
         preflight = UpgradePreflight(
             satisfied=not blockers,
             blockers=tuple(dict.fromkeys(blockers)),
@@ -448,6 +476,7 @@ class UpgradeService:
                 incompatible_definitions
             ),
             definition_baseline=tuple(baseline),
+            evidence_id=preflight_evidence.id,
             evaluated_at=float(self.clock()),
         )
         status = (
@@ -614,14 +643,11 @@ class UpgradeService:
                     distinct_humans=True,
                     allow_self_approval=False,
                 ),
-                evidence_refs=tuple(
-                    item
-                    for item in (
-                        plan.preflight.definition_baseline[0].record_id
-                        if plan.preflight and plan.preflight.definition_baseline
-                        else None,
-                    )
-                    if item
+                evidence_refs=(
+                    (plan.preflight.evidence_id,)
+                    if plan.preflight is not None
+                    and plan.preflight.evidence_id is not None
+                    else ()
                 ),
             ),
             requester=actor,
@@ -775,10 +801,32 @@ class UpgradeService:
             values = dict(result or {})
             values["idempotency_key"] = payload.idempotency_key
         except Exception as exc:
+            failure_evidence = self.evidence.create_evidence(
+                EvidenceCreate(
+                    project_id=plan.project_id,
+                    evidence_type=EvidenceType.POLICY_EVALUATION,
+                    provider="codex-web",
+                    source="upgrade-step-verification",
+                    result=EvidenceResult.FAIL,
+                    summary=(
+                        f"Upgrade step {running.id} failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    metadata={
+                        "upgrade_plan_id": plan.id,
+                        "step_id": running.id,
+                        "phase": running.phase.value,
+                        "kind": running.kind.value,
+                        "attempt": running.attempts,
+                    },
+                ),
+                actor=actor,
+            )
             failed = running.model_copy(
                 update={
                     "status": UpgradeStepStatus.FAILED,
                     "last_error": f"{type(exc).__name__}: {exc}",
+                    "evidence_id": failure_evidence.id,
                     "completed_at": float(self.clock()),
                 }
             )
@@ -789,10 +837,33 @@ class UpgradeService:
                 extra={"status": UpgradeStatus.FAILED},
             )
 
+        success_evidence = self.evidence.create_evidence(
+            EvidenceCreate(
+                project_id=plan.project_id,
+                evidence_type=EvidenceType.POLICY_EVALUATION,
+                provider="codex-web",
+                source="upgrade-step-verification",
+                result=EvidenceResult.PASS,
+                summary=(
+                    f"Upgrade step {running.id} completed "
+                    f"({running.phase.value}/{running.kind.value})"
+                ),
+                metadata={
+                    "upgrade_plan_id": plan.id,
+                    "step_id": running.id,
+                    "phase": running.phase.value,
+                    "kind": running.kind.value,
+                    "attempt": running.attempts,
+                    "irreversible": running.irreversible,
+                },
+            ),
+            actor=actor,
+        )
         succeeded = running.model_copy(
             update={
                 "status": UpgradeStepStatus.SUCCEEDED,
                 "result": values,
+                "evidence_id": success_evidence.id,
                 "completed_at": float(self.clock()),
             }
         )
