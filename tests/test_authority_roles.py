@@ -419,6 +419,39 @@ class AuthorityRoleServiceTests(unittest.TestCase):
         self.assertEqual(wrong_project.outcome.value, "deny")
         self.assertIn("no matching operational Role", wrong_project.reasons[0])
 
+    def test_role_lifecycle_deprecated_remains_bound_but_disabled_denies(self):
+        base = self._catalog(bindings=(self._binding(),))
+        deprecated_roles = tuple(
+            role.model_copy(update={"lifecycle": "deprecated"})
+            if role.id == "developer"
+            else role
+            for role in base.roles
+        )
+        self._publish(base.model_copy(update={"roles": deprecated_roles}))
+
+        deprecated = self.service.evaluate(self._request(), actor=self.actor)
+        self.assertEqual(deprecated.outcome.value, "allow")
+        self.assertEqual(deprecated.matched_role_ids, ("developer",))
+
+        disabled_roles = tuple(
+            role.model_copy(update={"lifecycle": "disabled"})
+            if role.id == "developer"
+            else role
+            for role in base.roles
+        )
+        self._publish(base.model_copy(update={"roles": disabled_roles}))
+
+        disabled = self.service.evaluate(self._request(), actor=self.actor)
+        self.assertEqual(disabled.outcome.value, "deny")
+        self.assertTrue(
+            any(
+                "no assigned Role grants capability" in reason
+                or "no matching operational Role" in reason
+                for reason in disabled.reasons
+            ),
+            disabled.reasons,
+        )
+
     def test_missing_definition_fails_closed_instead_of_falling_back(self):
         active = self.registry.resolve(
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
