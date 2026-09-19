@@ -21,6 +21,18 @@ class RuntimeStateWiringTests(unittest.TestCase):
             application.runtime_state.work_item_states,
         )
         self.assertIs(application.app.state.sqlite_state_store, application.state_store)
+        self.assertIs(
+            application.app.state.agent_session_store.store,
+            application.state_store,
+        )
+        self.assertIs(
+            application.app.state.agent_session_service.store,
+            application.app.state.agent_session_store,
+        )
+        self.assertEqual(
+            application.app.state.codex_agent_runtime_adapter.runtime_id,
+            "codex",
+        )
 
 
 if __name__ == "__main__":
