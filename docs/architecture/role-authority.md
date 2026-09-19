@@ -134,7 +134,7 @@ On intent creation the service:
 6. cancels the intent before provider execution if any required capability is
    denied or cannot be evaluated.
 
-A caller-authored `ALLOW` snapshot cannot override this result.
+A caller-authored `ALLOW` snapshot cannot override this result. An explicit caller `DENY` is retained only as an additional one-way safety veto; it can cancel an otherwise authorized intent but can never create authority.
 
 Immediately before provider execution the service re-resolves the original
 requesting identity's current membership/Team context, re-resolves the current
