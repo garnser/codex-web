@@ -84,7 +84,7 @@ test('metric explorer shows freshness, provenance and immutable snapshots', asyn
     });
   });
 
-  await page.goto('/tests/browser/metrics_fixture.html');
+  await page.goto('http://127.0.0.1:18766/tests/browser/metrics_fixture.html');
   await expect(page.locator('#metrics-button')).toBeVisible();
   await page.locator('#metrics-button').click();
 
@@ -139,7 +139,7 @@ test('metric explorer renders missing data explicitly and is responsive', async 
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/tests/browser/metrics_fixture.html');
+  await page.goto('http://127.0.0.1:18766/tests/browser/metrics_fixture.html');
   await page.locator('#metrics-button').click();
 
   const dialog = page.locator('#metrics-dialog');
