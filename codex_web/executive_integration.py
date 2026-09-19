@@ -440,7 +440,7 @@ class MultiProviderExecutiveService(ExecutiveService):
             "knowledgeBackend": (
                 "organizational_memory"
                 if self.organizational_memory is not None
-                else "legacy_sqlite"
+                else "sqlite"
             ),
         }
 
