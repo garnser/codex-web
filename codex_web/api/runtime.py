@@ -65,6 +65,13 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
         require_runtime_reader(request)
         return service.operations(window_seconds=window_seconds)
 
+    @router.get("/api/operations/distributed")
+    async def distributed_operations(
+        request: Request,
+    ) -> dict[str, Any]:
+        require_runtime_reader(request)
+        return await service.distributed_status()
+
     @router.post("/api/recovery/resume")
     async def recovery_resume(request: Request) -> dict[str, Any]:
         require_runtime_admin(request)
