@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sanitized Company Operations demo</title></head>
+<body>
+  <div class="topbar"><div class="controls"></div></div>
+  <button data-attention-launch hidden>Inbox</button>
+  <button id="business-kpi-button" hidden>Operating view</button>
+  <button id="executive-management-button" hidden>Organization</button>
+  <script>
+    const overview = {
+      organization_id: 'fixture-org',
+      workspace_id: 'fixture-workspace',
+      evaluated_at: 1890000000,
+      overall_health: 'degraded',
+      counts: {
+        business_entities: 2,
+        external_records: 3,
+        fact_diagnostics: 3,
+        sources: 2,
+        kpis: 2,
+        goals: 1,
+        decisions: 1,
+        executive_activations: 1,
+        attention_items: 1,
+        pending_approvals: 1,
+        action_intents: 1
+      },
+      business_domains: ['finance', 'revenue', 'customer_success'],
+      business_entities: [
+        { id: 'business-entity-demo-customer', name: 'Northstar Demo Retail', entity_type: 'customer', lifecycle: 'active', classification: 'confidential' },
+        { id: 'business-entity-demo-product', name: 'Checkout Demo', entity_type: 'product', lifecycle: 'active', classification: 'internal' }
+      ],
+      fact_diagnostics: [
+        {
+          business_entity_id: 'business-entity-demo-customer',
+          entity_name: 'Northstar Demo Retail',
+          entity_type: 'customer',
+          fact_key: 'arr',
+          freshness: 'fresh',
+          conflict: true,
+          selected_fact_id: 'company-fact-demo-crm',
+          selected_value: 120000,
+          unit: 'USD',
+          provider: 'reference-crm',
+          external_record_ref_id: 'external-record-demo-crm',
+          candidate_fact_ids: ['company-fact-demo-crm', 'company-fact-demo-billing'],
+          conflict_fact_ids: ['company-fact-demo-crm', 'company-fact-demo-billing'],
+          stale_fact_ids: [],
+          revoked_source_fact_ids: [],
+          reason: 'authoritative CRM value selected; billing disagreement remains visible'
+        }
+      ],
+      external_records: [
+        { id: 'external-record-demo-crm', provider: 'reference-crm', object_type: 'account', external_id: 'demo-acct-001', lifecycle: 'active' },
+        { id: 'external-record-demo-billing', provider: 'reference-billing', object_type: 'customer', external_id: 'demo-bill-001', lifecycle: 'active' }
+      ],
+      sources: [
+        {
+          source_id: 'business-source-demo-crm',
+          name: 'CRM Accounts',
+          source_type: 'reference-crm',
+          provider_id: 'reference-crm',
+          provider_instance: 'https://crm.fixture.invalid',
+          object_type: 'account',
+          entity_type: 'customer',
+          status: 'active',
+          capabilities: ['incremental_sync', 'events', 'tombstones'],
+          credential_ref: 'secret-ref-demo-crm',
+          cursor: 'cursor-42',
+          checkpoint: 'checkpoint-42',
+          last_success_at: 1889999800,
+          last_error: null,
+          projected_records: 42,
+          stale_events: 1,
+          duplicate_events: 2,
+          capacity_status: 'throttled',
+          capacity_reason: 'synthetic HTTP 429',
+          retry_at: 1890000300,
+          consecutive_failures: 1,
+          drift_count: 1,
+          conflict_count: 1,
+          health: 'degraded',
+          issues: ['provider capacity throttled: synthetic HTTP 429', '1 reconciliation conflict(s) require inspection'],
+          extension_installation_id: 'extension-demo-crm',
+          extension_id: 'com.example.fixture.crm',
+          extension_version: '1.0.0',
+          extension_lifecycle: 'enabled',
+          extension_health: 'healthy',
+          extension_requested_capabilities: ['network.crm.read', 'secrets.crm'],
+          extension_granted_capabilities: ['network.crm.read'],
+          extension_configuration_record_ids: ['config-demo-crm']
+        },
+        {
+          source_id: 'business-source-demo-billing',
+          name: 'Billing Customers',
+          source_type: 'reference-billing',
+          provider_id: 'reference-billing',
+          provider_instance: 'https://billing.fixture.invalid',
+          object_type: 'customer',
+          entity_type: 'customer',
+          status: 'active',
+          capabilities: ['paged_discovery'],
+          credential_ref: 'secret-ref-demo-billing',
+          cursor: 'page-9',
+          checkpoint: 'page-9',
+          last_success_at: 1889999700,
+          projected_records: 30,
+          stale_events: 0,
+          duplicate_events: 0,
+          capacity_status: 'available',
+          consecutive_failures: 0,
+          drift_count: 1,
+          conflict_count: 1,
+          health: 'degraded',
+          issues: ['1 reconciliation conflict(s) require inspection']
+        }
+      ],
+      kpi_view: {
+        current: false,
+        blockers: ['recurring_revenue: partial'],
+        evaluated_at: 1890000000,
+        items: [
+          {
+            kpi_id: 'business-kpi-demo-arr',
+            kpi_revision: 2,
+            metric_id: 'metric-demo-arr',
+            metric_revision: 3,
+            key: 'recurring_revenue',
+            name: 'Recurring revenue',
+            domain: 'revenue',
+            value: 120000,
+            unit: 'USD',
+            currency: 'USD',
+            freshness: 'partial',
+            readiness: 'partial',
+            readiness_reasons: ['conflicting provider values'],
+            observation_ids: ['metric-observation-demo-arr'],
+            fact_keys: ['arr'],
+            external_record_ref_ids: ['external-record-demo-crm', 'external-record-demo-billing'],
+            goal_ids: ['goal-demo-growth'],
+            decision_ids: ['decision-demo-pricing']
+          }
+        ]
+      },
+      goals: [{ id: 'goal-demo-growth', title: 'Grow recurring revenue', status: 'active' }],
+      decisions: [{ id: 'decision-demo-pricing', title: 'Pricing review', status: 'approved' }],
+      executive_activations: [{
+        id: 'executive-demo-revenue',
+        subject: 'Revenue review',
+        status: 'planned',
+        trigger_kind: 'event',
+        selections: [{ role_id: 'cro', score: 50 }]
+      }],
+      attention_items: [{
+        id: 'attention-demo-conflict',
+        reason: 'Synthetic provider conflict requires review',
+        type: 'business_sync',
+        severity: 'high',
+        status: 'open'
+      }],
+      approval_requests: [{
+        id: 'approval-demo-pricing',
+        status: 'pending',
+        target_fingerprint: 'fixture-fingerprint',
+        target: {
+          operation: 'execute',
+          object_type: 'decision',
+          object_id: 'decision-demo-pricing',
+          resource_ids: ['resource-demo-billing']
+        }
+      }],
+      action_intents: [{
+        id: 'action-intent-demo-plan-change',
+        status: 'requires_reconciliation',
+        provider_type: 'reference-billing-action',
+        resource_ids: ['resource-demo-billing'],
+        action_id: 'billing.plan.change',
+        action_definition: { title: 'Change demo billing plan', risk_class: 'high' }
+      }],
+      blockers: [
+        'recurring_revenue: partial',
+        'fact Northstar Demo Retail/arr: conflict',
+        'action action-intent-demo-plan-change: requires_reconciliation'
+      ]
+    };
+
+    window.fetch = async (url, options = {}) => {
+      const path = new URL(url, window.location.href).pathname;
+      if (path === '/api/company-operations/overview') {
+        return new Response(JSON.stringify({ item: overview }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ detail: 'Synthetic fixture only' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+  </script>
+  <script src="/static/company_operations_ui.js" type="module"></script>
+</body>
+</html>
