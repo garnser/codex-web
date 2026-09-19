@@ -532,10 +532,15 @@ class BusinessDataSourceService:
         binding = self._binding(state, source, snapshot)
         deterministic_id = self._entity_id(source, snapshot)
         if binding is not None:
-            return self.business_context.get_entity(
+            entity = self.business_context.get_entity(
                 binding.business_entity_id,
                 actor=actor,
             )
+            if entity.entity_type != source.entity_type:
+                raise BusinessDataSourceConflictError(
+                    "business entity key is bound with a different entity type"
+                )
+            return entity
         try:
             entity = self.business_context.get_entity(
                 deterministic_id,
@@ -567,6 +572,10 @@ class BusinessDataSourceService:
                     deterministic_id,
                     actor=actor,
                 )
+        if entity.entity_type != source.entity_type:
+            raise BusinessDataSourceConflictError(
+                "business entity key resolves to a different entity type"
+            )
 
         candidate = BusinessEntityBinding(
             organization_id=source.organization_id,
@@ -739,10 +748,22 @@ class BusinessDataSourceService:
             )
 
         entity = self.business_context.get_entity(entity.id, actor=actor)
+        current_name_provenance = next(
+            (
+                item
+                for item in entity.field_provenance
+                if item.field_name.casefold() == "name"
+            ),
+            None,
+        )
         if (
             entity.lifecycle == BusinessEntityLifecycle.ACTIVE
             and self._should_update_entity_name(entity, source, snapshot)
-            and entity.name != snapshot.entity_name
+            and (
+                entity.name != snapshot.entity_name
+                or current_name_provenance is None
+                or current_name_provenance.external_record_ref_id != external.id
+            )
         ):
             other = tuple(
                 item
@@ -880,6 +901,16 @@ class BusinessDataSourceService:
                 "snapshot": self._snapshot_payload(snapshot),
             },
         )
+        existing = self.store.load().projection_receipts.get(
+            delivery.event.event_id
+        )
+        if not delivery.inserted and existing is not None:
+            return existing.model_copy(
+                update={
+                    "outcome": "duplicate",
+                    "reason": "canonical event was already projected",
+                }
+            )
         return self._project_snapshot(
             source,
             snapshot,
@@ -1124,14 +1155,10 @@ class BusinessDataSourceService:
             event_kind=event.event_kind,
             occurred_at=event.occurred_at,
         )
-        if event.cursor is not None or event.checkpoint is not None:
-            self._update_source(
-                source.id,
-                {
-                    "cursor": event.cursor or source.cursor,
-                    "checkpoint": event.checkpoint or source.checkpoint,
-                },
-            )
+        # Webhook/event delivery does not advance the durable reconciliation
+        # cursor. Opaque provider cursors cannot be safely ordered across
+        # out-of-order event delivery; scheduled/manual reconciliation owns
+        # cursor advancement after a fully projected page.
         return receipt
 
     async def handle_canonical_event(
