@@ -169,6 +169,11 @@ class AgentRuntimeAdapter(Protocol):
         provider_native_session_id: str,
     ) -> AgentRuntimeResult: ...
 
+    async def restore_session(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult: ...
+
     async def start_turn(
         self,
         provider_native_session_id: str,
