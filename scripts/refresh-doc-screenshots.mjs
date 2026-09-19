@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { chromium } from "playwright";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -18,12 +19,29 @@ const server = spawn("python3", ["-m", "http.server", String(port), "--bind", ho
   stdio: ["ignore", "ignore", "inherit"],
 });
 
+function probe(url) {
+  return new Promise((resolve) => {
+    const request = http.get(url, (response) => {
+      response.resume();
+      response.once("end", () => {
+        resolve(
+          response.statusCode !== undefined
+          && response.statusCode >= 200
+          && response.statusCode < 400
+        );
+      });
+    });
+    request.once("error", () => resolve(false));
+    request.setTimeout(1000, () => {
+      request.destroy();
+      resolve(false);
+    });
+  });
+}
+
 async function ready() {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      const response = await fetch(`${base}/static/index.html`);
-      if (response.ok) return;
-    } catch {}
+    if (await probe(`${base}/static/index.html`)) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("documentation screenshot HTTP server did not become ready");
