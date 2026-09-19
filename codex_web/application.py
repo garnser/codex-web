@@ -6,6 +6,7 @@ from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
+from codex_web.api.agent_sessions import build_agent_sessions_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.approval_requests import build_approval_requests_router
@@ -562,6 +563,13 @@ agent_runtime_telemetry_service = AgentRuntimeTelemetryService(
 app.state.agent_runtime_usage_store = agent_runtime_usage_store
 app.state.agent_runtime_telemetry_service = agent_runtime_telemetry_service
 app.include_router(build_agent_runtime_usage_router(agent_runtime_telemetry_service))
+app.include_router(
+    build_agent_sessions_router(
+        agent_session_service,
+        agent_runtime_registry,
+        agent_runtime_telemetry_service,
+    )
+)
 
 extension_state_store = ExtensionStateStore(state_store)
 extension_package_catalog = LocalExtensionPackageCatalog(EXTENSION_PACKAGE_DIR)
