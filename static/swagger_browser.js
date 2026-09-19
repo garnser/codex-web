@@ -132,6 +132,7 @@ function installSwaggerBrowser() {
   drawer.setAttribute("aria-modal", "true");
   drawer.setAttribute("aria-label", "Swagger API browser");
   drawer.setAttribute("aria-hidden", "true");
+  drawer.inert = true;
 
   drawer.innerHTML = `
     <div class="swagger-browser-head">
@@ -172,6 +173,7 @@ function installSwaggerBrowser() {
     backdrop.classList.add("open");
     drawer.classList.add("open");
     drawer.setAttribute("aria-hidden", "false");
+    drawer.inert = false;
     launch.setAttribute("aria-expanded", "true");
     closeButton.focus();
   };
@@ -180,6 +182,7 @@ function installSwaggerBrowser() {
     backdrop.classList.remove("open");
     drawer.classList.remove("open");
     drawer.setAttribute("aria-hidden", "true");
+    drawer.inert = true;
     launch.setAttribute("aria-expanded", "false");
     launch.focus();
   };
