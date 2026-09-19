@@ -23,6 +23,14 @@ BUSINESS_KPI_CONTRACT = ContractSpec(
 )
 
 
+class BusinessKPIPack(StrEnum):
+    CFO = "cfo"
+    CRO = "cro"
+    CMO = "cmo"
+    CPO = "cpo"
+    CUSTOMER_SUCCESS = "customer_success"
+
+
 class BusinessKPIDomain(StrEnum):
     FINANCE = "finance"
     REVENUE = "revenue"
@@ -130,6 +138,7 @@ class BusinessKPIDefinitionCreate(BaseModel):
     unit: str = Field(min_length=1, max_length=100)
     value_type: MetricValueType = MetricValueType.NUMBER
     freshness_seconds: int = Field(default=3600, ge=1)
+    window_seconds: int | None = Field(default=None, ge=1)
     direction: MetricDirection = MetricDirection.NEUTRAL
     thresholds: tuple[MetricThreshold, ...] = ()
     formula: BusinessKPIFormula
@@ -158,6 +167,7 @@ class BusinessKPIDefinitionUpdate(BaseModel):
     unit: str | None = Field(default=None, min_length=1, max_length=100)
     value_type: MetricValueType | None = None
     freshness_seconds: int | None = Field(default=None, ge=1)
+    window_seconds: int | None = Field(default=None, ge=1)
     direction: MetricDirection | None = None
     thresholds: tuple[MetricThreshold, ...] | None = None
     formula: BusinessKPIFormula | None = None
@@ -182,6 +192,7 @@ class BusinessKPIDefinition(BaseModel):
     unit: str
     value_type: MetricValueType
     freshness_seconds: int
+    window_seconds: int | None = None
     direction: MetricDirection
     thresholds: tuple[MetricThreshold, ...] = ()
     formula: BusinessKPIFormula
@@ -295,6 +306,7 @@ class BusinessKPIOperatingItem(BaseModel):
     value: float | int | bool | None = None
     unit: str
     currency: str | None = None
+    window_seconds: int | None = None
     freshness: MetricFreshness
     readiness: BusinessKPIReadiness
     readiness_reasons: tuple[str, ...] = ()
@@ -347,6 +359,152 @@ class CompanyOperatingSnapshot(BaseModel):
     items: tuple[BusinessKPISnapshotItem, ...]
     captured_by: str
     captured_at: float = Field(default_factory=time.time)
+
+
+class BusinessKPITemplate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    pack: BusinessKPIPack
+    key: str
+    name: str
+    domain: BusinessKPIDomain
+    description: str
+    suggested_unit: str
+    supported_formula_kinds: tuple[BusinessKPIFormulaKind, ...]
+    required_explicit_inputs: tuple[str, ...]
+    notes: str
+
+
+BUSINESS_KPI_TEMPLATES: tuple[BusinessKPITemplate, ...] = (
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CFO,
+        key="recurring_revenue",
+        name="Recurring revenue",
+        domain=BusinessKPIDomain.FINANCE,
+        description="Tenant-defined recurring revenue over selected contracts/subscriptions.",
+        suggested_unit="currency",
+        supported_formula_kinds=(BusinessKPIFormulaKind.AGGREGATE,),
+        required_explicit_inputs=("revenue fact key", "entity scope", "currency", "freshness/window"),
+        notes="No ARR/MRR normalization convention is assumed.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CFO,
+        key="gross_margin_inputs",
+        name="Gross-margin inputs",
+        domain=BusinessKPIDomain.FINANCE,
+        description="Explicit revenue and direct-cost inputs for tenant-defined margin reporting.",
+        suggested_unit="currency_or_percent",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.DIFFERENCE,
+            BusinessKPIFormulaKind.RATIO,
+        ),
+        required_explicit_inputs=("revenue term", "direct-cost term", "currency", "formula scale"),
+        notes="Cost allocation policy remains tenant-defined.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CFO,
+        key="cloud_service_cost",
+        name="Cloud/service cost",
+        domain=BusinessKPIDomain.COST,
+        description="Selected infrastructure/service cost facts across configured cost scopes.",
+        suggested_unit="currency",
+        supported_formula_kinds=(BusinessKPIFormulaKind.AGGREGATE,),
+        required_explicit_inputs=("cost fact key", "cost-center/resource scope", "currency"),
+        notes="No provider billing taxonomy is assumed.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CRO,
+        key="pipeline",
+        name="Pipeline",
+        domain=BusinessKPIDomain.REVENUE,
+        description="Configured opportunity/pipeline value or count.",
+        suggested_unit="currency_or_count",
+        supported_formula_kinds=(BusinessKPIFormulaKind.AGGREGATE,),
+        required_explicit_inputs=("pipeline fact key", "opportunity scope", "currency/window"),
+        notes="Stage weighting and qualification rules must be explicit in source facts.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CRO,
+        key="conversion",
+        name="Conversion",
+        domain=BusinessKPIDomain.REVENUE,
+        description="Explicit numerator/denominator conversion measure.",
+        suggested_unit="percent",
+        supported_formula_kinds=(BusinessKPIFormulaKind.RATIO,),
+        required_explicit_inputs=("converted term", "eligible-population term", "window", "scale"),
+        notes="The platform does not assume what counts as a conversion.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CRO,
+        key="retention_or_churn",
+        name="Retention / churn",
+        domain=BusinessKPIDomain.REVENUE,
+        description="Tenant-defined retained/churned population or value.",
+        suggested_unit="percent",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.RATIO,
+            BusinessKPIFormulaKind.PERCENT_CHANGE,
+        ),
+        required_explicit_inputs=("population/value terms", "window", "scale"),
+        notes="Logo, revenue and cohort retention are distinct definitions and must not be conflated.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CMO,
+        key="campaign_performance",
+        name="Campaign performance",
+        domain=BusinessKPIDomain.MARKETING,
+        description="Configured campaign outcome, cost or conversion measure.",
+        suggested_unit="tenant_defined",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.AGGREGATE,
+            BusinessKPIFormulaKind.RATIO,
+        ),
+        required_explicit_inputs=("campaign scope", "outcome/cost facts", "window"),
+        notes="Attribution model remains source-/tenant-defined.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CPO,
+        key="product_adoption",
+        name="Product adoption",
+        domain=BusinessKPIDomain.PRODUCT,
+        description="Configured usage/adoption measure for a product or product area.",
+        suggested_unit="count_or_percent",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.AGGREGATE,
+            BusinessKPIFormulaKind.RATIO,
+        ),
+        required_explicit_inputs=("usage fact", "eligible population", "product scope", "window"),
+        notes="Active-user/adoption semantics must be explicitly defined.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CUSTOMER_SUCCESS,
+        key="support_responsiveness",
+        name="Support responsiveness",
+        domain=BusinessKPIDomain.CUSTOMER_SUCCESS,
+        description="Configured response-time or SLA-attainment measure.",
+        suggested_unit="time_or_percent",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.AGGREGATE,
+            BusinessKPIFormulaKind.RATIO,
+        ),
+        required_explicit_inputs=("support fact", "relationship scope", "window"),
+        notes="Priority/SLA class and clock semantics are tenant-defined.",
+    ),
+    BusinessKPITemplate(
+        pack=BusinessKPIPack.CUSTOMER_SUCCESS,
+        key="customer_health",
+        name="Customer health",
+        domain=BusinessKPIDomain.CUSTOMER_SUCCESS,
+        description="Configured measured customer-health input or score.",
+        suggested_unit="score",
+        supported_formula_kinds=(
+            BusinessKPIFormulaKind.AGGREGATE,
+            BusinessKPIFormulaKind.RATIO,
+        ),
+        required_explicit_inputs=("health fact(s)", "customer scope", "window"),
+        notes="No universal health-score weighting is assumed.",
+    ),
+)
 
 
 class BusinessKPIState(BaseModel):
