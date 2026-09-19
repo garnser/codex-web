@@ -31,6 +31,7 @@ def executive_role_catalog_seed_payload() -> dict:
         ExecutiveObjectType.WORK_GRAPH,
         ExecutiveObjectType.METRIC,
         ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
         ExecutiveObjectType.APPROVAL,
         ExecutiveObjectType.ATTENTION,
         ExecutiveObjectType.EVENT,
@@ -97,6 +98,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.WORK_GRAPH,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                     ExecutiveObjectType.EVENT,
                 ),
                 event_subscriptions=(
@@ -145,6 +147,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                     ExecutiveObjectType.WORK_GRAPH,
                 ),
                 event_subscriptions=("decision.transition", "attention.transition"),
@@ -228,6 +231,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                     ExecutiveObjectType.APPROVAL,
                 ),
                 event_subscriptions=("decision.transition", "approval.transition"),
@@ -270,6 +274,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.WORK_GRAPH,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                 ),
                 event_subscriptions=(
                     "work.transition",
@@ -315,6 +320,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.WORK_ITEM,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                     ExecutiveObjectType.APPROVAL,
                     ExecutiveObjectType.EVENT,
                 ),
@@ -361,6 +367,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                 ),
                 event_subscriptions=("decision.transition",),
                 keywords=(
@@ -398,6 +405,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                 ),
                 event_subscriptions=("decision.transition",),
                 keywords=(
@@ -434,6 +442,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.DECISION,
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
+                    ExecutiveObjectType.MEMORY,
                 ),
                 event_subscriptions=("decision.transition", "attention.transition"),
                 keywords=(
