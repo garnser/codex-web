@@ -338,26 +338,39 @@ class ApprovalRequestService:
             now=now,
         )
 
-    async def create(
+    async def _create_bound(
         self,
         payload: ApprovalRequestCreate,
         *,
         requester: AuthenticationActor,
         request_id: str | None = None,
+        require_current_session: bool,
     ) -> ApprovalRequest:
         now = float(self.clock())
-        current = self._current_actor(
-            requester,
-            scope=requester.tenant,
-            now=now,
-        )
+        if require_current_session:
+            current = self._current_actor(
+                requester,
+                scope=requester.tenant,
+                now=now,
+            )
+        else:
+            current = self.identity.actor_for_identity(
+                requester.identity_id,
+                scope=requester.tenant,
+            )
+            if current.principal_kind != requester.principal_kind:
+                raise ApprovalEligibilityError(
+                    "requester principal kind changed"
+                )
         request = ApprovalRequest.from_create(
             payload,
             organization_id=current.organization_id,
             workspace_id=current.workspace_id,
             requester_identity_id=current.identity_id,
             requester_principal_kind=current.principal_kind,
-            requester_session_id=current.session_id,
+            requester_session_id=(
+                current.session_id if require_current_session else None
+            ),
             now=now,
             request_id=request_id,
         )
@@ -378,6 +391,46 @@ class ApprovalRequestService:
             actor_id=current.identity_id,
         )
         return stored
+
+    async def create_for_identity(
+        self,
+        payload: ApprovalRequestCreate,
+        *,
+        requester_identity_id: str,
+        scope: TenantScope,
+        request_id: str | None = None,
+    ) -> ApprovalRequest:
+        """Create a policy-generated request bound to a live canonical identity.
+
+        This is for server-owned bridges such as sensitive Definition
+        publication. It re-resolves current identity/membership but does not
+        fabricate a requester login session or authentication assurance.
+        """
+
+        requester = self.identity.actor_for_identity(
+            requester_identity_id,
+            scope=scope,
+        )
+        return await self._create_bound(
+            payload,
+            requester=requester,
+            request_id=request_id,
+            require_current_session=False,
+        )
+
+    async def create(
+        self,
+        payload: ApprovalRequestCreate,
+        *,
+        requester: AuthenticationActor,
+        request_id: str | None = None,
+    ) -> ApprovalRequest:
+        return await self._create_bound(
+            payload,
+            requester=requester,
+            request_id=request_id,
+            require_current_session=True,
+        )
 
     def list(
         self,
