@@ -239,8 +239,7 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
             ExecutiveActivationCreate(
                 subject="Architecture cost trade-off",
                 request=(
-                    "Review the architecture migration and cloud cost tradeoff. "
-                    "Do not involve unrelated product or growth roles."
+                    "Review the architecture migration and cloud cost constraints."
                 ),
                 max_roles=2,
                 budget=ExecutiveReasoningBudget(
