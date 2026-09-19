@@ -88,6 +88,12 @@ class StateStoreMigrator:
         before = target.documents()
         inserted: list[str] = []
         existing_equal = 0
+        unexpected = sorted(set(before) - set(source_docs))
+        if unexpected:
+            raise StateStoreMigrationConflict(
+                "destination contains namespaces absent from source: "
+                + ", ".join(unexpected[:20])
+            )
 
         for namespace in sorted(source_docs):
             incoming = source_docs[namespace]
