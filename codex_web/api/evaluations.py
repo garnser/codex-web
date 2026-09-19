@@ -36,16 +36,20 @@ def build_evaluations_router(service: EvaluationService) -> APIRouter:
             return HTTPException(status_code=400, detail=str(exc))
         return HTTPException(status_code=400, detail=str(exc))
 
-    def admin(request: Request):
+    def privileged(request: Request, *, allow_run_scope: bool):
         actor = request_actor(request)
         if actor.principal_kind == PrincipalKind.SERVICE:
-            if not any(
-                scope in actor.service_scopes
-                for scope in ("evaluation:admin", "evaluation:run")
-            ):
+            allowed = {"evaluation:admin"}
+            if allow_run_scope:
+                allowed.add("evaluation:run")
+            if not any(scope in actor.service_scopes for scope in allowed):
                 raise HTTPException(
                     status_code=403,
-                    detail="evaluation:admin or evaluation:run service scope required",
+                    detail=(
+                        "evaluation:admin or evaluation:run service scope required"
+                        if allow_run_scope
+                        else "evaluation:admin service scope required"
+                    ),
                 )
             return actor
         try:
@@ -76,7 +80,7 @@ def build_evaluations_router(service: EvaluationService) -> APIRouter:
         payload: EvaluationScenarioCreate,
         request: Request,
     ) -> dict[str, Any]:
-        actor = admin(request)
+        actor = privileged(request, allow_run_scope=False)
         try:
             item = service.create_scenario(payload, actor=actor)
         except Exception as exc:
@@ -104,7 +108,7 @@ def build_evaluations_router(service: EvaluationService) -> APIRouter:
         payload: EvaluationRunRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = admin(request)
+        actor = privileged(request, allow_run_scope=True)
         try:
             item, comparison = await service.run(payload, actor=actor)
         except Exception as exc:
@@ -160,7 +164,7 @@ def build_evaluations_router(service: EvaluationService) -> APIRouter:
         payload: EvaluationSuiteRunRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = admin(request)
+        actor = privileged(request, allow_run_scope=True)
         try:
             item = await service.run_suite(
                 suite_id,
