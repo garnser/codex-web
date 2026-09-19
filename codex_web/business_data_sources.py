@@ -410,3 +410,9 @@ class BusinessDataSyncResult(BaseModel):
     cursor_after: str | None = None
     checkpoint: str | None = None
     exhausted: bool
+
+
+class BusinessDataSourceStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: BusinessDataSourceStatus
