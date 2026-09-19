@@ -330,6 +330,7 @@ class EvaluationRunRequest(BaseModel):
     scenario_id: str = Field(min_length=1)
     scenario_version: str = Field(min_length=1)
     replay_fixture_id: str = Field(min_length=1)
+    backend_id: str = Field(default="recorded", min_length=1)
     baseline_run_id: str | None = None
 
 
@@ -354,6 +355,7 @@ class EvaluationRun(BaseModel):
     suite_ids: tuple[str, ...] = ()
     ci_tier: EvaluationCITier
     replay_fixture_id: str
+    backend_id: str
     mode: EvaluationRunMode
     failure_injection: EvaluationFailureInjection | None = None
     fixture_checksum_sha256: str
