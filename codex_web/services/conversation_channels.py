@@ -99,6 +99,21 @@ class ConversationChannelService:
         )
         if fact is None:
             return None
+        return await self.ingest_fact(
+            fact,
+            project_id=project_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+
+    async def ingest_fact(
+        self,
+        fact: ConversationFact,
+        *,
+        project_id: str | None = None,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> ConversationChannelDelivery:
         identity = {
             "provider_type": fact.address.provider_type,
             "provider_instance": fact.address.provider_instance,
