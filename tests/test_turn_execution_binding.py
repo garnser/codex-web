@@ -12,7 +12,7 @@ from codex_web.configuration import (
 )
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
-from codex_web.execution_workers import WorkerCapability
+from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.models import Project
 from codex_web.resources import (
     ResourceCreate,
@@ -365,6 +365,45 @@ class TurnExecutionBindingTests(unittest.TestCase):
 
         self.assertEqual(len(self.workspaces.list(self.actor)), 1)
         self.assertEqual(len(self.workers.list_assignments(self.actor)), 1)
+
+
+    def test_per_execution_runtime_binding_is_persisted_and_reuse_is_fail_closed(self) -> None:
+        self._publish_secret()
+        selected = ExecutionRuntimeBinding(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            capability_revision=7,
+        )
+
+        first = self.service.prepare(
+            thread_id="thread-123",
+            execution_id="routed-exec-1",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            runtime_binding=selected,
+        )
+        assignment = self.workers.list_assignments(self.actor)[0]
+
+        self.assertEqual(first.runtime_binding, selected)
+        self.assertEqual(assignment.runtime_binding, selected)
+
+        with self.assertRaisesRegex(
+            TurnExecutionBindingError,
+            "different agent runtime",
+        ):
+            self.service.prepare(
+                thread_id="thread-123",
+                execution_id="routed-exec-1",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                runtime_binding=ExecutionRuntimeBinding(
+                    provider_id="provider-b",
+                    runtime_id="runtime-b",
+                    capability_revision=1,
+                ),
+            )
 
     def test_binding_contains_reference_metadata_only(self) -> None:
         self._publish_secret("secret-codex-worker")
