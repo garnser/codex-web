@@ -32,6 +32,7 @@ from codex_web.decisions import (
     DecisionStatus,
     DecisionSupersedeRequest,
     DecisionUpdate,
+    DecisionWorkLink,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.metrics import MetricFreshness
@@ -843,6 +844,56 @@ class DecisionService:
         await self._emit(
             updated,
             transition="superseded",
+            actor_id=actor.identity_id,
+        )
+        return updated
+
+    async def record_work_links(
+        self,
+        decision_id: str,
+        work_links: tuple[DecisionWorkLink, ...],
+        *,
+        actor: AuthenticationActor,
+        reason: str,
+    ) -> Decision:
+        current = self.get(decision_id, actor=actor)
+        self._require_edit(current, actor)
+        if current.status != DecisionStatus.APPROVED:
+            raise DecisionStateError(
+                "Decision work can only be recorded after canonical approval"
+            )
+        ids = [item.item_id for item in work_links]
+        if len(set(ids)) != len(ids):
+            raise DecisionValidationError("Decision work link item ids must be unique")
+
+        def apply(state: DecisionState, stored: Decision):
+            if stored.status != DecisionStatus.APPROVED:
+                raise DecisionStateError(
+                    "Decision work can only be recorded after canonical approval"
+                )
+            now = float(self.clock())
+            updated = stored.model_copy(
+                update={
+                    "work_links": work_links,
+                    "updated_at": now,
+                    "revision": stored.revision + 1,
+                }
+            )
+            return (
+                self._append_history(
+                    state,
+                    updated,
+                    actor_id=actor.identity_id,
+                    reason=reason,
+                    event_type="decision.work_links_updated",
+                ),
+                updated,
+            )
+
+        updated = self.store.update(decision_id, apply)
+        await self._emit(
+            updated,
+            transition="work_links_updated",
             actor_id=actor.identity_id,
         )
         return updated
