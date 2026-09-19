@@ -111,6 +111,6 @@ postmortem.
 Human mutations require administrator authority + MFA; service principals need
 incident:admin.
 
-Issues #121/#125/#127 own product presentation: command/timeline, affected
+The Autonomy Control Center and cross-cutting operator workspaces own product presentation: command/timeline, affected
 Resources, containment/recovery actions, restoration Evidence, postmortem and
 critical-incident prominence in the shared operator inbox.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical encryption-at-rest and key-management foundation for issue #167.
+Canonical encryption-at-rest and key-management foundation.
 
 This architecture deliberately separates **secrets/credentials** from **cryptographic encryption keys**. SecretBroker remains the boundary for provider credentials. CryptoKeyService owns key metadata, versioning, scope, rotation and encryption/decryption behavior. Raw key material lives only in a KeyBackend.
 
@@ -113,13 +113,13 @@ This foundation does not pretend existing plaintext domains became encrypted mer
 3. replace sensitive stored fields/blobs with EncryptedEnvelope;
 4. keep searchable/indexable non-sensitive metadata separate;
 5. add re-encryption/backfill jobs with resumable progress;
-6. expose affected-data/re-encryption progress in #141;
-7. add each domain's key manifest requirements to backup/restore (#163).
+6. expose affected-data/re-encryption progress in the platform administration UI;
+7. add each domain's key manifest requirements to the canonical backup/restore flow.
 
 Likely early adopters are Executive memory/knowledge, Decisions, selected integration payloads, and artifact/evidence content-bearing fields.
 
 ## UI impact
 
-#141/#125 should expose key IDs, purpose, scope, backend type/health, versions, active/decrypt-only/revoked state, creation/rotation/revocation timestamps, manifest/restore validation, and guarded rotation/revocation actions.
+The platform administration UI and operator workspaces should expose key IDs, purpose, scope, backend type/health, versions, active/decrypt-only/revoked state, creation/rotation/revocation timestamps, manifest/restore validation, and guarded rotation/revocation actions.
 
 Raw key material must never be rendered.

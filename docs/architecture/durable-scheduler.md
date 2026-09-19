@@ -2,7 +2,7 @@
 
 ## Status
 
-**Canonical scheduler contract (#158).** Time-triggered work is represented
+**Canonical scheduler contract.** Time-triggered work is represented
 as durable canonical schedule state. The scheduler is a deterministic engine:
 it never invokes an LLM, ActionProvider, or privileged execution path directly.
 
@@ -39,7 +39,7 @@ A scheduler worker claims due records transactionally. The claim increments
 the record revision and installs a bounded lease. Completion requires the same
 lease owner and revision, which fences stale workers. An expired lease can be
 claimed by another scheduler worker. This is the single-instance implementation
-of the ownership contract that future replicated coordination in #142 must
+of the ownership contract that replicated coordination must
 preserve.
 
 Pause, resume, and cancel operate on the same durable record. Cancelled and
@@ -108,6 +108,6 @@ The canonical API exposes list/create/get/pause/resume/cancel under
 require scheduler admin authority and MFA for human administrators.
 
 The backend intentionally does not create schedule-specific shadow UI state.
-#112/#125/#127 own the operator projection for schedule owner/scope, timezone,
+The orchestration inspector and operator workspaces expose schedule owner/scope, timezone,
 recurrence, next/last firing, misfire policy, generated canonical event,
 pause/resume/cancel controls, and schedule-to-result provenance.

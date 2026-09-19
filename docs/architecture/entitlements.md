@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical entitlements and quota foundation for issue #164.
+Canonical entitlements and quota foundation.
 
 This contract answers a product/service question that is deliberately separate from authorization:
 
@@ -116,7 +116,7 @@ Future hosted billing/export adapters consume this canonical boundary rather tha
 
 ## UI impact
 
-Issue #141/#125 should expose:
+The platform administration UI and operator workspaces should expose:
 
 - current mode and capability entitlements;
 - quota policy and consumption;

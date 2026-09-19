@@ -89,7 +89,7 @@ A project-specific published catalog can therefore override a less-specific
 catalog using the same stable definition ID. The selected immutable
 `DefinitionReference` is included in every decision.
 
-Issue #108 extends administration/lifecycle UX and broader contract composition on
+The Role administration/lifecycle UX extends broader contract composition on
 the same registry. It must not introduce another Role store or evaluator.
 
 ## Decisions and provenance
@@ -109,7 +109,7 @@ Each evaluation returns a structured `AuthorityDecision` containing:
 A missing, corrupt, ambiguous, quarantined or incompatible authority definition
 produces a deny decision rather than a fallback Role.
 
-The ActionIntent enforcement integration is a separate #107 delivery slice. It
+ActionIntent enforcement consumes this authority model as a separate integration boundary. It
 will persist this canonical decision at the external-action boundary and remove
 caller-authored authority assertions as an authorization source.
 

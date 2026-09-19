@@ -149,7 +149,7 @@ Edge additions/removals append graph audit events with:
 - scope;
 - timestamp.
 
-APIs/UI added by #104 must mutate this service rather than maintaining
+Work Graph APIs and UI must mutate this service rather than maintaining
 browser-local or provider-local dependency state.
 
 ## Scope and security
@@ -170,7 +170,7 @@ orchestration must still honor:
 
 ## API and operator surface
 
-Issue #104 exposes the graph service through the tenant-scoped
+The Work Graph API exposes the graph service through the tenant-scoped
 `/api/work-graph` API:
 
 - project snapshots contain canonical nodes, edges, readiness, runnable refs,

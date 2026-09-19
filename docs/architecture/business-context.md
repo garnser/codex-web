@@ -128,7 +128,7 @@ Exact provider/reference provenance must survive later reasoning and Decision
 snapshots. CompanyFacts retain ExternalRecordRef IDs and Evidence refs; entities
 can link to Goals, Decisions, Metrics, Resources and Projects.
 
-Executive integration (#343) should pass these exact references into
+Executive integration should pass these exact references into
 Decision/Executive provenance rather than flattening them into unattributed
 prose.
 
@@ -172,12 +172,12 @@ domains:
 - Metrics remain measured KPI definitions/observations;
 - Evidence remains structured verification/proof.
 
-Issue #342 can bind business KPI catalogs to these references without introducing
+Business KPI catalogs can bind to these references without introducing
 a second Metric engine.
 
 ## BusinessDataSource boundary
 
-Issue #341 owns provider-neutral BusinessDataSource ingestion/synchronization and
+The BusinessDataSource contract owns provider-neutral ingestion/synchronization and
 reconciliation.
 
 BusinessDataSource adapters should:

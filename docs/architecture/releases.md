@@ -113,7 +113,7 @@ administrator authority and MFA for human users or release:admin service scope.
 
 ## UI
 
-Issues #121/#125/#127 own presentation. The Autonomy Control Center and
+The Autonomy Control Center and cross-cutting operator workspaces own presentation. The Autonomy Control Center and
 Operations views should expose immutable artifact identity, SBOM/provenance,
 signature status, gate blockers, ApprovalRequest state, rollout progress,
 ActionIntent state, verification Evidence, blast radius and rollback target

@@ -137,6 +137,6 @@ Evidence for the intended deployment scale.
 load-shed mode, open circuits and qualification history. Policy/qualification
 mutations require administrator + MFA or capacity:admin service scope.
 
-Issues #121/#125/#141 should render saturation, open circuits, provider
+The Autonomy Control Center, operator workspaces, and platform administration UI should render saturation, open circuits, provider
 throttling, recovery storm pressure and capacity Evidence directly from these
 canonical/deterministic surfaces without model calls.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical model-gateway and prompt-governance foundation for issue #155.
+Canonical model-gateway and prompt-governance foundation.
 
 The model gateway owns provider/model identity and deterministic routing. Agent/role identity does not select provider-specific model names directly.
 
@@ -77,7 +77,7 @@ Prompt templates are versioned canonical records with a SHA-256 checksum.
 
 Invocation requests pin an explicit template version or resolve the current active version before routing. Invocation audit records contain the template ID/version/checksum plus a hash of the rendered prompt/messages, but never the prompt/message body.
 
-The initial gateway treats template content as an administration asset. Definition Registry #170 may become the shared publication mechanism for prompt/template definitions later; this gateway remains the runtime resolver/enforcer and invocation-attribution owner.
+The initial gateway treats template content as an administration asset. The Definition Registry may become the shared publication mechanism for prompt/template definitions later; this gateway remains the runtime resolver/enforcer and invocation-attribution owner.
 
 ## Credentials
 
@@ -144,7 +144,7 @@ Open Executive advisory/board reasoning now consumes the gateway rather than cho
 - the authenticated request actor supplies tenant/workspace scope to gateway routing;
 - API responses retain the legacy `model` field for compatibility and additionally expose `model_class` plus exact `model_invocation_ids`;
 - every referenced invocation resolves exact provider/model/template/policy attribution through the gateway ledger;
-- successful provider token/cost usage is emitted into the canonical #164 usage ledger;
+- successful provider token/cost usage is emitted into the canonical entitlement/usage ledger;
 - prompt, conversation, response and credential bodies are not copied into model-invocation or metering records.
 
 For existing self-hosted installations, Executive performs a compatibility bootstrap only when no strategic model mapping exists. It converts the current Executive provider/model environment defaults into ordinary tenant-scoped gateway registry records. Native OpenAI's standard `OPENAI_API_KEY` environment behavior remains a compatibility credential path; canonical hosted/provider administration should use SecretBroker `credential_ref` records.
@@ -158,6 +158,6 @@ This compatibility bootstrap is intentionally subordinate to canonical registry 
 3. Migrate Executive reasoning to `strategic` / `high-reasoning` classes.
 4. Migrate Codex turn defaults to `primary-coding` while preserving explicit user/project model overrides during transition.
 5. Attach model invocation IDs to Work Items/Goals/Decisions/audit/evaluation.
-6. Feed token/cost results into #164 metering and future budget policy.
+6. Feed token/cost results into canonical entitlement and usage metering and future budget policy.
 
-UI administration belongs to #141/#125/#127 and must display provider/model capabilities, exact routing constraints and provenance without exposing credentials.
+UI administration belongs to the platform administration and cross-cutting operator workspaces and must display provider/model capabilities, exact routing constraints and provenance without exposing credentials.

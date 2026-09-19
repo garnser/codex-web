@@ -188,7 +188,7 @@ post-upgrade verification and rollback recording.
 Human mutation requires administrator authority + MFA; service principals
 require upgrade:admin.
 
-Issues #121/#125 should display source/target versions, mixed-version warnings,
+The Autonomy Control Center and operator workspaces should display source/target versions, mixed-version warnings,
 Definition incompatibilities, drain state, step progress/Evidence, irreversible
-boundaries and rollback availability. #124 owns the operator upgrade/runbook
+boundaries and rollback availability. The operator upgrade/runbook documentation
 documentation.

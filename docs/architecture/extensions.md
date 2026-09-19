@@ -266,7 +266,7 @@ ActionProvider/ActionIntent and canonical identity/resource/secret boundaries.
 
 ## UI impact
 
-Platform administration UI work is tracked by #141/#125. The UI should expose:
+The platform administration UI and operator workspaces should expose:
 
 - extension identity, publisher and provenance;
 - digest/signature verification state;

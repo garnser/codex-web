@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical execution-worker trust-boundary foundation for issue #166.
+Canonical execution-worker trust-boundary foundation.
 
 The control plane owns canonical identity, policy, approvals, secrets, resources,
 work state, evidence requirements and side-effect intent state. Execution
@@ -126,11 +126,11 @@ grant when a concrete worker backend needs them.
 
 Worker loss, lease expiry, capability mismatch, stale completion and resource
 limit breaches are explicit events. Limit breaches and execution failures
-should produce canonical evidence through #136 where applicable.
+should produce canonical Evidence and Verification records where applicable.
 
 ## UI impact
 
-#141/#125 should expose worker pools, identity, capability set, version,
+The platform administration UI and operator workspaces should expose worker pools, identity, capability set, version,
 heartbeat/health, concurrency, execution subject, assignment/fence/lease status,
 drain/quarantine/revocation, sandbox/network/resource limits, and failure
 evidence. Raw lease tokens and secret material must never be rendered.
@@ -153,7 +153,7 @@ A local command execution requires all of the following:
 
 - a canonical execution assignment already authorized by the control plane;
 - the canonical local worker identity and active fenced lease;
-- an active #135 filesystem execution workspace matching the execution,
+- an active canonical filesystem execution workspace matching the execution,
   execution subject, project/resource set and base revision;
 - `command_execution` in the assignment capability set;
 - a sandbox other than `danger-full-access`;
@@ -328,7 +328,7 @@ into an ephemeral Codex credential. There is no arbitrary-secret scan,
 
 This stage intentionally stops before `thread/resume`, `thread/start` or
 `turn/start`. Production RPC routing and assignment/session completion belong
-to the #294 migration; the planner only guarantees that those operations can
+to the worker-transport migration; the planner only guarantees that those operations can
 begin from one canonical, isolated and auditable execution binding.
 
 ### Production turn routing through isolated sessions
@@ -360,9 +360,9 @@ from an active assignment to the long-lived control-plane CodexRuntime.
 
 This migration intentionally leaves metadata-oriented compatibility operations
 such as initial `thread/start` creation and inactive-thread listing on the
-control-plane runtime for the next #294 slice. That compatibility path does not
+control-plane runtime for the worker-transport migration. That compatibility path does not
 execute a production turn. Removing the remaining global app-server requirement
-and completing restart/session-loss coverage is required before #294 can close.
+and completing restart/session-loss coverage is required before the migration is considered complete.
 
 ### Assignment-bound Codex app-server session
 
@@ -415,7 +415,7 @@ app-server/thread compatibility transport has **not** silently become an
 assignment-bound worker process.
 
 The delegation primitive is the credential/state seam required by that move.
-#294 owns migrating the long-lived compatibility transport so each worker Codex
+The long-lived compatibility transport must be migrated so each worker Codex
 process is associated with canonical assignment/workspace/lease state and uses
 this delegation contract. Until that migration is complete, new untrusted
 command/tool execution paths must use the isolated worker backend rather than

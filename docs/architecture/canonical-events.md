@@ -21,7 +21,7 @@ Deterministic type/predicate filtering
         ↓
 Canonical subscribers
         ↓
-Later autonomy reasoning gate (#111)
+The bounded-autonomy reasoning gate
 ```
 
 Persistence and duplicate suppression happen before subscriber dispatch. A
@@ -31,7 +31,7 @@ after a process restart.
 ## Event envelope
 
 The bus transports `codex_web.compatibility.CanonicalEventEnvelope`. Event
-schema compatibility remains owned by the compatibility contract from #138.
+schema compatibility remains owned by the canonical compatibility/versioning contract.
 Unknown event-envelope versions fail before payload interpretation.
 
 The first code-owned event classes are:
@@ -73,17 +73,17 @@ The event store, bus, ingestion service, type filters, and subscriber
 predicates contain no model invocation. They operate on known structured facts
 only. An idle bus has no polling loop and consumes no model tokens.
 
-Issue #111 owns the later bounded autonomy controller and reasoning gate.
+The bounded-autonomy controller owns the reasoning gate.
 Consumers must not treat untrusted event content as authority; canonical
 identity, policy, approval, ActionIntent, worker, and evidence boundaries still
 apply.
 
-Durable scheduler firings from #158 use `schedule.due` with the stable schedule
+Durable scheduler firings use `schedule.due` with the stable schedule
 ID and scheduled occurrence in the payload. Scheduler retries reuse the same
 event idempotency boundary rather than dispatching a second timer-specific path.
 
 External side-effect completion and reconciliation remain owned by the durable
-ActionIntent/ActionProvider boundary from #137. The event bus does not create a
+canonical ActionIntent/ActionProvider boundary. The event bus does not create a
 second provider mutation path.
 
 ## Persistence and retention
@@ -92,12 +92,12 @@ Canonical events are stored in the shared SQLite state store under the
 `canonical_events` namespace. The initial local deployment keeps a bounded
 history and prunes idempotency entries together with pruned events. Future
 distributed ownership/retention changes must preserve idempotency and replay
-semantics and are coordinated with #142/#159.
+semantics and are coordinated with replicated ownership and replay/evaluation semantics.
 
 ## UI impact
 
 This backend slice deliberately adds no shadow UI state. The orchestration
-inspector/event timeline in #112 and the cross-cutting workspaces in #125/#127
+orchestration inspector/event timeline and the cross-cutting operator workspaces
 must project canonical events from this boundary, including event ID, type,
 source, correlation/causation, tenant/workspace scope, duplicate/replay state,
 and downstream outcome.
