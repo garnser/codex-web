@@ -13,7 +13,7 @@ from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurn
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.codex_worker_session import AssignmentBoundAgentSessionManager
+from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
