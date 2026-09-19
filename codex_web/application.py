@@ -14,6 +14,7 @@ from codex_web.api.attention import build_attention_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
 from codex_web.api.autonomy import build_autonomy_router
+from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
@@ -105,6 +106,7 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_policy import AutonomyPolicyService
+from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -203,6 +205,7 @@ from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
 from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.attention import AttentionStore
 from codex_web.storage.autonomy import AutonomyStateStore
+from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -844,6 +847,15 @@ app.include_router(
 )
 
 autonomy_state_store = AutonomyStateStore(state_store)
+autonomy_audit_store = AutonomyAuditStore(state_store)
+autonomy_audit_service = AutonomyAuditService(
+    autonomy_audit_store,
+    autonomy_store=autonomy_state_store,
+    action_intents=action_intent_service,
+    evidence=artifact_evidence_service,
+    canonical_events=canonical_event_ingestion,
+    scheduler=scheduler_service,
+)
 autonomy_policy_service = AutonomyPolicyService(
     autonomy_state_store,
     authority=authority_role_service,
@@ -855,8 +867,11 @@ autonomy_controller = AutonomyController(
     autonomy_state_store,
     action_intents=action_intent_service,
     policy=autonomy_policy_service,
+    audit=autonomy_audit_service,
 )
 app.state.autonomy_state_store = autonomy_state_store
+app.state.autonomy_audit_store = autonomy_audit_store
+app.state.autonomy_audit_service = autonomy_audit_service
 app.state.autonomy_policy_service = autonomy_policy_service
 app.state.autonomy_controller = autonomy_controller
 app.include_router(
@@ -865,6 +880,7 @@ app.include_router(
         autonomy_policy_service,
     )
 )
+app.include_router(build_autonomy_audit_router(autonomy_audit_service))
 
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,
