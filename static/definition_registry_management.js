@@ -39,6 +39,19 @@
     return scopeType !== "global" || actor.assurance === "local_trusted";
   }
 
+  function canApprove(scopeType) {
+    if (!actor) return false;
+    if (actor.principal_kind === "service") {
+      return scopeType === "global"
+        ? (actor.service_scopes || []).includes("definitions:global-approve")
+        : (actor.service_scopes || []).includes("definitions:approve");
+    }
+    const elevated = ["mfa", "local_trusted"].includes(actor.assurance)
+      && (actor.roles || []).some((role) => ["owner", "approver"].includes(role));
+    if (!elevated) return false;
+    return scopeType !== "global" || actor.assurance === "local_trusted";
+  }
+
   function sameSlot(left, right) {
     return left.definition_id === right.definition_id
       && left.kind === right.kind
@@ -114,19 +127,25 @@
 
   function actionButtons(record) {
     const manageable = canManage(record.scope_type);
-    if (!manageable) {
-      return '<small>Lifecycle mutation unavailable for the current actor/assurance.</small>';
+    const approvable = canApprove(record.scope_type);
+    if (!manageable && !approvable) {
+      return '<small>Lifecycle mutation/approval unavailable for the current actor/assurance.</small>';
     }
     const actions = [];
     if (["draft", "validated"].includes(record.lifecycle)) {
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      }
+      if (approvable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="approve-publication" data-record-id="${escapeHtml(record.record_id)}">Approve sensitive publication</button>`);
+      }
     }
-    if (record.lifecycle !== "quarantined") {
+    if (manageable && record.lifecycle !== "quarantined") {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="quarantine" data-record-id="${escapeHtml(record.record_id)}">Quarantine</button>`);
     }
     const active = activeFor(record);
-    if (active && active.record_id !== record.record_id) {
+    if (manageable && active && active.record_id !== record.record_id) {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="rollback" data-record-id="${escapeHtml(record.record_id)}">Rollback to r${escapeHtml(record.revision)}</button>`);
     }
     return actions.length
@@ -207,8 +226,75 @@
     }
   }
 
+  async function publicationPreflight(record) {
+    return apiRequest(
+      `/api/definitions/${encodeURIComponent(record.record_id)}/publication-preflight`,
+    );
+  }
+
+  function preflightSummary(assessment) {
+    const classes = (assessment.change_classes || []).join(", ") || "none";
+    const reasons = (assessment.reasons || []).join(" · ") || "no classified changes";
+    return `classes: ${classes}; ${reasons}`;
+  }
+
+  async function approvePublication(record) {
+    let preflight;
+    try {
+      preflight = await publicationPreflight(record);
+    } catch (error) {
+      setStatus(`Publication preflight failed: ${error.message}`);
+      return;
+    }
+    const assessment = preflight.assessment || {};
+    if (!assessment.requires_approval) {
+      setStatus(`${record.definition_id} r${record.revision} does not require sensitive-publication approval. ${preflightSummary(assessment)}`);
+      return;
+    }
+    if ((preflight.approvals || []).some((item) => item.approved_by === actor?.identity_id)) {
+      setStatus(`Current actor already approved this exact preflight fingerprint ${assessment.fingerprint}.`);
+      return;
+    }
+    const reason = window.prompt(
+      `Approval reason for sensitive publication of ${record.definition_id} r${record.revision}:\n${preflightSummary(assessment)}`,
+      "",
+    );
+    if (reason === null || !reason.trim()) return;
+    if (!window.confirm(
+      `Approve this exact sensitive-publication fingerprint? ${preflightSummary(assessment)} The approval becomes stale automatically if the active revision or candidate changes.`,
+    )) return;
+    try {
+      const response = await apiRequest(
+        `/api/definitions/${encodeURIComponent(record.record_id)}/publication-approvals`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason: reason.trim() }),
+        },
+      );
+      setStatus(`Recorded approval ${response.approval.id} for fingerprint ${response.approval.fingerprint}. A distinct authorized publisher can now publish while this preflight remains current.`);
+      document.getElementById("refresh-definitions")?.click();
+    } catch (error) {
+      setStatus(`Sensitive publication approval failed: ${error.message}`);
+    }
+  }
+
   async function publishRecord(record) {
     const active = activeFor(record);
+    let preflight;
+    try {
+      preflight = await publicationPreflight(record);
+    } catch (error) {
+      setStatus(`Publication preflight failed: ${error.message}`);
+      return;
+    }
+    const assessment = preflight.assessment || {};
+    const approvals = preflight.approvals || [];
+    const publicationApproval = assessment.requires_approval ? approvals[0] : null;
+    if (assessment.requires_approval && !publicationApproval) {
+      setStatus(`Publication blocked: sensitive authority/definition expansion requires approval for the exact current fingerprint. ${preflightSummary(assessment)}`);
+      return;
+    }
+
     let impactCount = 0;
     if (active) {
       try {
@@ -221,12 +307,12 @@
       }
     }
     const reason = window.prompt(
-      `Publication reason for ${record.definition_id} r${record.revision}:`,
+      `Publication reason for ${record.definition_id} r${record.revision}:\n${preflightSummary(assessment)}`,
       "",
     );
     if (reason === null) return;
     const approvalRaw = window.prompt(
-      "Approval metadata as JSON object (optional):",
+      "Additional publication metadata as JSON object (optional; this cannot replace required canonical approval evidence):",
       "{}",
     );
     if (approvalRaw === null) return;
@@ -235,14 +321,17 @@
       approvalMetadata = JSON.parse(approvalRaw || "{}");
       if (!approvalMetadata || Array.isArray(approvalMetadata) || typeof approvalMetadata !== "object") throw new Error("object required");
     } catch (error) {
-      setStatus(`Approval metadata must be a JSON object: ${error.message}`);
+      setStatus(`Publication metadata must be a JSON object: ${error.message}`);
       return;
     }
     const impact = active
       ? ` Active r${active.revision} will be superseded; ${impactCount < 0 ? "usage impact could not be loaded" : `${impactCount} tenant-visible usage reference(s) currently point to it`}.`
       : " No active revision currently occupies this canonical slot.";
+    const approvalText = publicationApproval
+      ? ` Sensitive change approved by ${publicationApproval.approved_by} as ${publicationApproval.id}.`
+      : " No sensitive expansion approval is required.";
     if (!window.confirm(
-      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
+      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${approvalText} ${preflightSummary(assessment)} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
     )) return;
     try {
       await apiRequest(
@@ -253,10 +342,11 @@
             reason: reason.trim() || null,
             expected_active_revision: active?.revision ?? null,
             approval_metadata: approvalMetadata,
+            publication_approval_id: publicationApproval?.id || null,
           }),
         },
       );
-      setStatus(`Published ${record.definition_id} r${record.revision}.`);
+      setStatus(`Published ${record.definition_id} r${record.revision} using canonical publication preflight ${assessment.fingerprint}.`);
       document.getElementById("refresh-definitions")?.click();
     } catch (error) {
       setStatus(`Definition publication failed: ${error.message}`);
@@ -323,6 +413,7 @@
     try {
       if (action === "validate") await validateRecord(record);
       else if (action === "publish") await publishRecord(record);
+      else if (action === "approve-publication") await approvePublication(record);
       else if (action === "quarantine") await quarantineRecord(record);
       else if (action === "rollback") await rollbackRecord(record);
     } finally {
