@@ -46,6 +46,8 @@ def authority_role_catalog_seed_payload() -> dict:
                 role_id="local-admin",
                 subject_kind="identity",
                 subject_id=DEFAULT_HUMAN_IDENTITY_ID,
+                organization_id="local",
+                workspace_id="default",
             ),
         ),
     ).model_dump(mode="json")
