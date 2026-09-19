@@ -21,7 +21,6 @@ from codex_web.identity import (
 )
 from codex_web.models import ApprovalSlackMessage
 from codex_web.services.approval_requests import ApprovalRequestService
-from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.storage.approval_requests import ApprovalRequestNotFoundError
 
@@ -39,7 +38,7 @@ class ApprovalService:
         self,
         host: Any,
         *,
-        assignment_sessions: AssignmentBoundAgentSessionManager | None = None,
+        assignment_sessions: AssignmentBoundAgentSessionManager | tuple[AssignmentBoundAgentSessionManager, ...] | None = None,
         canonical: ApprovalRequestService | None = None,
         canonical_requester: AuthenticationActor | None = None,
         compatibility_actor: AuthenticationActor | None = None,
@@ -64,12 +63,15 @@ class ApprovalService:
 
     def _approval_runtimes(self):
         yield self.host.codex
-        manager = self.assignment_sessions
-        if manager is None:
+        managers = self.assignment_sessions
+        if managers is None:
             return
-        for session in manager.sessions.values():
-            if session.runtime is not None:
-                yield session.runtime
+        if not isinstance(managers, tuple):
+            managers = (managers,)
+        for manager in managers:
+            for session in manager.sessions.values():
+                if session.runtime is not None:
+                    yield session.runtime
 
     def pending(self) -> dict[int | str, dict[str, Any]]:
         result: dict[int | str, dict[str, Any]] = {}
@@ -91,7 +93,7 @@ class ApprovalService:
 
         for runtime in self._approval_runtimes():
             if request_id in runtime.pending_approvals:
-                await CodexAgentRuntimeAdapter(runtime).respond_approval(
+                await runtime.respond_to_server_request(
                     request_id,
                     result,
                 )
