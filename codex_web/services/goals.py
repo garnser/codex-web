@@ -588,6 +588,21 @@ class GoalService:
                     raise GoalConflictError(
                         "completion evaluation is stale for current goal revision"
                     )
+                latest = next(
+                    (
+                        item
+                        for item in reversed(state.completion_evaluations)
+                        if item.goal_id == current.id
+                        and item.organization_id == scope.organization_id
+                        and item.workspace_id == scope.workspace_id
+                        and item.goal_revision == current.revision
+                    ),
+                    None,
+                )
+                if latest is None or latest.id != evaluation.id:
+                    raise GoalConflictError(
+                        "completion transition requires the latest current evaluation"
+                    )
                 if not evaluation.eligible:
                     raise GoalConflictError(
                         "completion evaluation has unresolved blockers"
