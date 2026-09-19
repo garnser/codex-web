@@ -338,7 +338,7 @@ class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(events.event(delivery.event.event_id))
 
             transport.fail_publish = False
-            recovered = await bus.dispatch_outbox_once(now=1000.0)
+            recovered = await bus.dispatch_outbox_once(now=10_000_000_000.0)
             self.assertEqual(recovered["published"], 1)
             self.assertEqual(events.outbox_status()["published"], 1)
 
