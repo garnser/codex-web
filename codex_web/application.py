@@ -23,6 +23,7 @@ from codex_web.api.goals import build_goals_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
+from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.resources import build_resources_router
@@ -108,6 +109,7 @@ from codex_web.services.goal_decomposition_generation import (
 from codex_web.services.goal_decompositions import GoalDecompositionService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.orchestration_inspector import OrchestrationInspectorService
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
@@ -505,6 +507,13 @@ autonomy_controller = AutonomyController(
 app.state.autonomy_state_store = autonomy_state_store
 app.state.autonomy_controller = autonomy_controller
 app.include_router(build_autonomy_router(autonomy_controller))
+
+orchestration_inspector_service = OrchestrationInspectorService(
+    canonical_event_store,
+    autonomy_controller,
+)
+app.state.orchestration_inspector_service = orchestration_inspector_service
+app.include_router(build_orchestration_router(orchestration_inspector_service))
 
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
