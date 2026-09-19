@@ -49,6 +49,7 @@ REQUIRED_DOCS = (
     "docs/reference/README.md",
     "docs/reference/documentation-versioning.md",
     "docs/reference/platform-contracts.md",
+    "docs/reference/api-authorization.md",
     "docs/troubleshooting/README.md",
     "docs/troubleshooting/operator-matrix.md",
     "docs/advanced-adoption/README.md",
