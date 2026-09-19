@@ -237,6 +237,54 @@ class IdentityService:
             assurance=AuthenticationAssurance.LOCAL_TRUSTED,
         )
 
+    def actor_for_identity(
+        self,
+        identity_id: str,
+        *,
+        scope: TenantScope,
+    ) -> AuthenticationActor:
+        """Resolve current canonical membership/team context for an identity.
+
+        This is intentionally credential-free and is for server-side
+        authorization re-evaluation only. It does not authenticate a request.
+        """
+        state = self.store.load()
+        human = next(
+            (
+                item
+                for item in state.humans
+                if item.id == identity_id and item.disabled_at is None
+            ),
+            None,
+        )
+        service = next(
+            (
+                item
+                for item in state.services
+                if item.id == identity_id and item.disabled_at is None
+            ),
+            None,
+        )
+        if human is not None and service is not None:
+            raise AuthenticationError("identity kind is ambiguous")
+        if human is not None:
+            return self._actor(
+                state,
+                identity_id=identity_id,
+                principal_kind=PrincipalKind.HUMAN,
+                scope=scope,
+                assurance=AuthenticationAssurance.PRIMARY,
+            )
+        if service is not None:
+            return self._actor(
+                state,
+                identity_id=identity_id,
+                principal_kind=PrincipalKind.SERVICE,
+                scope=scope,
+                assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            )
+        raise AuthenticationError("identity not found or disabled")
+
     def create_session(
         self,
         *,

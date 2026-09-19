@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.action_providers import ActionDefinition, ActionRequest, ActionResult, ActionVerification
 from codex_web.artifact_evidence import EvidenceRequirement
+from codex_web.definitions import DefinitionReference
 from codex_web.security import ExecutionSecurityPolicy, SecurityTrustDecision
 
 
@@ -47,6 +48,13 @@ class ActionDecisionSnapshot(BaseModel):
     outcome: ActionDecisionOutcome = ActionDecisionOutcome.NOT_EVALUATED
     source: str = Field(default="not-evaluated", min_length=1)
     reason: str | None = None
+    capabilities: tuple[str, ...] = ()
+    definition_refs: tuple[DefinitionReference, ...] = ()
+    role_ids: tuple[str, ...] = ()
+    grant_ids: tuple[str, ...] = ()
+    delegation_ids: tuple[str, ...] = ()
+    expires_at: float | None = None
+    reasons: tuple[str, ...] = ()
     evaluated_at: float | None = None
 
 
@@ -95,6 +103,7 @@ class ActionIntent(BaseModel):
     action_definition: ActionDefinition
     request: ActionRequest
     authority_decision: ActionDecisionSnapshot
+    authority_recheck: ActionDecisionSnapshot | None = None
     policy_decision: ActionDecisionSnapshot
     security_policy: ExecutionSecurityPolicy
     security_decision: SecurityTrustDecision

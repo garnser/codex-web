@@ -113,6 +113,42 @@ The ActionIntent enforcement integration is a separate #107 delivery slice. It
 will persist this canonical decision at the external-action boundary and remove
 caller-authored authority assertions as an authorization source.
 
+## ActionIntent enforcement boundary
+
+External/state-changing actions are authorized at the durable ActionIntent
+boundary. The caller may still submit an `authority_decision` field for
+backward-compatible audit payloads, but that field is **not** an authorization
+source.
+
+On intent creation the service:
+
+1. resolves the canonical ActionProvider binding and ActionDefinition;
+2. requires the ActionDefinition to declare one or more
+   `required_authority` capabilities;
+3. derives the requested authority level from the code-owned
+   `required_authority_level`;
+4. evaluates every required capability through the canonical Role authority
+   service using the canonical project and Resource targets;
+5. persists the aggregate canonical decision and exact Definition Registry
+   provenance;
+6. cancels the intent before provider execution if any required capability is
+   denied or cannot be evaluated.
+
+Caller-authored authority snapshots are compatibility/audit input only. Neither `ALLOW` nor `DENY` replaces the canonical Role decision; only the canonical evaluator determines operational authority. Independent policy and security decisions remain separate fail-closed gates.
+
+Immediately before provider execution the service re-resolves the original
+requesting identity's current membership/Team context, re-resolves the current
+ActionDefinition, and performs the same canonical Role evaluation again. This
+catches Role-definition quarantine/revision, revoked membership, removed Team
+membership, expired delegation, resource changes, and other authority drift
+between queueing and execution.
+
+The original creation-time decision remains immutable audit provenance.
+Execution-time authority is stored separately as `authority_recheck`.
+
+If the requester identity, authority service, authority definition, or canonical
+scope cannot be re-resolved, execution fails closed without calling the provider.
+
 ## Token efficiency
 
 Role evaluation is deterministic application logic. It never invokes a model.

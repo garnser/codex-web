@@ -57,6 +57,7 @@ class ActionDefinition(BaseModel):
     risk_class: ActionRiskClass = ActionRiskClass.MEDIUM
     required_resource_types: tuple[ResourceType, ...] = ()
     required_authority: tuple[str, ...] = ()
+    required_authority_level: Literal["read", "recommend", "prepare", "execute", "approve"] = "execute"
     credential_required: bool = False
     credential_purpose: str | None = None
     expected_evidence: tuple[str, ...] = ()
