@@ -383,11 +383,14 @@ class TurnExecutionBindingTests(unittest.TestCase):
 
 
     def test_per_execution_runtime_binding_is_persisted_and_reuse_is_fail_closed(self) -> None:
-        self._publish_secret()
+        self._publish_secret(
+            "secret-anthropic-worker",
+            config_key=ANTHROPIC_WORKER_API_KEY_CONFIG,
+        )
         selected = ExecutionRuntimeBinding(
-            provider_id="provider-a",
-            runtime_id="runtime-a",
-            capability_revision=7,
+            provider_id="anthropic",
+            runtime_id="claude-code",
+            capability_revision=1,
         )
 
         first = self.service.prepare(
@@ -414,8 +417,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
                 sandbox="workspace-write",
                 approval_policy="on-request",
                 runtime_binding=ExecutionRuntimeBinding(
-                    provider_id="provider-b",
-                    runtime_id="runtime-b",
+                    provider_id="openai",
+                    runtime_id="codex",
                     capability_revision=1,
                 ),
             )
