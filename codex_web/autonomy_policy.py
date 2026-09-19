@@ -47,6 +47,7 @@ class AutonomyQualificationGate(StrEnum):
     CAPACITY = "capacity"
     UPGRADE = "upgrade"
     AUDIT_INTEGRITY = "audit_integrity"
+    RELIABILITY = "reliability"
     WORKER_PLANE = "worker_plane"
     REPLICATED_OWNERSHIP = "replicated_ownership"
 
@@ -60,6 +61,7 @@ DEFAULT_PRODUCTION_GATES: tuple[AutonomyQualificationGate, ...] = (
     AutonomyQualificationGate.CAPACITY,
     AutonomyQualificationGate.UPGRADE,
     AutonomyQualificationGate.AUDIT_INTEGRITY,
+    AutonomyQualificationGate.RELIABILITY,
     AutonomyQualificationGate.WORKER_PLANE,
 )
 
