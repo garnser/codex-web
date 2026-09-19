@@ -22,6 +22,7 @@ from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
+from codex_web.api.evaluations import build_evaluations_router
 from codex_web.api.executive_management import build_executive_management_router
 from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
@@ -134,6 +135,7 @@ from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
 from codex_web.services.entitlements import EntitlementService
+from codex_web.services.evaluations import EvaluationService
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
@@ -194,6 +196,7 @@ from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
 from codex_web.storage.entitlements import EntitlementStore
+from codex_web.storage.evaluations import EvaluationStore
 from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
@@ -588,6 +591,16 @@ app.state.local_artifact_content_store = local_artifact_content_store
 app.state.artifact_content_service = artifact_content_service
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
+
+evaluation_store = EvaluationStore(state_store)
+evaluation_service = EvaluationService(
+    evaluation_store,
+    definition_registry_service,
+    artifact_evidence=artifact_evidence_service,
+)
+app.state.evaluation_store = evaluation_store
+app.state.evaluation_service = evaluation_service
+app.include_router(build_evaluations_router(evaluation_service))
 
 agent_runtime_usage_store = AgentRuntimeUsageStore(state_store)
 
