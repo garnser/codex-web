@@ -260,11 +260,14 @@ app = core.app
 core._state_file_lock = state_file_lock
 core._atomic_write_text = atomic_write_text
 
-project_repository = ProjectRepository(PROJECTS_FILE)
 state_store = build_state_store(
     sqlite_path=STATE_DB_FILE,
     backend=os.environ.get("CODEX_WEB_STATE_BACKEND", "sqlite"),
     postgres_dsn=os.environ.get("CODEX_WEB_POSTGRES_DSN"),
+)
+project_repository = ProjectRepository(
+    PROJECTS_FILE,
+    store=state_store,
 )
 event_transport = build_event_transport(
     os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
