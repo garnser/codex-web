@@ -26,7 +26,20 @@ class ReferenceTaskSource:
 
     source_type = "reference"
     contract_version = TASK_SOURCE_CONTRACT.current
-    capabilities = TaskSourceCapabilities(frozenset(TaskSourceCapability))
+    capabilities = TaskSourceCapabilities(
+        frozenset(
+            {
+                TaskSourceCapability.CREATE,
+                TaskSourceCapability.DISCOVERY,
+                TaskSourceCapability.READ,
+                TaskSourceCapability.EVENTS,
+                TaskSourceCapability.OWNER_WRITE,
+                TaskSourceCapability.STATE_WRITE,
+                TaskSourceCapability.COMMENTS,
+                TaskSourceCapability.ARTIFACT_LINKS,
+            }
+        )
+    )
 
     def __init__(
         self,
