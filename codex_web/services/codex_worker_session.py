@@ -17,7 +17,10 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
 )
 from codex_web.runtime.codex import CodexRuntime
-from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionStatus
+from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionStatus,
+    AssignmentRuntimeCredentialProvider,
+)
 from codex_web.services.codex_auth_delegation import (
     CodexAuthDelegation,
     CodexDelegatedLaunch,
@@ -79,6 +82,7 @@ class AssignmentBoundCodexSession:
         runtime_factory: Callable[..., CodexRuntime] = CodexRuntime,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[CodexModelEgressEndpoint, ...]] | None = None,
+        credential_provider: AssignmentRuntimeCredentialProvider | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -89,6 +93,7 @@ class AssignmentBoundCodexSession:
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = max(0.05, watchdog_interval_seconds)
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.credential_provider = credential_provider or local_worker.codex_auth_delegation
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -220,7 +225,7 @@ class AssignmentBoundCodexSession:
         workspace_path: Path,
         broker: AssignmentBoundModelEgressBroker | None,
     ):
-        delegation_service = self.local_worker.codex_auth_delegation
+        delegation_service = self.credential_provider
         if delegation_service is None:
             raise AssignmentBoundCodexSessionError(
                 "Codex auth delegation is not configured"
@@ -304,7 +309,7 @@ class AssignmentBoundCodexSession:
                 "assignment-bound Codex assignment deadline expired"
             )
         if self.delegation is not None:
-            delegation_service = self.local_worker.codex_auth_delegation
+            delegation_service = self.credential_provider
             if delegation_service is None:
                 raise AssignmentBoundCodexSessionStaleError(
                     "Codex auth delegation is unavailable"
@@ -431,7 +436,7 @@ class AssignmentBoundCodexSession:
             raise AssignmentBoundCodexSessionStaleError(
                 "assignment-bound Codex assignment deadline expired"
             )
-        delegation_service = self.local_worker.codex_auth_delegation
+        delegation_service = self.credential_provider
         if delegation_service is None:
             raise AssignmentBoundCodexSessionStaleError(
                 "Codex auth delegation is unavailable"
