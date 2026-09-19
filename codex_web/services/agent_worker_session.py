@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
 from codex_web.execution_workers import ExecutionAssignment
+from codex_web.identity import AuthenticationActor
+
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,3 +94,47 @@ class AssignmentBoundAgentSessionManager(Protocol):
     async def stop(self, assignment_id: str) -> None: ...
 
     async def stop_all(self) -> None: ...
+
+
+@runtime_checkable
+class AssignmentRuntimeCredentialGrant(Protocol):
+    """Metadata-only credential grant bound to one worker assignment/fence."""
+
+    assignment_id: str
+    worker_id: str
+    fence: int
+    secret_id: str
+    secret_rotation: int
+    expires_at: float
+
+
+@runtime_checkable
+class AssignmentRuntimeLaunchInput(Protocol):
+    """Ephemeral launch material exposed only inside the credential boundary."""
+
+    delegation: AssignmentRuntimeCredentialGrant
+    command: tuple[str, ...]
+    environment: Any
+
+
+@runtime_checkable
+class AssignmentRuntimeCredentialProvider(Protocol):
+    """Runtime-specific credential/launch boundary used by the generic worker session."""
+
+    def use(
+        self,
+        assignment: ExecutionAssignment,
+        *,
+        worker_id: str,
+        fence: int,
+        actor: AuthenticationActor,
+        consumer: Callable[[AssignmentRuntimeLaunchInput], T],
+    ) -> T: ...
+
+    def validate_current(
+        self,
+        delegation: AssignmentRuntimeCredentialGrant,
+        assignment: ExecutionAssignment,
+        *,
+        actor: AuthenticationActor,
+    ) -> None: ...
