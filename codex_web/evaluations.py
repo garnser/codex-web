@@ -64,6 +64,9 @@ class EvaluationAssertionKind(StrEnum):
     COST = "cost"
     NO_LLM = "no_llm"
     POLICY_VIOLATIONS = "policy_violations"
+    RUNTIME_PIN = "runtime_pin"
+    MODEL_PINS = "model_pins"
+    QUALITY_SCORE = "quality_score"
 
 
 class EvaluationStateSnapshot(BaseModel):
@@ -188,6 +191,7 @@ class EvaluationTrace(BaseModel):
     output_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0.0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
+    quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def normalize(self) -> "EvaluationTrace":
@@ -224,6 +228,7 @@ class EvaluationExpectedInvariants(BaseModel):
     require_no_llm: bool = False
     forbid_policy_violations: bool = True
     max_interventions: int | None = Field(default=None, ge=0)
+    min_quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class EvaluationRegressionThresholds(BaseModel):
@@ -235,6 +240,8 @@ class EvaluationRegressionThresholds(BaseModel):
     max_action_increase: int = Field(default=0, ge=0)
     max_intervention_increase: int = Field(default=0, ge=0)
     allow_definition_resolution_changes: bool = False
+    allow_runtime_changes: bool = False
+    allow_model_prompt_changes: bool = False
 
 
 class EvaluationReplayFixture(BaseModel):
@@ -243,6 +250,8 @@ class EvaluationReplayFixture(BaseModel):
     id: str = Field(min_length=1)
     mode: EvaluationRunMode
     definition_overrides: tuple[DefinitionReference, ...] = ()
+    runtime_override: EvaluationRuntimePin | None = None
+    model_overrides: tuple[EvaluationModelPin, ...] = ()
     failure_injection: EvaluationFailureInjection | None = None
     trace: EvaluationTrace
 
@@ -252,6 +261,18 @@ class EvaluationReplayFixture(BaseModel):
             raise ValueError("failure replay fixture requires failure_injection")
         if self.mode != EvaluationRunMode.FAILURE_INJECTION and self.failure_injection is not None:
             raise ValueError("failure_injection only applies to failure replay fixtures")
+        if self.mode == EvaluationRunMode.HISTORICAL and (
+            self.definition_overrides
+            or self.runtime_override is not None
+            or self.model_overrides
+        ):
+            raise ValueError("historical replay fixture cannot override pinned historical inputs")
+        if self.mode == EvaluationRunMode.CANDIDATE and not (
+            self.definition_overrides
+            or self.runtime_override is not None
+            or self.model_overrides
+        ):
+            raise ValueError("candidate replay fixture requires a definition, runtime, or model override")
         return self
 
 
@@ -293,8 +314,12 @@ class EvaluationScenarioCreate(BaseModel):
         fixture_ids = [item.id for item in self.replay_fixtures]
         if len(fixture_ids) != len(set(fixture_ids)):
             raise ValueError("evaluation replay fixture ids must be unique")
-        if not any(item.mode == EvaluationRunMode.HISTORICAL for item in self.replay_fixtures):
-            raise ValueError("evaluation scenario requires a historical replay fixture")
+        historical_count = sum(
+            1 for item in self.replay_fixtures
+            if item.mode == EvaluationRunMode.HISTORICAL
+        )
+        if historical_count != 1:
+            raise ValueError("evaluation scenario requires exactly one historical replay fixture")
         injections = {
             item.failure_injection
             for item in self.replay_fixtures
@@ -397,6 +422,8 @@ class EvaluationComparison(BaseModel):
     intervention_delta: int
     policy_violation_delta: int
     definition_resolution_changed: bool
+    runtime_changed: bool = False
+    model_or_prompt_changed: bool = False
     regression_reasons: tuple[str, ...] = ()
     passed: bool
     created_at: float = Field(default_factory=time.time)
