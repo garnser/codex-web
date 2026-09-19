@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractVersion
+from codex_web.identity import (
+    ASSURANCE_RANK,
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.definitions import (
     DEFINITION_SCOPE_PRECEDENCE,
     DefinitionContext,
     DefinitionDraftCreate,
     DefinitionLifecycle,
+    DefinitionPublicationApproval,
+    DefinitionPublicationAssessment,
     DefinitionPublishRequest,
     DefinitionRecord,
     DefinitionReference,
@@ -41,6 +52,19 @@ class DefinitionCompatibilityError(RuntimeError):
 DefinitionValidator = Callable[[dict[str, Any]], dict[str, Any]]
 DefinitionChangeNotifier = Callable[[dict[str, Any]], None]
 DefinitionUsageProvider = Callable[[DefinitionReference], list[dict[str, Any]]]
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionPublicationGuardResult:
+    change_classes: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    requires_approval: bool = False
+
+
+DefinitionPublicationGuard = Callable[
+    [DefinitionRecord, DefinitionRecord | None],
+    DefinitionPublicationGuardResult,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +119,7 @@ class DefinitionRegistryService:
         self.engine_version = str(ContractVersion.parse(engine_version))
         self.notifier = notifier
         self._usage_providers: list[DefinitionUsageProvider] = []
+        self._publication_guards: dict[str, DefinitionPublicationGuard] = {}
         self._cache: dict[tuple[str, str, str | None, str | None, str | None], DefinitionRecord] = {}
 
     def register_schema(self, schema: DefinitionKindSchema) -> None:
@@ -104,6 +129,18 @@ class DefinitionRegistryService:
     def register_usage_provider(self, provider: DefinitionUsageProvider) -> None:
         if provider not in self._usage_providers:
             self._usage_providers.append(provider)
+
+    def register_publication_guard(
+        self,
+        kind: str,
+        guard: DefinitionPublicationGuard,
+    ) -> None:
+        existing = self._publication_guards.get(kind)
+        if existing is not None and existing is not guard:
+            raise DefinitionConflictError(
+                f"definition publication guard already registered: {kind}"
+            )
+        self._publication_guards[kind] = guard
 
     @staticmethod
     def _scope_id(scope_type: DefinitionScope, scope_id: str | None) -> str | None:
@@ -288,6 +325,201 @@ class DefinitionRegistryService:
         self._notify("definition.validated", validated[0])
         return validated[0]
 
+    @staticmethod
+    def _publication_fingerprint(
+        selected: DefinitionRecord,
+        active: DefinitionRecord | None,
+        result: DefinitionPublicationGuardResult,
+    ) -> str:
+        payload = {
+            "record_id": selected.record_id,
+            "candidate_revision": selected.revision,
+            "candidate_checksum": selected.checksum,
+            "active_record_id": active.record_id if active else None,
+            "active_revision": active.revision if active else None,
+            "active_checksum": active.checksum if active else None,
+            "change_classes": list(result.change_classes),
+            "reasons": list(result.reasons),
+            "requires_approval": result.requires_approval,
+        }
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _publication_assessment(
+        self,
+        selected: DefinitionRecord,
+        active: DefinitionRecord | None,
+    ) -> DefinitionPublicationAssessment:
+        guard = self._publication_guards.get(selected.kind)
+        result = (
+            guard(selected, active)
+            if guard is not None
+            else DefinitionPublicationGuardResult()
+        )
+        return DefinitionPublicationAssessment(
+            record_id=selected.record_id,
+            candidate_revision=selected.revision,
+            candidate_checksum=selected.checksum,
+            active_record_id=active.record_id if active else None,
+            active_revision=active.revision if active else None,
+            change_classes=tuple(dict.fromkeys(result.change_classes)),
+            reasons=tuple(dict.fromkeys(result.reasons)),
+            requires_approval=result.requires_approval,
+            fingerprint=self._publication_fingerprint(selected, active, result),
+        )
+
+    def publication_preflight(
+        self,
+        record_id: str,
+    ) -> DefinitionPublicationAssessment:
+        records = self.store.load()
+        selected = next(
+            (record for record in records if record.record_id == record_id),
+            None,
+        )
+        if selected is None:
+            raise DefinitionNotFoundError(
+                f"definition record not found: {record_id}"
+            )
+        if selected.lifecycle not in {
+            DefinitionLifecycle.DRAFT,
+            DefinitionLifecycle.VALIDATED,
+        }:
+            raise DefinitionConflictError(
+                "publication preflight requires draft/validated definition"
+            )
+        selected = self._validated_record(selected)
+        active = self._active_same_slot(records, selected)
+        return self._publication_assessment(selected, active)
+
+    def record_publication_approval(
+        self,
+        record_id: str,
+        *,
+        actor: AuthenticationActor,
+        reason: str,
+    ) -> DefinitionPublicationApproval:
+        assessment = self.publication_preflight(record_id)
+        if not assessment.requires_approval:
+            raise DefinitionConflictError(
+                "publication approval is not required for this revision"
+            )
+        selected_for_scope = self.get_record(record_id)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            required_scope = (
+                "definitions:global-approve"
+                if selected_for_scope.scope_type == DefinitionScope.GLOBAL
+                else "definitions:approve"
+            )
+            if required_scope not in actor.service_scopes:
+                raise DefinitionConflictError(
+                    f"{required_scope} service scope required for publication approval"
+                )
+        else:
+            if not actor.has_role(MembershipRole.OWNER, MembershipRole.APPROVER):
+                raise DefinitionConflictError(
+                    "definition publication approval requires owner/approver role"
+                )
+            if (
+                ASSURANCE_RANK[actor.assurance]
+                < ASSURANCE_RANK[AuthenticationAssurance.MFA]
+            ):
+                raise DefinitionConflictError(
+                    "definition publication approval requires MFA assurance"
+                )
+            if (
+                selected_for_scope.scope_type == DefinitionScope.GLOBAL
+                and actor.assurance != AuthenticationAssurance.LOCAL_TRUSTED
+            ):
+                raise DefinitionConflictError(
+                    "global definition approval requires local-trusted assurance"
+                )
+        if (
+            selected_for_scope.scope_type == DefinitionScope.ORGANIZATION
+            and selected_for_scope.scope_id != actor.organization_id
+        ):
+            raise DefinitionConflictError(
+                "cross-tenant organization definition approval denied"
+            )
+        if (
+            selected_for_scope.scope_type == DefinitionScope.WORKSPACE
+            and selected_for_scope.scope_id != actor.workspace_id
+        ):
+            raise DefinitionConflictError(
+                "cross-tenant workspace definition approval denied"
+            )
+        approved: list[DefinitionPublicationApproval] = []
+
+        def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            selected = next(
+                (record for record in records if record.record_id == record_id),
+                None,
+            )
+            if selected is None:
+                raise DefinitionNotFoundError(
+                    f"definition record not found: {record_id}"
+                )
+            if selected.created_by == actor.identity_id:
+                raise DefinitionConflictError(
+                    "definition creator cannot approve their own sensitive publication"
+                )
+            current = self._publication_assessment(
+                self._validated_record(selected),
+                self._active_same_slot(records, selected),
+            )
+            if current.fingerprint != assessment.fingerprint:
+                raise DefinitionConflictError(
+                    "definition publication assessment changed before approval"
+                )
+            existing = next(
+                (
+                    item
+                    for item in selected.publication_approvals
+                    if item.fingerprint == current.fingerprint
+                    and item.approved_by == actor.identity_id
+                ),
+                None,
+            )
+            if existing is not None:
+                approved.append(existing)
+                return records
+            evidence = DefinitionPublicationApproval(
+                record_id=selected.record_id,
+                fingerprint=current.fingerprint,
+                active_revision=current.active_revision,
+                approved_by=actor.identity_id,
+                approver_principal_kind=actor.principal_kind.value,
+                approver_roles=tuple(role.value for role in actor.roles),
+                approver_assurance=actor.assurance.value,
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                reason=reason,
+            )
+            approved.append(evidence)
+            replacement = selected.model_copy(
+                update={
+                    "publication_approvals": (
+                        *selected.publication_approvals,
+                        evidence,
+                    )
+                }
+            )
+            return [
+                replacement if item.record_id == selected.record_id else item
+                for item in records
+            ]
+
+        self.store.update(update)
+        record = self.get_record(record_id)
+        self._notify("definition.publication_approved", record)
+        return approved[0]
+
     def _active_same_slot(
         self,
         records: list[DefinitionRecord],
@@ -326,6 +558,60 @@ class DefinitionRegistryService:
                 and request.expected_active_revision != active_revision
             ):
                 raise DefinitionConflictError("active definition revision changed before publication")
+
+            assessment = self._publication_assessment(selected, active)
+            approval = None
+            if assessment.requires_approval:
+                if not request.publication_approval_id:
+                    raise DefinitionConflictError(
+                        "sensitive definition publication requires approved preflight evidence"
+                    )
+                approval = next(
+                    (
+                        item
+                        for item in selected.publication_approvals
+                        if item.id == request.publication_approval_id
+                    ),
+                    None,
+                )
+                if approval is None:
+                    raise DefinitionConflictError(
+                        "definition publication approval evidence not found"
+                    )
+                if (
+                    approval.record_id != selected.record_id
+                    or approval.fingerprint != assessment.fingerprint
+                    or approval.active_revision != assessment.active_revision
+                ):
+                    raise DefinitionConflictError(
+                        "definition publication approval is stale for current preflight"
+                    )
+                if approval.approved_by == request.actor:
+                    raise DefinitionConflictError(
+                        "definition publisher cannot use their own approval"
+                    )
+
+            approval_metadata = dict(request.approval_metadata)
+            approval_metadata.update(
+                {
+                    "publication_preflight_fingerprint": assessment.fingerprint,
+                    "publication_change_classes": ",".join(
+                        assessment.change_classes
+                    ),
+                    "publication_requires_approval": (
+                        "true" if assessment.requires_approval else "false"
+                    ),
+                }
+            )
+            if approval is not None:
+                approval_metadata.update(
+                    {
+                        "publication_approval_id": approval.id,
+                        "publication_approved_by": approval.approved_by,
+                        "publication_approved_at": str(approval.approved_at),
+                    }
+                )
+
             now = time.time()
             current = selected.model_copy(
                 update={
@@ -335,7 +621,7 @@ class DefinitionRegistryService:
                     "published_by": request.actor,
                     "publish_reason": request.reason,
                     "published_at": now,
-                    "approval_metadata": dict(request.approval_metadata),
+                    "approval_metadata": approval_metadata,
                     "supersedes_record_id": active.record_id if active else None,
                 }
             )
