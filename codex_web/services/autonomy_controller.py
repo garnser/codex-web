@@ -14,7 +14,10 @@ from codex_web.autonomy import (
     AutonomyCycleRecord,
     AutonomyDeadLetter,
     AutonomyObservation,
+    AutonomyPauseScope,
     AutonomyReasoningResult,
+    AutonomyScopedPause,
+    AutonomyScopedPauseCreate,
 )
 from codex_web.autonomy_policy import (
     AutonomyCycleBudgetUsage,
@@ -86,6 +89,78 @@ class AutonomyController:
         )
         self.store.set_control(control, actor_id=actor_id)
         return control
+
+    def add_scoped_pause(
+        self,
+        payload: AutonomyScopedPauseCreate,
+        *,
+        actor_id: str,
+    ) -> AutonomyScopedPause:
+        current = self.store.load().control
+        now = time.time()
+        active = tuple(
+            item
+            for item in current.scoped_pauses
+            if item.active(now)
+            and not (
+                item.scope == payload.scope
+                and item.scope_id == payload.scope_id
+            )
+        )
+        pause = AutonomyScopedPause(
+            scope=payload.scope,
+            scope_id=payload.scope_id,
+            reason=payload.reason,
+            created_by=actor_id,
+            created_at=now,
+            expires_at=payload.expires_at,
+        )
+        control = current.model_copy(
+            update={"scoped_pauses": (*active, pause)}
+        )
+        self.store.set_control(control, actor_id=actor_id)
+        return pause
+
+    def remove_scoped_pause(
+        self,
+        pause_id: str,
+        *,
+        actor_id: str,
+    ) -> bool:
+        current = self.store.load().control
+        remaining = tuple(
+            item for item in current.scoped_pauses if item.id != pause_id
+        )
+        if len(remaining) == len(current.scoped_pauses):
+            return False
+        self.store.set_control(
+            current.model_copy(update={"scoped_pauses": remaining}),
+            actor_id=actor_id,
+        )
+        return True
+
+    @staticmethod
+    def _scoped_pause_reason(
+        control: AutonomyControl,
+        *,
+        actor: AuthenticationActor | None,
+        project_id: str | None,
+        resource_ids: tuple[str, ...] = (),
+        now: float | None = None,
+    ) -> str | None:
+        current = time.time() if now is None else float(now)
+        identity_id = actor.identity_id if actor is not None else None
+        resources = set(resource_ids)
+        for item in control.scoped_pauses:
+            if not item.active(current):
+                continue
+            if item.scope == AutonomyPauseScope.IDENTITY and identity_id == item.scope_id:
+                return f"autonomy_scoped_pause:identity:{item.scope_id}"
+            if item.scope == AutonomyPauseScope.PROJECT and project_id == item.scope_id:
+                return f"autonomy_scoped_pause:project:{item.scope_id}"
+            if item.scope == AutonomyPauseScope.RESOURCE and item.scope_id in resources:
+                return f"autonomy_scoped_pause:resource:{item.scope_id}"
+        return None
 
     def pause(self, *, actor_id: str) -> AutonomyControl:
         return self.update_control(
@@ -264,6 +339,33 @@ class AutonomyController:
             event_level = effective_event_policy.level
             event_policy_fingerprint = effective_event_policy.policy_fingerprint
             event_budget = effective_event_policy.budget
+
+        event_resource_ids = ()
+        if isinstance(event.payload, dict):
+            raw_resources = event.payload.get("resource_ids")
+            if isinstance(raw_resources, (list, tuple)):
+                event_resource_ids = tuple(str(item) for item in raw_resources if item)
+            elif event.payload.get("resource_id"):
+                event_resource_ids = (str(event.payload.get("resource_id")),)
+        scoped_pause_reason = self._scoped_pause_reason(
+            control,
+            actor=actor,
+            project_id=event_project_id,
+            resource_ids=event_resource_ids,
+            now=started_at,
+        )
+        if scoped_pause_reason is not None:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.SKIPPED,
+                reason=scoped_pause_reason,
+                started_at=started_at,
+            )
+            self._persist_cycle(cycle, event, actor)
+            return cycle
 
         if control.mode != "active":
             cycle = self._cycle(
