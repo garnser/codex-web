@@ -31,6 +31,8 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         approval_policy: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
     ) -> dict[str, Any]:
         return await service.create(
             project_id=project_id,
@@ -38,6 +40,8 @@ def build_threads_router(service: ThreadService) -> APIRouter:
             approval_policy=approval_policy,
             model=model,
             reasoning_effort=reasoning_effort,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
         )
 
     @router.get("/api/threads/{thread_id}")

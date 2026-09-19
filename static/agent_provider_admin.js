@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null };
 
   const capabilityLabel = (value) => String(value || '').replaceAll('_', ' ');
   const hasCapability = (session, capability) => (
@@ -35,8 +36,16 @@
       .agent-route-form{display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) auto;gap:7px}
       .agent-route-form input{min-width:0;height:36px;border:1px solid var(--line,#313744);border-radius:7px;background:var(--input-bg,var(--surface));color:var(--text);padding:7px 9px}
       .agent-route-result{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--border,var(--line,#313744));border-radius:7px;padding:8px;background:var(--code,var(--surface-soft))}
+      .agent-runtime-controls{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;border-top:1px solid var(--border,var(--line,#313744));padding-top:10px}
+      .agent-runtime-control{display:grid;gap:7px;min-width:0}
+      .agent-runtime-form{display:grid;grid-template-columns:minmax(110px,.8fr) minmax(140px,1fr) auto;gap:7px;align-items:end}
+      .agent-runtime-form label{display:grid;gap:4px;font-size:10px;color:var(--muted,#9aa4b5)}
+      .agent-runtime-form input,.agent-runtime-form select{min-width:0;height:36px;border:1px solid var(--line,#313744);border-radius:7px;background:var(--input-bg,var(--surface));color:var(--text);padding:7px 9px}
+      .agent-runtime-form .agent-fallback-label{display:flex;align-items:center;gap:6px;height:36px;color:var(--text)}
+      .agent-runtime-form .agent-fallback-label input{width:16px;height:16px}
+      .agent-runtime-control-status{font-size:10px;color:var(--muted,#9aa4b5);min-height:14px}
       .agent-empty{font-size:11px;color:var(--muted,#9aa4b5);padding:7px}
-      @media(max-width:760px){.agent-provider-layout{grid-template-columns:1fr}.agent-route-form{grid-template-columns:1fr}.agent-session-head,.agent-provider-head{align-items:stretch;flex-direction:column}}
+      @media(max-width:760px){.agent-provider-layout,.agent-runtime-controls{grid-template-columns:1fr}.agent-route-form,.agent-runtime-form{grid-template-columns:1fr}.agent-session-head,.agent-provider-head{align-items:stretch;flex-direction:column}}
     `;
     document.head.appendChild(style);
   }
@@ -207,24 +216,194 @@
   }
 
   async function loadInventory() {
-    const [providers, runtimes, sessions] = await Promise.all([
+    const [providers, runtimes, sessions, actor] = await Promise.all([
       apiRequest('/api/agent-providers/discover', {
         method: 'POST',
         body: JSON.stringify({ required_capabilities: [] }),
       }),
       apiRequest('/api/agent-runtimes'),
       apiRequest('/api/agent-sessions'),
+      apiRequest('/api/identity/me').catch(() => null),
     ]);
     return {
       providers: providers.items || [],
       runtimes: runtimes.items || [],
       sessions: sessions.items || [],
+      actor,
     };
+  }
+
+  function runtimeOptions(runtimes, includeDefault = true) {
+    const values = [];
+    if (includeDefault) values.push('<option value="">Policy/default</option>');
+    for (const runtime of runtimes) {
+      const value = `${runtime.provider_id}/${runtime.runtime_id}`;
+      const label = `${runtime.provider_id} / ${runtime.runtime_id} · ${runtime.health || 'unknown'}`;
+      values.push(`<option value="${value}">${label}</option>`);
+    }
+    return values.join('');
+  }
+
+  function hydrateRuntimeControls(card, inventory) {
+    currentInventory = inventory;
+    const options = runtimeOptions(inventory.runtimes);
+    const newRuntime = card.querySelector('.agent-new-runtime');
+    const preferenceRuntime = card.querySelector('.agent-preference-runtime');
+    if (newRuntime) {
+      const previous = newRuntime.value;
+      newRuntime.innerHTML = options;
+      if ([...newRuntime.options].some((option) => option.value === previous)) newRuntime.value = previous;
+    }
+    if (preferenceRuntime) {
+      const previous = preferenceRuntime.value;
+      preferenceRuntime.innerHTML = options;
+      if ([...preferenceRuntime.options].some((option) => option.value === previous)) preferenceRuntime.value = previous;
+    }
+  }
+
+  function splitRuntime(value) {
+    if (!value) return { providerId: null, runtimeId: null };
+    const slash = value.indexOf('/');
+    if (slash < 1) return { providerId: null, runtimeId: null };
+    return {
+      providerId: value.slice(0, slash),
+      runtimeId: value.slice(slash + 1),
+    };
+  }
+
+  async function startThreadWithRuntime(card) {
+    const status = card.querySelector('.agent-new-thread-status');
+    const projectId = card.querySelector('.agent-new-project').value.trim();
+    const selected = splitRuntime(card.querySelector('.agent-new-runtime').value);
+    if (!projectId) {
+      status.textContent = 'Project ID is required.';
+      return;
+    }
+    const params = new URLSearchParams({ project_id: projectId });
+    if (selected.providerId) params.set('provider_id', selected.providerId);
+    if (selected.runtimeId) params.set('runtime_id', selected.runtimeId);
+    status.textContent = selected.runtimeId
+      ? `Starting through ${selected.providerId}/${selected.runtimeId}…`
+      : 'Starting through canonical routing policy…';
+    try {
+      const response = await apiRequest(`/api/threads?${params}`, { method: 'POST' });
+      const thread = response.thread || response;
+      status.textContent = `Created ${thread.id || 'thread'}${response.agentSessionId ? ` · AgentSession ${response.agentSessionId}` : ''}.`;
+      window.dispatchEvent(new CustomEvent('codex:agent-thread-created', { detail: response }));
+      await refreshCard(card);
+    } catch (error) {
+      status.textContent = `Thread creation failed: ${error.message}`;
+    }
+  }
+
+  function preferenceContext(card) {
+    const scope = card.querySelector('.agent-preference-scope').value;
+    const projectId = card.querySelector('.agent-preference-project').value.trim();
+    return {
+      scope,
+      scopeId: scope === 'workspace'
+        ? currentInventory.actor?.workspace_id || null
+        : projectId || null,
+      context: scope === 'project' && projectId ? { project_id: projectId } : {},
+    };
+  }
+
+  async function resolvePreference(key, context) {
+    const response = await apiRequest('/api/configuration/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ key, context }),
+    });
+    return response.effective || {};
+  }
+
+  async function loadPreferences(card) {
+    const status = card.querySelector('.agent-preference-status');
+    const { scope, scopeId, context } = preferenceContext(card);
+    if (!scopeId) {
+      status.textContent = `A ${scope} target is required.`;
+      return;
+    }
+    status.textContent = 'Resolving canonical runtime preferences…';
+    try {
+      const [providers, runtimes, fallback] = await Promise.all([
+        resolvePreference('agent.routing.preferred_provider_ids', context),
+        resolvePreference('agent.routing.preferred_runtime_ids', context),
+        resolvePreference('agent.routing.allow_fallback', context),
+      ]);
+      const providerId = (providers.value || [])[0] || '';
+      const runtimeId = (runtimes.value || [])[0] || '';
+      const value = providerId && runtimeId ? `${providerId}/${runtimeId}` : '';
+      const select = card.querySelector('.agent-preference-runtime');
+      select.value = [...select.options].some((option) => option.value === value) ? value : '';
+      card.querySelector('.agent-preference-fallback').checked = fallback.value !== false;
+      status.textContent = `Effective source: ${runtimes.source || providers.source || 'default'}${runtimes.scope_type ? ` · ${runtimes.scope_type}${runtimes.scope_id ? ':' + runtimes.scope_id : ''}` : ''}`;
+    } catch (error) {
+      status.textContent = `Preference resolution failed: ${error.message}`;
+    }
+  }
+
+  async function publishPreference(key, value, scope, scopeId) {
+    const draft = await apiRequest('/api/configuration/drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        key,
+        scope_type: scope,
+        scope_id: scopeId,
+        value,
+        reason: 'Agent Providers operator runtime preference',
+      }),
+    });
+    const record = draft.record;
+    await apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/validate`, { method: 'POST' });
+    return apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/publish`, {
+      method: 'POST',
+      body: JSON.stringify({
+        reason: 'Agent Providers operator runtime preference',
+        expected_active_revision: null,
+      }),
+    });
+  }
+
+  async function savePreferences(card) {
+    const status = card.querySelector('.agent-preference-status');
+    const { scope, scopeId } = preferenceContext(card);
+    if (!scopeId) {
+      status.textContent = `A ${scope} target is required.`;
+      return;
+    }
+    const selected = splitRuntime(card.querySelector('.agent-preference-runtime').value);
+    const fallback = card.querySelector('.agent-preference-fallback').checked;
+    status.textContent = 'Publishing typed runtime preference configuration…';
+    try {
+      await publishPreference(
+        'agent.routing.preferred_provider_ids',
+        selected.providerId ? [selected.providerId] : [],
+        scope,
+        scopeId,
+      );
+      await publishPreference(
+        'agent.routing.preferred_runtime_ids',
+        selected.runtimeId ? [selected.runtimeId] : [],
+        scope,
+        scopeId,
+      );
+      await publishPreference(
+        'agent.routing.allow_fallback',
+        fallback,
+        scope,
+        scopeId,
+      );
+      status.textContent = 'Published canonical routing preferences.';
+      await loadPreferences(card);
+    } catch (error) {
+      status.textContent = `Preference publication failed: ${error.message}`;
+    }
   }
 
   function renderInventory(card, inventory, refresh) {
     const providerList = card.querySelector('.agent-provider-list');
     const sessionList = card.querySelector('.agent-session-list');
+    hydrateRuntimeControls(card, inventory);
     providerList.replaceChildren();
     sessionList.replaceChildren();
 
@@ -318,6 +497,29 @@
       <div class="agent-provider-layout">
         <section class="agent-provider-section"><h3>Providers & runtimes</h3><div class="agent-provider-list"></div></section>
         <section class="agent-provider-section"><h3>Canonical sessions</h3><div class="agent-session-list"></div></section>
+        <section class="agent-runtime-controls">
+          <div class="agent-runtime-control">
+            <h3>Start thread</h3>
+            <div class="agent-runtime-form">
+              <label>Project ID<input class="agent-new-project" value="home" placeholder="Project ID"></label>
+              <label>Execution runtime<select class="agent-new-runtime"><option value="">Policy/default</option></select></label>
+              <button type="button" class="ghost-button agent-new-thread">Create</button>
+            </div>
+            <div class="agent-runtime-control-status agent-new-thread-status" aria-live="polite">Default uses canonical project/workspace/Role routing policy.</div>
+          </div>
+          <div class="agent-runtime-control">
+            <h3>Runtime preference</h3>
+            <div class="agent-runtime-form">
+              <label>Scope<select class="agent-preference-scope"><option value="project">Project</option><option value="workspace">Workspace</option></select></label>
+              <label>Project ID<input class="agent-preference-project" value="home" placeholder="Project ID"></label>
+              <label>Preferred runtime<select class="agent-preference-runtime"><option value="">No preference</option></select></label>
+              <label class="agent-fallback-label"><input type="checkbox" class="agent-preference-fallback" checked> Allow fallback</label>
+              <button type="button" class="ghost-button agent-preference-load">Load</button>
+              <button type="button" class="ghost-button agent-preference-save">Publish</button>
+            </div>
+            <div class="agent-runtime-control-status agent-preference-status" aria-live="polite">Preferences publish through typed Configuration records. Role defaults remain Definition Registry policy.</div>
+          </div>
+        </section>
         <section class="agent-route-explainer">
           <h3>Explain runtime routing</h3>
           <div class="agent-route-form">
@@ -332,6 +534,13 @@
     grid.prepend(card);
     card.querySelector('.agent-provider-refresh').addEventListener('click', () => refreshCard(card));
     card.querySelector('.agent-route-run').addEventListener('click', () => explainRoute(card));
+    card.querySelector('.agent-new-thread').addEventListener('click', () => startThreadWithRuntime(card));
+    card.querySelector('.agent-preference-load').addEventListener('click', () => loadPreferences(card));
+    card.querySelector('.agent-preference-save').addEventListener('click', () => savePreferences(card));
+    card.querySelector('.agent-preference-scope').addEventListener('change', () => {
+      const project = card.querySelector('.agent-preference-project');
+      project.disabled = card.querySelector('.agent-preference-scope').value === 'workspace';
+    });
     const panel = document.getElementById('developer-panel');
     panel?.addEventListener('toggle', () => { if (panel.open) refreshCard(card); });
     if (panel?.open) refreshCard(card);
