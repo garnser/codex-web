@@ -190,7 +190,7 @@ class BusinessKpiService:
                 window_seconds=payload.window_seconds,
                 freshness_seconds=payload.freshness_seconds,
                 direction=payload.direction,
-                source_requirements=(f"business-kpi:{kpi_id}",),
+                source_requirements=(f"business-kpi:{kpi_id}:r1",),
                 thresholds=self._thresholds(payload.target),
             ),
             scope=actor.tenant,
@@ -313,7 +313,12 @@ class BusinessKpiService:
         current = self.get(kpi_id, actor=actor)
         changes = self._validated_candidate(current, payload)
 
-        metric_changes: dict[str, Any] = {"reason": payload.reason}
+        metric_changes: dict[str, Any] = {
+            "reason": payload.reason,
+            "source_requirements": (
+                f"business-kpi:{current.id}:r{current.revision + 1}",
+            ),
+        }
         mapping = {
             "name": "name",
             "description": "description",
@@ -434,6 +439,12 @@ class BusinessKpiService:
             if resolution.conflict:
                 partial = True
                 reasons.append(f"{entity.id}: conflicting providers")
+            if resolution.stale_fact_ids:
+                partial = True
+                reasons.append(f"{entity.id}: stale competing source fact(s)")
+            if resolution.revoked_source_fact_ids:
+                partial = True
+                reasons.append(f"{entity.id}: revoked competing source fact(s)")
             if resolution.selected is None:
                 missing_entities.append(entity.id)
                 if resolution.freshness == FactFreshness.STALE:
@@ -583,6 +594,7 @@ class BusinessKpiService:
         value: float,
         *,
         actor: AuthenticationActor,
+        current_partial: bool = False,
     ) -> BusinessKpiTrend:
         history = self.metrics.history(
             metric_id,
@@ -596,6 +608,12 @@ class BusinessKpiService:
         if previous is None or type(previous.value) not in {int, float}:
             return BusinessKpiTrend()
         previous_value = float(previous.value)
+        if current_partial or previous.partial:
+            return BusinessKpiTrend(
+                previous_observation_id=previous.id,
+                previous_value=previous_value,
+                previous_partial=previous.partial,
+            )
         absolute = value - previous_value
         percent = (
             absolute / abs(previous_value) * 100.0
@@ -605,6 +623,7 @@ class BusinessKpiService:
         return BusinessKpiTrend(
             previous_observation_id=previous.id,
             previous_value=previous_value,
+            previous_partial=previous.partial,
             absolute_delta=absolute,
             percent_delta=percent,
         )
@@ -739,7 +758,9 @@ class BusinessKpiService:
                 observed_at=observed_at,
                 window_start=window_start,
                 window_end=window_end,
-                source=f"business-kpi:{definition.id}",
+                source=(
+                    f"business-kpi:{definition.id}:r{definition.revision}"
+                ),
                 external_record_ref=None,
                 partial=partial,
                 idempotency_key=f"business-kpi:{formula_fingerprint}",
@@ -786,6 +807,7 @@ class BusinessKpiService:
                 observation.id,
                 value,
                 actor=actor,
+                current_partial=partial,
             ),
             evaluated_at=evaluated_at,
         )
