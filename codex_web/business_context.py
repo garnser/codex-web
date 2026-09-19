@@ -154,6 +154,7 @@ class BusinessFieldProvenance(BaseModel):
     external_record_ref_id: str | None = Field(default=None, max_length=500)
     provider: str | None = Field(default=None, max_length=200)
     authority: FactSourceAuthority = FactSourceAuthority.OBSERVED
+    priority: int = Field(default=0, ge=0, le=1000)
     source_revision: str | None = Field(default=None, max_length=500)
     observed_at: float | None = None
 
@@ -223,6 +224,8 @@ class ExternalRecordRefCreate(BaseModel):
     resource_ids: tuple[str, ...] = ()
     classification: DataClassification = DataClassification.INTERNAL
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = Field(default=None, max_length=500)
     synced_at: float | None = None
     retention_policy_ref: str | None = Field(default=None, max_length=500)
     retention_expires_at: float | None = None
@@ -254,6 +257,8 @@ class ExternalRecordRef(BaseModel):
     classification: DataClassification
     lifecycle: ExternalRecordLifecycle = ExternalRecordLifecycle.ACTIVE
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = None
     first_seen_at: float = Field(default_factory=time.time)
     synced_at: float = Field(default_factory=time.time)
     revoked_at: float | None = None
@@ -280,6 +285,8 @@ class ExternalRecordRefUpdate(BaseModel):
     resource_ids: tuple[str, ...] | None = None
     lifecycle: ExternalRecordLifecycle | None = None
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = Field(default=None, max_length=500)
     synced_at: float | None = None
 
 
