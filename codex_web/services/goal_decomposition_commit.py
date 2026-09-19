@@ -4,8 +4,6 @@ import time
 from collections import defaultdict
 
 from codex_web.action_intents import (
-    ActionDecisionOutcome,
-    ActionDecisionSnapshot,
     ActionIntentCreate,
     ActionIntentStatus,
 )
@@ -216,13 +214,6 @@ class GoalDecompositionCommitService:
                         binding_id=record.binding_id,
                         request=request,
                         goal_id=proposal.goal_id,
-                        authority_decision=ActionDecisionSnapshot(
-                            decision_id=f"{proposal.id}:review",
-                            outcome=ActionDecisionOutcome.ALLOW,
-                            source="approval:goal-decomposition-review",
-                            reason=proposal.review_reason or reason,
-                            evaluated_at=proposal.reviewed_at,
-                        ),
                         verification_required=False,
                     ),
                     actor=actor,
