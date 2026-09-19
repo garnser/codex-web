@@ -72,6 +72,8 @@ class CodexAgentRuntimeAdapter:
             params["cwd"] = request.workspace_cwd
         if request.sandbox:
             params["sandbox"] = request.sandbox
+        if request.sandbox_policy is not None:
+            params["sandboxPolicy"] = request.sandbox_policy
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
         if request.model:
@@ -89,6 +91,8 @@ class CodexAgentRuntimeAdapter:
             params["cwd"] = request.workspace_cwd
         if request.sandbox:
             params["sandbox"] = request.sandbox
+        if request.sandbox_policy is not None:
+            params["sandboxPolicy"] = request.sandbox_policy
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
         if request.model:
