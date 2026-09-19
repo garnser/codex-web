@@ -9,19 +9,25 @@ test("Swagger browser lazy-loads the live FastAPI docs and can be dismissed", as
 
   await expect(launch).toBeVisible();
   await expect(drawer).toHaveAttribute("aria-hidden", "true");
+  await expect(drawer).toHaveJSProperty("inert", true);
   await expect(frame).toHaveAttribute("src", "about:blank");
 
   await launch.click();
   await expect(drawer).toHaveClass(/open/);
   await expect(drawer).toHaveAttribute("aria-hidden", "false");
   await expect(launch).toHaveAttribute("aria-expanded", "true");
+  await expect(drawer).toHaveJSProperty("inert", false);
   await expect(frame).toHaveAttribute("src", "/docs");
   await expect(page.locator("#swagger-openapi-json")).toHaveAttribute("href", "/openapi.json");
   await expect(page.locator("#swagger-open-tab")).toHaveAttribute("href", "/docs");
 
+  await page.locator("#swagger-reload").click();
+  await expect(frame).toHaveAttribute("src", "/docs");
+
   await page.keyboard.press("Escape");
   await expect(drawer).not.toHaveClass(/open/);
   await expect(launch).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer).toHaveJSProperty("inert", true);
   await expect(launch).toBeFocused();
 });
 
