@@ -351,6 +351,8 @@ class BusinessKpiOperandAttribution(BaseModel):
     stale_fact_ids: tuple[str, ...] = ()
     revoked_source_fact_ids: tuple[str, ...] = ()
     missing_entity_ids: tuple[str, ...] = ()
+    oldest_selected_at: float | None = None
+    newest_selected_at: float | None = None
     value: float | None = None
     partial: bool = False
     reason: str
@@ -387,6 +389,7 @@ class BusinessKpiTargetEvaluation(BaseModel):
     target_value: float
     passed: bool
     variance: float
+    variance_percent: float | None = None
 
 
 class BusinessKpiEvaluation(BaseModel):
@@ -447,3 +450,21 @@ class BusinessKpiState(BaseModel):
     revisions: list[BusinessKpiDefinitionRevision] = Field(default_factory=list)
     attributions: list[BusinessKpiObservationAttribution] = Field(default_factory=list)
     operating_snapshots: list[BusinessKpiOperatingSnapshot] = Field(default_factory=list)
+
+
+class BusinessKpiGoalBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    goal_id: str = Field(min_length=1)
+    description: str | None = Field(default=None, max_length=2000)
+    operator: MetricThresholdOperator | None = None
+    target_value: float | None = None
+    allow_partial: bool = False
+
+
+class BusinessKpiDecisionBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    decision_id: str = Field(min_length=1)
+    summary: str | None = Field(default=None, max_length=4000)
+    allow_partial: bool = False
