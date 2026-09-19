@@ -30,6 +30,7 @@ from codex_web.services.definitions import (
     DefinitionKindSchema,
     DefinitionRegistryService,
 )
+from codex_web.resources import ResourceLifecycle
 from codex_web.services.resources import (
     ResourceCatalogError,
     ResourceCatalogService,
@@ -200,9 +201,15 @@ class AuthorityRoleService:
         resources = []
         for resource_id in request.resource_ids:
             try:
-                resources.append(self.resources.get(resource_id, actor))
+                resource = self.resources.get(resource_id, actor)
             except ResourceCatalogError:
                 return [f"resource is unavailable or outside tenant scope: {resource_id}"]
+            if resource.lifecycle in {
+                ResourceLifecycle.DISABLED,
+                ResourceLifecycle.DELETED,
+            }:
+                return [f"resource is not active for privileged use: {resource_id}"]
+            resources.append(resource)
 
         findings: list[str] = []
         if grant.resource_ids:
@@ -269,30 +276,38 @@ class AuthorityRoleService:
                 findings.append("grant requires explicit environment class")
             elif request.environment not in grant.environments:
                 findings.append("environment is outside grant")
-        if (
-            grant.max_amount_usd is not None
-            and request.amount_usd is not None
-            and request.amount_usd > grant.max_amount_usd
+        for limit, observed, missing_reason, exceeded_reason in (
+            (
+                grant.max_amount_usd,
+                request.amount_usd,
+                "grant requires explicit monetary amount",
+                "monetary amount exceeds grant",
+            ),
+            (
+                grant.max_input_tokens,
+                request.input_tokens,
+                "grant requires explicit input-token budget",
+                "input-token budget exceeds grant",
+            ),
+            (
+                grant.max_output_tokens,
+                request.output_tokens,
+                "grant requires explicit output-token budget",
+                "output-token budget exceeds grant",
+            ),
+            (
+                grant.max_model_calls,
+                request.model_calls,
+                "grant requires explicit model-call budget",
+                "model-call budget exceeds grant",
+            ),
         ):
-            findings.append("monetary amount exceeds grant")
-        if (
-            grant.max_input_tokens is not None
-            and request.input_tokens is not None
-            and request.input_tokens > grant.max_input_tokens
-        ):
-            findings.append("input-token budget exceeds grant")
-        if (
-            grant.max_output_tokens is not None
-            and request.output_tokens is not None
-            and request.output_tokens > grant.max_output_tokens
-        ):
-            findings.append("output-token budget exceeds grant")
-        if (
-            grant.max_model_calls is not None
-            and request.model_calls is not None
-            and request.model_calls > grant.max_model_calls
-        ):
-            findings.append("model-call budget exceeds grant")
+            if limit is None:
+                continue
+            if observed is None:
+                findings.append(missing_reason)
+            elif observed > limit:
+                findings.append(exceeded_reason)
         if (
             AUTHORITY_AUTONOMY_RISK_RANK[request.autonomous_risk]
             > AUTHORITY_AUTONOMY_RISK_RANK[grant.max_autonomous_risk]
