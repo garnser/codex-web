@@ -1323,6 +1323,7 @@ turn_execution_service = install_turn_execution_service(
     session_managers=assignment_session_managers,
     runtime_adapter_factory=_assignment_runtime_adapter,
     provider_capacity=provider_capacity_service,
+    ownership=replicated_ownership_service,
 )
 async def _resume_provider_capacity_wait(wait):
     if wait.thread_id:
