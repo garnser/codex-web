@@ -449,6 +449,42 @@ class FakeEvidence:
         ]
 
 
+class FakeExtensions:
+    def __init__(self, lifecycle="enabled", incompatible_reason=None):
+        self.installation = DumpNS(
+            id="extension-crm",
+            manifest=DumpNS(
+                id="com.example.crm",
+                version="1.2.3",
+                capabilities=DumpNS(
+                    requested=("network.crm.read", "secrets.crm"),
+                ),
+            ),
+            lifecycle=DumpNS(value=lifecycle),
+            health_status=DumpNS(value="healthy"),
+            configuration_record_ids=("config-crm",),
+            incompatible_reason=incompatible_reason,
+        )
+
+    def get(self, installation_id, actor):
+        if installation_id != self.installation.id:
+            raise KeyError(installation_id)
+        return self.installation
+
+    def grants(self, installation_id, actor):
+        self.get(installation_id, actor)
+        return [
+            DumpNS(
+                capability="network.crm.read",
+                active=True,
+            ),
+            DumpNS(
+                capability="secrets.crm",
+                active=False,
+            ),
+        ]
+
+
 class CompanyOperationsTests(unittest.TestCase):
     def setUp(self):
         self.actor = AuthenticationActor(
@@ -507,6 +543,64 @@ class CompanyOperationsTests(unittest.TestCase):
         self.assertIn("arr: partial", overview.blockers)
         self.assertTrue(
             any("fact Northstar/arr: conflict" == item for item in overview.blockers)
+        )
+
+    def test_linked_extension_requested_and_active_grants_remain_distinct(self):
+        context = FakeContext()
+        sources = FakeSources()
+        sources.source.extension_installation_id = "extension-crm"
+        service = CompanyOperationsService(
+            context,
+            sources,
+            FakeKpis(),
+            FakeGoals(),
+            FakeDecisions(),
+            self.executives,
+            FakeAttention(),
+            FakeCapacity(),
+            FakeApprovals(),
+            self.actions,
+            FakeEvidence(),
+            FakeExtensions(),
+            clock=lambda: 100.0,
+        )
+        source = service.overview(actor=self.actor).sources[0]
+        self.assertEqual(source.extension_id, "com.example.crm")
+        self.assertEqual(source.extension_version, "1.2.3")
+        self.assertEqual(
+            source.extension_requested_capabilities,
+            ("network.crm.read", "secrets.crm"),
+        )
+        self.assertEqual(
+            source.extension_granted_capabilities,
+            ("network.crm.read",),
+        )
+        self.assertEqual(
+            source.extension_configuration_record_ids,
+            ("config-crm",),
+        )
+
+        blocked = CompanyOperationsService(
+            context,
+            sources,
+            FakeKpis(),
+            FakeGoals(),
+            FakeDecisions(),
+            self.executives,
+            FakeAttention(),
+            FakeCapacity(),
+            FakeApprovals(),
+            self.actions,
+            FakeEvidence(),
+            FakeExtensions(
+                lifecycle="incompatible",
+                incompatible_reason="host contract mismatch",
+            ),
+            clock=lambda: 100.0,
+        ).overview(actor=self.actor).sources[0]
+        self.assertEqual(blocked.health, CompanyOperationsHealth.BLOCKED)
+        self.assertTrue(
+            any("host contract mismatch" in item for item in blocked.issues)
         )
 
     def test_explain_executive_traces_governed_context_to_action_receipt_and_evidence(self):
