@@ -24,6 +24,13 @@ from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionM
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
 )
+from codex_web.services.project_runtime import ProjectRuntimeService
+from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
+from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
+from codex_web.services.thread_naming import ThreadNamingService
+from codex_web.services.thread_recovery import ThreadRecoveryService
+from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingService,
 )
@@ -59,6 +66,14 @@ class ThreadService:
         routing_service: AgentRoutingService | None = None,
         session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
         runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
+        project_runtime: ProjectRuntimeService | None = None,
+        settings: ThreadExecutionSettingsService | None = None,
+        recovery: ThreadRecoveryService | None = None,
+        resume_runtime: ThreadResumeService | None = None,
+        naming: ThreadNamingService | None = None,
+        collaboration: ThreadBotCollaborationService | None = None,
+        thread_index: ThreadIndexRepository | None = None,
+        active_turn_loader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -71,6 +86,47 @@ class ThreadService:
         if session_manager is not None:
             self.session_managers.setdefault(("openai", "codex"), session_manager)
         self.runtime_adapter_factory = runtime_adapter_factory
+        self.project_runtime = project_runtime
+        self.settings = settings
+        self.recovery = recovery
+        self.resume_runtime = resume_runtime
+        self.naming = naming
+        self.collaboration = collaboration
+        self.thread_index = thread_index
+        self.active_turn_loader = active_turn_loader
+
+    @staticmethod
+    def _required(value: Any, name: str):
+        if value is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"{name} is unavailable",
+            )
+        return value
+
+    def _projects(self) -> ProjectRuntimeService:
+        return self._required(self.project_runtime, "project runtime")
+
+    def _settings(self) -> ThreadExecutionSettingsService:
+        return self._required(self.settings, "thread settings")
+
+    def _recovery(self) -> ThreadRecoveryService:
+        return self._required(self.recovery, "thread recovery")
+
+    def _resume(self) -> ThreadResumeService:
+        return self._required(self.resume_runtime, "thread resume runtime")
+
+    def _naming(self) -> ThreadNamingService:
+        return self._required(self.naming, "thread naming")
+
+    def _collaboration(self) -> ThreadBotCollaborationService:
+        return self._required(
+            self.collaboration,
+            "thread bot collaboration",
+        )
+
+    def _index(self) -> ThreadIndexRepository:
+        return self._required(self.thread_index, "thread index")
 
     def _require_bootstrap_routing(self) -> tuple[
         TurnExecutionBindingService,
@@ -193,12 +249,10 @@ class ThreadService:
         project = None
         if project_id:
             with contextlib.suppress(Exception):
-                project = self.host._project(project_id)
+                project = self._projects().get(project_id)
         if project is None:
-            project_for_cwd = getattr(self.host, "_project_for_cwd", None)
-            if callable(project_for_cwd):
-                with contextlib.suppress(Exception):
-                    project = project_for_cwd(item.get("cwd"))
+            with contextlib.suppress(Exception):
+                project = self._projects().find_by_cwd(item.get("cwd"))
         if project is None:
             return
 
@@ -275,7 +329,7 @@ class ThreadService:
         archived: bool = False,
         search: str | None = None,
     ) -> dict[str, Any]:
-        project_path = self.host._project(project_id).path if project_id else None
+        project_path = self._projects().get(project_id).path if project_id else None
         runtime_request = AgentRuntimeListRequest(
             workspace_cwd=project_path,
             archived=archived,
@@ -293,9 +347,13 @@ class ThreadService:
             return result
 
         items = result.get("data") or result.get("threads") or []
-        indexed_threads = self.host._load_thread_index()
+        indexed_threads = self._index().load()
         indexed_by_id = {indexed.id: indexed for indexed in indexed_threads}
-        active_turns = self.host._load_active_turns()
+        active_turns = (
+            self.active_turn_loader()
+            if self.active_turn_loader is not None
+            else {}
+        )
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -373,7 +431,7 @@ class ThreadService:
             bootstrap_bindings,
             control_actor,
         ) = self._require_bootstrap_routing()
-        project = self.host._project(project_id)
+        project = self._projects().get(project_id)
         effective_sandbox = sandbox or project.sandbox
         effective_approval_policy = approval_policy or project.approval_policy
         runtime_binding = await self._select_runtime_binding(
@@ -418,7 +476,7 @@ class ThreadService:
             )
 
         workspace_cwd = str(workspace_path)
-        params = self.host._project_params(
+        params = self._projects().params(
             project,
             {
                 "sessionStartSource": "startup",
@@ -428,7 +486,7 @@ class ThreadService:
             },
         )
         params["cwd"] = workspace_cwd
-        params["sandboxPolicy"] = self.host._sandbox_policy(
+        params["sandboxPolicy"] = self._projects().sandbox_policy(
             effective_sandbox,
             workspace_cwd,
         )
@@ -545,7 +603,7 @@ class ThreadService:
                 capability_snapshot=runtime_adapter.capabilities,
             )
 
-        self.host._remember_thread_run_settings(
+        self._settings().remember(
             thread_id,
             sandbox=effective_sandbox,
             approval_policy=effective_approval_policy,
@@ -595,13 +653,13 @@ class ThreadService:
         message_limit: int | None = None,
         turn_limit: int | None = None,
     ) -> dict[str, Any]:
-        self.host._raise_if_thread_replaced(thread_id)
+        self._recovery().raise_if_thread_replaced(thread_id)
         limit = self.host._coerce_thread_message_limit(
             message_limit if message_limit is not None else turn_limit
         )
-        resume_task = self.host.WEB_THREAD_RESUME_TASKS.get(thread_id)
-        if resume_task and not resume_task.done():
-            return self.host._thread_read_timeout_response(
+        resume_task = self._resume().active_task(thread_id)
+        if resume_task is not None:
+            return self._resume().read_timeout_response(
                 thread_id,
                 limit,
                 "thread/resume still in progress",
@@ -611,19 +669,19 @@ class ThreadService:
             runtime_result = await self._codex_adapter(thread_id).read_session(thread_id)
             response = runtime_result.payload
         except Exception as exc:
-            if self.host._is_codex_timeout_error(exc):
-                return self.host._thread_read_timeout_response(thread_id, limit, exc)
+            if self._resume().is_timeout_error(exc):
+                return self._resume().read_timeout_response(thread_id, limit, exc)
             raise
         return self.host._trim_thread_messages(response, limit)
 
     async def rename(self, thread_id: str, name: str) -> dict[str, Any]:
-        self.host._raise_if_thread_replaced(thread_id)
-        await self.host._set_thread_name(thread_id, name)
+        self._recovery().raise_if_thread_replaced(thread_id)
+        await self._naming().set_name(thread_id, name)
         return {"ok": True, "threadId": thread_id, "name": name}
 
     def update_settings(self, thread_id: str, payload: ThreadRunSettings) -> dict[str, Any]:
-        self.host._raise_if_thread_replaced(thread_id)
-        settings = self.host._remember_thread_run_settings(
+        self._recovery().raise_if_thread_replaced(thread_id)
+        settings = self._settings().remember(
             thread_id,
             sandbox=payload.sandbox,
             approval_policy=payload.approval_policy,
@@ -636,15 +694,22 @@ class ThreadService:
     def list_settings(self) -> dict[str, Any]:
         return {
             thread_id: settings.model_dump()
-            for thread_id, settings in self.host._load_thread_settings().items()
+            for thread_id, settings in self._settings().all().items()
         }
 
     def get_settings(self, thread_id: str) -> dict[str, Any]:
-        self.host._raise_if_thread_replaced(thread_id)
-        return {"threadId": thread_id, **self.host._thread_run_settings(thread_id).model_dump()}
+        self._recovery().raise_if_thread_replaced(thread_id)
+        return {
+            "threadId": thread_id,
+            **self._settings().get(thread_id).model_dump(),
+        }
 
     async def update_primary(self, thread_id: str, payload: ThreadPrimaryUpdate) -> dict[str, Any]:
-        bindings = await self.host._set_thread_primary(thread_id, payload.project_id, payload.primary)
+        bindings = await self._collaboration().set_primary(
+            thread_id,
+            payload.project_id,
+            payload.primary,
+        )
         return {
             "ok": True,
             "threadId": thread_id,
@@ -658,7 +723,7 @@ class ThreadService:
         thread_id: str,
         payload: ThreadPrimaryChannelUpdate,
     ) -> dict[str, Any]:
-        bindings = await self.host._set_thread_primary_channel(
+        bindings = await self._collaboration().set_primary_channel(
             thread_id,
             payload.project_id,
             payload.provider,
