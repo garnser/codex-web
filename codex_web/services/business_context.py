@@ -156,7 +156,7 @@ class BusinessContextService:
         retention_expires_at: float | None = None,
         source_record_ids: tuple[str, ...] = (),
         reason: str,
-    ) -> str | None:
+    ) -> GovernedDataRecord | None:
         if self.governance is None:
             return None
         record = self.governance.register_domain_record(
@@ -173,7 +173,7 @@ class BusinessContextService:
             ),
             actor=actor,
         )
-        return record.id
+        return record
 
     def _remove_object(self, object_type: str, object_id: str) -> None:
         def apply(state: BusinessContextState) -> BusinessContextState:
@@ -199,35 +199,34 @@ class BusinessContextService:
         self,
         object_type: str,
         object_id: str,
-        governance_record_id: str | None,
+        governance_record: GovernedDataRecord | None,
     ) -> None:
-        if governance_record_id is None:
+        if governance_record is None:
             return
+
+        update = {
+            "governance_record_id": governance_record.id,
+            "classification": governance_record.classification,
+        }
 
         def apply(state: BusinessContextState) -> BusinessContextState:
             if object_type == "business_entity":
                 state.entities = [
-                    item.model_copy(
-                        update={"governance_record_id": governance_record_id}
-                    )
+                    item.model_copy(update=update)
                     if item.id == object_id
                     else item
                     for item in state.entities
                 ]
             elif object_type == "external_record_ref":
                 state.external_records = [
-                    item.model_copy(
-                        update={"governance_record_id": governance_record_id}
-                    )
+                    item.model_copy(update=update)
                     if item.id == object_id
                     else item
                     for item in state.external_records
                 ]
             elif object_type == "company_fact":
                 state.facts = [
-                    item.model_copy(
-                        update={"governance_record_id": governance_record_id}
-                    )
+                    item.model_copy(update=update)
                     if item.id == object_id
                     else item
                     for item in state.facts
@@ -276,7 +275,7 @@ class BusinessContextService:
 
         self.store.update(apply)
         try:
-            governance_id = self._governance_register(
+            governance_record = self._governance_register(
                 object_type="business_entity",
                 object_id=item.id,
                 classification=item.classification,
@@ -290,7 +289,7 @@ class BusinessContextService:
         except Exception:
             self._remove_object("business_entity", item.id)
             raise
-        self._attach_governance("business_entity", item.id, governance_id)
+        self._attach_governance("business_entity", item.id, governance_record)
         return self.get_entity(item.id, actor=actor)
 
     def get_entity(
@@ -419,7 +418,7 @@ class BusinessContextService:
             )
         )
         try:
-            governance_id = self._governance_register(
+            governance_record = self._governance_register(
                 object_type="external_record_ref",
                 object_id=item.id,
                 classification=item.classification,
@@ -437,7 +436,7 @@ class BusinessContextService:
         except Exception:
             self._remove_object("external_record_ref", item.id)
             raise
-        self._attach_governance("external_record_ref", item.id, governance_id)
+        self._attach_governance("external_record_ref", item.id, governance_record)
         return self.get_external_record(item.id, actor=actor)
 
     def get_external_record(
@@ -614,7 +613,7 @@ class BusinessContextService:
         actor: AuthenticationActor,
     ) -> None:
         try:
-            governance_id = self._governance_register(
+            governance_record = self._governance_register(
                 object_type="company_fact",
                 object_id=item.id,
                 classification=item.classification,
@@ -627,7 +626,7 @@ class BusinessContextService:
         except Exception:
             self._remove_object("company_fact", item.id)
             raise
-        self._attach_governance("company_fact", item.id, governance_id)
+        self._attach_governance("company_fact", item.id, governance_record)
 
     def create_fact(
         self,
