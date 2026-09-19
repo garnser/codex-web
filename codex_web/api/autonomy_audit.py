@@ -177,9 +177,26 @@ def build_autonomy_audit_router(service: AutonomyAuditService) -> APIRouter:
         payload: AutonomyReliabilityPolicy,
         request: Request,
     ) -> dict[str, Any]:
-        admin(request)
-        policy = service.set_reliability_policy(payload)
+        actor = admin(request)
+        policy = service.set_reliability_policy(
+            payload,
+            actor=actor,
+        )
         return {"policy": policy.model_dump(mode="json")}
+
+    @router.post("/metrics/evidence")
+    async def reliability_evidence(request: Request) -> dict[str, Any]:
+        actor = admin(request)
+        try:
+            evidence, metrics = service.publish_reliability_evidence(
+                actor=actor,
+            )
+        except AutonomyAuditError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "evidence": evidence.model_dump(mode="json"),
+            "metrics": metrics.model_dump(mode="json"),
+        }
 
     @router.post("/signals")
     async def add_signal(
