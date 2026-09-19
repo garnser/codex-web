@@ -26,6 +26,7 @@ from codex_web.action_providers import (
     ActionResult,
     ActionVerification,
 )
+from codex_web.capacity import CapacityPolicy, WorkloadKind, WorkloadPriority
 from codex_web.entitlements import (
     CapabilityEntitlementUpdate,
     EntitlementMode,
@@ -51,6 +52,7 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.capacity import CapacityService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
@@ -59,6 +61,7 @@ from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
@@ -798,6 +801,53 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             intent_id=intent.id,
         )
         self.assertIsNone(claim)
+
+
+    async def test_capacity_saturation_defers_claim_without_provider_execution(self) -> None:
+        capacity = CapacityService(CapacityStore(self.sqlite))
+        capacity.set_policy(
+            CapacityPolicy(
+                max_global_inflight=4,
+                max_tenant_inflight=3,
+                critical_global_reserve=1,
+                critical_tenant_reserve=1,
+                load_shed_threshold=1.0,
+                low_priority_shed_threshold=1.0,
+                workload_limits={WorkloadKind.ACTION: 1},
+            )
+        )
+        blocker = capacity.acquire(
+            organization_id="local",
+            workspace_id="default",
+            workload=WorkloadKind.ACTION,
+            priority=WorkloadPriority.NORMAL,
+            owner_ref="other-action",
+            lease_seconds=60,
+        )
+        self.service.capacity = capacity
+
+        intent = self._create()
+        claim = self.service.claim(
+            ActionIntentClaimRequest(
+                worker_id="worker-1",
+                lease_seconds=30,
+            ),
+            actor=self.worker_actor,
+            intent_id=intent.id,
+        )
+        self.assertIsNotNone(claim)
+
+        deferred = await self.service.execute_claimed(
+            intent.id,
+            "worker-1",
+            actor=self.worker_actor,
+        )
+        self.assertEqual(deferred.status, ActionIntentStatus.PENDING)
+        self.assertIsNone(deferred.lease)
+        self.assertIsNotNone(deferred.not_before)
+        self.assertIn("capacity deferred", deferred.last_error or "")
+        self.assertEqual(self.reference.values, {})
+        self.assertTrue(capacity.release(blocker.id))
 
 
 if __name__ == "__main__":
