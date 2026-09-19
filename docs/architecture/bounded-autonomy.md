@@ -116,7 +116,12 @@ Reasoning failures exhaust a bounded retry count and enter a durable dead-letter
 history. Recursion or action-budget violations fail closed and are also
 dead-lettered.
 
-## Observability and attribution
+## Observability, audit, and attribution
+
+The canonical autonomy-cycle state remains the immediate control-plane record.
+Every terminal cycle path is additionally appended to the tamper-evident M11
+autonomy audit described in [autonomy-audit.md](autonomy-audit.md). Runtime logs
+and dashboard counters remain telemetry and cannot substitute for that audit.
 
 Each cycle records metadata only:
 
@@ -132,6 +137,10 @@ Each cycle records metadata only:
 - outcome/reason/error and timestamps.
 
 Recent cycle and dead-letter history is exposed through `GET /api/autonomy`.
+Reconstructable audit history, integrity roots, reliability/efficiency metrics,
+safety signals and periodic verification are exposed through
+`/api/autonomy/audit`. Production `execute_broad` policy can require fresh
+PASS Evidence for both audit integrity and measured reliability.
 Control mutations require autonomy-admin authorization (and MFA for human
 administrators):
 
