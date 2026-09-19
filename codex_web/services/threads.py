@@ -286,6 +286,7 @@ class ThreadService:
             sandbox=effective_sandbox,
             approval_policy=effective_approval_policy,
             workspace_cwd=workspace_cwd,
+            sandbox_policy=params.get("sandboxPolicy"),
             execution_id=binding.execution_id,
             assignment_id=binding.assignment_id,
             execution_workspace_id=binding.workspace_id,
