@@ -10,7 +10,13 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 
-from codex_web.executive import AGENTS, ExecutiveStore, rank_agents, route_agent
+from codex_web.executive import (
+    AGENTS,
+    DelegateRequest,
+    ExecutiveStore,
+    rank_agents,
+    route_agent,
+)
 from codex_web.executive_integration import MultiProviderExecutiveService, install_executive_integrated
 from codex_web.storage.executive_state import ExecutiveStateStore
 
@@ -137,6 +143,25 @@ class ExecutiveIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(provider_status["stateBackend"], "sqlite")
         self.assertEqual(provider_status["knowledgeBackend"], "sqlite")
+
+    def test_canonical_m9_compatibility_rejects_delegate_without_work_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MultiProviderExecutiveService(
+                _Host(Path(temp_dir)),
+                require_canonical_work_item=True,
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "requires a canonical work_item_ref",
+            ):
+                asyncio.run(
+                    service.delegate(
+                        DelegateRequest(
+                            task="Implement this directly from Executive chat",
+                            project_id="home",
+                        )
+                    )
+                )
 
     def test_ollama_defaults_are_local_and_do_not_require_key_at_construction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(

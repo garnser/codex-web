@@ -165,6 +165,8 @@ class GoalService:
         *,
         scope: TenantScope,
         actor_id: str,
+        originating_executive_activation_id: str | None = None,
+        originating_executive_proposal_id: str | None = None,
     ) -> GoalRecord:
         self._validate_bindings(payload.work_graph_bindings, scope)
         now = time.time()
@@ -182,6 +184,8 @@ class GoalService:
             budget=payload.budget,
             approval_requirements=payload.approval_requirements,
             work_graph_bindings=payload.work_graph_bindings,
+            originating_executive_activation_id=originating_executive_activation_id,
+            originating_executive_proposal_id=originating_executive_proposal_id,
             created_by=actor_id,
             updated_by=actor_id,
             created_at=now,

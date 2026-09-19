@@ -29,6 +29,7 @@ from codex_web.executive import (
     ExecutiveService,
 )
 from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.executive_roles import ExecutiveRoleDefinitionService
 from codex_web.services.executive_knowledge import (
     ExecutiveKnowledgeStore,
     ExecutiveKnowledgeUpsert,
@@ -44,6 +45,7 @@ class MultiProviderExecutiveService(ExecutiveService):
         host: Any,
         *,
         model_gateway: ModelGatewayService | None = None,
+        require_canonical_work_item: bool = False,
     ):
         super().__init__(host)
         # Executive runtime state uses the same SQLite document store as the
@@ -52,6 +54,7 @@ class MultiProviderExecutiveService(ExecutiveService):
         self.store = ExecutiveStateStore(host)
         self.knowledge = ExecutiveKnowledgeStore(host)
         self.model_gateway = model_gateway
+        self.require_canonical_work_item = require_canonical_work_item
         self._knowledge_prompt: contextvars.ContextVar[str] = contextvars.ContextVar(
             "executive_knowledge_prompt",
             default="",
@@ -317,6 +320,11 @@ class MultiProviderExecutiveService(ExecutiveService):
             self._knowledge_prompt.reset(knowledge_token)
 
     async def delegate(self, request: DelegateRequest) -> dict[str, Any]:
+        if self.require_canonical_work_item and not request.work_item_ref:
+            raise RuntimeError(
+                "Executive delegation requires a canonical work_item_ref; "
+                "materialize advisory outcomes through Goal/Decision/Work first"
+            )
         project_id = request.project_id
         if request.work_item_ref:
             try:
@@ -356,6 +364,7 @@ def install_executive_integrated(
     host: Any,
     *,
     model_gateway: ModelGatewayService | None = None,
+    executive_roles: ExecutiveRoleDefinitionService | None = None,
 ) -> MultiProviderExecutiveService:
     """Attach the Executive API router to the existing application once."""
 
@@ -363,13 +372,42 @@ def install_executive_integrated(
     if isinstance(existing, MultiProviderExecutiveService):
         return existing
 
-    service = MultiProviderExecutiveService(host, model_gateway=model_gateway)
+    service = MultiProviderExecutiveService(
+        host,
+        model_gateway=model_gateway,
+        require_canonical_work_item=executive_roles is not None,
+    )
     router = APIRouter()
 
     @router.get("/api/executive/agents")
-    async def list_agents() -> dict[str, Any]:
-        return {
-            "agents": [
+    async def list_agents(
+        request: Request,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        if executive_roles is not None:
+            actor = request_actor(request)
+            catalog = executive_roles.catalog(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                project_id=project_id,
+            )
+            agents = [
+                {
+                    "id": role.id,
+                    "name": role.name,
+                    "title": role.title,
+                    "description": role.description,
+                    "responsibilities": list(role.responsibilities),
+                    "eventSubscriptions": list(role.event_subscriptions),
+                    "observableInformation": [
+                        item.value for item in role.observable_information
+                    ],
+                    "lifecycle": role.lifecycle.value,
+                }
+                for role in catalog.roles
+            ]
+        else:
+            agents = [
                 {
                     "id": agent.id,
                     "name": agent.name,
@@ -377,7 +415,9 @@ def install_executive_integrated(
                     "description": agent.description,
                 }
                 for agent in AGENTS.values()
-            ],
+            ]
+        return {
+            "agents": agents,
             "executionRoles": [role.public() for role in execution_roles()],
             **service.provider_status(),
         }

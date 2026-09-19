@@ -279,6 +279,8 @@ class GoalRecord(BaseModel):
     work_graph_bindings: tuple[GoalWorkGraphBinding, ...] = ()
     completion_evaluation_id: str | None = None
     completed_at: float | None = None
+    originating_executive_activation_id: str | None = None
+    originating_executive_proposal_id: str | None = None
     revision: int = Field(default=1, ge=1)
     created_by: str = Field(min_length=1)
     updated_by: str = Field(min_length=1)

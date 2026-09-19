@@ -22,6 +22,7 @@ from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
+from codex_web.api.executive_management import build_executive_management_router
 from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
@@ -126,6 +127,8 @@ from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
+from codex_web.services.executive_roles import install_executive_role_definitions
+from codex_web.services.executive_management import ExecutiveManagementService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
@@ -195,6 +198,7 @@ from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.executive_activations import ExecutiveActivationStore
 from codex_web.storage.goals import GoalStore
 from codex_web.storage.metrics import MetricStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
@@ -280,6 +284,9 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+executive_role_definition_service = install_executive_role_definitions(
+    definition_registry_service
+)
 agent_routing_definition_service = install_agent_routing_definitions(
     definition_registry_service
 )
@@ -288,6 +295,7 @@ input_pipeline_definition_service = install_input_plugin_definitions(
 )
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.executive_role_definition_service = executive_role_definition_service
 app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
@@ -916,6 +924,40 @@ app.include_router(
         decision_work_service,
     )
 )
+executive_activation_store = ExecutiveActivationStore(state_store)
+executive_management_service = ExecutiveManagementService(
+    executive_activation_store,
+    executive_role_definition_service,
+    model_gateway_service,
+    authority_role_service,
+    goal_service,
+    decision_service,
+    decision_work_service,
+    work_item_service,
+    work_graph_service,
+    artifact_evidence_service,
+)
+app.state.executive_activation_store = executive_activation_store
+app.state.executive_management_service = executive_management_service
+app.include_router(build_executive_management_router(executive_management_service))
+
+def _executive_role_definition_usage(reference):
+    if reference.kind != "executive-role-catalog":
+        return []
+    return [
+        {
+            "object_type": "executive_activation",
+            "object_id": item.id,
+            "project_id": item.project_id,
+            "status": item.status.value,
+        }
+        for item in executive_activation_store.load().activations
+        if item.role_catalog.record_id == reference.record_id
+    ]
+
+definition_registry_service.register_usage_provider(
+    _executive_role_definition_usage
+)
 goal_decomposition_store = GoalDecompositionStore(state_store)
 goal_decomposition_service = GoalDecompositionService(
     goal_decomposition_store,
@@ -1323,6 +1365,7 @@ core.executive_service = install_executive_integrated(
     app,
     core,
     model_gateway=model_gateway_service,
+    executive_roles=executive_role_definition_service,
 )
 
 

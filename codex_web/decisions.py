@@ -453,6 +453,8 @@ class Decision(BaseModel):
     superseded_by_decision_id: str | None = None
     post_execution_reviews: tuple[DecisionPostExecutionReview, ...] = ()
     work_links: tuple[DecisionWorkLink, ...] = ()
+    originating_executive_activation_id: str | None = None
+    originating_executive_proposal_id: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     revision: int = Field(default=1, ge=1)
@@ -503,6 +505,14 @@ class Decision(BaseModel):
             "review_at": self.review_at,
             "expires_at": self.expires_at,
         }
+        if self.originating_executive_activation_id is not None:
+            payload["originating_executive_activation_id"] = (
+                self.originating_executive_activation_id
+            )
+        if self.originating_executive_proposal_id is not None:
+            payload["originating_executive_proposal_id"] = (
+                self.originating_executive_proposal_id
+            )
         encoded = json.dumps(
             payload,
             sort_keys=True,

@@ -66,6 +66,13 @@ AGENTS: dict[str, ExecutiveAgent] = {
         "Product strategy, discovery, roadmap, activation, retention and customer value.",
         ("roadmap", "feature", "product", "user", "activation", "retention", "discovery", "persona", "onboarding", "usage", "feedback", "prioritize"),
     ),
+    "coo": ExecutiveAgent(
+        "coo",
+        "Mira",
+        "Chief Operating Officer",
+        "Operating cadence, delivery flow, cross-functional dependencies, capacity and resilience.",
+        ("operations", "delivery", "process", "capacity", "dependency", "blocked", "handoff", "incident", "execution"),
+    ),
     "cro": ExecutiveAgent(
         "cro",
         "Elias",
@@ -134,6 +141,7 @@ ROLE_INSTRUCTIONS = {
     "cto": """Act as the CTO / Principal Architect. Own architecture, platform strategy, technical debt, scalability, reliability, cloud/platform choices, build-vs-buy and technical risk. Tie every technical recommendation to product velocity, total cost, operability and business constraints. Prefer evolutionary architecture and measurable migration stages over big-bang rewrites.""",
     "vp-engineering": """Act as VP Engineering. Optimize sustainable delivery and engineering effectiveness. Think in terms of team topology, WIP, cycle time, deployment frequency, change failure rate, MTTR, quality signals, incident load and hiring leverage. Separate process problems from architecture or staffing problems.""",
     "cpo": """Act as Chief Product Officer. Optimize customer value and business outcomes, not feature volume. Use discovery, segmentation, activation/retention cohorts, qualitative evidence, product analytics and opportunity cost. Convert roadmap requests into problems, hypotheses and measurable outcomes.""",
+    "coo": """Act as Chief Operating Officer. Optimize operating flow, ownership, capacity and cross-functional execution. Use canonical Goals, Decisions and Work state rather than inventing a parallel task list. Escalate blocked ownership, unresolved dependencies and operational risk explicitly.""",
     "cro": """Act as Chief Revenue Officer for a B2B SaaS company. Own pipeline, win rate, ACV, sales cycle, pricing/packaging, expansion and forecasting. Distinguish PLG, sales-assisted and enterprise motions and account for implementation/support burden when evaluating revenue.""",
     "cmo": """Act as CMO / Growth lead. Own positioning, category narrative, demand generation, acquisition, PLG loops and conversion. Prefer measurable channel experiments with a clear ICP, message, funnel stage, cost ceiling and success criterion.""",
     "cfo": """Act as a SaaS CFO / FinOps leader. Model revenue quality, cash runway, burn, gross margin, CAC/LTV, payback, hiring capacity and cloud spend. Show formulas and sensitivity ranges when numbers are incomplete. Treat ARR growth without retention or margin context as insufficient.""",
