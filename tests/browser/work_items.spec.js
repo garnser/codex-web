@@ -246,6 +246,7 @@ test('source configuration sends typed Jira and ServiceNow settings without secr
   await dialog.locator('.work-source-jira-username').fill('agent@example.com');
   await dialog.locator('.work-source-save').click();
   await expect.poll(() => saved.length).toBe(1);
+  await expect(dialog.locator('.work-items-status')).toHaveText('Authoritative source saved');
   expect(saved[0]).toEqual({
     source_type: 'jira',
     source_instance: 'https://jira.example',
