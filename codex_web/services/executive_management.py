@@ -538,6 +538,7 @@ class ExecutiveManagementService:
                 if wants_entities:
                     entities.append(
                         {
+                            "citation": f"[business-entity:{entity.id}]",
                             "id": entity.id,
                             "entity_type": entity.entity_type.value,
                             "name": entity.name,
@@ -616,13 +617,11 @@ class ExecutiveManagementService:
                         max_classification=max_classification,
                     )
                     denied = [
-                        decisions[item.governance_record_id]
+                        decision
                         for item in candidate_facts
                         if item.governance_record_id
-                        and (
-                            item.governance_record_id not in decisions
-                            or not decisions[item.governance_record_id].allowed
-                        )
+                        for decision in (decisions.get(item.governance_record_id),)
+                        if decision is None or not decision.allowed
                     ]
                     if denied:
                         denials.append(
@@ -632,7 +631,9 @@ class ExecutiveManagementService:
                                 "fact_key": key,
                                 "reason": "source_fact_denied_for_model_context",
                                 "denied_record_ids": [
-                                    item.record_id for item in denied
+                                    item.record_id
+                                    for item in denied
+                                    if item is not None
                                 ],
                             }
                         )
@@ -644,6 +645,11 @@ class ExecutiveManagementService:
                     )
                     facts.append(
                         {
+                            "citation": (
+                                f"[company-fact:{resolution.selected.id}]"
+                                if resolution.selected is not None
+                                else f"[company-fact-resolution:{entity.id}:{key}]"
+                            ),
                             "business_entity_id": entity.id,
                             "domains": self._business_entity_domains(entity.entity_type),
                             "key": key,
@@ -746,13 +752,11 @@ class ExecutiveManagementService:
                     max_classification=max_classification,
                 )
                 denied_source = [
-                    source_decisions[item.governance_record_id]
+                    decision
                     for item in source_facts
                     if item.governance_record_id
-                    and (
-                        item.governance_record_id not in source_decisions
-                        or not source_decisions[item.governance_record_id].allowed
-                    )
+                    for decision in (source_decisions.get(item.governance_record_id),)
+                    if decision is None or not decision.allowed
                 ]
                 if denied_source:
                     denials.append(
@@ -761,7 +765,9 @@ class ExecutiveManagementService:
                             "object_id": kpi_id,
                             "reason": "kpi_source_fact_denied_for_model_context",
                             "denied_record_ids": [
-                                item.record_id for item in denied_source
+                                item.record_id
+                                for item in denied_source
+                                if item is not None
                             ],
                         }
                     )
@@ -773,6 +779,10 @@ class ExecutiveManagementService:
                 )
                 kpis.append(
                     {
+                        "citation": (
+                            f"[business-kpi:{definition.id}@r{definition.revision}"
+                            f"/metric:{definition.metric_id}@r{current.metric_revision}]"
+                        ),
                         "id": definition.id,
                         "key": definition.key,
                         "name": definition.name,
