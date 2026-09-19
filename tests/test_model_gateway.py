@@ -35,8 +35,13 @@ from codex_web.input_plugins import (
 )
 from codex_web.model_providers import (
     ModelProviderAdapter,
+    ModelProviderCapacityError,
     ModelProviderTransientError,
     OpenAIModelProviderAdapter,
+)
+from codex_web.provider_capacity import (
+    ProviderCapacityReport,
+    ProviderCapacityStatus,
 )
 from codex_web.secret_backends import LocalFileSecretBackend
 from codex_web.secrets import SecretCreate
@@ -47,9 +52,11 @@ from codex_web.services.model_gateway import (
     ModelRegistryConflictError,
     ModelRoutingError,
 )
+from codex_web.services.provider_capacity import ProviderCapacityService
 from codex_web.services.secrets import SecretBroker
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
+from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -61,10 +68,17 @@ class _FakeAdapter:
         self.calls: list[tuple[str, str | None]] = []
         self.requests: list[ModelInvocationRequest] = []
         self.transient_models: set[str] = set()
+        self.capacity_models: set[str] = set()
 
     async def invoke(self, provider, model, request, *, credential):
         self.calls.append((model.id, credential))
         self.requests.append(request)
+        if model.id in self.capacity_models:
+            raise ModelProviderCapacityError(
+                "usage limit reached: quota exhausted",
+                status=ProviderCapacityStatus.DEPLETED,
+                retry_at=1_900_000_120.0,
+            )
         if model.id in self.transient_models:
             raise ModelProviderTransientError("temporary provider outage")
         return ModelProviderResult(
@@ -112,9 +126,14 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             SecretStateStore(self.sqlite),
             {"local": LocalFileSecretBackend(root / "secrets")},
         )
+        self.capacity = ProviderCapacityService(
+            ProviderCapacityStore(self.sqlite),
+            clock=lambda: 1_900_000_000.0,
+        )
         self.service = ModelGatewayService(
             ModelGatewayStore(self.sqlite),
             secret_broker=self.secret_broker,
+            provider_capacity=self.capacity,
         )
         self.adapter = _FakeAdapter()
         self.service.register_adapter(self.adapter)
@@ -286,6 +305,61 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.invocation.attempts[0].outcome, "transient_failure")
         self.assertEqual(result.invocation.attempts[1].outcome, "success")
         self.assertEqual(result.invocation.selected_model_id, "second")
+
+    async def test_capacity_failure_falls_back_and_persists_provider_cooldown(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("first", "p1", route_priority=1)
+        self._model("second", "p2", route_priority=2)
+        self.adapter.capacity_models.add("first")
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual(result.text, "reply:second")
+        self.assertEqual(
+            [item[0] for item in self.adapter.calls],
+            ["first", "second"],
+        )
+        self.assertEqual(
+            result.invocation.attempts[0].outcome,
+            "capacity_failure",
+        )
+        blocked = self.capacity.blocking_record(
+            "p1",
+            None,
+            actor=self.actor,
+        )
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked.status, ProviderCapacityStatus.DEPLETED)
+        self.assertEqual(blocked.retry_at, 1_900_000_120.0)
+
+        route = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual(
+            [item.provider_id for item in route.candidates],
+            ["p2"],
+        )
+
+    async def test_preexisting_provider_capacity_is_excluded_before_invocation(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("first", "p1", route_priority=1)
+        self._model("second", "p2", route_priority=2)
+        self.capacity.report(
+            ProviderCapacityReport(
+                provider_id="p1",
+                status=ProviderCapacityStatus.THROTTLED,
+                retry_at=1_900_000_060.0,
+                reason="retry later",
+                source="test",
+                observed_at=1_900_000_000.0,
+            ),
+            actor=self.actor,
+        )
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual(result.text, "reply:second")
+        self.assertEqual(self.adapter.calls, [("second", None)])
 
     async def test_policy_bounds_fallback_attempts(self) -> None:
         self._provider("p1")
