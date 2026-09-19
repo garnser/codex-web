@@ -127,22 +127,27 @@
 
   function actionButtons(record) {
     const manageable = canManage(record.scope_type);
-    if (!manageable) {
-      return '<small>Lifecycle mutation unavailable for the current actor/assurance.</small>';
+    const approvable = canApprove(record.scope_type);
+    if (!manageable && !approvable) {
+      return '<small>Lifecycle mutation/approval unavailable for the current actor/assurance.</small>';
     }
     const actions = [];
     if (["draft", "validated"].includes(record.lifecycle)) {
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
-      if (canApprove(record.scope_type)) {
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
+      }
+      if (approvable) {
         actions.push(`<button type="button" class="ghost-button" data-definition-action="approve" data-record-id="${escapeHtml(record.record_id)}">Record publication approval</button>`);
       }
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      }
     }
-    if (record.lifecycle !== "quarantined") {
+    if (manageable && record.lifecycle !== "quarantined") {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="quarantine" data-record-id="${escapeHtml(record.record_id)}">Quarantine</button>`);
     }
     const active = activeFor(record);
-    if (active && active.record_id !== record.record_id) {
+    if (manageable && active && active.record_id !== record.record_id) {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="rollback" data-record-id="${escapeHtml(record.record_id)}">Rollback to r${escapeHtml(record.revision)}</button>`);
     }
     return actions.length
