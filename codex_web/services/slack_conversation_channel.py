@@ -48,7 +48,8 @@ class SlackConversationChannelProvider:
         event_id: str | None = None,
     ) -> ConversationFact | None:
         envelope = payload
-        event = dict(payload.get("event") or payload)
+        original_event = dict(payload.get("event") or payload)
+        event = dict(original_event)
         event_type = str(event.get("type") or "")
         subtype = str(event.get("subtype") or "")
 
@@ -69,6 +70,7 @@ class SlackConversationChannelProvider:
 
         channel = (
             event.get("channel")
+            or original_event.get("channel")
             or envelope.get("channel")
             or envelope.get("_channel")
         )
