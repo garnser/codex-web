@@ -510,7 +510,7 @@ class BusinessKPITests(unittest.TestCase):
         for template in BUSINESS_KPI_TEMPLATES:
             self.assertTrue(template.required_explicit_inputs)
             self.assertTrue(template.supported_formula_kinds)
-            self.assertIn("defined", template.notes.casefold())
+            self.assertFalse(hasattr(template, "formula"))
 
     def test_empty_workspace_is_not_reported_as_current_operating_state(self) -> None:
         view = self.service.operating_view(actor=self.admin, at=100.0)
