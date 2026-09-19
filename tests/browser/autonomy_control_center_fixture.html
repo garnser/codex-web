@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Autonomy Control Center fixture</title></head>
+<body>
+  <details id="developer-panel" open>
+    <summary>Developer</summary>
+    <div class="developer-grid"></div>
+  </details>
+  <script>
+    window.__accRequests = [];
+    const snapshot = {
+      autonomy: {
+        control: { mode: "active", dry_run: false, simulation: false },
+        effective_policy: { level: "execute_bounded" },
+        qualification: [
+          { gate: "recovery", configured: true, evidence: { evidence_ids: ["evidence-recovery"], require_independent_verification: true } },
+          { gate: "capacity", configured: false, evidence: null }
+        ]
+      },
+      blockers: [{ domain: "upgrade", severity: "high", object_id: "upgrade-1", reasons: ["definition_incompatible:policy.old"] }],
+      approvals: { count: 1, pending: [{
+        id: "approval-1", status: "pending",
+        target: { operation: "deploy.release", object_type: "release_promotion", object_id: "promotion-1" },
+        requirement: { quorum: 2 }, decisions: [{ outcome: "approve" }]
+      }]},
+      attention: { count: 1, active: [{
+        id: "attention-1", severity: "critical", type: "incident.command", status: "open",
+        reason: "SEV1 incident: API unavailable", source: { object_type: "incident", object_id: "incident-1" }
+      }]},
+      incidents: { count: 1, active: [{
+        id: "incident-1", severity: "sev1", title: "API unavailable", status: "active",
+        commander_identity_id: "commander-a", affected_resource_ids: ["service-api"]
+      }]},
+      releases: { count: 1, blocked: [], latest: {
+        id: "release-1", name: "web", version: "1.2.3", status: "qualified",
+        rollback_release_id: "release-0",
+        build: { artifact_id: "artifact-build", digest: "sha256:aaaa", source_revision: "commit-abc", sbom_artifact_id: "artifact-sbom" },
+        promotions: [{ environment_name: "production", status: "awaiting_approval", artifact_digest: "sha256:aaaa", rollout: { strategy: "canary" }, blockers: [] }]
+      }},
+      recovery: {
+        recovery_qualified: false, latest_backup_id: "backup-1", latest_restore_verification_id: "verify-1",
+        rpo_satisfied: true, rto_satisfied: false, blockers: ["rto_not_satisfied"]
+      },
+      capacity: {
+        health: { load_shed_mode: true, active_tenant: 4, active_global: 10, open_circuits: ["action:gitlab:prod"], recent_deferred: 3 },
+        provider_records: [{ provider_id: "openai", runtime_id: "codex", status: "throttled", reason: "rate limit" }],
+        waits: [{ id: "wait-1" }]
+      },
+      upgrades: { count: 1, active: [{
+        id: "upgrade-1", current_app_version: "1.0.0", target_app_version: "1.1.0", status: "preflight_blocked",
+        maintenance_mode: false, rollback_available: true, irreversible_boundary_crossed: false,
+        preflight: { satisfied: false, blockers: ["definition_incompatible:policy.old"] }
+      }]},
+      execution_plane: {
+        workers: [{ id: "worker-1", lifecycle: "active", version: "1.1.0", pool: "default", supported_execution_contract_versions: ["1.0"] }],
+        assignments: [{ id: "assignment-1", status: "running" }]
+      },
+      audit: {
+        integrity: { status: "verified", root_hash: "root-hash", checkpoint_id: "checkpoint-1" },
+        metrics: { verified_action_rate: 0.99, model_tokens_per_success: 200 },
+        checkpoints: [{ id: "checkpoint-1" }],
+        active_signals: []
+      },
+      replication: {
+        coordination: { backend_id: "state-store:postgresql", shared: true, active_leases: 3, expired_leases: 0 },
+        ownership: { instanceId: "cp-a", leaseSeconds: 30, responsibilities: { scheduler: { owned: true, fencingToken: 8 } } }
+      },
+      orchestration: { cycle_count: 4, event_count: 5, timeline: [], evaluations: {} }
+    };
+    const explanation = {
+      intent_id: "intent-1",
+      trigger: { event_id: "event-1", event_type: "ci.pipeline", source: "gitlab:prod" },
+      goal_id: "goal-1", decision_id: "decision-1", work_item_ref: "group/app#42",
+      authority: { recheck: { outcome: "allow", reason: "role release-manager authorized" } },
+      policy: { outcome: "allow", source: "canonical:autonomy-policy", reason: "qualified" },
+      execution_contract: { execution_id: "execution-1", action_definition: { action_id: "deploy.release" } },
+      action_intent: { id: "intent-1", status: "succeeded", resource_ids: ["service-api"], request: { action_id: "deploy.release" } },
+      provider_action: { provider_type: "gitlab", provider_instance: "prod", action_id: "deploy.release", receipts: [{ id: "receipt-1" }] },
+      evidence: [{ id: "evidence-1", result: "pass" }],
+      verification: { receipts: [{ id: "verify-1", verified: true }] },
+      approval_requests: [{ id: "approval-1" }],
+      attention_items: [{ id: "attention-1" }],
+      result: { status: "succeeded" }
+    };
+    window.fetch = async (url, options = {}) => {
+      const parsed = new URL(url, window.location.href);
+      const method = options.method || "GET";
+      window.__accRequests.push({ path: parsed.pathname, search: parsed.search, method, body: options.body || null });
+      if (parsed.pathname === "/api/autonomy/control-center") {
+        return new Response(JSON.stringify(snapshot), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/autonomy/control-center/actions/intent-1/explain") {
+        return new Response(JSON.stringify(explanation), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/approval-requests/approval-1/decisions" && method === "POST") {
+        snapshot.approvals.pending = [];
+        snapshot.approvals.count = 0;
+        return new Response(JSON.stringify({ approval_request: { id: "approval-1", status: "approved" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/autonomy/pause" && method === "POST") snapshot.autonomy.control.mode = "paused";
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    window.prompt = () => "reviewed";
+  </script>
+  <script src="/static/autonomy_control_center.js"></script>
+</body>
+</html>
