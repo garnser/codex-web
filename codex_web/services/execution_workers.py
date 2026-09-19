@@ -253,6 +253,9 @@ class ExecutionWorkerService:
                 pool=payload.pool,
                 version=payload.version,
                 capabilities=payload.capabilities,
+                supported_execution_contract_versions=(
+                    payload.supported_execution_contract_versions
+                ),
                 max_concurrency=payload.max_concurrency,
                 registered_by=actor.identity_id,
             )
