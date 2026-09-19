@@ -79,6 +79,7 @@ from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
+from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.codex_worker_configuration import install_codex_worker_configuration
 from codex_web.services.codex_model_egress import endpoints_from_provider_base_urls
@@ -149,6 +150,7 @@ from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
@@ -174,6 +176,12 @@ core._atomic_write_text = atomic_write_text
 
 project_repository = ProjectRepository(PROJECTS_FILE)
 state_store = SQLiteStateStore(STATE_DB_FILE)
+canonical_event_store = CanonicalEventStore(state_store)
+canonical_event_bus = CanonicalEventBus(canonical_event_store)
+canonical_event_ingestion = CanonicalEventIngestionService(canonical_event_bus)
+app.state.canonical_event_store = canonical_event_store
+app.state.canonical_event_bus = canonical_event_bus
+app.state.canonical_event_ingestion = canonical_event_ingestion
 configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
@@ -584,7 +592,12 @@ extension_runtime_registry = ExtensionRuntimeRegistry(
     action_provider_registry,
 )
 app.state.extension_runtime_registry = extension_runtime_registry
-gitlab_service = install_gitlab_service(app, core, gitlab_client)
+gitlab_service = install_gitlab_service(
+    app,
+    core,
+    gitlab_client,
+    canonical_events=canonical_event_ingestion,
+)
 
 # Legacy code still needing project/runtime state consumes the extracted
 # repositories. SQLite is primary for mutable runtime documents; repositories
