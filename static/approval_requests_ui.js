@@ -176,7 +176,7 @@ async function submitDecision(dialog, itemId, revision, outcome) {
   }
 }
 
-async function load(dialog) {
+async function load(dialog, focusId = null) {
   const status = dialog.querySelector("[data-approval-status]");
   const list = dialog.querySelector("[data-approval-list]");
   const filter = dialog.querySelector("[data-approval-filter]").value;
@@ -185,7 +185,9 @@ async function load(dialog) {
   try {
     const payload = await api("/api/approval-requests");
     const all = payload.approval_requests || [];
-    const items = filterItems(all, filter);
+    const items = focusId
+      ? all.filter((item) => item.id === focusId)
+      : filterItems(all, filter);
     list.innerHTML = items.length ? items.map(requestMarkup).join("") : '<div class="approval-empty">No matching ApprovalRequests.</div>';
     list.querySelectorAll("[data-approval-decision]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -269,6 +271,12 @@ function install() {
     count.textContent = String(pending);
     count.hidden = pending === 0;
   }).catch(() => {});
+
+  const focusId = new URLSearchParams(window.location.search).get("approval");
+  if (focusId) {
+    dialog.showModal();
+    load(dialog, focusId);
+  }
 }
 
 if (document.readyState === "loading") {
