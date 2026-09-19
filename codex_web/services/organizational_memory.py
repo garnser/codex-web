@@ -605,8 +605,6 @@ class OrganizationalMemoryService:
             )
             for row in payload.relationships
         )
-        embedding = self._embedding_for(record)
-
         def apply(state: OrganizationalMemoryState) -> OrganizationalMemoryState:
             if any(item.id == record.id for item in state.records):
                 raise KnowledgeConflictError(
@@ -623,10 +621,10 @@ class OrganizationalMemoryService:
                 )
             state.records.append(record)
             state.relationships.extend(relationships)
-            state.embeddings.append(embedding)
             return state
 
         self.store.update_state(apply)
+        self._index_upsert(record)
         return record
 
     def revise(
@@ -814,8 +812,6 @@ class OrganizationalMemoryService:
             )
             for row in normalized.relationships
         )
-        embedding = self._embedding_for(next_record)
-
         def apply(state: OrganizationalMemoryState) -> OrganizationalMemoryState:
             stored = next(
                 (item for item in state.records if item.id == current.id),
@@ -840,10 +836,11 @@ class OrganizationalMemoryService:
             ]
             state.records.append(next_record)
             state.relationships.extend(new_relationships)
-            state.embeddings.append(embedding)
             return state
 
         self.store.update_state(apply)
+        self._index_upsert(self.store.get(current.id))
+        self._index_upsert(next_record)
         return next_record
 
     def invalidate(
@@ -880,7 +877,9 @@ class OrganizationalMemoryService:
             ]
             return state, updated
 
-        return self.store.update(knowledge_id, apply)
+        updated = self.store.update(knowledge_id, apply)
+        self._index_upsert(updated)
+        return updated
 
     def get(
         self,
