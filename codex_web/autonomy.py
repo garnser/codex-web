@@ -92,22 +92,6 @@ class AutonomyControl(BaseModel):
             "trigger_event_types",
             tuple(dict.fromkeys(item.strip() for item in self.trigger_event_types if item.strip())),
         )
-        object.__setattr__(
-            self,
-            "scoped_pauses",
-            tuple(
-                dict.fromkeys(
-                    (
-                        item.scope.value,
-                        item.scope_id,
-                        item.id,
-                    )
-                    for item in self.scoped_pauses
-                )
-            ),
-        )
-        # Rebuild the tuple after duplicate-key filtering while preserving
-        # the first canonical pause record for each unique ID/scope pair.
         seen = set()
         pauses = []
         for item in self.scoped_pauses:
