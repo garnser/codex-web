@@ -86,7 +86,7 @@ The local runtime exposes:
 - `GET /api/logs/recent` — bounded, tenant-scoped, redacted structured-log telemetry;
 - `GET /api/observability` — combined diagnostics snapshot.
 
-These endpoints are operational projections, not authority/state mutation APIs. The Platform Foundation UI (#141) can consume them without creating dashboard-local health truth.
+These endpoints are operational projections, not authority/state mutation APIs. The platform administration UI can consume them without creating dashboard-local health truth.
 
 ## Extension requirements
 
