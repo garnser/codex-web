@@ -377,6 +377,7 @@ class BusinessKpiTrend(BaseModel):
 
     previous_observation_id: str | None = None
     previous_value: float | None = None
+    previous_partial: bool = False
     absolute_delta: float | None = None
     percent_delta: float | None = None
 
