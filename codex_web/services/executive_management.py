@@ -991,15 +991,42 @@ class ExecutiveManagementService:
         try:
             if proposal.kind == ExecutiveProposalKind.GOAL:
                 payload = GoalCreate.model_validate(proposal.payload)
-                result = self.goals.create(
-                    payload,
-                    scope=actor.tenant,
-                    actor_id=actor.identity_id,
+                result = next(
+                    (
+                        item
+                        for item in self.goals.list(scope=actor.tenant)
+                        if item.originating_executive_activation_id == activation.id
+                        and item.originating_executive_proposal_id == proposal.id
+                    ),
+                    None,
                 )
+                if result is None:
+                    result = self.goals.create(
+                        payload,
+                        scope=actor.tenant,
+                        actor_id=actor.identity_id,
+                        originating_executive_activation_id=activation.id,
+                        originating_executive_proposal_id=proposal.id,
+                    )
                 resulting_ref = f"goal:{result.id}"
             elif proposal.kind == ExecutiveProposalKind.DECISION:
                 payload = DecisionCreate.model_validate(proposal.payload)
-                result = await self.decisions.create(payload, actor=actor)
+                result = next(
+                    (
+                        item
+                        for item in self.decisions.list(actor=actor)
+                        if item.originating_executive_activation_id == activation.id
+                        and item.originating_executive_proposal_id == proposal.id
+                    ),
+                    None,
+                )
+                if result is None:
+                    result = await self.decisions.create(
+                        payload,
+                        actor=actor,
+                        originating_executive_activation_id=activation.id,
+                        originating_executive_proposal_id=proposal.id,
+                    )
                 resulting_ref = f"decision:{result.id}"
             elif proposal.kind == ExecutiveProposalKind.WORK:
                 raw = dict(proposal.payload)
