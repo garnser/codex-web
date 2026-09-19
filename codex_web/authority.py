@@ -288,7 +288,7 @@ class AuthorityDecision(BaseModel):
     organization_id: str
     workspace_id: str
     request: AuthorityEvaluationRequest
-    definition_ref: DefinitionReference
+    definition_ref: DefinitionReference | None = None
     matched_role_ids: tuple[str, ...] = ()
     matched_grant_ids: tuple[str, ...] = ()
     delegation_ids: tuple[str, ...] = ()
