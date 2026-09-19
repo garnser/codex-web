@@ -20,6 +20,7 @@ from codex_web.api.autonomy_control_center import build_autonomy_control_center_
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
+from codex_web.api.conversation_channels import build_conversation_channels_router
 from codex_web.api.capacity import build_capacity_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
@@ -1677,6 +1678,9 @@ bot_runtime.conversation_channels = conversation_channel_service
 app.state.conversation_channel_store = conversation_channel_store
 app.state.conversation_channel_registry = conversation_channel_registry
 app.state.conversation_channel_service = conversation_channel_service
+app.include_router(
+    build_conversation_channels_router(conversation_channel_service)
+)
 
 slack_provider_service = install_slack_provider_service(
     app,
