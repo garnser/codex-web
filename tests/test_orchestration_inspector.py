@@ -8,7 +8,7 @@ from codex_web.autonomy import AutonomyObservation
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
-from codex_web.scheduler import ScheduleCreate
+from codex_web.scheduler import ScheduleCreate, ScheduleRecord
 from codex_web.services.orchestration_inspector import OrchestrationInspectorService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
@@ -165,17 +165,7 @@ class OrchestrationInspectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["approval_requests"], [])
 
     async def test_schedule_projection_links_canonical_firing_event_and_tenant_scope(self) -> None:
-        local = self.scheduler.create(
-            ScheduleCreate(
-                name="Local review",
-                tenant_id="org-a",
-                workspace_id="workspace-a",
-                trigger_type="review.due",
-                due_at=100.0,
-                payload={"goal_id": "goal-a"},
-            ).model_copy(),
-        ) if False else None
-        local = __import__("codex_web.scheduler", fromlist=["ScheduleRecord"]).ScheduleRecord.from_create(
+        local = ScheduleRecord.from_create(
             ScheduleCreate(
                 name="Local review",
                 tenant_id="org-a",
@@ -188,7 +178,7 @@ class OrchestrationInspectorTests(unittest.IsolatedAsyncioTestCase):
             now=50.0,
         )
         self.scheduler.create(local)
-        other = __import__("codex_web.scheduler", fromlist=["ScheduleRecord"]).ScheduleRecord.from_create(
+        other = ScheduleRecord.from_create(
             ScheduleCreate(
                 name="Other tenant",
                 tenant_id="org-b",
