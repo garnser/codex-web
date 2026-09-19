@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from codex_web.agent_runtime import AgentRuntimeSessionRequest
+from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
 from codex_web.identity import AuthenticationActor
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
@@ -26,6 +26,19 @@ from codex_web.services.thread_bootstrap_bindings import (
 from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingService,
 )
+
+
+class _ThreadRuntimeTransport:
+    def __init__(self, host: Any, thread_id: str) -> None:
+        self.host = host
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        return await self.host._codex_request_for_thread(
+            self.thread_id,
+            method,
+            params or {},
+        )
 
 
 class ThreadService:
@@ -72,6 +85,17 @@ class ThreadService:
             self.bootstrap_bindings,
             self.control_actor,
         )
+
+    def _codex_adapter(
+        self,
+        thread_id: str | None = None,
+    ) -> CodexAgentRuntimeAdapter:
+        transport = (
+            self.host.codex
+            if thread_id is None
+            else _ThreadRuntimeTransport(self.host, thread_id)
+        )
+        return CodexAgentRuntimeAdapter(transport)
 
     def default_message_limit(self) -> int:
         try:
@@ -131,19 +155,15 @@ class ThreadService:
         search: str | None = None,
     ) -> dict[str, Any]:
         project_path = self.host._project(project_id).path if project_id else None
-        params: dict[str, Any] = {
-            "limit": 100,
-            "archived": archived,
-            "sortKey": "updated_at",
-            "sortDirection": "desc",
-            "sourceKinds": ["appServer", "cli", "vscode", "exec"],
-        }
-        if project_path:
-            params["cwd"] = project_path
-        if search:
-            params["searchTerm"] = search
+        runtime_request = AgentRuntimeListRequest(
+            workspace_cwd=project_path,
+            archived=archived,
+            search=search,
+            limit=100,
+        )
         try:
-            result = await self.host.codex.request("thread/list", params)
+            runtime_result = await self._codex_adapter().list_sessions(runtime_request)
+            result = runtime_result.payload
         except Exception as exc:
             if archived:
                 raise HTTPException(status_code=504, detail=str(exc)) from exc
@@ -402,11 +422,8 @@ class ThreadService:
                 event_type="web_read_deferred_for_resume",
             )
         try:
-            response = await self.host._codex_request_for_thread(
-                thread_id,
-                "thread/read",
-                {"threadId": thread_id, "includeTurns": True},
-            )
+            runtime_result = await self._codex_adapter(thread_id).read_session(thread_id)
+            response = runtime_result.payload
         except Exception as exc:
             if self.host._is_codex_timeout_error(exc):
                 return self.host._thread_read_timeout_response(thread_id, limit, exc)
@@ -471,16 +488,16 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "thread/archive", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).close_session(thread_id)
+        ).payload
 
     async def unarchive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "thread/unarchive", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).restore_session(thread_id)
+        ).payload
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "turn/interrupt", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).interrupt(thread_id)
+        ).payload
