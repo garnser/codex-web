@@ -365,17 +365,21 @@ class FakeApprovals:
 class FakeActions:
     def __init__(self):
         decision = DumpNS(
-            model_dump=lambda mode=None: {
-                "outcome": "allow",
-                "source": "authority",
-                "reason": "role grant",
-            }
+            outcome="allow",
+            source="authority",
+            reason="role grant",
+            capabilities=(),
+            definition_refs=(),
+            role_ids=(),
+            grant_ids=(),
+            delegation_ids=(),
+            expires_at=None,
+            reasons=("test authority allows",),
+            evaluated_at=100.0,
         )
         security = DumpNS(
-            model_dump=lambda mode=None: {
-                "allowed": True,
-                "reasons": ["bounded provider action"],
-            }
+            allowed=True,
+            reasons=("bounded provider action",),
         )
         self.intent = DumpNS(
             id="action-intent-1",
