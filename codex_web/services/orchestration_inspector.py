@@ -652,6 +652,7 @@ class OrchestrationInspectorService:
 
         autonomy = self.autonomy.status()
         cycles = autonomy["recent_cycles"]
+        scoped_cycles: list[dict[str, Any]] = []
         cycles_by_event: dict[str, list[dict[str, Any]]] = {}
         for cycle in cycles:
             cycle_org = cycle.get("organization_id")
@@ -668,6 +669,7 @@ class OrchestrationInspectorService:
                 and cycle_workspace != workspace_id
             ):
                 continue
+            scoped_cycles.append(cycle)
             cycles_by_event.setdefault(str(cycle["event_id"]), []).append(cycle)
 
         timeline = []
@@ -789,8 +791,18 @@ class OrchestrationInspectorService:
         return {
             "control": autonomy["control"],
             "timeline": timeline,
-            "dead_letters": autonomy["dead_letters"],
-            "cycle_count": len(cycles),
+            "dead_letters": [
+                item
+                for item in autonomy["dead_letters"]
+                if (
+                    organization_id is None
+                    and workspace_id is None
+                )
+                or item.get("cycle_id") in {
+                    cycle.get("id") for cycle in scoped_cycles
+                }
+            ],
+            "cycle_count": len(scoped_cycles),
             "event_count": len(timeline),
             "schedules": self._schedule_projection(
                 all_events,
