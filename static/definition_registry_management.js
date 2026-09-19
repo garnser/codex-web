@@ -379,5 +379,9 @@
   }
 
   window.addEventListener("codex:definition-registry-rendered", (event) => hydrate(event.detail || {}));
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", bind, { once: true });
+  } else {
+    bind();
+  }
 })();
