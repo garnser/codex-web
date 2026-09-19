@@ -29,6 +29,8 @@ class AutonomyMode(StrEnum):
 class AutonomyCycleOutcome(StrEnum):
     DETERMINISTIC = "deterministic"
     SKIPPED = "skipped"
+    RECOMMENDED = "recommended"
+    PREPARED = "prepared"
     DRY_RUN = "dry_run"
     SIMULATED = "simulated"
     COMPLETED = "completed"
