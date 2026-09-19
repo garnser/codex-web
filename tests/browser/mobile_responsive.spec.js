@@ -31,10 +31,12 @@ for (const width of portraitWidths) {
     await expect(navToggle).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('body')).toHaveClass(/mobile-nav-open/);
     await expect(page.locator('.sidebar')).toHaveAttribute('aria-hidden', 'false');
-    await expect(page.locator('#project-one')).toBeFocused();
+    await expect(page.locator('#mobile-nav-close')).toBeFocused();
+    await expect(page.locator('.main')).toHaveAttribute('aria-hidden', 'true');
 
     await page.keyboard.press('Escape');
     await expect(navToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.main')).not.toHaveAttribute('aria-hidden', 'true');
     await expect(navToggle).toBeFocused();
 
     await page.locator('#open-dialog').click();
