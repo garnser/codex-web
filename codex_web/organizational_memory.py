@@ -416,6 +416,8 @@ class KnowledgeRetrievalRun(BaseModel):
     query_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     filters: dict[str, Any]
     selected_knowledge_ids: tuple[str, ...]
+    selected_scores: dict[str, float] = Field(default_factory=dict)
+    selected_freshness: dict[str, KnowledgeFreshness] = Field(default_factory=dict)
     denied: tuple[KnowledgeDeniedCandidate, ...] = ()
     packed_tokens: int = Field(ge=0)
     candidate_count: int = Field(ge=0)
