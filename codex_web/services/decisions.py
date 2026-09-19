@@ -43,6 +43,7 @@ from codex_web.services.approval_requests import (
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 from codex_web.services.metrics import MetricError, MetricService
+from codex_web.services.goals import GoalError, GoalService
 from codex_web.storage.decisions import (
     DecisionConflictError,
     DecisionNotFoundError,
@@ -104,6 +105,7 @@ class DecisionService:
         metrics: MetricService,
         artifact_evidence: ArtifactEvidenceService,
         canonical_events: CanonicalEventIngestionService | None = None,
+        goals: GoalService | None = None,
         *,
         clock=time.time,
     ) -> None:
@@ -112,6 +114,7 @@ class DecisionService:
         self.metrics = metrics
         self.artifact_evidence = artifact_evidence
         self.canonical_events = canonical_events
+        self.goals = goals
         self.clock = clock
 
     @staticmethod
@@ -135,6 +138,23 @@ class DecisionService:
         raise DecisionAuthorizationError(
             "Decision initiator or administrator required"
         )
+
+    def _validate_goal(
+        self,
+        goal_id: str | None,
+        *,
+        actor: AuthenticationActor,
+    ) -> None:
+        if goal_id is None:
+            return
+        if self.goals is None:
+            raise DecisionValidationError(
+                "Goal-linked Decisions require the canonical Goal service"
+            )
+        try:
+            self.goals.get(goal_id, scope=actor.tenant)
+        except GoalError as exc:
+            raise DecisionValidationError(str(exc)) from exc
 
     @staticmethod
     def _budget(
@@ -281,12 +301,14 @@ class DecisionService:
         *,
         actor: AuthenticationActor,
     ) -> Decision:
+        self._validate_goal(payload.goal_id, actor=actor)
         evidence = self._resolve_evidence(payload.evidence, actor=actor)
         now = float(self.clock())
         decision = Decision(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             project_id=payload.project_id,
+            goal_id=payload.goal_id,
             title=payload.title,
             question=payload.question,
             initiator_identity_id=actor.identity_id,
@@ -385,6 +407,12 @@ class DecisionService:
                 f"found {current.revision}"
             )
 
+        goal_id = (
+            payload.goal_id
+            if "goal_id" in payload.model_fields_set
+            else current.goal_id
+        )
+        self._validate_goal(goal_id, actor=actor)
         evidence = (
             self._resolve_evidence(payload.evidence, actor=actor)
             if payload.evidence is not None
@@ -404,6 +432,7 @@ class DecisionService:
         changes = {
             "title": payload.title if payload.title is not None else current.title,
             "question": payload.question if payload.question is not None else current.question,
+            "goal_id": goal_id,
             "participants": (
                 payload.participants
                 if payload.participants is not None
