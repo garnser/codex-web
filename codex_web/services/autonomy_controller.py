@@ -149,7 +149,7 @@ class AutonomyController:
         now: float | None = None,
     ) -> str | None:
         current = time.time() if now is None else float(now)
-        identity_id = actor.identity_id if actor is not None else None
+        identity_id = getattr(actor, "identity_id", None)
         resources = set(resource_ids)
         for item in control.scoped_pauses:
             if not item.active(current):
