@@ -7,6 +7,20 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import QueuedTurn, TurnCreate
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+
+
+class _ThreadRuntimeTransport:
+    def __init__(self, host: Any, thread_id: str) -> None:
+        self.host = host
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        return await self.host._codex_request_for_thread(
+            self.thread_id,
+            method,
+            params or {},
+        )
 
 
 class TurnService:
@@ -264,7 +278,9 @@ class TurnService:
                 self.host._requeue_turn_front(queued)
                 raise
             with contextlib.suppress(Exception):
-                await self.host.codex.request("turn/interrupt", {"threadId": thread_id})
+                await CodexAgentRuntimeAdapter(
+                    _ThreadRuntimeTransport(self.host, thread_id)
+                ).interrupt(thread_id)
             self.host._clear_thread_active(thread_id)
         project = self.host._project(queued.project_id)
         response = await self.host._start_thread_turn_now(
