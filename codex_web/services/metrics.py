@@ -467,6 +467,7 @@ class MetricService:
         evaluation = self.evaluate(
             metric_id,
             scope=scope,
+            at=payload.evaluated_at,
             window_start=payload.window_start,
             window_end=payload.window_end,
         )
