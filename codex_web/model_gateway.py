@@ -239,6 +239,7 @@ class ModelProviderResult(BaseModel):
     text: str
     usage: ModelProviderUsage = Field(default_factory=ModelProviderUsage)
     provider_request_id: str | None = None
+    stop_reason: str | None = None
 
 
 class ModelInvocationAttempt(BaseModel):
@@ -255,6 +256,7 @@ class ModelInvocationAttempt(BaseModel):
     output_tokens: int | None = None
     actual_cost_usd: float | None = None
     provider_request_id: str | None = None
+    provider_stop_reason: str | None = None
     started_at: float
     completed_at: float
 
