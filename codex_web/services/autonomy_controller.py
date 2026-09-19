@@ -169,7 +169,7 @@ class AutonomyController:
             cycle.prompt_template_id = reasoning_result.prompt_template_id
             cycle.model_routing_reason = reasoning_result.model_routing_reason
             cycle.model_invocation_ids = reasoning_result.model_invocation_ids
-        self._persist_cycle(cycle, event, actor)
+        self.store.append_cycle(cycle)
         if self.audit is not None:
             self.audit.record_cycle(
                 cycle,
