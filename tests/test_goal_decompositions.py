@@ -112,7 +112,6 @@ class GoalDecompositionServiceTests(unittest.TestCase):
                 project_id="project-b",
                 title="Release outcome",
                 description="Prepare the verified result for release.",
-                blocked_by_item_ids=("child",),
             ),
         )
 
@@ -226,6 +225,49 @@ class GoalDecompositionServiceTests(unittest.TestCase):
                 items=over_depth,
                 limits=GoalDecompositionLimits(max_depth=1, max_items=5),
             )
+
+    def test_cross_project_parent_and_blocking_edges_fail_closed(self) -> None:
+        cross_parent = (
+            GoalProposedWorkItem(
+                id="parent",
+                project_id="project-a",
+                title="Parent",
+                description="Parent work.",
+            ),
+            GoalProposedWorkItem(
+                id="child",
+                project_id="project-b",
+                title="Child",
+                description="Child work.",
+                parent_item_id="parent",
+            ),
+        )
+        with self.assertRaisesRegex(
+            GoalDecompositionConflictError,
+            "parent relationships must stay within one project",
+        ):
+            self._create(items=cross_parent)
+
+        cross_blocker = (
+            GoalProposedWorkItem(
+                id="blocker",
+                project_id="project-a",
+                title="Blocker",
+                description="Blocking work.",
+            ),
+            GoalProposedWorkItem(
+                id="blocked",
+                project_id="project-b",
+                title="Blocked",
+                description="Blocked work.",
+                blocked_by_item_ids=("blocker",),
+            ),
+        )
+        with self.assertRaisesRegex(
+            GoalDecompositionConflictError,
+            "blocking relationships must stay within one project",
+        ):
+            self._create(items=cross_blocker)
 
     def test_unknown_project_and_missing_references_fail_closed(self) -> None:
         with self.assertRaises(GoalDecompositionScopeError):
