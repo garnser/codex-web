@@ -12,10 +12,29 @@ GOAL_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": GOAL_CONTRACT.current,
+        "schema_version": "1.0",
         "goals": list(payload.get("goals", [])),
         "revisions": list(payload.get("revisions", [])),
         "events": list(payload.get("events", [])),
+    },
+)
+GOAL_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": GOAL_CONTRACT.current,
+        "goals": [
+            {
+                **item,
+                "completion_evaluation_id": item.get("completion_evaluation_id"),
+                "completed_at": item.get("completed_at"),
+            }
+            for item in payload.get("goals", [])
+        ],
+        "completion_evaluations": list(
+            payload.get("completion_evaluations", [])
+        ),
     },
 )
 

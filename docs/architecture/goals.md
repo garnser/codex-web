@@ -143,15 +143,43 @@ Unknown non-idempotent TaskSource creates are never replaced or blindly retried.
 
 This separation makes preview/review/commit durable and auditable: models propose bounded structure, authorized operators accept/revise/reject, ActionIntent owns every external mutation, and canonical Goal traceability is finalized only from observed authoritative results.
 
+## Deterministic completion evaluation
+
+Goal completion is a verified state transition, not an agent assertion. A completion
+evaluation is persisted against one exact Goal revision and records the actor,
+reason, criterion observations, current bound Work Item outcomes, findings and
+eligibility.
+
+Success criteria are evaluated without model reasoning:
+
+- manual criteria require an explicit verification observation;
+- metric criteria require an explicit observed value and use the code-owned
+  `eq`, `gte` or `lte` operator from the Goal definition;
+- observations retain source/reference/timestamp provenance;
+- missing required observations fail closed;
+- unknown or duplicate criterion IDs are rejected rather than ignored.
+
+Every Work Item in the Goal's canonical bound project/subgraph must currently have
+terminal outcome `completed`. Active, failed, cancelled or missing bound work is
+reported as an explicit blocker.
+
+The `active -> completed` transition requires the caller to name the **latest**
+passing completion evaluation for the current Goal revision. The service rechecks
+bound Work Items immediately before completing so a previously passing snapshot
+cannot conceal later Work Item drift. Revising the Goal makes previous completion
+evaluations stale automatically because their `goal_revision` no longer matches.
+
+The accepted evaluation ID and completion timestamp are stored in the completed
+Goal revision, while all evaluation records remain tenant-scoped durable
+provenance. This allows operators to reconstruct exactly why completion was
+accepted without replaying chat or invoking a model.
+
 ## M5 handoff
 
-This foundation intentionally does **not** perform Goal decomposition or LLM-driven completion judgment. Issue #106 builds on this contract to add:
-
-- bounded Goal → proposed-work decomposition;
-- accepted proposed work committed only through the project's authoritative TaskSource CREATE capability, with the external side effect persisted through the canonical ActionIntent/ActionProvider boundary before provider execution;
-- review/accept/revise/reject before canonical work creation where policy requires;
-- completion evaluation and evidence;
-- Goal workspace/UI;
-- end-to-end Goal → Decision/Project → Work → Result traceability.
+M5 now provides bounded Goal decomposition, review, durable ActionIntent-backed
+commit, bidirectional Work Graph traceability, and deterministic completion
+verification. The remaining #106 product slice is the Goal workspace/UI that
+projects these canonical contracts for operators without introducing client-side
+shadow state.
 
 Any reasoning added there must follow the Token Efficiency Ruleset: deterministic-first gating, minimum sufficient context, bounded calls/depth, structured output, and Goal-attributed token/cost accounting.

@@ -3,7 +3,12 @@ from __future__ import annotations
 import time
 
 from codex_web.goals import (
+    GoalCompletionEvaluation,
+    GoalCompletionEvaluationRequest,
     GoalCreate,
+    GoalCriterionEvaluation,
+    GoalCriterionKind,
+    GoalCriterionOperator,
     GoalEvent,
     GoalHealth,
     GoalHealthSnapshot,
@@ -18,6 +23,7 @@ from codex_web.goals import (
     GoalTransitionRequest,
     GoalUpdate,
     GoalWorkGraphBinding,
+    GoalWorkItemCompletionEvaluation,
 )
 from codex_web.identity import TenantScope
 from codex_web.services.projects import ProjectNotFoundError, ProjectService
@@ -290,6 +296,253 @@ class GoalService:
         assert result is not None
         return result
 
+    @staticmethod
+    def _numeric(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    @classmethod
+    def _criterion_result(
+        cls,
+        criterion,
+        observation,
+    ) -> GoalCriterionEvaluation:
+        findings: list[str] = []
+        passed = False
+        observed_value = observation.observed_value if observation is not None else None
+        source = observation.source if observation is not None else None
+        reference = observation.reference if observation is not None else None
+        observed_at = observation.observed_at if observation is not None else None
+
+        if observation is None:
+            findings.append("no verification observation supplied")
+        elif criterion.kind == GoalCriterionKind.MANUAL:
+            passed = observation.verified is True
+            if observation.verified is None:
+                findings.append("manual criterion requires explicit verified=true/false")
+            elif not passed:
+                findings.append("manual criterion was explicitly not verified")
+        else:
+            if observed_value is None:
+                findings.append("metric criterion requires observed_value")
+            elif criterion.operator == GoalCriterionOperator.EQ:
+                target = criterion.target_value
+                observed_numeric = cls._numeric(observed_value)
+                target_numeric = cls._numeric(target)
+                if observed_numeric is not None and target_numeric is not None:
+                    passed = observed_numeric == target_numeric
+                else:
+                    passed = type(observed_value) is type(target) and observed_value == target
+                if not passed:
+                    findings.append("observed metric does not equal target")
+            elif criterion.operator in {
+                GoalCriterionOperator.GTE,
+                GoalCriterionOperator.LTE,
+            }:
+                observed_numeric = cls._numeric(observed_value)
+                target_numeric = cls._numeric(criterion.target_value)
+                if observed_numeric is None or target_numeric is None:
+                    findings.append("ordered metric comparison requires numeric values")
+                else:
+                    passed = (
+                        observed_numeric >= target_numeric
+                        if criterion.operator == GoalCriterionOperator.GTE
+                        else observed_numeric <= target_numeric
+                    )
+                    if not passed:
+                        findings.append(
+                            "observed metric is below target"
+                            if criterion.operator == GoalCriterionOperator.GTE
+                            else "observed metric is above target"
+                        )
+            else:
+                findings.append("metric criterion has no supported operator")
+
+        return GoalCriterionEvaluation(
+            criterion_id=criterion.id,
+            kind=criterion.kind,
+            required=criterion.required,
+            passed=passed,
+            description=criterion.description,
+            metric_key=criterion.metric_key,
+            operator=criterion.operator,
+            target_value=criterion.target_value,
+            observed_value=observed_value,
+            source=source,
+            reference=reference,
+            observed_at=observed_at,
+            findings=tuple(findings),
+        )
+
+    def _completion_work_items(
+        self,
+        goal: GoalRecord,
+        *,
+        scope: TenantScope,
+    ) -> tuple[GoalWorkItemCompletionEvaluation, ...]:
+        bound_refs = set(self._bound_refs(goal, scope=scope))
+        rows: list[GoalWorkItemCompletionEvaluation] = []
+        for project_id in sorted({project for project, _ in bound_refs}):
+            snapshot = self.work_graph.snapshot(project_id, scope=scope)
+            by_ref = {node.ref: node for node in snapshot.nodes}
+            for _project, ref in sorted(
+                item for item in bound_refs if item[0] == project_id
+            ):
+                node = by_ref.get(ref)
+                if node is None:
+                    rows.append(
+                        GoalWorkItemCompletionEvaluation(
+                            project_id=project_id,
+                            work_item_ref=ref,
+                            passed=False,
+                            findings=("bound Work Item is missing from canonical graph",),
+                        )
+                    )
+                    continue
+                outcome = node.terminal_outcome
+                if outcome == "completed":
+                    rows.append(
+                        GoalWorkItemCompletionEvaluation(
+                            project_id=project_id,
+                            work_item_ref=ref,
+                            terminal_outcome=outcome,
+                            passed=True,
+                        )
+                    )
+                else:
+                    finding = (
+                        f"bound Work Item terminal outcome is {outcome}"
+                        if outcome in {"failed", "cancelled"}
+                        else "bound Work Item is not completed"
+                    )
+                    rows.append(
+                        GoalWorkItemCompletionEvaluation(
+                            project_id=project_id,
+                            work_item_ref=ref,
+                            terminal_outcome=outcome,
+                            passed=False,
+                            findings=(finding,),
+                        )
+                    )
+        return tuple(rows)
+
+    def evaluate_completion(
+        self,
+        goal_id: str,
+        payload: GoalCompletionEvaluationRequest,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+    ) -> GoalCompletionEvaluation:
+        goal = self.get(goal_id, scope=scope)
+        if goal.status == GoalStatus.CANCELLED:
+            raise GoalConflictError("cancelled goal cannot be completion-verified")
+
+        observations = {}
+        for item in payload.observations:
+            if item.criterion_id in observations:
+                raise GoalConflictError(
+                    f"duplicate completion observation: {item.criterion_id}"
+                )
+            observations[item.criterion_id] = item
+
+        criterion_ids = {item.id for item in goal.success_criteria}
+        unknown = sorted(set(observations) - criterion_ids)
+        if unknown:
+            raise GoalConflictError(
+                "completion observations reference unknown criteria: "
+                + ", ".join(unknown)
+            )
+
+        criteria = tuple(
+            self._criterion_result(item, observations.get(item.id))
+            for item in goal.success_criteria
+        )
+        work_items = self._completion_work_items(goal, scope=scope)
+        blockers = [
+            f"work_item:{item.work_item_ref}:{item.findings[0]}"
+            for item in work_items
+            if not item.passed
+        ]
+        blockers.extend(
+            f"criterion:{item.criterion_id}:{item.findings[0] if item.findings else 'not satisfied'}"
+            for item in criteria
+            if item.required and not item.passed
+        )
+        if not work_items and not any(item.required for item in criteria):
+            blockers.append(
+                "goal has no bound work and no required success criterion to verify"
+            )
+
+        evaluation = GoalCompletionEvaluation(
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            goal_id=goal.id,
+            goal_revision=goal.revision,
+            eligible=not blockers,
+            work_items=work_items,
+            criteria=criteria,
+            blockers=tuple(blockers),
+            evaluated_by=actor_id,
+            reason=payload.reason,
+        )
+
+        def apply(state: GoalState) -> GoalState:
+            current = self._goal(state, goal_id, scope)
+            if current.revision != evaluation.goal_revision:
+                raise GoalConflictError(
+                    "goal changed during completion evaluation; evaluate current revision again"
+                )
+            state.completion_evaluations.append(evaluation)
+            state.events.append(
+                self._event(
+                    current,
+                    event_type="goal_completion_evaluated",
+                    actor_id=actor_id,
+                    reason=payload.reason,
+                    occurred_at=evaluation.evaluated_at,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        return evaluation
+
+    def completion_evaluations(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+    ) -> tuple[GoalCompletionEvaluation, ...]:
+        state = self.store.load()
+        self._goal(state, goal_id, scope)
+        rows = [
+            item
+            for item in state.completion_evaluations
+            if item.goal_id == goal_id
+            and item.organization_id == scope.organization_id
+            and item.workspace_id == scope.workspace_id
+        ]
+        rows.sort(key=lambda item: (item.evaluated_at, item.id), reverse=True)
+        return tuple(rows)
+
+    def completion_evaluation(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+    ) -> GoalCompletionEvaluation | None:
+        goal = self.get(goal_id, scope=scope)
+        return next(
+            (
+                item
+                for item in self.completion_evaluations(goal_id, scope=scope)
+                if item.goal_revision == goal.revision
+            ),
+            None,
+        )
+
     def transition(
         self,
         goal_id: str,
@@ -311,10 +564,70 @@ class GoalService:
                     f"goal transition {current.status.value} -> "
                     f"{payload.status.value} is not allowed"
                 )
-            now = time.time()
+            completion_evaluation_id = None
+            completed_at = None
+            if payload.status == GoalStatus.COMPLETED:
+                if not payload.completion_evaluation_id:
+                    raise GoalConflictError(
+                        "completion transition requires completion_evaluation_id"
+                    )
+                evaluation = next(
+                    (
+                        item
+                        for item in state.completion_evaluations
+                        if item.id == payload.completion_evaluation_id
+                        and item.goal_id == current.id
+                        and item.organization_id == scope.organization_id
+                        and item.workspace_id == scope.workspace_id
+                    ),
+                    None,
+                )
+                if evaluation is None:
+                    raise GoalConflictError("completion evaluation not found")
+                if evaluation.goal_revision != current.revision:
+                    raise GoalConflictError(
+                        "completion evaluation is stale for current goal revision"
+                    )
+                latest = next(
+                    (
+                        item
+                        for item in reversed(state.completion_evaluations)
+                        if item.goal_id == current.id
+                        and item.organization_id == scope.organization_id
+                        and item.workspace_id == scope.workspace_id
+                        and item.goal_revision == current.revision
+                    ),
+                    None,
+                )
+                if latest is None or latest.id != evaluation.id:
+                    raise GoalConflictError(
+                        "completion transition requires the latest current evaluation"
+                    )
+                if not evaluation.eligible:
+                    raise GoalConflictError(
+                        "completion evaluation has unresolved blockers"
+                    )
+                current_work = self._completion_work_items(current, scope=scope)
+                current_blockers = [
+                    item.work_item_ref for item in current_work if not item.passed
+                ]
+                if current_blockers:
+                    raise GoalConflictError(
+                        "bound Work Items changed after completion evaluation: "
+                        + ", ".join(current_blockers)
+                    )
+                completion_evaluation_id = evaluation.id
+                completed_at = time.time()
+            elif payload.completion_evaluation_id is not None:
+                raise GoalConflictError(
+                    "completion_evaluation_id is valid only for completed transition"
+                )
+            now = completed_at or time.time()
             candidate = current.model_copy(
                 update={
                     "status": payload.status,
+                    "completion_evaluation_id": completion_evaluation_id,
+                    "completed_at": completed_at,
                     "revision": current.revision + 1,
                     "updated_by": actor_id,
                     "updated_at": now,

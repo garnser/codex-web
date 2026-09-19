@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.compatibility import ContractSpec
 
 
-GOAL_CONTRACT = ContractSpec("goal-state", "1.0", ("1.0",))
+GOAL_CONTRACT = ContractSpec("goal-state", "1.1", ("1.0", "1.1"), deprecated=("1.0",))
 
 
 class GoalStatus(StrEnum):
@@ -182,11 +182,76 @@ class GoalUpdate(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class GoalCriterionObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    criterion_id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    reference: str | None = None
+    observed_value: str | int | float | bool | None = None
+    verified: bool | None = None
+    note: str | None = None
+    observed_at: float = Field(default_factory=time.time)
+
+
+class GoalCompletionEvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    observations: tuple[GoalCriterionObservation, ...] = ()
+    reason: str = Field(min_length=1)
+
+
+class GoalCriterionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    criterion_id: str
+    kind: GoalCriterionKind
+    required: bool
+    passed: bool
+    description: str
+    metric_key: str | None = None
+    operator: GoalCriterionOperator | None = None
+    target_value: str | int | float | bool | None = None
+    observed_value: str | int | float | bool | None = None
+    source: str | None = None
+    reference: str | None = None
+    observed_at: float | None = None
+    findings: tuple[str, ...] = ()
+
+
+class GoalWorkItemCompletionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project_id: str
+    work_item_ref: str
+    terminal_outcome: str | None = None
+    passed: bool
+    findings: tuple[str, ...] = ()
+
+
+class GoalCompletionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(default_factory=lambda: f"goal-completion-{uuid.uuid4().hex}")
+    organization_id: str
+    workspace_id: str
+    goal_id: str
+    goal_revision: int = Field(ge=1)
+    eligible: bool
+    work_items: tuple[GoalWorkItemCompletionEvaluation, ...] = ()
+    criteria: tuple[GoalCriterionEvaluation, ...] = ()
+    blockers: tuple[str, ...] = ()
+    evaluated_by: str
+    reason: str
+    evaluated_at: float = Field(default_factory=time.time)
+
+
 class GoalTransitionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     status: GoalStatus
     reason: str = Field(min_length=1)
+    completion_evaluation_id: str | None = None
 
 
 class GoalRecord(BaseModel):
@@ -207,6 +272,8 @@ class GoalRecord(BaseModel):
     budget: GoalBudget = Field(default_factory=GoalBudget)
     approval_requirements: tuple[GoalApprovalRequirement, ...] = ()
     work_graph_bindings: tuple[GoalWorkGraphBinding, ...] = ()
+    completion_evaluation_id: str | None = None
+    completed_at: float | None = None
     revision: int = Field(default=1, ge=1)
     created_by: str = Field(min_length=1)
     updated_by: str = Field(min_length=1)
@@ -273,3 +340,4 @@ class GoalState(BaseModel):
     goals: list[GoalRecord] = Field(default_factory=list)
     revisions: list[GoalRevision] = Field(default_factory=list)
     events: list[GoalEvent] = Field(default_factory=list)
+    completion_evaluations: list[GoalCompletionEvaluation] = Field(default_factory=list)
