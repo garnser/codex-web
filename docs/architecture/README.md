@@ -139,3 +139,4 @@ The target architecture is:
 
 - [Governed Executive business context](executive-business-context.md) — role-specific business domains, bounded governed facts/KPIs, exact recommendation provenance, stale/conflict handling and canonical action boundaries.
 \n- [API authorization](api-authorization.md)\n
+- [Conversation channels](conversation-channels.md) — provider-neutral Slack/Telegram/Teams inbound normalization, capabilities, tenant-scoped dedupe/order handling, canonical routing provenance and outbound authority boundary.
