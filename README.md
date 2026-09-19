@@ -112,7 +112,7 @@ Read the [Token Efficiency Ruleset](docs/architecture/token-efficiency-rules.md)
                  repositories / tools / providers
 ```
 
-Architecture contracts live under [`docs/architecture/`](docs/architecture/README.md). User and operator documentation lives under [`docs/`](docs/README.md).
+Architecture contracts live under [`docs/architecture/`](docs/architecture/README.md). User and operator guidance is available in the [product documentation](docs/README.md).
 
 ## Quick start
 
