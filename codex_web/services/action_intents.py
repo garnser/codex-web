@@ -394,6 +394,7 @@ class ActionIntentService:
         definition,
         request,
         payload: ActionIntentCreate,
+        authority_decision: ActionDecisionSnapshot,
         actor: AuthenticationActor,
         intent_id: str | None,
     ) -> SecurityTrustDecision:
@@ -402,8 +403,8 @@ class ActionIntentService:
                 binding=binding,
                 definition=definition,
                 request=request,
-                authority_outcome=payload.authority_decision.outcome.value,
-                authority_source=payload.authority_decision.source,
+                authority_outcome=authority_decision.outcome.value,
+                authority_source=authority_decision.source,
                 policy_outcome=payload.policy_decision.outcome.value,
                 policy_source=payload.policy_decision.source,
                 actor=actor,
@@ -413,10 +414,10 @@ class ActionIntentService:
             )
         privileged = definition.risk_class.value in {"high", "critical"}
         trusted = (
-            payload.authority_decision.outcome == ActionDecisionOutcome.ALLOW
+            authority_decision.outcome == ActionDecisionOutcome.ALLOW
             and payload.policy_decision.outcome == ActionDecisionOutcome.ALLOW
             and SecurityBoundaryService.trusted_decision_source(
-                payload.authority_decision.source
+                authority_decision.source
             )
             and SecurityBoundaryService.trusted_decision_source(
                 payload.policy_decision.source
@@ -438,7 +439,7 @@ class ActionIntentService:
             resource_ids=request.resource_ids,
             sandbox=binding.security_policy.sandbox,
             network_enabled=binding.security_policy.network.enabled,
-            authority_source=payload.authority_decision.source,
+            authority_source=authority_decision.source,
             policy_source=payload.policy_decision.source,
             reasons=reasons,
         )
@@ -448,6 +449,7 @@ class ActionIntentService:
         intent: ActionIntent,
         *,
         actor: AuthenticationActor,
+        authority_decision: ActionDecisionSnapshot,
     ) -> tuple[bool, str | None]:
         binding, _, definition, request = self.execution.resolve_contract(
             intent.binding_id,
@@ -465,8 +467,8 @@ class ActionIntentService:
             binding=binding,
             definition=definition,
             request=request,
-            authority_outcome=intent.authority_decision.outcome.value,
-            authority_source=intent.authority_decision.source,
+            authority_outcome=authority_decision.outcome.value,
+            authority_source=authority_decision.source,
             policy_outcome=intent.policy_decision.outcome.value,
             policy_source=intent.policy_decision.source,
             actor=actor,
@@ -574,11 +576,17 @@ class ActionIntentService:
         )
         causation_id = context.causation_id if context else None
         intent_id = f"action-intent-{uuid.uuid4().hex}"
+        authority_decision = self._canonical_authority_snapshot(
+            definition=definition,
+            request=request,
+            actor=actor,
+        )
         security_decision = self._security_decision(
             binding=binding,
             definition=definition,
             request=request,
             payload=payload,
+            authority_decision=authority_decision,
             actor=actor,
             intent_id=intent_id,
         )
@@ -624,7 +632,7 @@ class ActionIntentService:
             }
         )
         denied = (
-            payload.authority_decision.outcome == ActionDecisionOutcome.DENY
+            authority_decision.outcome == ActionDecisionOutcome.DENY
             or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
             or security_decision.outcome == SecurityDecisionOutcome.DENY
         )
@@ -643,7 +651,7 @@ class ActionIntentService:
             action_id=request.action_id,
             action_definition=definition,
             request=provider_request,
-            authority_decision=payload.authority_decision,
+            authority_decision=authority_decision,
             policy_decision=payload.policy_decision,
             security_policy=binding.security_policy,
             security_decision=security_decision,
@@ -664,10 +672,12 @@ class ActionIntentService:
             updated_at=now,
             completed_at=now if denied else None,
             last_error=(
-                "; ".join(security_decision.reasons)
+                authority_decision.reason
+                if authority_decision.outcome == ActionDecisionOutcome.DENY
+                else "; ".join(security_decision.reasons)
                 if security_decision.outcome == SecurityDecisionOutcome.DENY
-                else "authority or policy denied action"
-                if denied
+                else "policy denied action"
+                if payload.policy_decision.outcome == ActionDecisionOutcome.DENY
                 else None
             ),
             work_item_success=payload.work_item_success,
