@@ -17,9 +17,7 @@ from codex_web.models import (
 
 from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.codex_worker_session import (
-    AssignmentBoundCodexSessionManager,
-)
+from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
 )
@@ -51,7 +49,7 @@ class ThreadService:
         host: Any,
         *,
         binding_service: TurnExecutionBindingService | None = None,
-        session_manager: AssignmentBoundCodexSessionManager | None = None,
+        session_manager: AssignmentBoundAgentSessionManager | None = None,
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
         control_actor: AuthenticationActor | None = None,
         agent_sessions: AgentSessionService | None = None,
@@ -65,7 +63,7 @@ class ThreadService:
 
     def _require_bootstrap_routing(self) -> tuple[
         TurnExecutionBindingService,
-        AssignmentBoundCodexSessionManager,
+        AssignmentBoundAgentSessionManager,
         ThreadBootstrapBindingService,
         AuthenticationActor,
     ]:
