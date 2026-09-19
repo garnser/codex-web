@@ -1439,6 +1439,8 @@ class OrganizationalMemoryService:
             return current
 
         self.store.update_state(apply)
+        for knowledge_id in affected:
+            self._index_delete(knowledge_id)
         return (
             f"memory:{target_id}:{action.value}:"
             + ",".join(sorted(affected))
