@@ -458,6 +458,93 @@ class DefinitionRegistryService:
         self._notify("definition.publication_approved", approved[0])
         return approved[0]
 
+    def publication_mutation(
+        self,
+        records: list[DefinitionRecord],
+        record_id: str,
+        request: DefinitionPublishRequest,
+        *,
+        enforce_approval: bool,
+        now: float | None = None,
+    ) -> tuple[list[DefinitionRecord], DefinitionRecord]:
+        """Pure publication transform reusable by atomic cross-domain commits."""
+
+        selected = next(
+            (record for record in records if record.record_id == record_id),
+            None,
+        )
+        if selected is None:
+            raise DefinitionNotFoundError(
+                f"definition record not found: {record_id}"
+            )
+        if selected.lifecycle not in {
+            DefinitionLifecycle.DRAFT,
+            DefinitionLifecycle.VALIDATED,
+        }:
+            raise DefinitionConflictError(
+                "only draft/validated definitions can be published"
+            )
+        selected = self._validated_record(selected)
+        active = self._active_same_slot(records, selected)
+        active_revision = active.revision if active else None
+        if (
+            request.expected_active_revision is not None
+            and request.expected_active_revision != active_revision
+        ):
+            raise DefinitionConflictError(
+                "active definition revision changed before publication"
+            )
+        assessment = self._publication_assessment(active, selected)
+        if enforce_approval and assessment.requires_independent_approval:
+            valid_approvals = [
+                approval
+                for approval in selected.publication_approvals
+                if approval.candidate_checksum == selected.checksum
+                and approval.active_record_id
+                == (active.record_id if active else None)
+                and approval.active_revision
+                == (active.revision if active else None)
+                and approval.approved_by != request.actor
+            ]
+            if not valid_approvals:
+                raise DefinitionApprovalRequiredError(
+                    "sensitive definition expansion requires independent approval",
+                    record_id=selected.record_id,
+                    reasons=assessment.reasons,
+                )
+        timestamp = time.time() if now is None else float(now)
+        current = selected.model_copy(
+            update={
+                "lifecycle": DefinitionLifecycle.PUBLISHED,
+                "validated_by": selected.validated_by or request.actor,
+                "validated_at": selected.validated_at or timestamp,
+                "published_by": request.actor,
+                "publish_reason": request.reason,
+                "published_at": timestamp,
+                "approval_metadata": dict(request.approval_metadata),
+                "supersedes_record_id": active.record_id if active else None,
+            }
+        )
+        result: list[DefinitionRecord] = []
+        for record in records:
+            if active is not None and record.record_id == active.record_id:
+                result.append(
+                    record.model_copy(
+                        update={
+                            "lifecycle": DefinitionLifecycle.SUPERSEDED,
+                            "superseded_by_record_id": current.record_id,
+                        }
+                    )
+                )
+            elif record.record_id == selected.record_id:
+                result.append(current)
+            else:
+                result.append(record)
+        return result, current
+
+    def notify_published(self, record: DefinitionRecord) -> None:
+        self._notify("definition.published", record)
+
     def _publish(
         self,
         record_id: str,
@@ -468,68 +555,17 @@ class DefinitionRegistryService:
         published: list[DefinitionRecord] = []
 
         def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
-            selected = next((record for record in records if record.record_id == record_id), None)
-            if selected is None:
-                raise DefinitionNotFoundError(f"definition record not found: {record_id}")
-            if selected.lifecycle not in {DefinitionLifecycle.DRAFT, DefinitionLifecycle.VALIDATED}:
-                raise DefinitionConflictError("only draft/validated definitions can be published")
-            selected = self._validated_record(selected)
-            active = self._active_same_slot(records, selected)
-            active_revision = active.revision if active else None
-            if (
-                request.expected_active_revision is not None
-                and request.expected_active_revision != active_revision
-            ):
-                raise DefinitionConflictError("active definition revision changed before publication")
-            assessment = self._publication_assessment(active, selected)
-            if enforce_approval and assessment.requires_independent_approval:
-                valid_approvals = [
-                    approval
-                    for approval in selected.publication_approvals
-                    if approval.candidate_checksum == selected.checksum
-                    and approval.active_record_id == (active.record_id if active else None)
-                    and approval.active_revision == (active.revision if active else None)
-                    and approval.approved_by != request.actor
-                ]
-                if not valid_approvals:
-                    raise DefinitionApprovalRequiredError(
-                        "sensitive definition expansion requires independent approval",
-                        record_id=selected.record_id,
-                        reasons=assessment.reasons,
-                    )
-            now = time.time()
-            current = selected.model_copy(
-                update={
-                    "lifecycle": DefinitionLifecycle.PUBLISHED,
-                    "validated_by": selected.validated_by or request.actor,
-                    "validated_at": selected.validated_at or now,
-                    "published_by": request.actor,
-                    "publish_reason": request.reason,
-                    "published_at": now,
-                    "approval_metadata": dict(request.approval_metadata),
-                    "supersedes_record_id": active.record_id if active else None,
-                }
+            result, current = self.publication_mutation(
+                records,
+                record_id,
+                request,
+                enforce_approval=enforce_approval,
             )
-            result: list[DefinitionRecord] = []
-            for record in records:
-                if active is not None and record.record_id == active.record_id:
-                    result.append(
-                        record.model_copy(
-                            update={
-                                "lifecycle": DefinitionLifecycle.SUPERSEDED,
-                                "superseded_by_record_id": current.record_id,
-                            }
-                        )
-                    )
-                elif record.record_id == selected.record_id:
-                    result.append(current)
-                else:
-                    result.append(record)
             published.append(current)
             return result
 
         self.store.update(update)
-        self._notify("definition.published", published[0])
+        self.notify_published(published[0])
         return published[0]
 
     def publish(
