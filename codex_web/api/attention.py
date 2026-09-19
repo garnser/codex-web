@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
+
+from codex_web.api.identity import request_actor
+from codex_web.services.attention import AttentionService, AttentionStateError
+from codex_web.storage.attention import AttentionItemNotFoundError
+
+
+class AttentionResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = None
+
+
+class AttentionSnoozeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    until: float
+
+
+def build_attention_router(service: AttentionService) -> APIRouter:
+    router = APIRouter(prefix="/api/attention", tags=["attention"])
+
+    def serialize(item) -> dict[str, Any]:
+        return item.model_dump(mode="json")
+
+    def translate(exc: Exception) -> HTTPException:
+        if isinstance(exc, AttentionItemNotFoundError):
+            return HTTPException(status_code=404, detail="attention item not found")
+        if isinstance(exc, AttentionStateError):
+            return HTTPException(status_code=409, detail=str(exc))
+        return HTTPException(status_code=400, detail=str(exc))
+
+    @router.get("")
+    async def list_items(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        return {
+            "attention_items": [
+                serialize(item)
+                for item in service.list(actor)
+            ]
+        }
+
+    @router.get("/{item_id}")
+    async def get_item(item_id: str, request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = service.get(item_id, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    @router.post("/{item_id}/acknowledge")
+    async def acknowledge(item_id: str, request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = await service.acknowledge(item_id, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    @router.post("/{item_id}/resolve")
+    async def resolve(
+        item_id: str,
+        payload: AttentionResolveRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = await service.resolve(item_id, actor=actor, reason=payload.reason)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    @router.post("/{item_id}/snooze")
+    async def snooze(
+        item_id: str,
+        payload: AttentionSnoozeRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = await service.snooze(item_id, actor=actor, until=payload.until)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    return router
