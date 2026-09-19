@@ -181,6 +181,6 @@ test('Agent Providers surface remains usable on narrow screens', async ({ page }
   const card = page.locator('#agent-provider-card');
   await expect(card).toBeVisible();
   const layout = card.locator('.agent-provider-layout');
-  await expect(layout).toHaveCSS('grid-template-columns', /370px|358px|1fr/);
+  await expect(layout).toHaveCSS('grid-template-columns', /^\d+(?:\.\d+)?px$/);
   await expect(card.locator('.agent-route-run')).toBeVisible();
 });
