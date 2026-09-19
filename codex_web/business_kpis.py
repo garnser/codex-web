@@ -350,6 +350,30 @@ class BusinessKPISnapshotItem(BaseModel):
     decision_ids: tuple[str, ...] = ()
 
 
+class BusinessKPITargetSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(default_factory=lambda: f"business-kpi-target-snapshot-{uuid.uuid4().hex}")
+    organization_id: str
+    workspace_id: str
+    binding_id: str
+    target_kind: BusinessKPITargetKind
+    target_id: str
+    kpi_id: str
+    kpi_revision: int
+    metric_id: str
+    metric_revision: int
+    metric_snapshot_id: str
+    observation_ids: tuple[str, ...] = ()
+    value: float | int | bool | None = None
+    unit: str
+    freshness: MetricFreshness
+    window_start: float | None = None
+    window_end: float | None = None
+    captured_by: str
+    captured_at: float = Field(default_factory=time.time)
+
+
 class CompanyOperatingSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -516,3 +540,4 @@ class BusinessKPIState(BaseModel):
     bindings: list[BusinessKPITargetBinding] = Field(default_factory=list)
     refreshes: list[BusinessKPIRefreshResult] = Field(default_factory=list)
     operating_snapshots: list[CompanyOperatingSnapshot] = Field(default_factory=list)
+    target_snapshots: list[BusinessKPITargetSnapshot] = Field(default_factory=list)
