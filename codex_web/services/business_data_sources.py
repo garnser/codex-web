@@ -376,12 +376,24 @@ class BusinessDataSourceService:
     ) -> BusinessDataSourceRecord:
         current = self.get(source_id, actor=actor)
         if current.schedule_id and self.scheduler is not None:
-            if status == BusinessDataSourceStatus.ACTIVE:
+            if (
+                status == BusinessDataSourceStatus.ACTIVE
+                and current.status in {
+                    BusinessDataSourceStatus.PAUSED,
+                    BusinessDataSourceStatus.QUARANTINED,
+                }
+            ):
                 self.scheduler.resume(current.schedule_id, actor_id=actor.identity_id)
-            elif status in {
-                BusinessDataSourceStatus.PAUSED,
-                BusinessDataSourceStatus.QUARANTINED,
-            }:
+            elif (
+                status in {
+                    BusinessDataSourceStatus.PAUSED,
+                    BusinessDataSourceStatus.QUARANTINED,
+                }
+                and current.status not in {
+                    BusinessDataSourceStatus.PAUSED,
+                    BusinessDataSourceStatus.QUARANTINED,
+                }
+            ):
                 self.scheduler.pause(current.schedule_id, actor_id=actor.identity_id)
         return self._update_source(source_id, {"status": status})
 
@@ -602,11 +614,15 @@ class BusinessDataSourceService:
 
     @staticmethod
     def _incoming_is_stale(existing, snapshot: BusinessDataSnapshot) -> bool:
-        if (
-            existing.source_sequence is not None
-            and snapshot.source_sequence is not None
-        ):
+        if existing.source_sequence is not None:
+            if snapshot.source_sequence is None:
+                return True
             return snapshot.source_sequence <= existing.source_sequence
+        if (
+            existing.source_updated_at is not None
+            and snapshot.source_updated_at is None
+        ):
+            return True
         if (
             existing.source_updated_at is not None
             and snapshot.source_updated_at is not None
