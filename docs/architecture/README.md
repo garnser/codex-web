@@ -100,6 +100,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Tamper-evident autonomy audit and reliability](autonomy-audit.md) — tenant-partitioned hash chains, checkpoints/signing/export, governed redaction, reliability/efficiency metrics, periodic verification and deterministic suspension.
 - [Canonical release promotion](releases.md) — immutable build-once promotion, SBOM/provenance/signing gates, exact ApprovalRequests, staged rollout and known-good artifact rollback.
 - [Canonical Incident domain](incidents.md) — deduped detection, command/handoff, Attention escalation, ActionIntent containment/recovery, Evidence-required resolution and postmortem learning.
+- [Production recovery and continuity](recovery-continuity.md) — explicit RPO/RTO, canonical-key encrypted snapshots, scheduler-backed backups, isolated restore drills, key/audit integrity checks and recovery Evidence.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
