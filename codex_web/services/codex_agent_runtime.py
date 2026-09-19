@@ -97,6 +97,8 @@ class CodexAgentRuntimeAdapter:
             params["sandboxPolicy"] = request.sandbox_policy
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
+        if request.approval_reviewer:
+            params["approvalsReviewer"] = request.approval_reviewer
         if request.model:
             params["model"] = request.model
         response = await self.transport.request("thread/start", params)
@@ -116,6 +118,8 @@ class CodexAgentRuntimeAdapter:
             params["sandboxPolicy"] = request.sandbox_policy
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
+        if request.approval_reviewer:
+            params["approvalsReviewer"] = request.approval_reviewer
         if request.model:
             params["model"] = request.model
         if request.developer_instructions:
@@ -194,6 +198,8 @@ class CodexAgentRuntimeAdapter:
             params["developerInstructions"] = request.developer_instructions
         if request.approval_policy:
             params["approvalPolicy"] = request.approval_policy
+        if request.approval_reviewer:
+            params["approvalsReviewer"] = request.approval_reviewer
         if request.sandbox_policy is not None:
             params["sandboxPolicy"] = request.sandbox_policy
         response = await self.transport.request("turn/start", params)
