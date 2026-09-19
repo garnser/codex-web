@@ -322,36 +322,46 @@ class ExecutiveManagementService:
                         weight = 4 if " " in keyword else 2
                     score += weight
                     reasons.append(f"keyword:{keyword}")
-            if payload.goal_ids and ExecutiveObjectType.GOAL in role.observable_information:
-                score += 1
-            if payload.decision_ids and ExecutiveObjectType.DECISION in role.observable_information:
-                score += 1
-            if payload.work_item_refs and ExecutiveObjectType.WORK_ITEM in role.observable_information:
-                score += 1
-            if payload.evidence_ids and ExecutiveObjectType.EVIDENCE in role.observable_information:
-                score += 1
             matched_domains = tuple(
                 sorted(
                     set(business_domains)
                     & {value.casefold() for value in role.business_domains}
                 )
             )
+            if (
+                role.id == catalog.fallback_role_id
+                and len(set(business_domains)) < 2
+            ):
+                matched_domains = ()
             if matched_domains:
                 score += 12 + (2 * len(matched_domains))
                 reasons.extend(
                     f"business-domain:{value}"
                     for value in matched_domains
                 )
-            if (
-                payload.business_entity_ids
-                and ExecutiveObjectType.BUSINESS_ENTITY in role.observable_information
-            ):
-                score += 1
-            if (
-                business_domains
-                and ExecutiveObjectType.BUSINESS_KPI in role.observable_information
-            ):
-                score += 1
+
+            # Canonical object references provide context to an already relevant
+            # role; they are not enough on their own to activate every role that
+            # happens to be able to observe Goals/Decisions/Work/Evidence.
+            if score > 0:
+                if payload.goal_ids and ExecutiveObjectType.GOAL in role.observable_information:
+                    score += 1
+                if payload.decision_ids and ExecutiveObjectType.DECISION in role.observable_information:
+                    score += 1
+                if payload.work_item_refs and ExecutiveObjectType.WORK_ITEM in role.observable_information:
+                    score += 1
+                if payload.evidence_ids and ExecutiveObjectType.EVIDENCE in role.observable_information:
+                    score += 1
+                if (
+                    payload.business_entity_ids
+                    and ExecutiveObjectType.BUSINESS_ENTITY in role.observable_information
+                ):
+                    score += 1
+                if (
+                    business_domains
+                    and ExecutiveObjectType.BUSINESS_KPI in role.observable_information
+                ):
+                    score += 1
             if score > 0:
                 scored.append((score, order, role.id, tuple(reasons)))
 
