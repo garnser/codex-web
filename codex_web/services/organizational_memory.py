@@ -343,6 +343,13 @@ class OrganizationalMemoryService:
                 item.governance_record_id
                 for item in indexable
             )
+            context = self.governance.filter_context(
+                ContextFilterRequest(
+                    record_ids=governed_ids,
+                    max_classification=DataClassification.RESTRICTED,
+                ),
+                actor=actor,
+            )
             manifest = self.governance.authorize_export(
                 ExportAuthorizationRequest(
                     record_ids=governed_ids,
@@ -350,7 +357,18 @@ class OrganizationalMemoryService:
                 ),
                 actor=actor,
             )
-            allowed = {item.record_id for item in manifest.items}
+            context_allowed = set(context.allowed_record_ids)
+            export_allowed = {
+                item.record_id: item
+                for item in manifest.items
+            }
+            provider_residency = set(identity.residency_tags)
+            allowed = {
+                record_id
+                for record_id, item in export_allowed.items()
+                if record_id in context_allowed
+                and set(item.residency_tags).issubset(provider_residency)
+            }
             indexable = [
                 item
                 for item in indexable
@@ -387,6 +405,13 @@ class OrganizationalMemoryService:
                 if actor is None:
                     self._mark_index_dirty()
                     return
+                context = self.governance.filter_context(
+                    ContextFilterRequest(
+                        record_ids=(item.governance_record_id,),
+                        max_classification=DataClassification.RESTRICTED,
+                    ),
+                    actor=actor,
+                )
                 manifest = self.governance.authorize_export(
                     ExportAuthorizationRequest(
                         record_ids=(item.governance_record_id,),
@@ -394,7 +419,18 @@ class OrganizationalMemoryService:
                     ),
                     actor=actor,
                 )
-                if not manifest.items:
+                export_item = manifest.items[0] if manifest.items else None
+                residency_ok = (
+                    export_item is not None
+                    and set(export_item.residency_tags).issubset(
+                        set(identity.residency_tags)
+                    )
+                )
+                if (
+                    item.governance_record_id
+                    not in set(context.allowed_record_ids)
+                    or not residency_ok
+                ):
                     self.retrieval_backend.delete(item.id)
                     return
             self.retrieval_backend.upsert(
