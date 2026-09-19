@@ -74,6 +74,8 @@ from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing import AgentRoutingService
+from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
+from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
@@ -219,8 +221,12 @@ configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
+agent_routing_configuration_specs = install_agent_routing_configuration(
+    configuration_service
+)
 app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
+app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
     try:
@@ -237,11 +243,15 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+agent_routing_definition_service = install_agent_routing_definitions(
+    definition_registry_service
+)
 input_pipeline_definition_service = install_input_plugin_definitions(
     definition_registry_service
 )
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
 core._execution_role_definition_service = execution_role_definition_service
@@ -521,6 +531,8 @@ agent_routing_service = AgentRoutingService(
     agent_provider_service,
     agent_runtime_registry,
     model_gateway=model_gateway_service,
+    configuration=configuration_service,
+    role_defaults=agent_routing_definition_service,
 )
 app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service
