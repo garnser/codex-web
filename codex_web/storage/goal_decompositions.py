@@ -23,7 +23,12 @@ class GoalDecompositionStore:
         GOAL_DECOMPOSITION_CONTRACT.require(
             payload.get("schema_version", "")
         )
-        return GoalDecompositionState.model_validate(payload)
+        state = GoalDecompositionState.model_validate(payload)
+        if state.schema_version != GOAL_DECOMPOSITION_CONTRACT.current:
+            state = state.model_copy(
+                update={"schema_version": GOAL_DECOMPOSITION_CONTRACT.current}
+            )
+        return state
 
     def load(self) -> GoalDecompositionState:
         return self._decode(self.store.get(self.namespace))

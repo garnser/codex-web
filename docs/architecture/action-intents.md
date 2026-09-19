@@ -120,6 +120,21 @@ Execution-plane and callback operations require explicit service identities:
 
 This separation makes every provider execution/reconciliation/rollback attributable to an explicit worker service principal and every provider callback attributable to a callback service principal. Actual provider execution still passes through ActionProvider resource/credential validation and the credential broker.
 
+## Goal decomposition commit boundary
+
+Accepted Goal decomposition does not execute TaskSource creation inline. The Goal
+commit service first preflights the complete proposal, persists a per-item commit
+plan, and then queues one Goal-attributed `task-source.create` ActionIntent per
+proposed item. Leased ActionIntent workers remain the only execution plane.
+
+Goal reconciliation reads the durable intent status and receipt. A generated Work
+Item becomes traceable to the Goal only when a successful ActionResult contains
+the actual tenant-visible canonical Work Item ref. Failed, uncertain, cancelled,
+or reconciliation-required intents remain visible on the proposal and do not
+cause replacement external creates. Once all items have trustworthy refs, the
+deterministic Work Graph and Goal bindings are materialized and the proposal is
+marked committed.
+
 ## Autonomy boundary
 
 Autonomy no longer executes external actions inline. The historical `_execute_external_action` composition seam now queues an ActionIntent. Leased ActionIntent workers own external mutation.

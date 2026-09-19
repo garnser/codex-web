@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 
 from codex_web.goal_decomposition import (
+    GoalDecompositionCommitItem,
+    GoalDecompositionCommitState,
     GoalDecompositionEvent,
     GoalDecompositionProposal,
     GoalDecompositionProposalCreate,
@@ -120,6 +122,13 @@ class GoalDecompositionService:
                 raise GoalDecompositionConflictError(
                     f"proposal parent item not found: {item.parent_item_id}"
                 )
+            if (
+                item.parent_item_id is not None
+                and by_id[item.parent_item_id].project_id != item.project_id
+            ):
+                raise GoalDecompositionConflictError(
+                    "proposal parent relationships must stay within one project"
+                )
             missing_blockers = [
                 value
                 for value in item.blocked_by_item_ids
@@ -129,6 +138,13 @@ class GoalDecompositionService:
                 raise GoalDecompositionConflictError(
                     "proposal blocker item not found: "
                     + ", ".join(sorted(missing_blockers))
+                )
+            if any(
+                by_id[blocker].project_id != item.project_id
+                for blocker in item.blocked_by_item_ids
+            ):
+                raise GoalDecompositionConflictError(
+                    "proposal blocking relationships must stay within one project"
                 )
 
         depths: dict[str, int] = {}
@@ -353,6 +369,11 @@ class GoalDecompositionService:
                 "reviewed_by": None,
                 "reviewed_at": None,
                 "review_reason": None,
+                "commit_items": (),
+                "commit_started_by": None,
+                "commit_started_at": None,
+                "commit_error": None,
+                "committed_at": None,
                 "committed_work_item_refs": (),
             },
             deep=True,
@@ -446,6 +467,270 @@ class GoalDecompositionService:
                     updated,
                     event_type=f"goal_decomposition.{status.value}",
                     reason=payload.reason,
+                    actor_id=actor_id,
+                    occurred_at=now,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        return updated
+
+    @staticmethod
+    def _validate_commit_plan(
+        proposal: GoalDecompositionProposal,
+        commit_items: tuple[GoalDecompositionCommitItem, ...],
+    ) -> None:
+        proposed = {item.id: item for item in proposal.items}
+        planned = {item.proposal_item_id: item for item in commit_items}
+        if set(planned) != set(proposed) or len(planned) != len(commit_items):
+            raise GoalDecompositionConflictError(
+                "goal decomposition commit plan must cover every proposed item exactly once"
+            )
+        correlations: set[str] = set()
+        for item_id, record in planned.items():
+            item = proposed[item_id]
+            if record.project_id != item.project_id:
+                raise GoalDecompositionConflictError(
+                    f"commit project mismatch for proposed item {item_id}"
+                )
+            if record.correlation_id in correlations:
+                raise GoalDecompositionConflictError(
+                    "goal decomposition commit correlation IDs must be unique"
+                )
+            correlations.add(record.correlation_id)
+            if (
+                record.state != GoalDecompositionCommitState.PLANNED
+                or record.intent_id is not None
+                or record.work_item_ref is not None
+            ):
+                raise GoalDecompositionConflictError(
+                    "new goal decomposition commit records must start planned"
+                )
+
+    def begin_commit(
+        self,
+        proposal_id: str,
+        commit_items: tuple[GoalDecompositionCommitItem, ...],
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        reason: str,
+    ) -> GoalDecompositionProposal:
+        current = self.get(proposal_id, scope=scope)
+        if current.status != GoalDecompositionStatus.ACCEPTED:
+            raise GoalDecompositionConflictError(
+                f"cannot commit decomposition in {current.status.value} state"
+            )
+        try:
+            goal = self.goals.get(current.goal_id, scope=scope)
+        except GoalNotFoundError as exc:
+            raise GoalDecompositionNotFoundError("goal not found") from exc
+        self._assert_nonterminal_goal(goal.status)
+        if goal.revision != current.goal_revision:
+            raise GoalDecompositionConflictError(
+                "goal changed after decomposition acceptance; revise the proposal before commit"
+            )
+        self._validate_commit_plan(current, commit_items)
+        now = time.time()
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "status": GoalDecompositionStatus.COMMITTING,
+                "commit_items": commit_items,
+                "commit_started_by": actor_id,
+                "commit_started_at": now,
+                "commit_error": None,
+                "updated_by": actor_id,
+                "updated_at": now,
+            },
+            deep=True,
+        )
+
+        def apply(state: GoalDecompositionState) -> GoalDecompositionState:
+            stored = self._proposal(state, proposal_id, scope)
+            if stored.status != GoalDecompositionStatus.ACCEPTED:
+                raise GoalDecompositionConflictError(
+                    f"cannot commit decomposition in {stored.status.value} state"
+                )
+            index = state.proposals.index(stored)
+            state.proposals[index] = updated
+            state.revisions.append(
+                self._revision(
+                    updated,
+                    reason=reason,
+                    actor_id=actor_id,
+                    revised_at=now,
+                )
+            )
+            state.events.append(
+                self._event(
+                    updated,
+                    event_type="goal_decomposition.committing",
+                    reason=reason,
+                    actor_id=actor_id,
+                    occurred_at=now,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        return updated
+
+    @staticmethod
+    def _validate_commit_progress(
+        current: GoalDecompositionProposal,
+        commit_items: tuple[GoalDecompositionCommitItem, ...],
+    ) -> None:
+        existing = {item.proposal_item_id: item for item in current.commit_items}
+        incoming = {item.proposal_item_id: item for item in commit_items}
+        if set(existing) != set(incoming) or len(incoming) != len(commit_items):
+            raise GoalDecompositionConflictError(
+                "goal decomposition commit progress must preserve the commit plan"
+            )
+        for item_id, before in existing.items():
+            after = incoming[item_id]
+            if (
+                after.project_id != before.project_id
+                or after.binding_id != before.binding_id
+                or after.correlation_id != before.correlation_id
+            ):
+                raise GoalDecompositionConflictError(
+                    f"commit plan identity changed for proposed item {item_id}"
+                )
+            if (
+                after.work_item_ref is not None
+                and after.state != GoalDecompositionCommitState.SUCCEEDED
+            ):
+                raise GoalDecompositionConflictError(
+                    "only succeeded commit items may carry a Work Item ref"
+                )
+
+    def record_commit_progress(
+        self,
+        proposal_id: str,
+        commit_items: tuple[GoalDecompositionCommitItem, ...],
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        reason: str,
+        error: str | None = None,
+    ) -> GoalDecompositionProposal:
+        current = self.get(proposal_id, scope=scope)
+        if current.status != GoalDecompositionStatus.COMMITTING:
+            raise GoalDecompositionConflictError(
+                f"cannot update commit progress in {current.status.value} state"
+            )
+        self._validate_commit_progress(current, commit_items)
+        if current.commit_items == commit_items and current.commit_error == error:
+            return current
+        now = time.time()
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "commit_items": commit_items,
+                "commit_error": error,
+                "updated_by": actor_id,
+                "updated_at": now,
+            },
+            deep=True,
+        )
+
+        def apply(state: GoalDecompositionState) -> GoalDecompositionState:
+            stored = self._proposal(state, proposal_id, scope)
+            if stored.status != GoalDecompositionStatus.COMMITTING:
+                raise GoalDecompositionConflictError(
+                    f"cannot update commit progress in {stored.status.value} state"
+                )
+            index = state.proposals.index(stored)
+            state.proposals[index] = updated
+            state.revisions.append(
+                self._revision(
+                    updated,
+                    reason=reason,
+                    actor_id=actor_id,
+                    revised_at=now,
+                )
+            )
+            state.events.append(
+                self._event(
+                    updated,
+                    event_type="goal_decomposition.commit_progress",
+                    reason=reason,
+                    actor_id=actor_id,
+                    occurred_at=now,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        return updated
+
+    def complete_commit(
+        self,
+        proposal_id: str,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        reason: str,
+    ) -> GoalDecompositionProposal:
+        current = self.get(proposal_id, scope=scope)
+        if current.status != GoalDecompositionStatus.COMMITTING:
+            raise GoalDecompositionConflictError(
+                f"cannot complete commit in {current.status.value} state"
+            )
+        if not current.commit_items or any(
+            item.state != GoalDecompositionCommitState.SUCCEEDED
+            or not item.work_item_ref
+            for item in current.commit_items
+        ):
+            raise GoalDecompositionConflictError(
+                "goal decomposition commit cannot complete until every item succeeded"
+            )
+        refs_by_id = {
+            item.proposal_item_id: item.work_item_ref
+            for item in current.commit_items
+        }
+        ordered_refs = tuple(refs_by_id[item.id] for item in current.items)
+        if len(set(ordered_refs)) != len(ordered_refs):
+            raise GoalDecompositionConflictError(
+                "goal decomposition commit produced duplicate Work Item refs"
+            )
+        now = time.time()
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "status": GoalDecompositionStatus.COMMITTED,
+                "commit_error": None,
+                "committed_at": now,
+                "committed_work_item_refs": ordered_refs,
+                "updated_by": actor_id,
+                "updated_at": now,
+            },
+            deep=True,
+        )
+
+        def apply(state: GoalDecompositionState) -> GoalDecompositionState:
+            stored = self._proposal(state, proposal_id, scope)
+            if stored.status != GoalDecompositionStatus.COMMITTING:
+                raise GoalDecompositionConflictError(
+                    f"cannot complete commit in {stored.status.value} state"
+                )
+            index = state.proposals.index(stored)
+            state.proposals[index] = updated
+            state.revisions.append(
+                self._revision(
+                    updated,
+                    reason=reason,
+                    actor_id=actor_id,
+                    revised_at=now,
+                )
+            )
+            state.events.append(
+                self._event(
+                    updated,
+                    event_type="goal_decomposition.committed",
+                    reason=reason,
                     actor_id=actor_id,
                     occurred_at=now,
                 )

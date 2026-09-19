@@ -12,8 +12,8 @@ from codex_web.goals import GoalBudget
 
 GOAL_DECOMPOSITION_CONTRACT = ContractSpec(
     "goal-decomposition-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 
 MAX_GOAL_DECOMPOSITION_DEPTH = 8
@@ -27,7 +27,19 @@ class GoalDecompositionStatus(StrEnum):
     PROPOSED = "proposed"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+    COMMITTING = "committing"
     COMMITTED = "committed"
+
+
+class GoalDecompositionCommitState(StrEnum):
+    PLANNED = "planned"
+    QUEUED = "queued"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNCERTAIN = "uncertain"
+    REQUIRES_RECONCILIATION = "requires_reconciliation"
+    ROLLED_BACK = "rolled_back"
 
 
 class GoalDecompositionReviewDecision(StrEnum):
@@ -132,6 +144,26 @@ class GoalDecompositionReview(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class GoalDecompositionCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1)
+
+
+class GoalDecompositionCommitItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    proposal_item_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    binding_id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    intent_id: str | None = None
+    work_item_ref: str | None = None
+    state: GoalDecompositionCommitState = GoalDecompositionCommitState.PLANNED
+    last_error: str | None = None
+    updated_at: float = Field(default_factory=time.time)
+
+
 class GoalDecompositionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -153,6 +185,11 @@ class GoalDecompositionProposal(BaseModel):
     reviewed_by: str | None = None
     reviewed_at: float | None = None
     review_reason: str | None = None
+    commit_items: tuple[GoalDecompositionCommitItem, ...] = ()
+    commit_started_by: str | None = None
+    commit_started_at: float | None = None
+    commit_error: str | None = None
+    committed_at: float | None = None
     committed_work_item_refs: tuple[str, ...] = ()
 
 
