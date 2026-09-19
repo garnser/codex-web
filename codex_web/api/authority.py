@@ -143,7 +143,28 @@ def build_authority_router(
             record = explorer.registry.get_record(record_id)
             project_id = record.scope_id if record.scope_type == DefinitionScope.PROJECT else None
             require_record_visible(record, actor, project_id=project_id)
-            return explorer.impact(record_id)
+            result = explorer.impact(record_id)
+            visible_work = work_items.list(
+                project_id=None,
+                owner=None,
+                stage=None,
+                release_gate=None,
+                scope=actor.tenant,
+            )
+            visible_refs = {
+                str(item.get("ref"))
+                for item in visible_work.get("items", [])
+                if item.get("ref")
+            }
+            active_work = [
+                item
+                for item in result["affected"]["active_work"]
+                if item.get("object_type") == "work_item"
+                and str(item.get("object_id")) in visible_refs
+            ]
+            result["affected"]["active_work"] = active_work
+            result["affected"]["active_work_count"] = len(active_work)
+            return result
         except Exception as exc:
             if isinstance(
                 exc,
