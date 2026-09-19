@@ -1189,7 +1189,31 @@ class ActionIntentService:
                     ActionIntentStatus.FAILED,
                     error=f"entitlement/quota denied before provider execution: {exc}",
                 )
-        intent = self._mark_executing(intent_id, worker_id, actor)
+        capacity_lease = None
+        component_key = self._capacity_component(pending)
+        if self.capacity is not None:
+            try:
+                capacity_lease = self.capacity.acquire(
+                    organization_id=pending.organization_id,
+                    workspace_id=pending.workspace_id,
+                    workload=WorkloadKind.ACTION,
+                    priority=self._capacity_priority(pending),
+                    owner_ref=pending.id,
+                    component_key=component_key,
+                    lease_seconds=pending.timeout_seconds + 30.0,
+                )
+            except CapacityDeferredError as exc:
+                return self._defer_for_capacity(
+                    pending.id,
+                    reason=exc.reason,
+                    retry_at=exc.retry_at,
+                )
+        try:
+            intent = self._mark_executing(intent_id, worker_id, actor)
+        except Exception:
+            if self.capacity is not None and capacity_lease is not None:
+                self.capacity.release(capacity_lease.id)
+            raise
         with correlated(
             correlation_id=intent.correlation_id,
             causation_id=intent.causation_id,
