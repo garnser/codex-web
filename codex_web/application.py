@@ -50,7 +50,7 @@ from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
 from codex_web.integrations.webhook_security import install_webhook_security
-from codex_web.model_providers import OpenAIModelProviderAdapter
+from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
@@ -331,6 +331,7 @@ model_gateway_service = ModelGatewayService(
     input_pipeline_resolver=input_pipeline_definition_service.pipeline_for,
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
+model_gateway_service.register_adapter(AnthropicModelProviderAdapter())
 app.include_router(build_model_gateway_router(model_gateway_service))
 app.state.model_gateway_store = model_gateway_store
 app.state.model_gateway_service = model_gateway_service
