@@ -17,7 +17,7 @@ ApprovalDecisionValue: TypeAlias = Literal[
     "decline",
 ]
 ReasoningEffort: TypeAlias = Literal["", "none", "minimal", "low", "medium", "high", "xhigh"]
-BotProvider: TypeAlias = Literal["slack", "telegram"]
+BotProvider: TypeAlias = Literal["slack", "telegram", "teams"]
 WorkItemStage: TypeAlias = Literal[
     "implementation_active",
     "ready_for_validation",

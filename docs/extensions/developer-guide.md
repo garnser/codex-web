@@ -143,3 +143,15 @@ unavailable to synchronization.
 
 
 For a complete connector walkthrough, manifest guidance and conformance checklist, see [Build a governed BusinessDataSource connector](business-data-source-guide.md). A packaged synthetic example lives under `examples/extensions/reference_business_data_source/`.
+
+## ConversationChannel extensions
+
+Conversational intake integrations should implement the
+[ConversationChannel contract](../architecture/conversation-channels.md).
+Declare only capabilities the provider actually supports and normalize provider
+conversation/message/sender identity as provenance rather than canonical
+authority. Inbound events must enter the canonical event boundary before
+routing. Credentials remain SecretReferences, and extension lifecycle state
+must gate adapter availability. Consequential outbound provider writes belong
+to ActionProvider/ActionIntent rather than a direct ConversationChannel send
+method.

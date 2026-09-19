@@ -18,6 +18,7 @@ _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]*$")
 
 class ExtensionType(StrEnum):
     TASK_SOURCE = "task_source"
+    CONVERSATION_CHANNEL = "conversation_channel"
     ACTION_PROVIDER = "action_provider"
     MODEL_PROVIDER = "model_provider"
     SECRET_BACKEND = "secret_backend"
@@ -137,6 +138,7 @@ class ExtensionEntrypoints(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task_source: str | None = None
+    conversation_channel: str | None = None
     action_provider: str | None = None
     model_provider: str | None = None
     secret_backend: str | None = None
