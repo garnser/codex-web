@@ -165,7 +165,7 @@ class AuthorityPublicationGuardTests(unittest.TestCase):
         )
 
     def _changed(self, mutate) -> AuthorityRoleCatalogDefinition:
-        payload = self.baseline.model_dump(mode="python")
+        payload = self.baseline.model_dump(mode="json")
         mutate(payload)
         return AuthorityRoleCatalogDefinition.model_validate(payload)
 
@@ -463,11 +463,11 @@ class AuthorityPublicationApiTests(unittest.TestCase):
             ),
         )
 
-        payload = baseline.model_dump(mode="python")
-        payload["roles"][1]["grants"][0]["environments"] = (
-            AuthorityEnvironment.STAGING,
-            AuthorityEnvironment.PRODUCTION,
-        )
+        payload = baseline.model_dump(mode="json")
+        payload["roles"][1]["grants"][0]["environments"] = [
+            AuthorityEnvironment.STAGING.value,
+            AuthorityEnvironment.PRODUCTION.value,
+        ]
         candidate = AuthorityRoleCatalogDefinition.model_validate(payload)
         self.draft = self.service.create_draft(
             DefinitionDraftCreate(
