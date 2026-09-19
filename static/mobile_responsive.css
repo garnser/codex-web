@@ -9,6 +9,7 @@
 }
 
 .mobile-nav-toggle,
+.mobile-nav-close,
 .mobile-nav-backdrop {
   display: none;
 }
@@ -97,7 +98,8 @@ th {
     display: none !important;
   }
 
-  .mobile-nav-toggle {
+  .mobile-nav-toggle,
+  .mobile-nav-close {
     display: inline-grid;
     flex: 0 0 auto;
     min-width: var(--touch-target);
@@ -107,6 +109,10 @@ th {
     padding: 0;
     place-items: center;
     font-size: 20px;
+  }
+
+  .mobile-nav-close {
+    margin-left: 6px;
   }
 
   .mobile-nav-backdrop {
