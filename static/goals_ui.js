@@ -244,7 +244,7 @@ function renderProposal(proposal) {
             <div class="goal-commit-row">
               <strong>${esc(item.proposal_item_id)}</strong>
               <span>${esc(item.state)}</span>
-              <small>Intent: ${esc(item.intent_id || '—')}</small>
+              <small>ActionIntent: ${esc(item.intent_id || '—')}</small>
               <small>Work Item: ${esc(item.work_item_ref || '—')}</small>
               ${item.last_error ? `<small class="goal-danger">${esc(item.last_error)}</small>` : ''}
             </div>
