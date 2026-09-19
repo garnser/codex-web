@@ -220,6 +220,33 @@ class AutonomyControlCenterService:
             workspace_id=actor.workspace_id,
         )
 
+        recent_cycles = autonomy["recent_cycles"][:100]
+        simulated_cycles = [
+            item
+            for item in recent_cycles
+            if item.get("outcome") in {"dry_run", "simulated"}
+        ]
+        executed_cycles = [
+            item
+            for item in recent_cycles
+            if item.get("outcome") in {"completed", "prepared", "recommended"}
+        ]
+        simulation = {
+            "dry_run_enabled": bool(autonomy["control"].get("dry_run")),
+            "simulation_enabled": bool(autonomy["control"].get("simulation")),
+            "simulated_cycles": simulated_cycles[:25],
+            "executed_cycles": executed_cycles[:25],
+            "simulated_action_count": sum(
+                int(item.get("action_count") or 0)
+                for item in simulated_cycles
+            ),
+            "executed_action_count": sum(
+                int(item.get("action_count") or 0)
+                for item in executed_cycles
+            ),
+            "evaluation_count": len(orchestration.get("evaluations") or {}),
+        }
+
         coordination = self.coordination.health().model_dump(mode="json")
         ownership = self.ownership.status()
 
@@ -232,7 +259,12 @@ class AutonomyControlCenterService:
                 "recent_cycles": autonomy["recent_cycles"][:25],
                 "dead_letters": autonomy["dead_letters"][:25],
                 "break_glass_grants": autonomy["break_glass_grants"][:25],
+                "scoped_pauses": [
+                    item
+                    for item in autonomy["control"].get("scoped_pauses", [])
+                ],
             },
+            "simulation": simulation,
             "approvals": {
                 "pending": [
                     item.model_dump(mode="json")
@@ -325,8 +357,29 @@ class AutonomyControlCenterService:
         *,
         actor: AuthenticationActor,
     ) -> dict[str, Any]:
-        return self.orchestration.explain_action(
+        explanation = self.orchestration.explain_action(
             intent_id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
         )
+        action = explanation.get("action_intent") or {}
+        definition = action.get("action_definition") or {}
+        resources = list(action.get("resource_ids") or [])
+        risk = self._value(definition.get("risk_class")) if isinstance(definition, dict) else None
+        explanation["blast_radius"] = {
+            "resource_count": len(resources),
+            "resource_ids": resources,
+            "risk_class": risk or "unknown",
+            "rollback_required": bool(action.get("rollback_required")),
+            "verification_required": bool(action.get("verification_required")),
+            "provider": (
+                f"{action.get('provider_type') or '?'}"
+                f"/{action.get('provider_instance') or '?'}"
+            ),
+            "high_impact": (
+                risk in {"high", "critical"}
+                or len(resources) > 1
+                or bool(action.get("rollback_required"))
+            ),
+        }
+        return explanation
