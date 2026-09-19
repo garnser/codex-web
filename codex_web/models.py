@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
@@ -44,14 +44,102 @@ class TaskSourceIdentity(BaseModel):
     event_cursor: str | None = None
 
 
+class JiraTaskSourceSettings(BaseModel):
+    """Typed non-secret Jira adapter settings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    kind: Literal["jira"] = "jira"
+    username: str | None = None
+
+
+class ServiceNowFieldSettings(BaseModel):
+    """Allowlisted ServiceNow Task field names used only by its adapter."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    number: str = "number"
+    title: str = "short_description"
+    body: str = "description"
+    state: str = "state"
+    assignee: str = "assigned_to"
+    priority: str = "priority"
+    category: str = "category"
+    parent: str = "parent"
+    updated: str = "sys_updated_on"
+    sys_id: str = "sys_id"
+    comment: str = "comments"
+
+
+class ServiceNowTaskSourceSettings(BaseModel):
+    """Typed non-secret ServiceNow adapter settings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    kind: Literal["servicenow"] = "servicenow"
+    table: str = Field(default="task", min_length=1)
+    fields: ServiceNowFieldSettings = Field(default_factory=ServiceNowFieldSettings)
+    canonical_state_values: dict[WorkItemStage, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_state_values(self) -> "ServiceNowTaskSourceSettings":
+        normalized = {
+            stage: str(value or "").strip()
+            for stage, value in self.canonical_state_values.items()
+            if str(value or "").strip()
+        }
+        object.__setattr__(self, "canonical_state_values", normalized)
+        return self
+
+
+TaskSourceProviderSettings: TypeAlias = Annotated[
+    JiraTaskSourceSettings | ServiceNowTaskSourceSettings,
+    Field(discriminator="kind"),
+]
+
+
 class TaskSourceConfiguration(BaseModel):
-    """Exactly one provider-neutral authoritative source binding for a project."""
+    """Exactly one provider-neutral authoritative source binding for a project.
+
+    Secret material never lives here. Built-in providers may reference one
+    canonical SecretReference and carry only typed, non-secret adapter settings.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
     source_type: str = Field(min_length=1)
     source_instance: str = Field(min_length=1)
     scope: str = Field(min_length=1)
+    credential_secret_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    provider_settings: TaskSourceProviderSettings | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def validate_builtin_provider_binding(self) -> "TaskSourceConfiguration":
+        source_type = self.source_type.casefold()
+        if source_type in {"jira", "servicenow"}:
+            if not self.credential_secret_id:
+                raise ValueError(
+                    f"{source_type} task source requires credential_secret_id"
+                )
+            if self.provider_settings is None:
+                raise ValueError(
+                    f"{source_type} task source requires typed provider_settings"
+                )
+            if self.provider_settings.kind != source_type:
+                raise ValueError(
+                    "task-source provider_settings kind must match source_type"
+                )
+        elif self.provider_settings is not None:
+            raise ValueError(
+                "typed provider_settings are only supported for built-in jira/servicenow task sources"
+            )
+        return self
 
 
 class Project(BaseModel):

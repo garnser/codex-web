@@ -13,6 +13,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
+from codex_web.services.builtin_task_source_runtime import install_builtin_task_source_runtime
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.task_source_events import (
@@ -77,6 +78,17 @@ class WorkItemService:
             register_project(
                 "gitlab",
                 self._gitlab_source_for_project,
+            )
+        app_state = getattr(getattr(host, "app", None), "state", None)
+        identity_service = getattr(app_state, "identity_service", None)
+        secret_broker = getattr(app_state, "secret_broker", None)
+        self.builtin_task_source_runtime = None
+        if identity_service is not None and secret_broker is not None:
+            self.builtin_task_source_runtime = install_builtin_task_source_runtime(
+                self.task_source_registry,
+                host,
+                identity_service,
+                secret_broker,
             )
         self.gitlab_artifact_events = gitlab_artifact_events or GitLabArtifactEventProjector(
             host,
