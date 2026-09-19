@@ -138,6 +138,32 @@ class CanonicalEventBus:
         )
         return delivery.transport_message_id or delivery.id, False
 
+    async def dispatch_committed(
+        self,
+        event: CanonicalEventEnvelope,
+        *,
+        inserted: bool = True,
+    ) -> CanonicalEventDelivery:
+        if not inserted:
+            return CanonicalEventDelivery(event, False, 0)
+        dispatched = await self._dispatch_local(event)
+        transport_delivery_id = None
+        transport_pending = False
+        if self.transport is not None:
+            outbox = self.store.load().outbox.get(event.event_id)
+            attempt = (outbox.attempts + 1) if outbox is not None else 1
+            transport_delivery_id, transport_pending = await self._publish_transport(
+                event,
+                attempt=attempt,
+            )
+        return CanonicalEventDelivery(
+            event,
+            True,
+            dispatched,
+            transport_delivery_id=transport_delivery_id,
+            transport_pending=transport_pending,
+        )
+
     async def publish(
         self,
         event: CanonicalEventEnvelope,
@@ -155,23 +181,7 @@ class CanonicalEventBus:
 
         # Canonical state is already committed before either local handlers or
         # transport publication run.
-        dispatched = await self._dispatch_local(persisted)
-        transport_delivery_id = None
-        transport_pending = False
-        if self.transport is not None:
-            outbox = self.store.load().outbox.get(persisted.event_id)
-            attempt = (outbox.attempts + 1) if outbox is not None else 1
-            transport_delivery_id, transport_pending = await self._publish_transport(
-                persisted,
-                attempt=attempt,
-            )
-        return CanonicalEventDelivery(
-            persisted,
-            True,
-            dispatched,
-            transport_delivery_id=transport_delivery_id,
-            transport_pending=transport_pending,
-        )
+        return await self.dispatch_committed(persisted, inserted=True)
 
     async def dispatch_outbox_once(
         self,
@@ -334,6 +344,57 @@ class CanonicalEventIngestionService:
             payload=dict(payload),
         )
         return await self.bus.publish(event, idempotency_key=normalized_key)
+
+    async def ingest_with_mutation(
+        self,
+        *,
+        namespace: str,
+        default: Any,
+        updater: Callable[[Any], Any],
+        event_type: str | CanonicalEventType,
+        source: str,
+        idempotency_key: str,
+        payload: dict[str, Any],
+        occurred_at: float | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> tuple[Any, CanonicalEventDelivery]:
+        normalized_source = str(source or "").strip()
+        normalized_key = str(idempotency_key or "").strip()
+        normalized_type = (
+            event_type.value
+            if isinstance(event_type, CanonicalEventType)
+            else str(event_type or "").strip()
+        )
+        if not normalized_source or not normalized_key or not normalized_type:
+            raise ValueError("canonical mutation event source/key/type must not be empty")
+        event_id = self._event_id(normalized_source, normalized_key)
+        event = CanonicalEventEnvelope(
+            event_id=event_id,
+            event_type=normalized_type,
+            occurred_at=time.time() if occurred_at is None else float(occurred_at),
+            source=normalized_source,
+            correlation_id=correlation_id or event_id,
+            causation_id=causation_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            payload=dict(payload),
+        )
+        domain, persisted, inserted = self.bus.store.record_with_document_mutation(
+            namespace,
+            default,
+            updater,
+            event,
+            idempotency_key=normalized_key,
+            enqueue_transport=self.bus.transport is not None,
+        )
+        delivery = await self.bus.dispatch_committed(
+            persisted,
+            inserted=inserted,
+        )
+        return domain, delivery
 
     async def ingest_task_source(
         self,
