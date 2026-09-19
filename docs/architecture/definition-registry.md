@@ -75,6 +75,50 @@ A project/workspace scoped published authority catalog can override the same
 stable global definition through normal registry precedence. Missing or invalid
 authority definitions do not fall back to bootstrap data.
 
+## Sensitive publication guards
+
+Definition publication supports code-owned, per-kind publication guards. A guard
+compares the validated candidate revision with the currently active revision in
+the same canonical slot and returns a deterministic classification, reasons,
+and whether distinct approval is required.
+
+For the M6 `authority-role-catalog`, privilege expansion includes capability or
+authority-level increases, broader project/resource/environment scope,
+production access, higher or removed monetary/model/token ceilings, higher
+autonomous-risk ceilings, reduced approval requirements, added inheritance,
+bindings/delegations, or longer delegated authority. Restrictive/equivalent
+changes remain publishable without synthetic approval.
+
+Sensitive publication uses a two-step contract:
+
+1. `GET /api/definitions/{record_id}/publication-preflight` returns the exact
+   candidate checksum, active revision, deterministic change classes/reasons and
+   a SHA-256 fingerprint.
+2. A distinct currently authorized approver records immutable approval through
+   `POST /api/definitions/{record_id}/publication-approvals`.
+
+Approval evidence is stored on the draft and records the canonical approver
+identity, principal kind, roles, assurance, tenant, reason and timestamp. Human
+approval requires owner/approver authority plus MFA (local-trusted for global
+definitions); service approval requires the corresponding
+`definitions:approve` or `definitions:global-approve` scope.
+
+Publication validates the approval ID against the current preflight
+fingerprint, candidate checksum and active revision. A concurrent publication,
+candidate replacement, or other change that alters the preflight makes the
+approval stale automatically. The creator cannot approve their own sensitive
+revision, and the publisher cannot use their own approval.
+
+Free-form `approval_metadata` is supplementary audit metadata only and cannot
+replace canonical approval evidence. Published provenance records the preflight
+fingerprint, change classes, whether approval was required, and the accepted
+approval ID/approver.
+
+Rollback uses the same guard. Restrictive rollback can publish directly;
+rollback to a more permissive historical payload creates the immutable rollback
+draft but its publication fails closed until that new draft receives approval
+for its current fingerprint.
+
 ## Execution-role migration
 
 The first migrated definition is:
