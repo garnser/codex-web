@@ -115,7 +115,7 @@ class SchedulerService:
     def _daily_timestamp(recurrence, target_date: date) -> float:
         zone = ZoneInfo(str(recurrence.timezone))
         local_clock = wall_time.fromisoformat(str(recurrence.local_time))
-        local = datetime.combine(target_date, local_clock, tzinfo=zone, fold=0)
+        local = datetime.combine(target_date, local_clock, tzinfo=zone).replace(fold=0)
         return local.timestamp()
 
     def _next_occurrence(self, schedule: ScheduleRecord, after: float) -> float | None:
@@ -311,7 +311,7 @@ class SchedulerService:
         now = float(self.clock())
         claim_limit = self.max_claims_per_tick if max_claims is None else max(0, int(max_claims))
         event_limit = self.max_events_per_tick if max_events is None else max(0, int(max_events))
-        if claim_limit == 0:
+        if claim_limit == 0 or event_limit == 0:
             return SchedulerRunResult(claimed=0, processed=0, emitted=0)
 
         claimed = self.store.claim_due(
