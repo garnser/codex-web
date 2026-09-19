@@ -12,6 +12,7 @@ from codex_web.decisions import (
     DecisionStatus,
     DecisionSupersedeRequest,
     DecisionUpdate,
+    DecisionWorkCommitRequest,
 )
 from codex_web.identity import (
     AuthenticationAssurance,
@@ -26,6 +27,10 @@ from codex_web.services.approval_requests import (
 from codex_web.services.decision_deliberation import (
     DecisionDeliberationError,
     DecisionDeliberationService,
+)
+from codex_web.services.decision_work import (
+    DecisionWorkError,
+    DecisionWorkService,
 )
 from codex_web.services.decisions import (
     DecisionAuthorizationError,
@@ -48,6 +53,7 @@ from codex_web.storage.decisions import (
 def build_decisions_router(
     service: DecisionService,
     deliberation: DecisionDeliberationService,
+    decision_work: DecisionWorkService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/decisions", tags=["decisions"])
 
@@ -82,6 +88,7 @@ def build_decisions_router(
             (
                 DecisionValidationError,
                 DecisionDeliberationError,
+                DecisionWorkError,
                 DecisionError,
                 ValueError,
             ),
@@ -296,6 +303,70 @@ def build_decisions_router(
         except Exception as exc:
             raise translate(exc) from exc
         return {"item": serialize(item)}
+
+    @router.post("/{decision_id}/work")
+    async def commit_decision_work(
+        decision_id: str,
+        payload: DecisionWorkCommitRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        if decision_work is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Decision work service is unavailable",
+            )
+        actor = writer(request)
+        try:
+            item = await decision_work.commit(
+                decision_id,
+                payload,
+                actor=actor,
+            )
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"item": serialize(item)}
+
+    @router.post("/{decision_id}/work/reconcile")
+    async def reconcile_decision_work(
+        decision_id: str,
+        request: Request,
+        reason: str = Query(
+            default="Reconcile approved Decision work with canonical ActionIntent results",
+            min_length=1,
+            max_length=4000,
+        ),
+    ) -> dict[str, Any]:
+        if decision_work is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Decision work service is unavailable",
+            )
+        actor = writer(request)
+        try:
+            item = await decision_work.reconcile(
+                decision_id,
+                actor=actor,
+                reason=reason,
+            )
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"item": serialize(item)}
+
+    @router.get("/{decision_id}/trace")
+    async def decision_trace(
+        decision_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        if decision_work is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Decision work service is unavailable",
+            )
+        actor = request_actor(request)
+        try:
+            return decision_work.trace(decision_id, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
 
     @router.post("/{decision_id}/reviews")
     async def post_execution_review(
