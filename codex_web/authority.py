@@ -326,6 +326,16 @@ class AuthorityDecision(BaseModel):
 
 
 def validate_authority_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
-    return AuthorityRoleCatalogDefinition.model_validate(payload).model_dump(
+    normalized = AuthorityRoleCatalogDefinition.model_validate(payload).model_dump(
         mode="json"
     )
+    original_roles = {
+        str(item.get("id")): item
+        for item in payload.get("roles", [])
+        if isinstance(item, dict)
+    }
+    for role in normalized["roles"]:
+        original = original_roles.get(role["id"], {})
+        if "lifecycle" not in original:
+            role.pop("lifecycle", None)
+    return normalized
