@@ -21,6 +21,7 @@ from codex_web.services.authority_publication import assess_authority_catalog_pu
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
+    DefinitionScope,
     reference_for,
 )
 from codex_web.identity import AuthenticationActor
@@ -356,35 +357,16 @@ class AuthorityRoleService:
             evaluated_at=time.time() if evaluated_at is None else evaluated_at,
         )
 
-    def evaluate(
+    def _evaluate_record(
         self,
+        record,
         request: AuthorityEvaluationRequest,
         *,
         actor: AuthenticationActor,
-        now: float | None = None,
+        evaluated_at: float,
     ) -> AuthorityDecision:
-        evaluated_at = time.time() if now is None else now
-        try:
-            record = self.catalog_record(
-                actor=actor,
-                project_id=request.project_id,
-                now=evaluated_at,
-            )
-            catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
-            definition_ref = reference_for(record)
-        except (
-            DefinitionCompatibilityError,
-            DefinitionConflictError,
-            DefinitionError,
-            LookupError,
-            ValueError,
-        ) as exc:
-            return self._deny(
-                actor,
-                request,
-                reasons=(f"canonical authority definition unavailable: {exc}",),
-                evaluated_at=evaluated_at,
-            )
+        catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
+        definition_ref = reference_for(record)
 
         roots: list[tuple[str, str | None, float | None]] = []
         for binding in catalog.bindings:
@@ -485,6 +467,94 @@ class AuthorityRoleService:
             evaluated_at=evaluated_at,
         )
 
+    def evaluate_record(
+        self,
+        record_id: str,
+        request: AuthorityEvaluationRequest,
+        *,
+        actor: AuthenticationActor,
+        now: float | None = None,
+    ) -> AuthorityDecision:
+        """Evaluate one exact authority Definition revision with runtime semantics.
+
+        This is intended for deterministic pre-publication simulation. It does
+        not make the revision effective and enforces the candidate's canonical
+        tenant/project slot before evaluating grants.
+        """
+        evaluated_at = time.time() if now is None else now
+        try:
+            record = self.registry.get_record(record_id)
+            if (
+                record.kind != AUTHORITY_ROLE_CATALOG_KIND
+                or record.definition_id != AUTHORITY_ROLE_CATALOG_ID
+            ):
+                raise ValueError("record is not the canonical authority Role catalog")
+            if (
+                record.scope_type == DefinitionScope.ORGANIZATION
+                and record.scope_id != actor.organization_id
+            ):
+                raise ValueError("authority candidate is outside actor organization")
+            if (
+                record.scope_type == DefinitionScope.WORKSPACE
+                and record.scope_id != actor.workspace_id
+            ):
+                raise ValueError("authority candidate is outside actor workspace")
+            if record.scope_type == DefinitionScope.PROJECT:
+                if request.project_id is None or record.scope_id != request.project_id:
+                    raise ValueError("authority candidate requires its exact project context")
+            return self._evaluate_record(
+                record,
+                request,
+                actor=actor,
+                evaluated_at=evaluated_at,
+            )
+        except (
+            DefinitionCompatibilityError,
+            DefinitionConflictError,
+            DefinitionError,
+            LookupError,
+            ValueError,
+        ) as exc:
+            return self._deny(
+                actor,
+                request,
+                reasons=(f"canonical authority definition unavailable: {exc}",),
+                evaluated_at=evaluated_at,
+            )
+
+    def evaluate(
+        self,
+        request: AuthorityEvaluationRequest,
+        *,
+        actor: AuthenticationActor,
+        now: float | None = None,
+    ) -> AuthorityDecision:
+        evaluated_at = time.time() if now is None else now
+        try:
+            record = self.catalog_record(
+                actor=actor,
+                project_id=request.project_id,
+                now=evaluated_at,
+            )
+            return self._evaluate_record(
+                record,
+                request,
+                actor=actor,
+                evaluated_at=evaluated_at,
+            )
+        except (
+            DefinitionCompatibilityError,
+            DefinitionConflictError,
+            DefinitionError,
+            LookupError,
+            ValueError,
+        ) as exc:
+            return self._deny(
+                actor,
+                request,
+                reasons=(f"canonical authority definition unavailable: {exc}",),
+                evaluated_at=evaluated_at,
+            )
 
 def install_authority_roles(
     registry: DefinitionRegistryService,
