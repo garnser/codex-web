@@ -6,11 +6,44 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codex_web.services.agent_model_egress import (
+    AgentRuntimeModelEgressEndpoint,
+    model_egress_endpoints_from_base_urls,
+)
 from codex_web.services.codex_model_egress import (
     AssignmentBoundModelEgressBroker,
     CodexModelEgressEndpoint,
     endpoints_from_provider_base_urls,
 )
+
+
+class AgentRuntimeModelEgressEndpointTests(unittest.TestCase):
+    def test_generic_resolver_has_no_implicit_provider_destinations(self) -> None:
+        endpoints = model_egress_endpoints_from_base_urls(
+            (
+                "https://models.example.com/v1",
+                "http://unsafe.example.com/v1",
+            ),
+            default_endpoints=(
+                AgentRuntimeModelEgressEndpoint("runtime.example.test", 8443),
+            ),
+        )
+
+        self.assertEqual(
+            {(item.host, item.port) for item in endpoints},
+            {
+                ("models.example.com", 443),
+                ("runtime.example.test", 8443),
+            },
+        )
+
+    def test_generic_resolver_without_defaults_fails_closed_to_empty(self) -> None:
+        self.assertEqual(
+            model_egress_endpoints_from_base_urls(
+                ("http://unsafe.example.com/v1",),
+            ),
+            (),
+        )
 
 
 class CodexModelEgressEndpointTests(unittest.TestCase):
@@ -84,7 +117,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     def _auth(self, *, capability: str | None = None) -> str:
         value = capability if capability is not None else self.broker.capability
-        encoded = base64.b64encode(f"codex:{value}".encode()).decode()
+        encoded = base64.b64encode(f"agent-runtime:{value}".encode()).decode()
         return f"Basic {encoded}"
 
     async def _connect(self, target: str, auth: str) -> tuple[
