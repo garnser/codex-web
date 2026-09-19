@@ -140,6 +140,7 @@ class FakeSources:
             source_type="reference-crm",
             source_instance="crm://prod",
             provider_id="crm",
+            extension_installation_id=None,
             object_type="account",
             entity_type=BusinessEntityType.CUSTOMER,
             status=BusinessDataSourceStatus.ACTIVE,
