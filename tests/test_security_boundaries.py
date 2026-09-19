@@ -40,6 +40,8 @@ from codex_web.security import (
 )
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.identity import IdentityService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.security_boundary import (
@@ -59,6 +61,7 @@ from codex_web.identity import (
 from codex_web.models import WorkItemState
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.security_events import SecurityEventStore
@@ -157,6 +160,13 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ResourceCreate(resource_type=ResourceType.OTHER, name="Target"),
             actor=self.actor,
         )
+        self.definition_registry = DefinitionRegistryService(
+            DefinitionRegistryStore(self.sqlite)
+        )
+        self.authority = install_authority_roles(
+            self.definition_registry,
+            self.resources,
+        )
         self.registry = ActionProviderRegistry(ActionProviderStateStore(self.sqlite))
         self.execution = ActionExecutionService(self.registry, self.resources)
         self.security = SecurityBoundaryService(SecurityEventStore(self.sqlite))
@@ -164,6 +174,8 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ActionIntentStore(self.sqlite),
             self.execution,
             security_boundary=self.security,
+            authority=self.authority,
+            identity=self.identity,
         )
 
     async def asyncTearDown(self) -> None:
