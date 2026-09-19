@@ -518,7 +518,7 @@ class IncidentService:
                     evaluated_at=float(self.clock()),
                 ),
                 verification_required=True,
-                rollback_required=not payload.recovery,
+                rollback_required=payload.rollback_required,
             ),
             actor=actor,
         )
