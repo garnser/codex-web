@@ -70,6 +70,15 @@ class AuthorityApprovalRequirement(BaseModel):
     count: int = Field(default=0, ge=0, le=20)
     role_ids: tuple[str, ...] = ()
 
+    @model_validator(mode="after")
+    def normalize(self) -> "AuthorityApprovalRequirement":
+        object.__setattr__(
+            self,
+            "role_ids",
+            tuple(dict.fromkeys(self.role_ids)),
+        )
+        return self
+
 
 class AuthorityGrant(BaseModel):
     """One atomic permission grant.
@@ -114,11 +123,6 @@ class AuthorityGrant(BaseModel):
         ):
             values = tuple(dict.fromkeys(getattr(self, field_name)))
             object.__setattr__(self, field_name, values)
-        object.__setattr__(
-            self.approvals,
-            "role_ids",
-            tuple(dict.fromkeys(self.approvals.role_ids)),
-        )
         return self
 
 
@@ -228,6 +232,8 @@ class AuthorityRoleCatalogDefinition(BaseModel):
                 item.role_id,
                 item.subject_kind,
                 item.subject_id,
+                item.organization_id,
+                item.workspace_id,
                 item.project_ids,
             )
             for item in self.bindings
