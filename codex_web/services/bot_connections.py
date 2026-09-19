@@ -200,8 +200,11 @@ class BotConnectionService:
     ) -> BotConnection:
         now = time.time()
         provider = payload.provider.lower()
-        if provider not in {"slack", "telegram"}:
-            raise HTTPException(status_code=400, detail="Provider must be slack or telegram")
+        if provider not in {"slack", "telegram", "teams"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Provider must be slack, telegram, or teams",
+            )
         project = self.host._project(payload.project_id)
         if actor is not None:
             scope = self._project_scope(payload.project_id)
