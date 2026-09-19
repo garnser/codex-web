@@ -427,7 +427,13 @@ class DefinitionRegistryService:
         self._notify("definition.publication_approved", approved[0])
         return approved[0]
 
-    def publish(self, record_id: str, request: DefinitionPublishRequest) -> DefinitionRecord:
+    def _publish(
+        self,
+        record_id: str,
+        request: DefinitionPublishRequest,
+        *,
+        enforce_approval: bool,
+    ) -> DefinitionRecord:
         published: list[DefinitionRecord] = []
 
         def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
@@ -445,7 +451,7 @@ class DefinitionRegistryService:
             ):
                 raise DefinitionConflictError("active definition revision changed before publication")
             assessment = self._publication_assessment(active, selected)
-            if assessment.requires_independent_approval:
+            if enforce_approval and assessment.requires_independent_approval:
                 valid_approvals = [
                     approval
                     for approval in selected.publication_approvals
@@ -494,6 +500,17 @@ class DefinitionRegistryService:
         self.store.update(update)
         self._notify("definition.published", published[0])
         return published[0]
+
+    def publish(
+        self,
+        record_id: str,
+        request: DefinitionPublishRequest,
+    ) -> DefinitionRecord:
+        return self._publish(
+            record_id,
+            request,
+            enforce_approval=True,
+        )
 
     def quarantine(self, record_id: str, *, actor: str, reason: str) -> DefinitionRecord:
         changed: list[DefinitionRecord] = []
@@ -711,9 +728,10 @@ class DefinitionRegistryService:
                 continue
             draft = self.create_draft(seed.model_copy(update={"actor": actor}))
             created.append(
-                self.publish(
+                self._publish(
                     draft.record_id,
                     DefinitionPublishRequest(actor=actor, reason="initial bootstrap"),
+                    enforce_approval=False,
                 )
             )
         return created
