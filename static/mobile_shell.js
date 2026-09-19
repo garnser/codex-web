@@ -39,7 +39,11 @@ function ensureMobileShell() {
     toggle.setAttribute('aria-label', toggle.title);
 
     if (mobile) {
-      sidebar.toggleAttribute('inert', !next);
+      if (next) {
+        sidebar.removeAttribute('inert');
+      } else {
+        sidebar.setAttribute('inert', '');
+      }
       sidebar.setAttribute('aria-hidden', String(!next));
     } else {
       sidebar.removeAttribute('inert');
@@ -47,11 +51,12 @@ function ensureMobileShell() {
     }
 
     if (next) {
+      const first = sidebar.querySelector(
+        'button:not(.icon-button):not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, button:not([disabled])'
+      );
+      first?.focus();
       requestAnimationFrame(() => {
-        const first = sidebar.querySelector(
-          'button:not(.icon-button):not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, button:not([disabled])'
-        );
-        first?.focus({ preventScroll: true });
+        if (first && document.activeElement !== first) first.focus();
       });
     } else if (restoreFocus && mobile && document.activeElement && sidebar.contains(document.activeElement)) {
       toggle.focus({ preventScroll: true });
