@@ -73,6 +73,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
+from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
@@ -835,13 +836,30 @@ action_intent_service.recover_stale_claims()
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
+codex_agent_adapter = CodexAgentRuntimeAdapter(codex_runtime)
 agent_runtime_registry.register(
-    CodexAgentRuntimeAdapter(codex_runtime),
+    codex_agent_adapter,
     capability_revision=1,
     sandbox_profiles=("read-only", "workspace-write"),
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
+if not any(
+    provider.id == "openai"
+    and provider.organization_id == identity_service.local_trusted_actor().organization_id
+    and provider.workspace_id == identity_service.local_trusted_actor().workspace_id
+    for provider in agent_provider_store.list()
+):
+    agent_provider_service.upsert(
+        AgentProviderUpsert(
+            id="openai",
+            display_name="OpenAI Codex",
+            declared_capabilities=codex_agent_adapter.capabilities,
+            granted_capabilities=codex_agent_adapter.capabilities,
+            health=AgentProviderHealth.HEALTHY,
+        ),
+        actor=identity_service.local_trusted_actor(),
+    )
 
 class _ClaudeRegistryTransport:
     """Resolve the assignment-bound Claude session named in canonical requests."""
