@@ -646,6 +646,61 @@
                     </div>
                     <div id="definition-resolve-result" class="comm-log"></div>
                   </details>
+                  <details id="authority-policy-explorer-panel">
+                    <summary>Effective authority, impact & simulation</summary>
+                    <div class="form-result">Read-only explorer over canonical Role Definitions. Cross-identity inspection and simulation require admin authority with MFA/local-trusted assurance.</div>
+                    <div class="route-test">
+                      <label>Identity <input id="authority-explorer-identity" placeholder="Current identity if blank" /></label>
+                      <label>Project <input id="authority-explorer-project" placeholder="Optional project ID" /></label>
+                      <label>Work item <input id="authority-explorer-work-item" placeholder="Optional work-item ref" /></label>
+                      <label>Role <input id="authority-explorer-role" placeholder="Optional Role ID to inspect" /></label>
+                      <button id="authority-explorer-load" type="button" class="ghost-button">Explain effective authority</button>
+                    </div>
+                    <div id="authority-explorer-result" class="comm-log"></div>
+                    <details>
+                      <summary>Pre-publish impact preview</summary>
+                      <div class="route-test">
+                        <label>Candidate Definition record <input id="authority-impact-record" placeholder="Draft/validated record ID" /></label>
+                        <button id="authority-impact-load" type="button" class="ghost-button">Preview affected scope</button>
+                      </div>
+                      <div id="authority-impact-result" class="comm-log"></div>
+                    </details>
+                    <details>
+                      <summary>Canonical authority simulator</summary>
+                      <div class="route-test">
+                        <label>Exact revision <input id="authority-sim-record" placeholder="Optional draft/validated record ID" /></label>
+                        <label>Capability <input id="authority-sim-capability" placeholder="deploy.release" /></label>
+                        <label>Level <select id="authority-sim-level">
+                          <option value="read">read</option>
+                          <option value="recommend">recommend</option>
+                          <option value="prepare">prepare</option>
+                          <option value="execute">execute</option>
+                          <option value="approve">approve</option>
+                        </select></label>
+                        <label>Environment <select id="authority-sim-environment">
+                          <option value="">Unspecified</option>
+                          <option value="development">development</option>
+                          <option value="test">test</option>
+                          <option value="staging">staging</option>
+                          <option value="production">production</option>
+                        </select></label>
+                        <label>Resource IDs <input id="authority-sim-resources" placeholder="resource-a, resource-b" /></label>
+                        <label>Amount USD <input id="authority-sim-amount" type="number" min="0" step="0.01" /></label>
+                        <label>Input tokens <input id="authority-sim-input-tokens" type="number" min="0" /></label>
+                        <label>Output tokens <input id="authority-sim-output-tokens" type="number" min="0" /></label>
+                        <label>Model calls <input id="authority-sim-model-calls" type="number" min="0" /></label>
+                        <label>Autonomy risk <select id="authority-sim-risk">
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                          <option value="critical">critical</option>
+                        </select></label>
+                        <label>Approval Role IDs <input id="authority-sim-approvals" placeholder="release-approver" /></label>
+                        <button id="authority-sim-run" type="button" class="ghost-button">Simulate with runtime evaluator</button>
+                      </div>
+                      <div id="authority-simulation-result" class="comm-log"></div>
+                    </details>
+                  </details>
                   <details id="definition-diff-panel">
                     <summary>Compare revisions</summary>
                     <div class="route-test">
@@ -1157,6 +1212,7 @@
     <script src="static/operations_observability.js" type="module"></script>
     <script src="static/structured_log_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
+    <script src="static/authority_policy_explorer.js" type="module"></script>
     <script src="static/definition_registry_management.js" type="module"></script>
     <script src="static/definition_typed_editor.js" type="module"></script>
     <script src="static/executive-ui.js" type="module"></script>

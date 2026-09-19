@@ -154,3 +154,32 @@ scope cannot be re-resolved, execution fails closed without calling the provider
 Role evaluation is deterministic application logic. It never invokes a model.
 Prompt instructions, retrieved text, task descriptions, provider output or
 model output cannot grant authority.
+
+
+## Effective-policy explorer and exact-revision simulation
+
+Administrators can inspect the same authority model through three read-only
+surfaces:
+
+- `GET /api/authority/effective` resolves the exact published Definition for an
+  identity/project/work-item context and expands matching bindings,
+  delegations, inheritance paths and atomic grants into a permission matrix;
+- `GET /api/authority/impact/{record_id}` compares a draft/validated canonical
+  authority revision with the active revision in the same slot, reuses the
+  code-owned publication assessment, and reports changed Roles, subjects,
+  projects and tenant-visible active work;
+- `POST /api/authority/simulate` evaluates either the live effective Definition
+  or one exact draft/validated revision.
+
+Exact-revision simulation does not publish, activate or otherwise mutate the
+candidate. `AuthorityRoleService.evaluate` and
+`AuthorityRoleService.evaluate_record` both terminate in the same grant,
+resource, budget, approval and autonomy evaluator; selecting a candidate changes
+only the Definition record being evaluated. This keeps simulator outcomes and
+canonical denial reasons equivalent to runtime enforcement.
+
+Cross-identity inspection is credential-free server-side re-evaluation using the
+canonical identity membership/Team state. It does not impersonate or authenticate
+as the target identity. Explorer endpoints require administrator authority plus
+MFA or stronger assurance, and active-work impact is filtered to the requesting
+tenant before it is returned.

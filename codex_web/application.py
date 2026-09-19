@@ -6,6 +6,7 @@ from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
+from codex_web.api.authority import build_authority_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
@@ -67,6 +68,7 @@ from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
@@ -510,6 +512,20 @@ work_item_contract_service = install_work_item_contract_service(
     execution_role_definition_service,
 )
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
+authority_policy_explorer_service = AuthorityPolicyExplorerService(
+    authority_role_service,
+    definition_registry_service,
+)
+app.include_router(
+    build_authority_router(
+        authority_policy_explorer_service,
+        authority_role_service,
+        identity_service,
+        work_item_service,
+        project_service,
+    )
+)
+app.state.authority_policy_explorer_service = authority_policy_explorer_service
 task_source_action_provider = TaskSourceActionProvider(work_item_service)
 action_provider_registry.register(task_source_action_provider)
 app.state.task_source_action_provider = task_source_action_provider

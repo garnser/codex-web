@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+  <body>
+    <input id="authority-explorer-identity" />
+    <input id="authority-explorer-project" />
+    <input id="authority-explorer-work-item" />
+    <input id="authority-explorer-role" />
+    <button id="authority-explorer-load">load</button>
+    <div id="authority-explorer-result"></div>
+
+    <input id="authority-impact-record" />
+    <button id="authority-impact-load">impact</button>
+    <div id="authority-impact-result"></div>
+
+    <input id="authority-sim-record" />
+    <input id="authority-sim-capability" />
+    <select id="authority-sim-level"><option value="execute">execute</option></select>
+    <select id="authority-sim-environment"><option value=""></option><option value="production">production</option></select>
+    <input id="authority-sim-resources" />
+    <input id="authority-sim-amount" />
+    <input id="authority-sim-input-tokens" />
+    <input id="authority-sim-output-tokens" />
+    <input id="authority-sim-model-calls" />
+    <select id="authority-sim-risk"><option value="low">low</option><option value="high">high</option></select>
+    <input id="authority-sim-approvals" />
+    <button id="authority-sim-run">simulate</button>
+    <div id="authority-simulation-result"></div>
+
+    <script src="/static/authority_policy_explorer.js" type="module"></script>
+  </body>
+</html>

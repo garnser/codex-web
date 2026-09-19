@@ -274,6 +274,7 @@ function renderDetail(payload) {
   const checkpoint = execution.latest_checkpoint || null;
   const usage = execution.usage || {};
   const contract = payload.execution_contract || {};
+  const definitionRefs = Array.isArray(contract.definition_refs) ? contract.definition_refs : [];
   const history = payload.history?.items || [];
   const diagnostics = payload.diagnostics || [];
   const actions = payload.actions || {};
@@ -339,6 +340,10 @@ function renderDetail(payload) {
           sandbox: policy.sandbox || contract.permissions?.sandbox,
           approval_policy: policy.approval_policy || contract.permissions?.approval_policy,
         })}</div>
+        <small>Definition: ${definitionRefs.length ? definitionRefs.map((ref) => (
+          esc(ref.kind) + ':' + esc(ref.definition_id) + '@r' + esc(ref.revision)
+            + ' · ' + esc(ref.checksum)
+        )).join('<br>') : '—'}</small>
         <small>Success: ${esc((contract.success_criteria || []).join(' · ') || '—')}</small>
         <small>Failure: ${esc((contract.failure_conditions || []).join(' · ') || '—')}</small>
       </section>
