@@ -81,6 +81,7 @@ from codex_web.services.agent_routing_configuration import install_agent_routing
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
+from codex_web.services.agent_session_trace import AgentSessionTraceService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -563,13 +564,6 @@ agent_runtime_telemetry_service = AgentRuntimeTelemetryService(
 app.state.agent_runtime_usage_store = agent_runtime_usage_store
 app.state.agent_runtime_telemetry_service = agent_runtime_telemetry_service
 app.include_router(build_agent_runtime_usage_router(agent_runtime_telemetry_service))
-app.include_router(
-    build_agent_sessions_router(
-        agent_session_service,
-        agent_runtime_registry,
-        agent_runtime_telemetry_service,
-    )
-)
 
 extension_state_store = ExtensionStateStore(state_store)
 extension_package_catalog = LocalExtensionPackageCatalog(EXTENSION_PACKAGE_DIR)
@@ -706,6 +700,24 @@ action_intent_service = ActionIntentService(
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
 app.state.action_intent_service = action_intent_service
+
+agent_session_trace_service = AgentSessionTraceService(
+    agent_session_service,
+    agent_runtime_telemetry_service,
+    execution_worker_store,
+    execution_workspace_state_store,
+    action_intent_store,
+    artifact_evidence_store,
+)
+app.state.agent_session_trace_service = agent_session_trace_service
+app.include_router(
+    build_agent_sessions_router(
+        agent_session_service,
+        agent_runtime_registry,
+        agent_runtime_telemetry_service,
+        agent_session_trace_service,
+    )
+)
 
 autonomy_state_store = AutonomyStateStore(state_store)
 autonomy_controller = AutonomyController(

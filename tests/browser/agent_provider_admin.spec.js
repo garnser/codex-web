@@ -104,7 +104,29 @@ function installRoutes(page, actions = [], state = {}) {
         }),
       });
     }),
+    page.route('**/api/agent-sessions/*/trace', async (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        trace: {
+          assignment: { id: 'assignment-a', status: 'running', fence: 4 },
+          worker: { id: 'worker-a', lifecycle: 'active', version: 'worker-v1' },
+          execution_workspace: { id: 'execws-a', status: 'active', branch_name: 'codex/work' },
+          runtime_events: [
+            {
+              id: 'usage-a',
+              provider_native_turn_id: 'turn-a',
+              terminal_outcome: 'succeeded',
+              telemetry_completeness: 'partial',
+            },
+          ],
+          action_intents: [{ id: 'intent-a', status: 'completed' }],
+          evidence: [{ id: 'evidence-a', result: 'pass' }],
+          verifications: [{ id: 'verification-a', result: 'pass' }],
+        },
+      }),
+    })),
     page.route('**/api/agent-sessions/*/*', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
       actions.push({
         url: route.request().url(),
         method: route.request().method(),
@@ -226,6 +248,22 @@ test('shared AgentSession UI is capability-aware for Claude and Codex', async ({
   await claude.getByRole('button', { name: 'Interrupt' }).click();
   await expect.poll(() => actions.length).toBe(1);
   expect(actions[0].url).toContain('/api/agent-sessions/agent-session-claude/interrupt');
+});
+
+test('AgentSession execution trace links canonical assignment/runtime/action/evidence state', async ({ page }) => {
+  await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html');
+
+  const claude = page.locator('.agent-session-item', { hasText: 'agent-session-claude' });
+  const trace = claude.locator('.agent-session-trace');
+  await trace.locator('summary').click();
+
+  await expect(trace.locator('.agent-trace-body')).toContainText('Assignment: assignment-a · running · fence 4');
+  await expect(trace.locator('.agent-trace-body')).toContainText('Runtime events: turn-a:succeeded/partial');
+  await expect(trace.locator('.agent-trace-body')).toContainText('ActionIntents: intent-a:completed');
+  await expect(trace.locator('.agent-trace-body')).toContainText('Evidence: evidence-a:pass');
+  await expect(trace.getByRole('link', { name: 'Assignments' })).toHaveAttribute('href', '#execution-assignment-list');
+  await expect(trace.getByRole('link', { name: 'Artifacts & evidence' })).toHaveAttribute('href', '#artifact-list');
 });
 
 test('routing explanation is rendered from canonical route response', async ({ page }) => {

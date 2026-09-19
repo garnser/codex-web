@@ -12,6 +12,7 @@ from codex_web.services.agent_runtime import (
     AgentSessionService,
 )
 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
+from codex_web.services.agent_session_trace import AgentSessionTraceService
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -28,6 +29,7 @@ def build_agent_sessions_router(
     service: AgentSessionService,
     runtimes: AgentRuntimeRegistry,
     telemetry: AgentRuntimeTelemetryService | None = None,
+    trace_service: AgentSessionTraceService | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["agent-sessions"])
 
@@ -87,6 +89,26 @@ def build_agent_sessions_router(
         try:
             item = service.get(session_id, actor)
             return {"item": await project_session(item, actor)}
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.get("/api/agent-sessions/{session_id}/trace")
+    async def get_session_trace(
+        session_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        if trace_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="agent session execution trace is unavailable",
+            )
+        try:
+            return {
+                "trace": trace_service.trace(
+                    session_id,
+                    actor=request_actor(request),
+                )
+            }
         except Exception as exc:
             raise _error(exc) from exc
 
