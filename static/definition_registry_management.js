@@ -368,7 +368,12 @@
     document.getElementById("import-definitions")?.addEventListener("click", () => importDefinitions().catch(console.error));
     document.getElementById("definition-registry-list")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-definition-action]");
-      if (button) mutate(button).catch(console.error);
+      if (
+        button
+        && !["publish", "approve-publication"].includes(button.dataset.definitionAction)
+      ) {
+        mutate(button).catch(console.error);
+      }
     });
     loadActor().catch(console.error);
   }
