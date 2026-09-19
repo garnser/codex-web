@@ -130,7 +130,8 @@ function stageSummary(stage) {
     const model = detail.model_invocations?.[0];
     const runtimeText = session ? `${session.provider_id}/${session.runtime_id}` : "no runtime";
     const modelText = model ? `${model.selected_provider_id || "?"}/${model.selected_model_id || model.selected_concrete_model || "?"}` : "no model route";
-    return `${runtimeText} · ${modelText}`;
+    const modelReason = model?.route_reason ? ` · model: ${model.route_reason}` : "";
+    return `${runtimeText} · canonical AgentSession binding · ${modelText}${modelReason}`;
   }
   if (stage.stage === "authority_approval") {
     return `${detail.action_intents?.length || 0} intent(s) · ${detail.approval_requests?.length || 0} approval(s)`;
