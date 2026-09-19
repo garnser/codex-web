@@ -600,4 +600,20 @@ function wireGoalActions() {
   ));
 }
 
+window.addEventListener('codex:open-goal', async (event) => {
+  const goalId = String(event.detail?.goalId || '').trim();
+  if (!goalId) return;
+  ensureShell();
+  const dialog = document.querySelector('#goals-dialog');
+  if (!dialog.open) dialog.showModal();
+  await refreshAll();
+  if (state.goals.some((row) => row.goal?.id === goalId)) {
+    state.selectedGoalId = goalId;
+    renderGoalList();
+    await loadGoal(goalId);
+  } else {
+    setStatus(`Goal not found in current tenant: ${goalId}`, true);
+  }
+});
+
 ensureShell();
