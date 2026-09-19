@@ -161,6 +161,7 @@ class RecoveryHealth(BaseModel):
     latest_restore_verification_age_seconds: float | None = None
     latest_restore_passed: bool = False
     rpo_satisfied: bool = False
+    rto_satisfied: bool = False
     recovery_qualified: bool = False
     blockers: tuple[str, ...] = ()
 
