@@ -149,6 +149,16 @@ jobs:
 
           npx playwright test tests/browser --workers=1 --reporter=line
 
+      - name: Generate sanitized documentation screenshots
+        run: npm run docs:screenshots
+
+      - name: Upload documentation screenshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-screenshots
+          path: docs/assets/screenshots/generated/
+          if-no-files-found: error
+
   docker:
     name: docker-smoke
     runs-on: ubuntu-latest
