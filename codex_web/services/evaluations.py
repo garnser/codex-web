@@ -694,6 +694,8 @@ class EvaluationService:
             runtime,
             models,
         )
+        recorded_runtime = runtime or trace.runtime
+        recorded_models = models or trace.models
         run = EvaluationRun(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -709,8 +711,8 @@ class EvaluationService:
             starting_state=scenario.starting_state,
             event_ids=tuple(item.event_id for item in scenario.events),
             definitions=definitions,
-            runtime=runtime,
-            models=models,
+            runtime=recorded_runtime,
+            models=recorded_models,
             trace=trace,
             assertions=assertions,
             passed=all(item.passed for item in assertions),
