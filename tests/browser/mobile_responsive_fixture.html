@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mobile responsive shell fixture</title>
+  <link rel="stylesheet" href="../../static/styles.css">
+  <link rel="stylesheet" href="../../static/mobile_responsive.css">
+  <style>
+    .fixture-form{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
+    .fixture-form label{display:grid;gap:4px;min-width:0}
+    .fixture-card{padding:12px;border:1px solid var(--line);border-radius:8px;min-width:0}
+    .fixture-table{width:100%;border-collapse:collapse}
+    .fixture-table th,.fixture-table td{padding:8px;border:1px solid var(--line)}
+    @media(max-width:640px){.fixture-form{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-lockup"><div class="app-mark">C</div><strong>Codex Web</strong></div>
+      <button id="refresh" class="icon-button" type="button">↻</button>
+    </div>
+    <section>
+      <div class="section-title"><span>Projects</span><button class="icon-button" type="button">+</button></div>
+      <button id="project-one" type="button">Very long project name that remains touchable on a narrow phone</button>
+    </section>
+    <section>
+      <input class="search" aria-label="Search threads" placeholder="Search threads">
+      <button id="thread-one" type="button">Thread 1</button>
+    </section>
+  </aside>
+  <button id="sidebar-toggle" class="sidebar-toggle" type="button">‹</button>
+  <div id="sidebar-resizer" class="sidebar-resizer"></div>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="thread-heading">
+        <h1 id="thread-title">Responsive operator workflow</h1>
+        <p id="thread-meta">workspace / project / a-very-long-provider-reference-1234567890abcdef1234567890abcdef</p>
+      </div>
+      <div class="codex-status idle"><span class="status-spinner"></span><span>Idle</span></div>
+      <div class="controls">
+        <button class="ghost-button" type="button">Inbox</button>
+        <button class="ghost-button" type="button">Work</button>
+        <details class="developer-menu">
+          <summary><span>Developer</span><small>Operations and diagnostics with a long description</small></summary>
+          <div class="developer-content">
+            <div class="developer-grid">
+              <div class="developer-card"><h2>Diagnostics</h2><code>provider://region/instance/0123456789abcdef0123456789abcdef0123456789abcdef</code></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <div class="approvals"></div>
+    <section class="messages">
+      <article class="message agent">
+        <div class="message-header"><span class="role">Agent</span><time>00:00</time></div>
+        <div class="body">Long provenance: decision-0123456789abcdef0123456789abcdef0123456789abcdef / https://example.invalid/a/really/long/path/that/must/not/stretch/the/application-shell</div>
+      </article>
+      <article class="fixture-card">
+        <h2>Responsive form</h2>
+        <div class="fixture-form">
+          <label>Name <input value="Example"></label>
+          <label>Provider <select><option>Long provider option</option></select></label>
+        </div>
+      </article>
+      <article class="fixture-card">
+        <h2>Wide comparison</h2>
+        <div class="responsive-table-wrap">
+          <table class="fixture-table">
+            <thead><tr><th>Provider</th><th>Canonical identifier</th><th>Revision</th><th>Status and provenance</th></tr></thead>
+            <tbody><tr><td>Example</td><td>external-record-0123456789abcdef0123456789abcdef</td><td>revision-999999</td><td>authoritative / healthy / verified</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+      <button id="open-dialog" type="button">Open detail dialog</button>
+    </section>
+    <form class="composer">
+      <textarea aria-label="Prompt">Message</textarea>
+      <button id="send" class="primary-button" type="button">Send</button>
+    </form>
+  </main>
+
+  <dialog id="fixture-dialog" class="fixture-detail-dialog">
+    <form method="dialog" class="dialog-form">
+      <div class="dialog-heading"><h2>Detail</h2><button value="cancel" type="submit">Close</button></div>
+      <p>external-record-0123456789abcdef0123456789abcdef0123456789abcdef</p>
+      <label>Comment <input value="A mobile-safe field"></label>
+      <menu><button value="cancel">Cancel</button><button value="default" class="primary-button">Save</button></menu>
+    </form>
+  </dialog>
+
+  <script>
+    document.querySelector('#open-dialog').addEventListener('click', () => document.querySelector('#fixture-dialog').showModal());
+  </script>
+  <script src="../../static/mobile_shell.js"></script>
+</body>
+</html>
