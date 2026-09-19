@@ -97,6 +97,24 @@ class AgentSessionStore:
             raise AgentSessionNotFoundError(session_id)
         return item
 
+    def find_by_native_id(
+        self,
+        provider_native_session_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> AgentSession | None:
+        return next(
+            (
+                session
+                for session in self.load().sessions
+                if session.provider_native_session_id == provider_native_session_id
+                and session.organization_id == organization_id
+                and session.workspace_id == workspace_id
+            ),
+            None,
+        )
+
     def upsert(self, session: AgentSession) -> AgentSession:
         result: dict[str, AgentSession] = {}
 
