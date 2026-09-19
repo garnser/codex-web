@@ -121,12 +121,7 @@ def build_executive_management_router(
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
-            catalog = service.roles.catalog(
-                organization_id=actor.organization_id,
-                workspace_id=actor.workspace_id,
-                project_id=project_id,
-            )
-            reference = service.roles.reference(
+            catalog, reference = service.roles.resolve(
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
                 project_id=project_id,
