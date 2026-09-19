@@ -84,6 +84,8 @@ Authority grants that require qualifying approvals remain denied until those app
 
 Work proposals additionally require a Decision ID and pass through the M8 Decision-to-Work bridge. That bridge requires the Decision to be canonically approved and creates external task-source work only through durable ActionIntent/ActionProvider execution. Executive code never calls an external provider directly.
 
+Goal and Decision records created from Executive proposals store the trusted activation/proposal origin on the canonical record. Before creating either object, the materialization bridge searches for that exact origin and reuses it. This makes retries safe even if canonical creation succeeded but the Executive proposal bookkeeping update was interrupted.
+
 Escalation proposals are never automatically materialized into company state. They remain human/action-routing signals for the canonical Attention/Approval/Decision workflows.
 
 ## Compatibility
