@@ -4,7 +4,7 @@ Codex-web external mutations use a provider-neutral `ActionProvider` contract. C
 
 ## Contract
 
-ActionProvider contract version **1.0** declares a provider type/instance and a catalog of `ActionDefinition` records. Each action describes, before execution:
+ActionProvider contract version **1.1** declares a provider type/instance and a catalog of `ActionDefinition` records. Each action describes, before execution:
 
 - risk class;
 - required canonical resource types;
@@ -67,6 +67,34 @@ Autonomy exposes these same prepare/execute/verify/rollback methods through the 
 Providers return `ActionResult`, `ActionVerification`, and `ActionEvidence` models. Provider-native response bodies must be normalized into these structures before they reach core logic.
 
 Evidence is reference/summary/metadata oriented and must not contain credentials.
+
+## Authoritative TaskSource creation adapter
+
+The code-owned `task-source/authoritative` provider adapts the singular project
+TaskSource configuration into the ActionIntent side-effect lifecycle. It exposes
+only `task-source.create` and accepts the provider-neutral
+`title`/`body`/`owners`/`labels` creation facts.
+
+Preparation calls the same deterministic authoritative CREATE resolution used by
+`WorkItemService`, so a missing project source, incompatible adapter, or missing
+CREATE capability fails before an external mutation. Execution then delegates to
+`WorkItemService.create_authoritative(...)` and returns the actual projected
+Work Item ref plus the TaskSource identity in the ActionResult.
+
+The action deliberately declares no ActionProvider idempotency, rollback, or
+provider verification and limits execution to one attempt. TaskSource CREATE does
+not currently guarantee a common provider-level idempotency primitive, so an
+unknown post-send outcome must enter the existing ActionIntent reconciliation
+path rather than risk duplicate task creation.
+
+The adapter is registered in code, while tenant/project enablement remains an
+ordinary persisted ActionProvider binding. A Goal decomposition commit must find
+an enabled binding for `task-source/authoritative` whose project scope permits
+the proposed item. If no such binding exists, commit is blocked and the operator
+must configure it through the existing ActionProvider administration surface.
+Bindings for this action must also allow network egress because an authoritative
+TaskSource may be remote; provider credentials remain behind the TaskSource
+integration boundary and are never accepted as action parameters.
 
 ## Reference provider and conformance
 
