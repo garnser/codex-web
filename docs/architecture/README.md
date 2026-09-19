@@ -144,3 +144,5 @@ Any design or PR that adds executable worker behavior, durable sensitive data, a
 The target architecture is:
 
 > **Code implements engines and invariants. Definitions describe reusable behavior. Events trigger work. Retrieval supplies context. Models provide judgment. Policies control authority. Isolated workers execute bounded work. Actions produce evidence. Results become reusable knowledge.**
+
+- [Business context and CompanyFacts](business-context.md) — lightweight tenant-scoped business entities, stable external references, selected governed facts, deterministic source authority/conflict handling and canonical links.
