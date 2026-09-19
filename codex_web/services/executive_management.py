@@ -12,6 +12,13 @@ from codex_web.authority import (
     AuthorityEvaluationRequest,
     AuthorityLevel,
 )
+from codex_web.business_context import BusinessEntityType
+from codex_web.business_kpis import BusinessKPITargetKind
+from codex_web.data_governance import (
+    CLASSIFICATION_RANK,
+    ContextFilterRequest,
+    DataClassification,
+)
 from codex_web.decisions import DecisionCreate, DecisionWorkCommitRequest
 from codex_web.executive_roles import (
     ExecutiveActivation,
@@ -49,6 +56,9 @@ from codex_web.security import (
     render_untrusted_content,
 )
 from codex_web.services.authority_roles import AuthorityRoleService
+from codex_web.services.business_context import BusinessContextService
+from codex_web.services.business_kpis import BusinessKPIService
+from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.decision_work import DecisionWorkService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.executive_roles import ExecutiveRoleDefinitionService
@@ -107,6 +117,9 @@ class ExecutiveManagementService:
         work_graph: WorkGraphService,
         artifact_evidence: ArtifactEvidenceService,
         organizational_memory: OrganizationalMemoryService | None = None,
+        business_context: BusinessContextService | None = None,
+        business_kpis: BusinessKPIService | None = None,
+        data_governance: DataGovernanceService | None = None,
         *,
         clock=time.time,
     ) -> None:
@@ -121,6 +134,9 @@ class ExecutiveManagementService:
         self.work_graph = work_graph
         self.artifact_evidence = artifact_evidence
         self.organizational_memory = organizational_memory
+        self.business_context = business_context
+        self.business_kpis = business_kpis
+        self.data_governance = data_governance
         self.clock = clock
 
     @staticmethod
