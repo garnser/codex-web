@@ -154,6 +154,19 @@ class CodexAgentRuntimeAdapter:
             payload=response if isinstance(response, dict) else {},
         )
 
+    async def restore_session(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        response = await self.transport.request(
+            "thread/unarchive",
+            {"threadId": provider_native_session_id},
+        )
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload=response if isinstance(response, dict) else {},
+        )
+
     async def start_turn(
         self,
         provider_native_session_id: str,
