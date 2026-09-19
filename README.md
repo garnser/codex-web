@@ -375,6 +375,10 @@ EXECUTIVE.md                      Executive control-plane documentation
 DOCKER.md                         container deployment and workspace guidance
 ```
 
+## Documentation
+
+New users and operators should start with the [product documentation](docs/README.md). It provides a verified Getting Started path, Core Concepts, tutorials, Administration, Operations, Reference, Troubleshooting, and maturity-based adoption guidance. The [architecture index](docs/architecture/README.md) remains the deeper contract/reference layer for developers and reviewers.
+
 ## Quick start
 
 ### Local Python environment
