@@ -148,19 +148,13 @@ class WorkItemService:
             raise LookupError("Project not found")
         return project
 
-    async def create_authoritative(
+    def resolve_authoritative_create(
         self,
         project_id: str,
-        payload: TaskSourceCreateRequest,
         *,
         scope: TenantScope,
-    ) -> Any:
-        """Create through the project's authoritative source, then project state.
-
-        This is an internal execution seam. Callers that originate a new external
-        side effect must place it behind the canonical ActionIntent/ActionProvider
-        boundary rather than exposing this method directly as an HTTP mutation.
-        """
+    ) -> tuple[TaskSourceConfiguration, TaskSourceCreateCapable]:
+        """Resolve and validate CREATE without performing an external mutation."""
         project = self._project_for_scope(project_id, scope)
         configuration = getattr(project, "authoritative_task_source", None)
         if configuration is None:
@@ -179,6 +173,25 @@ class WorkItemService:
             raise TaskSourceResolutionError(
                 "Task-source adapter advertises CREATE without create() support"
             )
+        return configuration, source
+
+    async def create_authoritative(
+        self,
+        project_id: str,
+        payload: TaskSourceCreateRequest,
+        *,
+        scope: TenantScope,
+    ) -> Any:
+        """Create through the project's authoritative source, then project state.
+
+        This is an internal execution seam. Callers that originate a new external
+        side effect must place it behind the canonical ActionIntent/ActionProvider
+        boundary rather than exposing this method directly as an HTTP mutation.
+        """
+        configuration, source = self.resolve_authoritative_create(
+            project_id,
+            scope=scope,
+        )
         snapshot = await source.create(payload, scope=configuration.scope)
         return self.task_source_projector.upsert(
             source,
