@@ -20,6 +20,10 @@ from codex_web.resources import (
     ResourceType,
     ResourceUpdate,
 )
+from codex_web.services.anthropic_worker_configuration import (
+    ANTHROPIC_WORKER_API_KEY_CONFIG,
+    install_anthropic_worker_configuration,
+)
 from codex_web.services.codex_worker_configuration import (
     CODEX_WORKER_ACCESS_TOKEN_CONFIG,
     install_codex_worker_configuration,
@@ -126,6 +130,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ConfigurationRegistryStore(self.sqlite)
         )
         install_codex_worker_configuration(self.configuration)
+        install_anthropic_worker_configuration(self.configuration)
 
         self.backend = _FakeGitBackend(root / "workspaces")
         self.workspaces = ExecutionWorkspaceService(
@@ -146,6 +151,15 @@ class TurnExecutionBindingTests(unittest.TestCase):
             self.workspaces,
             self.workers,
             control_actor=self.actor,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+            ),
+            runtime_credential_configs={
+                ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+                ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
+            },
             clock=lambda: self.clock,
         )
 
@@ -158,10 +172,11 @@ class TurnExecutionBindingTests(unittest.TestCase):
         *,
         scope_type: ConfigurationScope = ConfigurationScope.PROJECT,
         scope_id: str | None = "home",
+        config_key: str = CODEX_WORKER_ACCESS_TOKEN_CONFIG,
     ) -> None:
         draft = self.configuration.create_draft(
             ConfigurationDraftCreate(
-                key=CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+                key=config_key,
                 scope_type=scope_type,
                 scope_id=scope_id,
                 value=SecretReference(secret_id=secret_id),
@@ -404,6 +419,32 @@ class TurnExecutionBindingTests(unittest.TestCase):
                     capability_revision=1,
                 ),
             )
+
+
+    def test_selected_runtime_uses_its_own_credential_reference(self) -> None:
+        self._publish_secret(
+            "secret-anthropic-worker",
+            config_key=ANTHROPIC_WORKER_API_KEY_CONFIG,
+        )
+        selected = ExecutionRuntimeBinding(
+            provider_id="anthropic",
+            runtime_id="claude-code",
+            capability_revision=1,
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-123",
+            execution_id="claude-exec-1",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            runtime_binding=selected,
+        )
+
+        assignment = self.workers.list_assignments(self.actor)[0]
+        self.assertEqual(binding.secret_ref, "secret-anthropic-worker")
+        self.assertEqual(assignment.secret_refs, ("secret-anthropic-worker",))
+        self.assertEqual(assignment.runtime_binding, selected)
 
     def test_binding_contains_reference_metadata_only(self) -> None:
         self._publish_secret("secret-codex-worker")
