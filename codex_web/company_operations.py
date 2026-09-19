@@ -44,6 +44,14 @@ class CompanySourceDiagnostic(BaseModel):
     source_type: str
     provider_id: str
     provider_instance: str
+    extension_installation_id: str | None = None
+    extension_id: str | None = None
+    extension_version: str | None = None
+    extension_lifecycle: str | None = None
+    extension_health: str | None = None
+    extension_requested_capabilities: tuple[str, ...] = ()
+    extension_granted_capabilities: tuple[str, ...] = ()
+    extension_configuration_record_ids: tuple[str, ...] = ()
     object_type: str
     entity_type: str
     status: str
