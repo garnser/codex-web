@@ -83,6 +83,7 @@ class DefinitionRecord(BaseModel):
     supersedes_record_id: str | None = None
     superseded_by_record_id: str | None = None
     rollback_of_record_id: str | None = None
+    derived_from_record_id: str | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
     publication_approvals: tuple[DefinitionPublicationApproval, ...] = ()
     min_engine_version: str | None = None
@@ -143,6 +144,7 @@ class DefinitionDraftCreate(BaseModel):
     effective_until: float | None = None
     min_engine_version: str | None = None
     max_engine_version: str | None = None
+    derived_from_record_id: str | None = None
 
 
 class DefinitionPublishRequest(BaseModel):
@@ -152,6 +154,19 @@ class DefinitionPublishRequest(BaseModel):
     reason: str | None = None
     expected_active_revision: int | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class DefinitionRetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    definition_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    scope_type: DefinitionScope = DefinitionScope.GLOBAL
+    scope_id: str | None = None
+    lifecycle: Literal["deprecated", "disabled"]
+    actor: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    expected_active_revision: int | None = None
 
 
 class DefinitionRollbackRequest(BaseModel):
