@@ -522,6 +522,7 @@ app.include_router(
         authority_role_service,
         identity_service,
         work_item_service,
+        project_service,
     )
 )
 app.state.authority_policy_explorer_service = authority_policy_explorer_service
