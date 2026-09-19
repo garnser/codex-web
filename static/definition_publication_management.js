@@ -191,5 +191,9 @@
   window.addEventListener("codex:definition-registry-rendered", (event) => {
     records = event.detail?.records || [];
   });
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", bind, { once: true });
+  } else {
+    bind();
+  }
 })();
