@@ -99,6 +99,12 @@ class AutonomyReasoningResult(BaseModel):
     model_input_tokens: int = Field(default=0, ge=0)
     model_output_tokens: int = Field(default=0, ge=0)
     model_cost_usd: float = Field(default=0.0, ge=0.0)
+    model_provider_id: str | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    prompt_template_id: str | None = None
+    model_routing_reason: str | None = None
+    model_invocation_ids: tuple[str, ...] = ()
 
     @property
     def model_tokens(self) -> int:
@@ -128,6 +134,12 @@ class AutonomyCycleRecord(BaseModel):
     policy_fingerprint: str | None = None
     break_glass_grant_id: str | None = None
     budget_usage: AutonomyCycleBudgetUsage = Field(default_factory=AutonomyCycleBudgetUsage)
+    model_provider_id: str | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    prompt_template_id: str | None = None
+    model_routing_reason: str | None = None
+    model_invocation_ids: tuple[str, ...] = ()
     outcome: AutonomyCycleOutcome
     reason: str
     started_at: float = Field(default_factory=time.time)
