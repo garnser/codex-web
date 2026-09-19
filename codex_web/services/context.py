@@ -16,11 +16,14 @@ class _ThreadRuntimeTransport:
         self.thread_id = thread_id
 
     async def request(self, method: str, params: dict[str, Any] | None = None):
-        return await self.host._codex_request_for_thread(
-            self.thread_id,
-            method,
-            params or {},
-        )
+        request_for_thread = getattr(self.host, "_codex_request_for_thread", None)
+        if callable(request_for_thread):
+            return await request_for_thread(
+                self.thread_id,
+                method,
+                params or {},
+            )
+        return await self.host.codex.request(method, params or {})
 
 
 class ContextCompactionService:
