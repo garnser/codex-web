@@ -13,6 +13,10 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "definition_registry_management.js").read_text(
             encoding="utf-8"
         )
+        publication_javascript = (
+            ROOT / "static" / "definition_publication_management.js"
+        ).read_text(encoding="utf-8")
+        combined_javascript = javascript + publication_javascript
 
         self.assertIn('id="definition-lifecycle-panel"', html)
         self.assertIn('id="definition-draft-payload"', html)
@@ -24,6 +28,15 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/definitions/rollback"', javascript)
         self.assertIn("expected_active_revision", javascript)
         self.assertIn("approval_metadata", javascript)
+        self.assertIn("/publication-preflight", combined_javascript)
+        self.assertIn("/publication-approvals", combined_javascript)
+        self.assertIn("publication_approval_id", combined_javascript)
+        self.assertIn("preflightSummary", combined_javascript)
+        self.assertIn("sensitive authority/definition expansion requires approval", combined_javascript)
+        self.assertIn("canApprove(scopeType)", javascript)
+        self.assertIn("definitions:approve", javascript)
+        self.assertIn("definitions:global-approve", javascript)
+        self.assertIn("cannot replace required canonical approval evidence", combined_javascript)
         self.assertIn("activeFor(record)", javascript)
         self.assertIn("usage impact could not be loaded", javascript)
         self.assertIn("creates a new immutable revision", javascript)
