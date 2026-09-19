@@ -253,20 +253,20 @@ def classify_api_policy(
 
 
 def _policy_markdown(policy: APIAuthorizationPolicy) -> str:
-    details = [f"kind=\`{policy.kind.value}\`"]
+    details = [f"kind=`{policy.kind.value}`"]
     if policy.human_roles:
         details.append(
             "human roles=" + "/".join(item.value for item in policy.human_roles)
         )
     if policy.required_assurance is not None:
-        details.append(f"assurance=\`{policy.required_assurance.value}\`")
+        details.append(f"assurance=`{policy.required_assurance.value}`")
     if policy.capability is not None:
-        details.append(f"capability=\`{policy.capability}\`")
+        details.append(f"capability=`{policy.capability}`")
     if policy.authority_level is not None:
-        details.append(f"level=\`{policy.authority_level.value}\`")
+        details.append(f"level=`{policy.authority_level.value}`")
     if policy.service_scope_mode != APIServiceScopeMode.NONE:
         details.append(
-            f"service scopes=\`{policy.service_scope_mode.value}\`"
+            f"service scopes=`{policy.service_scope_mode.value}`"
         )
     return (
         "**Authorization:** "
