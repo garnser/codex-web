@@ -30,6 +30,7 @@ from codex_web.api.extensions import build_extensions_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
+from codex_web.api.incidents import build_incidents_router
 from codex_web.api.goals import build_goals_router
 from codex_web.api.metrics import build_metrics_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
@@ -183,6 +184,7 @@ from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.releases import ReleaseService
 from codex_web.services.identity import IdentityService
+from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
@@ -230,6 +232,7 @@ from codex_web.storage.metrics import MetricStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
+from codex_web.storage.incidents import IncidentStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -922,6 +925,20 @@ release_service = ReleaseService(
 app.state.release_store = release_store
 app.state.release_service = release_service
 app.include_router(build_releases_router(release_service))
+
+incident_store = IncidentStore(state_store)
+incident_service = IncidentService(
+    incident_store,
+    attention=attention_service,
+    artifacts=artifact_evidence_service,
+    action_intents=action_intent_service,
+    resources=resource_catalog_service,
+    memory=organizational_memory_service,
+    canonical_events=canonical_event_ingestion,
+)
+app.state.incident_store = incident_store
+app.state.incident_service = incident_service
+app.include_router(build_incidents_router(incident_service))
 
 agent_session_trace_service = AgentSessionTraceService(
     agent_session_service,
