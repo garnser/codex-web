@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 from fastapi import FastAPI, HTTPException
 
+from codex_web.agent_runtime import AgentRuntimeResult
+from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings, TurnCreate
 from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
 from codex_web.services.turns import TurnService
@@ -172,6 +174,48 @@ class _Session:
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         return {"ok": True}
+
+
+class _AlternateTurnAdapter:
+    provider_id = "anthropic"
+    runtime_id = "claude-code"
+    runtime_type = "claude-agent-sdk"
+
+    def __init__(self, session) -> None:
+        self.session = session
+        self.resumed = []
+        self.turns = []
+
+    async def resume_session(self, native_session_id, request):
+        self.resumed.append((native_session_id, request))
+        return AgentRuntimeResult(
+            provider_native_session_id=native_session_id,
+            payload={"type": "system", "subtype": "resumed"},
+        )
+
+    async def start_turn(self, native_session_id, request):
+        self.turns.append((native_session_id, request))
+        return AgentRuntimeResult(
+            provider_native_session_id=native_session_id,
+            provider_native_turn_id="claude-turn-1",
+            payload={
+                "type": "result",
+                "subtype": "success",
+                "session_id": native_session_id,
+            },
+        )
+
+
+class _AlternateSession(_Session):
+    def __init__(self, binding) -> None:
+        super().__init__()
+        self.binding = binding
+        self.runtime = SimpleNamespace(native_session_id="claude-native-session")
+
+    def validate_current(self):
+        value = super().validate_current()
+        value.runtime_binding = self.binding
+        return value
 
 
 class _SessionManager:
@@ -348,6 +392,66 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             service.last_inputs["t1"]["bootstrap_id"],
             "bootstrap-1",
+        )
+
+
+    async def test_bootstrap_turn_dispatches_to_owning_non_codex_runtime(self) -> None:
+        host = _Host()
+        binding_service = _BindingService()
+        default_manager = _SessionManager(None)
+        selected = ExecutionRuntimeBinding(
+            provider_id="anthropic",
+            runtime_id="claude-code",
+            capability_revision=1,
+        )
+        claude_manager = _SessionManager(_AlternateSession(selected))
+        adapters = []
+
+        def factory(binding, session):
+            self.assertEqual(binding, selected)
+            adapter = _AlternateTurnAdapter(session)
+            adapters.append(adapter)
+            return adapter
+
+        service = TurnExecutionService(
+            host,
+            binding_service=binding_service,
+            session_manager=default_manager,
+            bootstrap_bindings=_BootstrapBindings("t1"),
+            control_actor=SimpleNamespace(identity_id="control"),
+            session_managers={
+                ("openai", "codex"): default_manager,
+                ("anthropic", "claude-code"): claude_manager,
+            },
+            runtime_adapter_factory=factory,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        response = await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue with Claude",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="ignored-for-bootstrap",
+        )
+
+        self.assertEqual(response["type"], "result")
+        self.assertEqual(default_manager.started, [])
+        self.assertEqual(len(adapters), 1)
+        adapter = adapters[0]
+        self.assertEqual(adapter.resumed[0][0], "claude-native-session")
+        self.assertEqual(adapter.turns[0][0], "claude-native-session")
+        self.assertEqual(host.active["t1"].turn_id, "claude-turn-1")
+        self.assertEqual(
+            service.last_inputs["t1"]["assignment_id"],
+            "assignment-1",
         )
 
     async def test_terminal_bootstrap_turn_retains_session_assignment(self) -> None:
