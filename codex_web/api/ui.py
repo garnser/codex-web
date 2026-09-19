@@ -26,6 +26,7 @@ def build_ui_router(host: Any) -> APIRouter:
                 f'<script src="static/work_items_ui.js?v={version}" type="module"></script>\n'
                 f'  <script src="static/orchestration_ui.js?v={version}" type="module"></script>\n'
                 f'  <script src="static/approval_requests_ui.js?v={version}" type="module"></script>\n'
+                f'  <script src="static/attention_ui.js?v={version}" type="module"></script>\n'
                 "  </body>"
             ),
         )
