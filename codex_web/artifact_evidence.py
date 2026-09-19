@@ -41,6 +41,10 @@ class EvidenceType(StrEnum):
     POLICY_EVALUATION = "policy_evaluation"
     APPROVAL_RECORD = "approval_record"
     ARTIFACT_VERIFICATION = "artifact_verification"
+    RUNTIME_RESULT = "runtime_result"
+    RUNTIME_USAGE = "runtime_usage"
+    RUNTIME_TOOL_SUMMARY = "runtime_tool_summary"
+    PROVIDER_RECEIPT = "provider_receipt"
 
 
 class EvidenceLifecycle(StrEnum):
