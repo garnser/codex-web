@@ -1,0 +1,4 @@
+# Optional dependencies for shared/replicated control-plane deployments.
+# The default local SQLite + in-process transport installation does not require these.
+psycopg[binary]>=3.2,<4
+redis>=6,<7
