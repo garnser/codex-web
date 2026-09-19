@@ -121,18 +121,25 @@ class RuntimeSupervisor:
         interval = float(h._support_servicedesk_sweep_interval())
         if interval <= 0 or not h._gitlab_api_token():
             return
+        async def sweep() -> None:
+            result = await h._run_support_servicedesk_sweep_once()
+            h._append_bot_event(
+                {
+                    "type": "support_servicedesk_sweep_completed",
+                    **{key: value for key, value in result.items() if key != "results"},
+                }
+            )
+
         while True:
             try:
-                if not self._owns("support-servicedesk"):
-                    await asyncio.sleep(interval)
-                    continue
-                result = await h._run_support_servicedesk_sweep_once()
-                h._append_bot_event(
-                    {
-                        "type": "support_servicedesk_sweep_completed",
-                        **{key: value for key, value in result.items() if key != "results"},
-                    }
-                )
+                ownership = self._ownership()
+                if ownership is None:
+                    await sweep()
+                else:
+                    await ownership.run_exclusive(
+                        "support-servicedesk",
+                        sweep,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -149,16 +156,23 @@ class RuntimeSupervisor:
         interval = float(h._queue_recovery_interval_seconds())
         if interval <= 0:
             return
+        async def recover() -> None:
+            for thread_id in h._load_turn_queues():
+                if h._thread_is_active(thread_id):
+                    h._release_stale_active_turn(thread_id, "queue-recovery")
+                if not h._thread_is_active(thread_id):
+                    h._schedule_queue_drain(thread_id)
+
         while True:
             try:
-                if not self._owns("queue-recovery"):
-                    await asyncio.sleep(interval)
-                    continue
-                for thread_id in h._load_turn_queues():
-                    if h._thread_is_active(thread_id):
-                        h._release_stale_active_turn(thread_id, "queue-recovery")
-                    if not h._thread_is_active(thread_id):
-                        h._schedule_queue_drain(thread_id)
+                ownership = self._ownership()
+                if ownership is None:
+                    await recover()
+                else:
+                    await ownership.run_exclusive(
+                        "queue-recovery",
+                        recover,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
