@@ -20,6 +20,12 @@ test("documentation screenshot manifest uses sanitized reachable fixtures", asyn
     await page.goto(`http://127.0.0.1:18766/${capture.fixture}`, {
       waitUntil: "networkidle",
     });
+    if (capture.open_selector) {
+      const trigger = page.locator(capture.open_selector);
+      await expect(trigger, `${capture.name} missing open selector`).toBeVisible();
+      await trigger.click();
+      await page.waitForTimeout(50);
+    }
     const text = await page.locator("body").innerText();
 
     for (const marker of manifest.forbidden_markers || []) {
