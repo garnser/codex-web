@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware import Middleware
 from starlette.routing import Match
 
 from codex_web.authority import (
@@ -305,6 +306,7 @@ def install_api_authorization(
     app.state.api_authorization_undeclared = tuple(undeclared)
 
     previous_openapi = app.openapi
+    app.openapi_schema = None
 
     def openapi_with_authorization() -> dict[str, Any]:
         schema = previous_openapi()
@@ -337,33 +339,76 @@ def install_api_authorization(
 
     app.openapi = openapi_with_authorization
 
-    @app.middleware("http")
-    async def api_authorization_boundary(request: Request, call_next):
-        path = request.url.path
-        if not path.startswith("/api"):
-            return await call_next(request)
-        route, policy, _child_scope = _policy_for_scope(app, request.scope)
-        if route is None:
-            # Unknown routes retain normal 404 behavior. Fail-closed applies to
-            # declared application operations, not nonexistent paths.
-            return await call_next(request)
-        if policy is None:
-            return _unauthorized(
-                "API operation has no declared authorization policy",
-                403,
+    class _APIAuthorizationMiddleware:
+        def __init__(
+            self,
+            inner,
+            *,
+            fastapi_app: FastAPI,
+            authority_service: AuthorityRoleService,
+        ) -> None:
+            self.inner = inner
+            self.fastapi_app = fastapi_app
+            self.authority_service = authority_service
+
+        async def __call__(self, scope, receive, send) -> None:
+            if scope.get("type") != "http":
+                await self.inner(scope, receive, send)
+                return
+            request = Request(scope, receive=receive)
+            path = request.url.path
+            if not path.startswith("/api"):
+                await self.inner(scope, receive, send)
+                return
+            route, policy, _child_scope = _policy_for_scope(
+                self.fastapi_app,
+                scope,
             )
-        if policy.kind == APIAuthorizationKind.PUBLIC:
-            return await call_next(request)
+            if route is None:
+                # Unknown routes retain normal 404 behavior. Fail-closed applies
+                # to declared application operations, not nonexistent paths.
+                await self.inner(scope, receive, send)
+                return
+            if policy is None:
+                response = _unauthorized(
+                    "API operation has no declared authorization policy",
+                    403,
+                )
+                await response(scope, receive, send)
+                return
+            if policy.kind == APIAuthorizationKind.PUBLIC:
+                await self.inner(scope, receive, send)
+                return
 
-        actor = getattr(request.state, "identity_actor", None)
-        if actor is None:
-            return _unauthorized("authentication required", 401)
+            actor = getattr(request.state, "identity_actor", None)
+            if actor is None:
+                response = _unauthorized("authentication required", 401)
+                await response(scope, receive, send)
+                return
 
-        denied: JSONResponse | None = None
-        if policy.kind == APIAuthorizationKind.ADMIN:
-            denied = _enforce_admin(policy, request)
-        elif policy.kind == APIAuthorizationKind.OPERATIONAL:
-            denied = _enforce_operational(policy, request, authority)
-        if denied is not None:
-            return denied
-        return await call_next(request)
+            denied: JSONResponse | None = None
+            if policy.kind == APIAuthorizationKind.ADMIN:
+                denied = _enforce_admin(policy, request)
+            elif policy.kind == APIAuthorizationKind.OPERATIONAL:
+                denied = _enforce_operational(
+                    policy,
+                    request,
+                    self.authority_service,
+                )
+            if denied is not None:
+                await denied(scope, receive, send)
+                return
+            await self.inner(scope, receive, send)
+
+    # Identity/CSRF middleware is installed earlier. Appending this middleware
+    # makes it inner to those existing boundaries when Starlette builds the
+    # stack, so request.state.identity_actor is canonical and already tenant-
+    # validated before API policy evaluation.
+    app.user_middleware.append(
+        Middleware(
+            _APIAuthorizationMiddleware,
+            fastapi_app=app,
+            authority_service=authority,
+        )
+    )
+    app.middleware_stack = None
