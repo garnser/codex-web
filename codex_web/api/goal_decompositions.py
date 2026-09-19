@@ -6,12 +6,16 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.goal_decomposition import (
+    GoalDecompositionCommitRequest,
     GoalDecompositionGenerationRequest,
     GoalDecompositionProposalCreate,
     GoalDecompositionProposalRevise,
     GoalDecompositionReview,
 )
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
+from codex_web.services.goal_decomposition_commit import (
+    GoalDecompositionCommitService,
+)
 from codex_web.services.goal_decomposition_generation import (
     GoalDecompositionGenerationService,
 )
@@ -40,6 +44,7 @@ def _error(exc: Exception) -> HTTPException:
 def build_goal_decompositions_router(
     service: GoalDecompositionService,
     generation: GoalDecompositionGenerationService | None = None,
+    commit: GoalDecompositionCommitService | None = None,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/goals/{goal_id}/decompositions",
@@ -212,6 +217,61 @@ def build_goal_decompositions_router(
         ) as exc:
             raise _error(exc) from exc
         return {"proposal": proposal.model_dump(mode="json")}
+
+    if commit is not None:
+        @router.post("/{proposal_id}/commit")
+        async def commit_proposal(
+            goal_id: str,
+            proposal_id: str,
+            payload: GoalDecompositionCommitRequest,
+            request: Request,
+        ) -> dict[str, Any]:
+            try:
+                actor = mutation_actor(request)
+                current = service.get(proposal_id, scope=actor.tenant)
+                if current.goal_id != goal_id:
+                    raise GoalDecompositionNotFoundError(
+                        "goal decomposition proposal not found"
+                    )
+                proposal = await commit.commit(
+                    proposal_id,
+                    actor=actor,
+                    reason=payload.reason,
+                )
+            except (
+                AuthorizationError,
+                GoalDecompositionError,
+                ValueError,
+            ) as exc:
+                raise _error(exc) from exc
+            return {"proposal": proposal.model_dump(mode="json")}
+
+        @router.post("/{proposal_id}/commit/reconcile")
+        async def reconcile_commit(
+            goal_id: str,
+            proposal_id: str,
+            payload: GoalDecompositionCommitRequest,
+            request: Request,
+        ) -> dict[str, Any]:
+            try:
+                actor = mutation_actor(request)
+                current = service.get(proposal_id, scope=actor.tenant)
+                if current.goal_id != goal_id:
+                    raise GoalDecompositionNotFoundError(
+                        "goal decomposition proposal not found"
+                    )
+                proposal = commit.reconcile(
+                    proposal_id,
+                    actor=actor,
+                    reason=payload.reason,
+                )
+            except (
+                AuthorizationError,
+                GoalDecompositionError,
+                ValueError,
+            ) as exc:
+                raise _error(exc) from exc
+            return {"proposal": proposal.model_dump(mode="json")}
 
     @router.get("/{proposal_id}/revisions")
     async def revisions(
