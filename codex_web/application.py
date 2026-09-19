@@ -1407,6 +1407,7 @@ bot_runtime = install_bot_runtime(
     core,
     slack_client=slack_client,
     telegram_client=telegram_client,
+    ownership=replicated_ownership_service,
 )
 bot_delivery_service = install_bot_delivery_service(
     app,
