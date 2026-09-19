@@ -1673,6 +1673,7 @@ conversation_channel_service = ConversationChannelService(
     bot_routing_service.route_normalized,
 )
 bot_routing_service.conversation_channels = conversation_channel_service
+bot_runtime.conversation_channels = conversation_channel_service
 app.state.conversation_channel_store = conversation_channel_store
 app.state.conversation_channel_registry = conversation_channel_registry
 app.state.conversation_channel_service = conversation_channel_service
