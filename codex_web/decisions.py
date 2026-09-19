@@ -504,9 +504,15 @@ class Decision(BaseModel):
             "dissent": [item.model_dump(mode="json") for item in self.dissent],
             "review_at": self.review_at,
             "expires_at": self.expires_at,
-            "originating_executive_activation_id": self.originating_executive_activation_id,
-            "originating_executive_proposal_id": self.originating_executive_proposal_id,
         }
+        if self.originating_executive_activation_id is not None:
+            payload["originating_executive_activation_id"] = (
+                self.originating_executive_activation_id
+            )
+        if self.originating_executive_proposal_id is not None:
+            payload["originating_executive_proposal_id"] = (
+                self.originating_executive_proposal_id
+            )
         encoded = json.dumps(
             payload,
             sort_keys=True,
