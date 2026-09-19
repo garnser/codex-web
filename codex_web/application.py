@@ -1027,7 +1027,12 @@ thread_service = ThreadService(
 )
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
-work_item_state_machine = install_work_item_state_machine(app, core, gitlab_client)
+work_item_state_machine = install_work_item_state_machine(
+    app,
+    core,
+    gitlab_client,
+    store=state_store,
+)
 work_item_contract_service = install_work_item_contract_service(
     app,
     core,
