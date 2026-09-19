@@ -107,14 +107,14 @@ class ApiAuthorizationTests(unittest.TestCase):
     def test_admin_policy_requires_configured_assurance(self):
         app = FastAPI()
 
-        @app.post("/api/projects")
-        async def create_project():
+        @app.post("/api/configuration/drafts")
+        async def create_configuration():
             return {}
 
         service = ApiAuthorizationService(FakeAuthority())
         with self.assertRaisesRegex(ApiAuthorizationError, "mfa"):
             service.authorize_request(
-                request_for(app, "POST", "/api/projects"),
+                request_for(app, "POST", "/api/configuration/drafts"),
                 actor(
                     roles=(MembershipRole.ADMIN,),
                     assurance=AuthenticationAssurance.PRIMARY,
