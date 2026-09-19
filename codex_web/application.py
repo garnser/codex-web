@@ -53,7 +53,7 @@ from codex_web.model_providers import OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
-from codex_web.execution_workers import WorkerCapability
+from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     EXECUTION_WORKSPACE_DIR,
@@ -443,6 +443,12 @@ app.state.local_execution_worker = local_execution_worker
 app.state.local_execution_backend = local_execution_backend
 app.state.local_execution_backend_status = local_execution_backend_status
 
+codex_execution_runtime_binding = ExecutionRuntimeBinding(
+    provider_id="openai",
+    runtime_id="codex",
+    capability_revision=1,
+)
+
 turn_execution_binding_service = TurnExecutionBindingService(
     configuration_service,
     project_service,
@@ -450,6 +456,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
     execution_workspace_service,
     execution_worker_service,
     control_actor=identity_service.local_trusted_actor(),
+    runtime_binding=codex_execution_runtime_binding,
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
@@ -557,6 +564,7 @@ assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
     local_execution_worker_runtime,
     core,
     egress_endpoints_resolver=_codex_model_egress_endpoints,
+    runtime_binding=codex_execution_runtime_binding,
 )
 app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
