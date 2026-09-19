@@ -19,10 +19,12 @@ from codex_web.evaluations import (
     EvaluationEventFixture,
     EvaluationExpectedInvariants,
     EvaluationFailureInjection,
+    EvaluationModelPin,
     EvaluationRegressionThresholds,
     EvaluationReplayFixture,
     EvaluationRunMode,
     EvaluationRunRequest,
+    EvaluationRuntimePin,
     EvaluationScenarioCreate,
     EvaluationStateSnapshot,
     EvaluationTerminalOutcome,
@@ -114,11 +116,32 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def scenario(self):
+        runtime = EvaluationRuntimePin(
+            agent_provider_id="openai",
+            runtime_id="codex",
+            runtime_type="codex",
+            capability_revision=1,
+            runtime_version="1.0",
+        )
+        model_v1 = EvaluationModelPin(
+            provider_id="openai",
+            model_id="strategic-default",
+            model_version="1",
+            prompt_template_id="generic.system",
+            prompt_template_version="1",
+            prompt_template_checksum_sha256="b" * 64,
+            policy_fingerprint_sha256="c" * 64,
+        )
+        model_v2 = model_v1.model_copy(
+            update={"model_version": "2", "prompt_template_version": "2"}
+        )
         historical = EvaluationTrace(
             terminal_outcome=EvaluationTerminalOutcome.SUCCEEDED,
             state_transitions=("work.ready", "work.completed"),
             selected_role_ids=("developer",),
             resolved_definitions=(self.historical_ref,),
+            runtime=runtime,
+            models=(model_v1,),
             actions=(),
             evidence_ids=("evidence-tests",),
             reasoning_calls=1,
@@ -127,6 +150,7 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
             output_tokens=50,
             cost_usd=0.10,
             latency_seconds=2.0,
+            quality_score=0.90,
         )
         candidate = historical.model_copy(
             update={
@@ -135,6 +159,11 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
                 "output_tokens": 80,
                 "cost_usd": 0.20,
                 "latency_seconds": 2.2,
+            }
+        )
+        model_candidate = historical.model_copy(
+            update={
+                "models": (model_v2,),
             }
         )
         timeout = historical.model_copy(
@@ -166,6 +195,8 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             historical_definitions=(self.historical_ref,),
+            runtime=runtime,
+            models=(model_v1,),
             expected=EvaluationExpectedInvariants(
                 terminal_outcomes=(
                     EvaluationTerminalOutcome.SUCCEEDED,
@@ -175,6 +206,7 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
                 expected_selected_role_ids=("developer",),
                 required_evidence_ids=("evidence-tests",),
                 forbid_policy_violations=True,
+                min_quality_score=0.80,
             ),
             budget=EvaluationBudget(
                 max_model_calls=3,
@@ -204,6 +236,12 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
                     mode=EvaluationRunMode.CANDIDATE,
                     definition_overrides=(self.candidate_ref,),
                     trace=candidate,
+                ),
+                EvaluationReplayFixture(
+                    id="candidate-model-v2",
+                    mode=EvaluationRunMode.CANDIDATE,
+                    model_overrides=(model_v2,),
+                    trace=model_candidate,
                 ),
                 EvaluationReplayFixture(
                     id="provider-timeout",
@@ -259,6 +297,36 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
             comparison.regression_reasons,
         )
 
+    async def test_candidate_model_prompt_pin_change_is_explicit_and_compared(self):
+        scenario = self.service.create_scenario(self.scenario(), actor=self.actor)
+        baseline, _ = await self.service.run(
+            EvaluationRunRequest(
+                scenario_id=scenario.scenario_id,
+                scenario_version=scenario.version,
+                replay_fixture_id="historical",
+            ),
+            actor=self.actor,
+        )
+        candidate, comparison = await self.service.run(
+            EvaluationRunRequest(
+                scenario_id=scenario.scenario_id,
+                scenario_version=scenario.version,
+                replay_fixture_id="candidate-model-v2",
+                baseline_run_id=baseline.id,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertTrue(candidate.passed)
+        self.assertEqual(candidate.models[0].model_version, "2")
+        self.assertIsNotNone(comparison)
+        self.assertTrue(comparison.model_or_prompt_changed)
+        self.assertFalse(comparison.passed)
+        self.assertIn(
+            "model/prompt pin changed outside allowed regression policy",
+            comparison.regression_reasons,
+        )
+
     async def test_failure_injection_replays_recorded_blocked_path_without_live_provider(self):
         scenario = self.service.create_scenario(self.scenario(), actor=self.actor)
         run, _ = await self.service.run(
@@ -305,7 +373,7 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.service.create_scenario(payload, actor=self.actor)
 
-    def test_sensitive_event_fixture_keys_are_rejected(self):
+    def test_sensitive_event_fixture_keys_are_rejected_but_secret_refs_are_allowed(self):
         with self.assertRaises(ValidationError):
             EvaluationEventFixture(
                 event_id="evt-secret",
@@ -314,6 +382,14 @@ class EvaluationServiceTests(unittest.IsolatedAsyncioTestCase):
                 occurred_at=1.0,
                 payload={"api_key": "must-not-be-stored"},
             )
+        fixture = EvaluationEventFixture(
+            event_id="evt-secret-ref",
+            event_type="failure.observed",
+            source="fixture",
+            occurred_at=2.0,
+            payload={"secret_ref": "secret-provider-key"},
+        )
+        self.assertEqual(fixture.payload["secret_ref"], "secret-provider-key")
 
 
 if __name__ == "__main__":
