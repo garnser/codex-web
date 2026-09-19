@@ -49,6 +49,9 @@ class ThreadExecutionSettingsService:
         self._override("_sync_bot_binding_settings", self.sync_bot_binding_settings)(thread_id, current)
         return current
 
+    def all(self) -> dict[str, ThreadRunSettings]:
+        return dict(self.host._load_thread_settings())
+
     def get(self, thread_id: str | None) -> ThreadRunSettings:
         if not thread_id:
             return ThreadRunSettings()
@@ -189,6 +192,7 @@ def install_thread_execution_settings_service(app: Any, host: Any) -> ThreadExec
         app.state.thread_execution_settings_service = service
 
     host._remember_thread_run_settings = service.remember
+    host._thread_run_settings_all = service.all
     host._thread_run_settings = service.get
     host._codex_web_internal_base_url = service.internal_base_url
     host._work_item_contract_binding = service.work_item_contract_binding
