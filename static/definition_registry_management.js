@@ -1,6 +1,8 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
+  const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
   let actor = null;
   let records = [];
   let schemas = [];
@@ -114,19 +116,27 @@
 
   function actionButtons(record) {
     const manageable = canManage(record.scope_type);
-    if (!manageable) {
-      return '<small>Lifecycle mutation unavailable for the current actor/assurance.</small>';
+    const approvable = approvalUi.canApprove(actor, record.scope_type);
+    if (!manageable && !approvable) {
+      return '<small>Lifecycle mutation/approval unavailable for the current actor/assurance.</small>';
     }
     const actions = [];
     if (["draft", "validated"].includes(record.lifecycle)) {
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
+      }
+      if (approvable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="approve" data-record-id="${escapeHtml(record.record_id)}">Record publication approval</button>`);
+      }
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      }
     }
-    if (record.lifecycle !== "quarantined") {
+    if (manageable && record.lifecycle !== "quarantined") {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="quarantine" data-record-id="${escapeHtml(record.record_id)}">Quarantine</button>`);
     }
     const active = activeFor(record);
-    if (active && active.record_id !== record.record_id) {
+    if (manageable && active && active.record_id !== record.record_id) {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="rollback" data-record-id="${escapeHtml(record.record_id)}">Rollback to r${escapeHtml(record.revision)}</button>`);
     }
     return actions.length
@@ -209,6 +219,18 @@
 
   async function publishRecord(record) {
     const active = activeFor(record);
+    let approvalContext;
+    try {
+      approvalContext = await approvalUi.publicationGate(record, actor);
+    } catch (error) {
+      setStatus(`Publication assessment failed: ${error.message}`);
+      return;
+    }
+    if (approvalContext.blockedMessage) {
+      setStatus(approvalContext.blockedMessage);
+      return;
+    }
+    const { assessment, independentApprovals } = approvalContext;
     let impactCount = 0;
     if (active) {
       try {
@@ -241,8 +263,12 @@
     const impact = active
       ? ` Active r${active.revision} will be superseded; ${impactCount < 0 ? "usage impact could not be loaded" : `${impactCount} tenant-visible usage reference(s) currently point to it`}.`
       : " No active revision currently occupies this canonical slot.";
+    const gate = approvalUi.publicationGateSummary(
+      assessment,
+      independentApprovals,
+    );
     if (!window.confirm(
-      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
+      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${gate} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
     )) return;
     try {
       await apiRequest(
@@ -311,7 +337,15 @@
       setStatus(`Rollback published as new r${response.record.revision}; target history r${record.revision} remains immutable.`);
       document.getElementById("refresh-definitions")?.click();
     } catch (error) {
-      setStatus(`Definition rollback failed: ${error.message}`);
+      const recovery = approvalUi.rollbackApprovalRecovery(error);
+      if (recovery) {
+        setStatus(recovery.message);
+        if (recovery.refresh) {
+          document.getElementById("refresh-definitions")?.click();
+        }
+      } else {
+        setStatus(`Definition rollback failed: ${error.message}`);
+      }
     }
   }
 
@@ -322,6 +356,17 @@
     button.disabled = true;
     try {
       if (action === "validate") await validateRecord(record);
+      else if (action === "approve") {
+        try {
+          const message = await approvalUi.recordPublicationApproval(record, actor);
+          if (message) {
+            setStatus(message);
+            document.getElementById("refresh-definitions")?.click();
+          }
+        } catch (error) {
+          setStatus(`Publication approval failed: ${error.message}`);
+        }
+      }
       else if (action === "publish") await publishRecord(record);
       else if (action === "quarantine") await quarantineRecord(record);
       else if (action === "rollback") await rollbackRecord(record);
@@ -353,57 +398,19 @@
     }
   }
 
-  async function exportDefinitions() {
-    try {
-      const documentValue = await apiRequest("/api/definitions/export");
-      const host = document.getElementById("definition-transfer-document");
-      if (host) host.value = JSON.stringify(documentValue, null, 2);
-      setStatus(`Loaded ${documentValue.records?.length || 0} tenant-visible definition record(s) for export.`);
-    } catch (error) {
-      setStatus(`Definition export failed: ${error.message}`);
-    }
-  }
-
-  async function importDefinitions() {
-    const raw = document.getElementById("definition-transfer-document")?.value || "";
-    let documentValue;
-    try {
-      documentValue = JSON.parse(raw);
-    } catch (error) {
-      setStatus(`Import document is not valid JSON: ${error.message}`);
-      return;
-    }
-    const imported = Array.isArray(documentValue?.records) ? documentValue.records : [];
-    if (!imported.length) {
-      setStatus("Import document must contain at least one definition record.");
-      return;
-    }
-    const blocked = imported.filter((record) => !canManage(record.scope_type));
-    if (blocked.length) {
-      const scopes = [...new Set(blocked.map((record) => record.scope_type))].join(", ");
-      setStatus(`Current actor/assurance cannot import every requested scope (${scopes}); nothing was submitted.`);
-      return;
-    }
-    if (!window.confirm(
-      `Import ${imported.length} versioned definition record(s) as new inactive drafts? All records are revalidated server-side and none are published automatically.`,
-    )) return;
-    try {
-      const response = await apiRequest("/api/definitions/import", {
-        method: "POST",
-        body: JSON.stringify({ document: documentValue }),
-      });
-      setStatus(`Imported ${response.count} record(s) as inactive draft revisions.`);
-      document.getElementById("refresh-definitions")?.click();
-    } catch (error) {
-      setStatus(`Definition import failed: ${error.message}`);
-    }
-  }
-
   function bind() {
     document.getElementById("definition-draft-scope")?.addEventListener("change", updateDraftScopeState);
     document.getElementById("create-definition-draft")?.addEventListener("click", () => createDraft().catch(console.error));
-    document.getElementById("export-definitions")?.addEventListener("click", () => exportDefinitions().catch(console.error));
-    document.getElementById("import-definitions")?.addEventListener("click", () => importDefinitions().catch(console.error));
+    document.getElementById("export-definitions")?.addEventListener("click", () => (
+      transferUi.exportDefinitions(setStatus).catch(console.error)
+    ));
+    document.getElementById("import-definitions")?.addEventListener("click", () => (
+      transferUi.importDefinitions({
+        canManage,
+        setStatus,
+        refresh: () => document.getElementById("refresh-definitions")?.click(),
+      }).catch(console.error)
+    ));
     document.getElementById("definition-registry-list")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-definition-action]");
       if (button) mutate(button).catch(console.error);

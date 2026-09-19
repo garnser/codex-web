@@ -161,6 +161,12 @@ class ActionIntentCanonicalAuthorityTests(unittest.IsolatedAsyncioTestCase):
                 reason="authority enforcement test",
             )
         )
+        self.definition_registry.approve_publication(
+            draft.record_id,
+            actor="test-approver",
+            reference="TEST-APPROVAL",
+            reason="test fixture approval",
+        )
         return self.definition_registry.publish(
             draft.record_id,
             DefinitionPublishRequest(

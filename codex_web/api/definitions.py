@@ -14,8 +14,14 @@ from codex_web.definitions import (
     DefinitionRollbackRequest,
     DefinitionScope,
 )
-from codex_web.identity import AuthenticationAssurance, AuthenticationActor, PrincipalKind
+from codex_web.identity import (
+    AuthenticationAssurance,
+    AuthenticationActor,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.services.definitions import (
+    DefinitionApprovalRequiredError,
     DefinitionCompatibilityError,
     DefinitionConflictError,
     DefinitionError,
@@ -48,6 +54,13 @@ class DefinitionValidateRequest(BaseModel):
     actor: str | None = None  # legacy compatibility; authenticated actor wins.
 
 
+class DefinitionPublicationApprovalHttpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reference: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class DefinitionPublishHttpRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -68,6 +81,7 @@ class DefinitionRollbackHttpRequest(BaseModel):
     actor: str | None = None  # legacy compatibility; authenticated actor wins.
     reason: str | None = None
     expected_active_revision: int | None = None
+    approval_metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class DefinitionQuarantineRequest(BaseModel):
@@ -90,6 +104,16 @@ class DefinitionResolveRequest(BaseModel):
 
 
 def _error(exc: Exception) -> HTTPException:
+    if isinstance(exc, DefinitionApprovalRequiredError):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "definition_approval_required",
+                "message": str(exc),
+                "record_id": exc.record_id,
+                "reasons": list(exc.reasons),
+            },
+        )
     if isinstance(exc, DefinitionNotFoundError):
         return HTTPException(
             status_code=404,
@@ -192,6 +216,38 @@ def build_definitions_router(
                 raise AuthorizationError("cross-tenant project definition denied")
             return
         raise AuthorizationError("unsupported definition scope")
+
+    def require_approval_actor(
+        actor: AuthenticationActor,
+        *,
+        record: DefinitionRecord,
+    ) -> None:
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            required = (
+                "definitions:global-approve"
+                if record.scope_type == DefinitionScope.GLOBAL
+                else "definitions:approve"
+            )
+            if required not in actor.service_scopes:
+                raise AuthorizationError(f"{required} service scope required")
+        else:
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            if not actor.has_role(
+                MembershipRole.OWNER,
+                MembershipRole.ADMIN,
+                MembershipRole.APPROVER,
+            ):
+                raise AuthorizationError(
+                    "definition publication approval requires owner/admin/approver role"
+                )
+            if (
+                record.scope_type == DefinitionScope.GLOBAL
+                and actor.assurance != AuthenticationAssurance.LOCAL_TRUSTED
+            ):
+                raise AuthorizationError(
+                    "global definition approval requires local-trusted platform context"
+                )
+        require_visible(record, actor)
 
     def tenant_context(
         context: DefinitionContext,
@@ -305,6 +361,64 @@ def build_definitions_router(
             ):
                 raise _error(exc) from exc
             raise
+        return {"record": record.model_dump(mode="json")}
+
+    @router.get("/{record_id}/publication-assessment")
+    async def publication_assessment(
+        record_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = authenticated(request)
+        try:
+            record = service.get_record(record_id)
+            require_visible(record, actor)
+            assessment = service.publication_assessment(record_id)
+        except (
+            DefinitionError,
+            DefinitionNotFoundError,
+            DefinitionConflictError,
+            DefinitionCompatibilityError,
+            AuthorizationError,
+            ValueError,
+        ) as exc:
+            raise _error(exc) from exc
+        return {
+            "record_id": record.record_id,
+            "requires_independent_approval": (
+                assessment.requires_independent_approval
+            ),
+            "reasons": list(assessment.reasons),
+            "approvals": [
+                item.model_dump(mode="json")
+                for item in record.publication_approvals
+            ],
+        }
+
+    @router.post("/{record_id}/publication-approvals")
+    async def approve_publication(
+        record_id: str,
+        payload: DefinitionPublicationApprovalHttpRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = authenticated(request)
+        try:
+            existing = service.get_record(record_id)
+            require_approval_actor(actor, record=existing)
+            record = service.approve_publication(
+                record_id,
+                actor=actor.identity_id,
+                reference=payload.reference,
+                reason=payload.reason,
+            )
+        except (
+            DefinitionError,
+            DefinitionNotFoundError,
+            DefinitionConflictError,
+            DefinitionCompatibilityError,
+            AuthorizationError,
+            ValueError,
+        ) as exc:
+            raise _error(exc) from exc
         return {"record": record.model_dump(mode="json")}
 
     @router.post("/{record_id}/validate")

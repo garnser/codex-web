@@ -36,6 +36,46 @@ Only one published revision may occupy a canonical `kind + definition_id + scope
 
 A quarantined, missing, corrupt, unsupported-schema or engine-incompatible definition does not fall back to an unrelated stored payload.
 
+## Sensitive publication approval
+
+Definition schemas may register a code-owned publication assessment. The stored
+payload cannot change or disable that classifier.
+
+For the canonical `authority-role-catalog`, publication is classified as
+sensitive when a candidate expands operational authority, including higher
+permission levels, broader resource/project/environment scope, production
+access, larger/unbounded monetary or model/token budgets, higher autonomous
+risk, weaker approvals, new inheritance, new bindings, or broader/longer
+delegation.
+
+Sensitive publication requires a durable independent attestation attached to the
+candidate revision. Each attestation records:
+
+- approver identity;
+- approval reference and reason;
+- candidate checksum;
+- the exact active record ID/revision reviewed;
+- classifier reasons;
+- approval timestamp.
+
+The final publisher must be a different identity from the matching approver.
+If the active revision changes after approval, the attestation becomes stale
+automatically and cannot authorize publication.
+
+The HTTP approval path requires MFA plus owner/admin/approver membership for
+humans, or explicit `definitions:approve` service scope. Global approval is
+further restricted to local-trusted platform context (or
+`definitions:global-approve` for service principals).
+
+Rollback uses the same gate. If a rollback would expand authority, the registry
+creates a normal immutable rollback draft but refuses to activate it. That draft
+must receive independent approval and then be published through the standard
+path. Rollback therefore cannot bypass the authority-expansion classifier.
+
+Code-owned bootstrap is the sole internal approval bypass and only applies when
+seeding an empty canonical slot. Imported records never import publication
+attestations; imports become fresh inactive drafts.
+
 ## Scope resolution
 
 Published effective definitions resolve deterministically from least to most specific:
@@ -120,6 +160,8 @@ The canonical administration API is under `/api/definitions`:
 - `GET /records` — browse/filter full history;
 - `POST /drafts`;
 - `POST /{record_id}/validate`;
+- `GET /{record_id}/publication-assessment`;
+- `POST /{record_id}/publication-approvals`;
 - `POST /{record_id}/publish`;
 - `POST /{record_id}/quarantine`;
 - `POST /rollback`;
@@ -143,4 +185,4 @@ A database definition cannot:
 - change cryptographic verification;
 - weaken hard fail-closed constraints.
 
-M6 policy may add approval requirements for sensitive definition publication, but the Definition Registry itself remains distinct from the authority system.
+Sensitive Definition publication approval is enforced by code-owned schema classifiers and durable candidate-bound attestations. The Definition Registry remains distinct from runtime Role evaluation: stored policy can require or constrain authority, but cannot weaken the publication classifier or hard fail-closed semantics.

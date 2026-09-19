@@ -108,6 +108,12 @@ class AuthorityRoleServiceTests(unittest.TestCase):
                 reason="test authority catalog",
             )
         )
+        self.registry.approve_publication(
+            draft.record_id,
+            actor="test-approver",
+            reference="TEST-APPROVAL",
+            reason="test fixture approval",
+        )
         return self.registry.publish(
             draft.record_id,
             DefinitionPublishRequest(
