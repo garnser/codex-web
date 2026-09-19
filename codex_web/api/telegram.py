@@ -27,9 +27,15 @@ def build_telegram_router(
         if not text or chat_id is None:
             return {"ok": True, "ignored": True}
 
-        connection = host._bot_connection_for_conversation(
-            "telegram",
-            str(chat_id),
+        connection_lookup = getattr(
+            host,
+            "_bot_connection_for_conversation",
+            None,
+        )
+        connection = (
+            connection_lookup("telegram", str(chat_id))
+            if callable(connection_lookup)
+            else None
         )
         project_id = connection.project_id if connection else "home"
         if conversation_channels is not None:
