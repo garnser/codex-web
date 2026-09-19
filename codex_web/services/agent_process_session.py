@@ -179,6 +179,13 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if (
+            self.runtime_binding is not None
+            and assignment.runtime_binding != self.runtime_binding
+        ):
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime binding is incompatible"
+            )
         workspace_path = self.local_worker._workspace_path(assignment)
         self.local_worker.backend.validate_assignment(assignment)
 
