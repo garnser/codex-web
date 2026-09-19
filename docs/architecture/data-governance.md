@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 foundation for issue #140.
+Canonical data-governance foundation for issue #140.
 
 This contract establishes one canonical metadata and enforcement boundary for data classification, retention, privacy actions, legal holds, export authorization, residency constraints, and model-context filtering.
 

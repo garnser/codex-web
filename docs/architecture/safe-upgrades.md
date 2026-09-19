@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 11 production-upgrade contract. Application upgrades are represented
+Canonical production-upgrade contract. Application upgrades are represented
 as canonical Upgrade Plans with an explicit source/target compatibility profile,
 ordered migration phases, durable step progress, preflight Evidence, and a
 truthful rollback boundary.

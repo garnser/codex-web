@@ -2,8 +2,8 @@
 
 ## Status
 
-**Milestone 7 orchestration contract.** This boundary builds on the versioned
-`CanonicalEventEnvelope` defined by the M3 compatibility policy and is the
+**Canonical event orchestration contract.** This boundary builds on the versioned
+`CanonicalEventEnvelope` defined by the compatibility/versioning policy and is the
 required ingress path for new event-driven autonomy.
 
 ## Flow

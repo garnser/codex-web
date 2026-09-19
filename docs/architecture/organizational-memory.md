@@ -1,6 +1,6 @@
 # Organizational Memory and Governed Retrieval
 
-Milestone 10 introduces durable organizational memory as a retrieval layer over canonical company knowledge. Memory is not chat history and it is never allowed to silently replace current Goals, Decisions, policies, resources, or other canonical state.
+Organizational Memory provides a durable retrieval layer over canonical company knowledge. Memory is not chat history and it is never allowed to silently replace current Goals, Decisions, policies, resources, or other canonical state.
 
 ## Canonical knowledge records
 
@@ -22,7 +22,7 @@ Revising a logical key creates a new immutable version and marks the former curr
 
 ## Governance and privacy
 
-Memory reuses M3 `DataGovernanceService`; it does not implement its own privacy/retention policy.
+Memory reuses the canonical `DataGovernanceService`; it does not implement its own privacy/retention policy.
 
 When a knowledge version is created or revised, a `DataCategory.MEMORY` governance record is registered. Classification, retention, residency and `deny_model_context` constraints can only become more restrictive through source-governance inheritance.
 
@@ -128,7 +128,7 @@ Authorized source adapters normalize repository, pull-request, issue, architectu
 
 Verified recurring solutions can be promoted into `PROCEDURE` memory only with explicit Evidence IDs and source Knowledge IDs. The promoted procedure records typed `derived_from` relationships plus source governance provenance. It inherits the strongest source classification, earliest source retention expiry, delete semantics, model-context denial, and operational-role restrictions. Promotion creates reusable governed knowledge; it does not grant execution authority or bypass ActionIntent/Approval policy.
 
-Executive reasoning retrieves memory before model invocation. Both the compatibility Executive chat path and canonical M9 Executive Management use the same `OrganizationalMemoryService.search` boundary with bounded Top-K/candidate/context budgets. Canonical Executive activations retain the exact retrieval-run ID, while prompt context carries exact `[memory:<id>@v<version>]` citations. Retrieval does not add a model call.
+Executive reasoning retrieves memory before model invocation. Both the compatibility Executive chat path and canonical Executive Management use the same `OrganizationalMemoryService.search` boundary with bounded Top-K/candidate/context budgets. Canonical Executive activations retain the exact retrieval-run ID, while prompt context carries exact `[memory:<id>@v<version>]` citations. Retrieval does not add a model call.
 
 The Memory workspace is an inspectable operator surface over canonical knowledge and retrieval provenance. It exposes scope, type, lifecycle/freshness, classification/retention, provenance, versions, relationships, derived backend/index/embedding revision, selected/denied candidates, scores, reasons, and packed token budgets. The UI explicitly labels the index as derived/rebuildable state rather than canonical truth and remains usable at phone viewport widths.
 

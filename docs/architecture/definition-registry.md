@@ -100,7 +100,7 @@ Application upgrades must validate active definition schemas/engine compatibilit
 
 ## Operational Role authority definitions
 
-M6 adds a second code-owned definition schema on the same registry:
+Role authority adds a second code-owned definition schema on the same registry:
 
 - kind: `authority-role-catalog`
 - stable ID: `authority.roles.default`

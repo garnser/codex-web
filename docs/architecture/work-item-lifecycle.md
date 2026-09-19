@@ -2,9 +2,9 @@
 
 ## Status
 
-**Milestone 2 architecture contract.** This document defines the canonical work-item stages already used by codex-web, the legal manual/API transition policy, semantic terminal outcomes, and the structured execution lifecycle carried by each work item.
+**Canonical work-item lifecycle contract.** This document defines the canonical work-item stages already used by codex-web, the legal manual/API transition policy, semantic terminal outcomes, and the structured execution lifecycle carried by each work item.
 
-The roadmap names `created`, `ready`, `assigned`, `running`, `blocked`, `review`, and `completed` as illustrative lifecycle concepts. Codex-web already has a richer canonical model, so Milestone 2 strengthens that model rather than introducing a parallel set of states.
+The canonical lifecycle is intentionally richer than a simple `created` → `ready` → `assigned` → `running` → `blocked` → `review` → `completed` sequence; integrations must strengthen and reuse this model rather than introducing parallel state machines.
 
 ## Canonical stages
 
@@ -61,7 +61,7 @@ Checkpoint history is capped at 20 entries per work item. The append-only work-i
 
 Execution lifecycle changes append attributed `WorkItemEvent` entries with top-level `actor`, `source`, and `reason` metadata. Existing events remain valid because these audit fields are optional.
 
-Usage records are additive and accumulate calls, input/output/reasoning tokens, and estimated cost on the canonical work item. Optional `goal_id` and `decision_id` fields are attribution hooks for later strategy/decision milestones; they do not create those entities in Milestone 2.
+Usage records are additive and accumulate calls, input/output/reasoning tokens, and estimated cost on the canonical work item. Optional `goal_id` and `decision_id` fields are attribution hooks for canonical Goal/Decision domains; they do not create those entities inside the work-item lifecycle.
 
 The API surfaces:
 

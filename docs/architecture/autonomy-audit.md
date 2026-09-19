@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 11 controlled-production-autonomy contract.** This boundary turns
+**Controlled-production-autonomy audit contract.** This boundary turns
 autonomy-cycle attribution into append-only canonical accountability records and
 derives reliability/efficiency qualification from those records. Runtime logs,
 traces and in-process metrics remain telemetry; they are not the audit source of
@@ -93,7 +93,7 @@ an auto_suspension audit record. This reduces autonomy only; it cannot grant
 authority or perform provider actions.
 
 Reliability summaries can be published as canonical policy-evaluation Evidence.
-The M11 effective autonomy policy includes reliability and audit_integrity as
+The effective autonomy policy includes reliability and audit_integrity as
 production-qualification gate types, so broader production autonomy can require
 fresh PASS Evidence instead of operator intuition.
 
@@ -117,7 +117,7 @@ inspection/mutation, and integrity-preserving redaction. Human mutations require
 administrator authority and MFA. Service principals require explicit autonomy
 audit/admin scope.
 
-## UI and later M11 domains
+## UI and related production domains
 
 Issue #121 owns the Autonomy Control Center and explain-action UI over this
 canonical audit. It should trace event -> policy/authority -> approval ->

@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 foundation for issue #155.
+Canonical model-gateway and prompt-governance foundation for issue #155.
 
 The model gateway owns provider/model identity and deterministic routing. Agent/role identity does not select provider-specific model names directly.
 

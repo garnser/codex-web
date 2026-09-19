@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 foundation for issue #167.
+Canonical encryption-at-rest and key-management foundation for issue #167.
 
 This architecture deliberately separates **secrets/credentials** from **cryptographic encryption keys**. SecretBroker remains the boundary for provider credentials. CryptoKeyService owns key metadata, versioning, scope, rotation and encryption/decryption behavior. Raw key material lives only in a KeyBackend.
 

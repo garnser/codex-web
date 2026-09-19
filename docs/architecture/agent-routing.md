@@ -2,7 +2,7 @@
 
 ## Status
 
-Architecture contract for M7 issue #351. Runtime and model selection are deterministic application logic; model reasoning is never used to choose a provider.
+Architecture contract for issue #351. Runtime and model selection are deterministic application logic; model reasoning is never used to choose a provider.
 
 ## Boundaries
 
@@ -48,7 +48,7 @@ A selected runtime records or exposes the AgentProvider ID and provider revision
 
 Independent model routing retains the existing model-provider/model IDs, model/prompt versions, model-policy fingerprint and routing reason from ModelGatewayService.
 
-Execution/session persistence must carry the selected runtime binding so later capability/provider changes cannot silently reinterpret an in-flight assignment. Downstream M7 replay/evaluation work should pin the same routing provenance.
+Execution/session persistence must carry the selected runtime binding so later capability/provider changes cannot silently reinterpret an in-flight assignment. Downstream replay/evaluation work should pin the same routing provenance.
 
 ## Configuration and role defaults
 

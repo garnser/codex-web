@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 11 recovery contract. A backup is not considered recovery evidence until
+Canonical production recovery contract. A backup is not considered recovery evidence until
 codex-web can decrypt it with the canonical key boundary, reconstruct its
 canonical state snapshot in isolation, validate integrity/dependencies and
 produce a successful restore-verification record.
@@ -128,7 +128,7 @@ Configuring RecoveryPolicy installs two recurring canonical Scheduler entries:
 Both use normal schedule.due events; there is no private timer loop.
 
 The restore-verification job publishes canonical POLICY_EVALUATION Evidence with
-source recovery-restore-verification. PASS Evidence is consumable by the M11
+source recovery-restore-verification. PASS Evidence is consumable by the canonical
 RECOVERY production-autonomy qualification gate.
 
 ## Failure scenarios
