@@ -46,7 +46,8 @@ Milestone dependency order is:
 9. M9 — Executive Management
 10. M10 — Organizational Memory
 11. M11 — Controlled Production Autonomy
-12. M12 — Product Documentation + Adoption\n13. M13 — Business Operations & Company Data
+12. M12 — Product Documentation + Adoption
+13. M13 — Business Operations & Company Data
 
 M3 is intentionally foundational. Its tracked work covers human identity/tenancy and session assurance, credential brokering, encryption/key management, canonical resources, provider-neutral external actions, control-plane/execution-plane separation and worker trust, isolated execution/concurrency, artifacts/evidence/verification, durable side-effect intents/reconciliation, contract/event versioning, model-provider governance, observability, typed configuration/feature rollouts, SaaS entitlements/quotas, extension/plugin lifecycle, **versioned database-backed operational definitions**, security trust boundaries, data governance, and the corresponding administration UI. Later milestones should consume those primitives instead of creating local substitutes.
 
