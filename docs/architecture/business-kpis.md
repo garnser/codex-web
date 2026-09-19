@@ -161,8 +161,15 @@ CompanyOperatingSnapshot captures one immutable MetricSnapshot per KPI plus:
 - bound Goal IDs;
 - bound Decision IDs.
 
-The target-snapshot API can therefore answer which exact measured state was
-available for a Goal or Decision without reconstructing history from prose.
+Each Goal/Decision binding also receives a BusinessKPITargetSnapshot. When the
+binding declares its own window, that target snapshot captures a separate
+MetricSnapshot using exactly that window; otherwise it can reuse the company
+snapshot. The target snapshot records binding ID, target ID/type, KPI revision,
+Metric revision, MetricSnapshot ID and exact observation IDs.
+
+The target-snapshot API can therefore answer which exact measured state and
+window were available for a Goal or Decision without reconstructing history
+from prose.
 
 Existing Decision metric-snapshot evidence remains the canonical mechanism when
 a Decision formally cites a measured value.
