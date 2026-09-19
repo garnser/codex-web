@@ -40,12 +40,15 @@ function ensureMobileShell() {
 
     if (mobile) {
       if (next) {
+        sidebar.inert = false;
         sidebar.removeAttribute('inert');
       } else {
+        sidebar.inert = true;
         sidebar.setAttribute('inert', '');
       }
       sidebar.setAttribute('aria-hidden', String(!next));
     } else {
+      sidebar.inert = false;
       sidebar.removeAttribute('inert');
       sidebar.removeAttribute('aria-hidden');
     }
@@ -54,10 +57,11 @@ function ensureMobileShell() {
       const first = sidebar.querySelector(
         'button:not(.icon-button):not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, button:not([disabled])'
       );
-      first?.focus();
-      requestAnimationFrame(() => {
-        if (first && document.activeElement !== first) first.focus();
-      });
+      window.setTimeout(() => {
+        if (first && document.body.contains(first)) {
+          first.focus({ preventScroll: true });
+        }
+      }, 0);
     } else if (restoreFocus && mobile && document.activeElement && sidebar.contains(document.activeElement)) {
       toggle.focus({ preventScroll: true });
     }
