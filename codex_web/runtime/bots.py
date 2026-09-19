@@ -24,11 +24,13 @@ class BotRuntime:
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
         secret_broker: SecretBroker | None = None,
+        ownership: Any | None = None,
     ) -> None:
         self.host = host
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
+        self.ownership = ownership
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
         self.slack_payload_locks: dict[str, asyncio.Lock] = {}
@@ -36,6 +38,13 @@ class BotRuntime:
 
     async def sync(self) -> None:
         async with self.lock:
+            if (
+                self.ownership is not None
+                and not self.ownership.owns("bot-runtime")
+            ):
+                for connection_id in list(self.tasks):
+                    await self._stop_locked(connection_id)
+                return
             connections = self.host._load_bot_connections()
             desired: dict[str, tuple[Any, ...]] = {}
             for connection in connections:
@@ -374,11 +383,13 @@ def install_bot_runtime(
     *,
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
+    ownership: Any | None = None,
 ) -> BotRuntime:
     """Replace the compatibility BotRuntime instance before lifecycle startup."""
 
     existing = getattr(app.state, "bot_runtime", None)
     if isinstance(existing, BotRuntime) and existing.host is host:
+        existing.ownership = ownership or existing.ownership
         host.bot_runtime = existing
         return existing
 
@@ -387,6 +398,7 @@ def install_bot_runtime(
         slack_client=slack_client,
         telegram_client=telegram_client,
         secret_broker=getattr(app.state, "secret_broker", None),
+        ownership=ownership,
     )
     host.bot_runtime = runtime
     app.state.bot_runtime = runtime
