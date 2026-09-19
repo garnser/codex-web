@@ -1,5 +1,6 @@
 import {
   csv,
+  esc,
   dateTimeValue,
   field,
   input,
@@ -11,7 +12,7 @@ import {
 function grantHtml(grant, roleIndex, grantIndex) {
   return '<div class="comm-entry typed-authority-grant" data-role-index="' + roleIndex
     + '" data-grant-index="' + grantIndex + '">'
-    + '<div class="section-title"><strong>Grant ' + grant.id + '</strong>'
+    + '<div class="section-title"><strong>Grant ' + esc(grant.id) + '</strong>'
     + '<button type="button" class="ghost-button" data-typed-action="remove-grant">Remove grant</button></div>'
     + '<div class="route-test">'
     + field('Grant ID', input('typed-grant-id', grant.id))
@@ -42,7 +43,7 @@ function grantHtml(grant, roleIndex, grantIndex) {
 
 function roleHtml(role, roleIndex) {
   return '<div class="comm-entry typed-authority-role" data-role-index="' + roleIndex + '">'
-    + '<div class="section-title"><strong>' + (role.name || role.id) + '</strong>'
+    + '<div class="section-title"><strong>' + esc(role.name || role.id) + '</strong>'
     + '<div class="developer-toolbar">'
     + '<button type="button" class="ghost-button" data-typed-action="add-grant">Add grant</button>'
     + '<button type="button" class="ghost-button" data-typed-action="clone-role">Clone role</button>'
@@ -62,7 +63,7 @@ function roleHtml(role, roleIndex) {
 
 function bindingHtml(binding, index) {
   return '<div class="comm-entry typed-authority-binding" data-binding-index="' + index + '">'
-    + '<div class="section-title"><strong>Binding ' + binding.id + '</strong>'
+    + '<div class="section-title"><strong>Binding ' + esc(binding.id) + '</strong>'
     + '<button type="button" class="ghost-button" data-typed-action="remove-binding">Remove</button></div>'
     + '<div class="route-test">'
     + field('Binding ID', input('typed-binding-id', binding.id))
@@ -79,7 +80,7 @@ function bindingHtml(binding, index) {
 
 function delegationHtml(item, index) {
   return '<div class="comm-entry typed-authority-delegation" data-delegation-index="' + index + '">'
-    + '<div class="section-title"><strong>Delegation ' + item.id + '</strong>'
+    + '<div class="section-title"><strong>Delegation ' + esc(item.id) + '</strong>'
     + '<button type="button" class="ghost-button" data-typed-action="remove-delegation">Remove</button></div>'
     + '<div class="route-test">'
     + field('Delegation ID', input('typed-delegation-id', item.id))
