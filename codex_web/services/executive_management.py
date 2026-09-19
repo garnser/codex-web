@@ -136,8 +136,22 @@ class ExecutiveManagementService:
 
     @staticmethod
     def _keyword_match(text: str, keyword: str) -> bool:
-        pattern = rf"(?<![a-z0-9]){re.escape(keyword.lower())}(?![a-z0-9])"
-        return re.search(pattern, text.lower()) is not None
+        normalized = text.lower()
+        token = re.escape(keyword.lower())
+        pattern = rf"(?<![a-z0-9]){token}(?![a-z0-9])"
+        matches = list(re.finditer(pattern, normalized))
+        if not matches:
+            return False
+        negative_cues = re.compile(
+            r"(?:do\s+not|don't|dont|exclude|excluding|without|unrelated)"
+        )
+        for match in matches:
+            window = normalized[max(0, match.start() - 64) : match.start()]
+            cue = list(negative_cues.finditer(window))
+            if cue and len(window) - cue[-1].end() <= 48:
+                continue
+            return True
+        return False
 
     def _catalog(
         self,
