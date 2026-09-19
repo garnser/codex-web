@@ -694,6 +694,64 @@ class ActionIntentService:
         self.store.update(apply)
         return intent
 
+    @staticmethod
+    def _capacity_priority(intent: ActionIntent) -> WorkloadPriority:
+        parameters = intent.request.parameters
+        if (
+            parameters.get("incident_id")
+            or parameters.get("recovery") is True
+            or "rollback" in intent.action_id.casefold()
+            or "reconcile" in intent.action_id.casefold()
+        ):
+            return WorkloadPriority.CRITICAL
+        risk = getattr(intent.action_definition.risk_class, "value", "")
+        if risk in {"high", "critical"}:
+            return WorkloadPriority.HIGH
+        return WorkloadPriority.NORMAL
+
+    @staticmethod
+    def _capacity_component(intent: ActionIntent) -> str:
+        return f"action:{intent.provider_type}:{intent.provider_instance}"
+
+    def _defer_for_capacity(
+        self,
+        intent_id: str,
+        *,
+        reason: str,
+        retry_at: float | None,
+    ) -> ActionIntent:
+        now = time.time()
+        not_before = max(
+            now + 0.25,
+            retry_at if retry_at is not None else now + 1.0,
+        )
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id != intent_id:
+                    continue
+                if item.status not in {
+                    ActionIntentStatus.CLAIMED,
+                    ActionIntentStatus.PENDING,
+                }:
+                    raise ActionIntentConflictError(
+                        "capacity deferral requires pending/claimed action intent"
+                    )
+                state.intents[index] = item.model_copy(
+                    update={
+                        "status": ActionIntentStatus.PENDING,
+                        "lease": None,
+                        "not_before": not_before,
+                        "updated_at": now,
+                        "last_error": f"capacity deferred: {reason}",
+                    }
+                )
+                return state
+            raise ActionIntentNotFoundError("action intent not found")
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent_id)
+
     def recover_stale_claims(
         self,
         *,
