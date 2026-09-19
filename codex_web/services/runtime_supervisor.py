@@ -217,7 +217,6 @@ class RuntimeSupervisor:
         except Exception:
             # Keep the HTTP UI available so it can report app-server failures.
             pass
-        await h.bot_runtime.sync()
         if (
             h.codex.ready.is_set()
             and h._autonomy_enabled()
@@ -233,6 +232,14 @@ class RuntimeSupervisor:
             )
 
         h._sd_notify("READY=1\nSTATUS=codex-web started")
+        self._spawn(
+            "bot-runtime-owner",
+            self._singleton_service_loop(
+                "bot-runtime",
+                h.bot_runtime.sync,
+                h.bot_runtime.stop,
+            ),
+        )
         self._spawn("systemd-watchdog", self._systemd_watchdog_loop())
         self._spawn("support-servicedesk", self._support_servicedesk_loop())
         self._spawn(
