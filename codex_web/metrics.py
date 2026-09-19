@@ -145,7 +145,7 @@ class MetricObservationCreate(BaseModel):
 
     value: float | int | bool
     unit: str | None = None
-    observed_at: float = Field(default_factory=time.time)
+    observed_at: float | None = None
     window_start: float | None = None
     window_end: float | None = None
     source: str = Field(min_length=1)
