@@ -214,7 +214,7 @@ class ConversationChannelService:
                 for item in event.attachments
             )
             parts.append(f"Attachments: {attachments}")
-        if event.references:
+        if event.references and parts:
             refs = ", ".join(
                 item.label or item.value
                 for item in event.references
