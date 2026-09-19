@@ -85,7 +85,7 @@ Field mappings declare CompanyFact authority, priority, quality, confidence,
 freshness and classification. Entity display-name mappings separately declare
 authority and priority.
 
-BusinessDataSource never hides provider disagreement. M13 CompanyFact
+BusinessDataSource never hides provider disagreement. CompanyFact
 resolution deterministically selects the highest-ranked fresh value while
 retaining conflict fact IDs. The drift endpoint exposes provider record
 position plus conflicting canonical facts.
@@ -160,7 +160,7 @@ position.
 
 An extension-backed adapter should be registered only when its package is
 verified, compatible, configured and enabled. Capability grant and extension
-installation remain separate M3 concepts.
+installation remain separate platform concepts.
 
 Unsafe or incompatible sources can be paused/quarantined. Scheduled
 reconciliation is paused while quarantined. Re-enabling requires an available
