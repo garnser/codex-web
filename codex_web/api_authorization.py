@@ -86,6 +86,13 @@ PUBLIC_API_PATHS = frozenset(
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+SELF_SERVICE_MUTATIONS = frozenset(
+    {
+        ("POST", "/api/identity/sessions/revoke-others"),
+        ("DELETE", "/api/identity/sessions/{session_id}"),
+    }
+)
+
 ADMIN_MUTATION_PREFIXES = (
     "/api/identity",
     "/api/secrets",
@@ -130,7 +137,7 @@ def classify_api_policy(
             domain_checks_remain_authoritative=False,
             description="Public health/authentication-verifier endpoint.",
         )
-    if method in SAFE_METHODS:
+    if method in SAFE_METHODS or (method, path) in SELF_SERVICE_MUTATIONS:
         return APIAuthorizationPolicy(
             kind=APIAuthorizationKind.AUTHENTICATED,
             description=(
