@@ -267,6 +267,38 @@ class MetricServiceTests(unittest.TestCase):
         self.assertEqual(evaluated.value, 75)
         self.assertEqual(evaluated.observation_ids, (current.id,))
 
+    def test_snapshot_can_pin_historical_as_of_freshness(self) -> None:
+        metric = self._definition(
+            aggregation=MetricAggregation.LAST,
+            freshness_seconds=30,
+        )
+        observation = self.service.ingest(
+            metric.id,
+            MetricObservationCreate(
+                value=88,
+                observed_at=100.0,
+                source="ci",
+                idempotency_key="ci:historical",
+            ),
+            scope=self.scope,
+            actor_id="collector",
+        )
+        snapshot = self.service.capture_snapshot(
+            metric.id,
+            MetricSnapshotRequest(
+                window_start=90.0,
+                window_end=100.0,
+                evaluated_at=100.0,
+            ),
+            scope=self.scope,
+            actor_id="decision-service",
+        )
+        self.assertEqual(snapshot.freshness, MetricFreshness.FRESH)
+        self.assertEqual(snapshot.observation_ids, (observation.id,))
+        self.assertEqual(snapshot.window_start, 90.0)
+        self.assertEqual(snapshot.window_end, 100.0)
+        self.assertEqual(snapshot.captured_at, 100.0)
+
     def test_snapshot_is_immutable_and_tenant_scoped(self) -> None:
         metric = self._definition(aggregation=MetricAggregation.LAST)
         now = time.time()
