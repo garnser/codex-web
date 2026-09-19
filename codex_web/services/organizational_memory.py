@@ -644,7 +644,8 @@ class OrganizationalMemoryService:
         if query.object_types and item.object_type not in query.object_types:
             return False
         if query.project_ids and item.project_id not in query.project_ids:
-            return False
+            if not (query.include_company_scope and item.project_id is None):
+                return False
         if query.logical_keys and item.logical_key not in query.logical_keys:
             return False
         if query.tags and not set(query.tags).issubset(set(item.tags)):
