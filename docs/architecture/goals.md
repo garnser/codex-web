@@ -36,7 +36,7 @@ draft ──→ active ──→ completed
   └─────────┴───────┴──→ cancelled
 ```
 
-`completed` and `cancelled` are terminal in the M5 foundation. Completion verification is added by #106; this foundation does not invoke a model to decide lifecycle state.
+`completed` and `cancelled` are terminal in the Goal lifecycle foundation. Completion verification is added by #106; this foundation does not invoke a model to decide lifecycle state.
 
 Human mutations require tenant administrator authority plus MFA/step-up assurance. Service automation requires the explicit `goals:admin` scope. Reads remain tenant-scoped canonical projections.
 
@@ -174,9 +174,9 @@ Goal revision, while all evaluation records remain tenant-scoped durable
 provenance. This allows operators to reconstruct exactly why completion was
 accepted without replaying chat or invoking a model.
 
-## M5 handoff
+## Goal-domain handoff
 
-M5 now provides bounded Goal decomposition, review, durable ActionIntent-backed
+The Goal domain provides bounded decomposition, review, durable ActionIntent-backed
 commit, bidirectional Work Graph traceability, and deterministic completion
 verification. The remaining #106 product slice is the Goal workspace/UI that
 projects these canonical contracts for operators without introducing client-side
