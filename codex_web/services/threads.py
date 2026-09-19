@@ -97,6 +97,55 @@ class ThreadService:
         )
         return CodexAgentRuntimeAdapter(transport)
 
+    def _adopt_legacy_thread(
+        self,
+        item: dict[str, Any],
+        *,
+        project_id: str | None,
+    ) -> None:
+        if self.agent_sessions is None or self.control_actor is None:
+            return
+        native_id = item.get("id") or item.get("threadId")
+        if not native_id:
+            return
+        existing = self.agent_sessions.find_by_native_id(
+            str(native_id),
+            self.control_actor,
+            provider_id="openai",
+            runtime_id="codex",
+        )
+        if existing is not None:
+            item["agentSessionId"] = existing.id
+            return
+
+        project = None
+        if project_id:
+            with contextlib.suppress(Exception):
+                project = self.host._project(project_id)
+        if project is None:
+            project_for_cwd = getattr(self.host, "_project_for_cwd", None)
+            if callable(project_for_cwd):
+                with contextlib.suppress(Exception):
+                    project = project_for_cwd(item.get("cwd"))
+        if project is None:
+            return
+
+        adapter = self._codex_adapter()
+        session = self.agent_sessions.adopt(
+            provider_id=adapter.provider_id,
+            runtime_id=adapter.runtime_id,
+            runtime_type=adapter.runtime_type,
+            provider_native_session_id=str(native_id),
+            request=AgentRuntimeSessionRequest(
+                project_id=project.id,
+                workspace_cwd=item.get("cwd"),
+                model=item.get("model") or getattr(project, "model", None),
+            ),
+            actor=self.control_actor,
+            capability_snapshot=adapter.capabilities,
+        )
+        item["agentSessionId"] = session.id
+
     def default_message_limit(self) -> int:
         try:
             limit = int(
@@ -227,6 +276,9 @@ class ThreadService:
             existing_ids.add(indexed.id)
 
         items.sort(key=lambda item: item.get("updatedAt") or 0, reverse=True)
+        for item in items:
+            if isinstance(item, dict):
+                self._adopt_legacy_thread(item, project_id=project_id)
         if "data" in result:
             result["data"] = items
         elif "threads" in result:
