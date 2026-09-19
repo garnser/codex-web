@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 
+from codex_web.agent_runtime import AgentRuntimeResult
+from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project
 from codex_web.services.threads import ThreadService
 
@@ -113,6 +115,41 @@ class _BootstrapBindings:
             raise self.error
         return SimpleNamespace(**kwargs)
 
+class _RoutingService:
+    def __init__(self, binding) -> None:
+        self.binding = binding
+        self.calls = []
+
+    async def route(self, request, *, actor):
+        self.calls.append((request, actor))
+        return SimpleNamespace(
+            selected_runtime=SimpleNamespace(
+                execution_binding=lambda: self.binding
+            )
+        )
+
+
+class _AlternateAdapter:
+    provider_id = "anthropic"
+    runtime_id = "claude-code"
+    runtime_type = "claude-agent-sdk"
+    capabilities = ()
+
+    def __init__(self, session) -> None:
+        self.session = session
+        self.created = []
+
+    async def create_session(self, request):
+        self.created.append(request)
+        return AgentRuntimeResult(
+            provider_native_session_id="claude-native-session",
+            payload={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "claude-native-session",
+            },
+        )
+
 
 class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, *, session=None, bindings=None, agent_sessions=None):
@@ -195,6 +232,59 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             host.events[-1]["agent_session_id"],
             "agent-session-1",
+        )
+
+
+    async def test_create_routes_selected_non_codex_runtime_without_using_default_manager(self) -> None:
+        host = _Host()
+        planner = _BindingService()
+        default_manager = _SessionManager(_Session())
+        claude_manager = _SessionManager(_Session())
+        bindings = _BootstrapBindings()
+        actor = SimpleNamespace(identity_id="control")
+        selected = ExecutionRuntimeBinding(
+            provider_id="anthropic",
+            runtime_id="claude-code",
+            capability_revision=1,
+        )
+        routing = _RoutingService(selected)
+        adapters = []
+
+        def factory(binding, session):
+            self.assertEqual(binding, selected)
+            adapter = _AlternateAdapter(session)
+            adapters.append(adapter)
+            return adapter
+
+        service = ThreadService(
+            host,
+            binding_service=planner,
+            session_manager=default_manager,
+            bootstrap_bindings=bindings,
+            control_actor=actor,
+            routing_service=routing,
+            session_managers={
+                ("openai", "codex"): default_manager,
+                ("anthropic", "claude-code"): claude_manager,
+            },
+            runtime_adapter_factory=factory,
+        )
+
+        response = await service.create(project_id="p1")
+
+        self.assertEqual(default_manager.started, [])
+        self.assertEqual(claude_manager.started, ["assignment-bootstrap"])
+        self.assertEqual(planner.calls[0]["runtime_binding"], selected)
+        self.assertEqual(response["thread"]["id"], "claude-native-session")
+        self.assertEqual(bindings.calls[0]["thread_id"], "claude-native-session")
+        self.assertEqual(len(adapters), 1)
+        self.assertEqual(
+            adapters[0].created[0].assignment_id,
+            "assignment-bootstrap",
+        )
+        self.assertEqual(
+            host.events[-1]["runtime_binding"],
+            selected.model_dump(mode="json"),
         )
 
     async def test_thread_start_failure_fails_assignment_and_never_uses_global_runtime(self) -> None:
