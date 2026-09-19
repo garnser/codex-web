@@ -126,9 +126,22 @@ Issue #106 persists decomposition as canonical proposal state **before** any mod
 - acceptance fails when the Goal changed after the proposal was produced, forcing an explicit revision against current Goal state;
 - revising a proposal refreshes the exact Goal revision and reasoning-budget snapshot before it can be reviewed again.
 
-Creating or accepting a proposal does **not** create canonical Work Items and does not call a model. The later generation slice may use the Model Gateway to produce strict structured proposal JSON, but it must validate through this same deterministic contract and attribute every invocation to the Goal. The later commit slice must use the project TaskSource CREATE capability added by #310 and persist each external creation through the ActionIntent/ActionProvider side-effect boundary before provider execution.
+Creating or accepting a proposal does **not** create canonical Work Items. Model-assisted generation may use the Model Gateway to produce strict structured proposal JSON, but the result validates through this same deterministic contract and every invocation remains attributed to the Goal.
 
-This separation makes preview/review durable and auditable: models propose bounded structure, authorized operators accept/revise/reject, and side effects remain a later explicit phase.
+Accepted proposals enter a separate durable commit lifecycle:
+
+- all proposed projects and `task-source/authoritative` ActionProvider bindings are resolved and side-effect-free `prepare` checks pass before commit state is opened;
+- parent and blocking relationships are project-local because canonical Work Graph edges cannot cross project boundaries;
+- the proposal persists one immutable commit-plan record per proposed item before any task-creation intent is queued;
+- each external task create is persisted as a Goal-attributed ActionIntent and remains queued for the leased ActionIntent worker rather than executing inline in the Goal request;
+- per-item commit state exposes planned, queued, succeeded, failed, cancelled, uncertain, reconciliation-required, and rolled-back outcomes;
+- reconciliation accepts only actual canonical Work Item refs returned by successful ActionResults and verifies those refs are visible in the expected project;
+- only after every proposed item resolves successfully are parent/blocking edges materialized and generated root Work Items merged into the Goal's Work Graph bindings;
+- the proposal reaches `committed` only after Work Graph and Goal traceability are durable.
+
+Unknown non-idempotent TaskSource creates are never replaced or blindly retried. A commit may remain `committing` with an explicit blocker until ActionIntent reconciliation establishes the authoritative outcome. Re-running commit only queues records that never obtained an ActionIntent; it preserves existing intent identity for all attempted external work.
+
+This separation makes preview/review/commit durable and auditable: models propose bounded structure, authorized operators accept/revise/reject, ActionIntent owns every external mutation, and canonical Goal traceability is finalized only from observed authoritative results.
 
 ## M5 handoff
 
