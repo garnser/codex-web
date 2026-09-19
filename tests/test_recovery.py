@@ -22,14 +22,21 @@ from codex_web.recovery import (
 )
 from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.services.crypto_keys import CryptoKeyService
+from codex_web.services.canonical_events import (
+    CanonicalEventBus,
+    CanonicalEventIngestionService,
+)
 from codex_web.services.recovery import (
     LocalBackupDestination,
     RecoveryConflictError,
     RecoveryService,
 )
+from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
+from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.recovery import RecoveryStore
+from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -292,6 +299,98 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn(third.id, state.backups)
         self.assertFalse(
             Path(first.destination_ref.removeprefix("file://")).exists()
+        )
+
+
+class ScheduledRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.state = SQLiteStateStore(root / "state.sqlite3")
+        self.clock = _Clock(1000.0)
+        self.actor = AuthenticationActor(
+            identity_id="recovery-service",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED,
+        )
+        self.crypto = CryptoKeyService(
+            CryptoKeyStore(self.state),
+            {"local": LocalFileKeyBackend(root / "keys")},
+        )
+        self.key = self.crypto.create_key(
+            ManagedKeyCreate(
+                purpose=KeyPurpose.BACKUP,
+                backend_type="local",
+            ),
+            actor=self.actor,
+        )
+        event_store = CanonicalEventStore(self.state)
+        self.bus = CanonicalEventBus(event_store)
+        ingestion = CanonicalEventIngestionService(self.bus)
+        self.scheduler = SchedulerService(
+            SchedulerStore(self.state),
+            ingestion,
+            clock=self.clock,
+            owner_id="scheduler-test",
+        )
+        self.evidence = _Evidence()
+        self.service = RecoveryService(
+            RecoveryStore(self.state),
+            state_store=self.state,
+            crypto=self.crypto,
+            evidence=self.evidence,
+            scheduler=self.scheduler,
+            canonical_events=ingestion,
+            service_actor=self.actor,
+            destinations=(LocalBackupDestination(root / "backups"),),
+            clock=self.clock,
+        )
+        self.service.configure(
+            RecoveryPolicy(
+                backup_key_id=self.key.id,
+                destination_id="local",
+                backup_interval_seconds=60,
+                restore_verification_interval_seconds=300,
+                retention_count=5,
+                require_audit_integrity=False,
+            ),
+            actor=self.actor,
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    async def test_scheduler_creates_backup_then_runs_restore_verification(self):
+        state = self.service.store.load()
+        self.assertIsNotNone(state.backup_schedule_id)
+        self.assertIsNotNone(state.verification_schedule_id)
+
+        self.state.put("business", {"important": True})
+        self.clock.value = 1061.0
+        first = await self.scheduler.run_due()
+        self.assertGreaterEqual(first.emitted, 1)
+        backups = list(self.service.store.load().backups.values())
+        self.assertTrue(backups)
+
+        self.clock.value = 1301.0
+        second = await self.scheduler.run_due()
+        self.assertGreaterEqual(second.emitted, 1)
+        verifications = list(
+            self.service.store.load().verifications.values()
+        )
+        self.assertTrue(verifications)
+        self.assertEqual(
+            verifications[-1].status,
+            RestoreVerificationStatus.PASS,
+        )
+        self.assertTrue(
+            any(
+                item.payload.source == "recovery-restore-verification"
+                for item in self.evidence.items
+            )
         )
 
 
