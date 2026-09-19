@@ -21,6 +21,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityBlockedError,
     ProviderCapacityService,
 )
+from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
@@ -57,6 +58,7 @@ class TurnExecutionService:
         session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
         runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
         provider_capacity: ProviderCapacityService | None = None,
+        ownership: ReplicatedOwnershipService | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -69,6 +71,7 @@ class TurnExecutionService:
             self.session_managers.setdefault(("openai", "codex"), session_manager)
         self.runtime_adapter_factory = runtime_adapter_factory
         self.provider_capacity = provider_capacity
+        self.ownership = ownership
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -958,6 +961,19 @@ class TurnExecutionService:
         return response
 
     async def drain_thread_queue(self, thread_id: str) -> None:
+        if self.ownership is None:
+            await self._drain_thread_queue_owned(thread_id)
+            return
+
+        async def operation() -> None:
+            await self._drain_thread_queue_owned(thread_id)
+
+        await self.ownership.run_exclusive(
+            f"thread-queue:{thread_id}",
+            operation,
+        )
+
+    async def _drain_thread_queue_owned(self, thread_id: str) -> None:
         h = self.host
         if not thread_id:
             await self.publish_queue_status(thread_id)
@@ -1314,6 +1330,7 @@ def install_turn_execution_service(
     session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
     runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
     provider_capacity: ProviderCapacityService | None = None,
+    ownership: ReplicatedOwnershipService | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1331,6 +1348,7 @@ def install_turn_execution_service(
             runtime_adapter_factory or service.runtime_adapter_factory
         )
         service.provider_capacity = provider_capacity or service.provider_capacity
+        service.ownership = ownership or service.ownership
     else:
         service = TurnExecutionService(
             host,
@@ -1342,6 +1360,7 @@ def install_turn_execution_service(
             session_managers=session_managers,
             runtime_adapter_factory=runtime_adapter_factory,
             provider_capacity=provider_capacity,
+            ownership=ownership,
         )
         app.state.turn_execution_service = service
 

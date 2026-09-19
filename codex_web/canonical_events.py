@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
 from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CanonicalEventType(StrEnum):
@@ -24,3 +27,34 @@ def task_source_event_type(provider_event_type: str) -> CanonicalEventType:
     if not normalized:
         raise ValueError("provider event type must not be empty")
     return CanonicalEventType.TASK_SOURCE
+
+
+class CanonicalEventOutboxStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    DEAD_LETTER = "dead_letter"
+
+
+class CanonicalEventOutboxRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    status: CanonicalEventOutboxStatus = CanonicalEventOutboxStatus.PENDING
+    attempts: int = Field(default=0, ge=0)
+    transport_backend_id: str | None = None
+    transport_delivery_id: str | None = None
+    not_before: float | None = None
+    last_error_code: str | None = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    published_at: float | None = None
+
+
+class CanonicalEventInboxReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    transport_backend_id: str
+    transport_delivery_id: str
+    consumer_id: str
+    acknowledged_at: float = Field(default_factory=time.time)

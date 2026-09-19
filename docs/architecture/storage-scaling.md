@@ -1,12 +1,14 @@
 # Storage scaling path
 
-codex-web currently uses SQLite as the primary durable state store. That is intentional for the single-instance control-plane deployment: it keeps installation and rollback simple while service boundaries are still being extracted.
+codex-web keeps SQLite as the default local durable store and exposes the same transactional document-store contract through an optional PostgreSQL backend for shared deployments. Local installation remains broker-free by default; shared delivery and coordination are explicit deployment choices rather than hidden requirements.
 
 A distributed deployment must preserve the same canonical-state guarantees. PostgreSQL, Redis, NATS, RabbitMQ, Kafka, or any other infrastructure component is never allowed to become an alternate source of business truth merely because it participates in storage, coordination, or event delivery.
 
 ## Current guarantees
 
-`SQLiteStateStore` provides:
+Canonical repositories consume the `StateStore` contract: transactional
+`get/put/update/update_many`, namespace discovery/deletion for migration, and
+backend health. `SQLiteStateStore` remains the default and provides:
 
 - transactional document updates using `BEGIN IMMEDIATE`
 - WAL mode with a five-second busy timeout
@@ -18,6 +20,19 @@ A distributed deployment must preserve the same canonical-state guarantees. Post
 - compatibility JSON mirrors in the repositories that still require rollback support
 
 A database created by a newer codex-web schema is rejected rather than silently opened by an older binary.
+
+`PostgresStateStore` implements the same contract for a shared control plane.
+Namespace updates use transaction-scoped PostgreSQL advisory locks plus row
+locking, and cross-namespace `update_many` acquires namespace locks in sorted
+order before reading or mutating state. The PostgreSQL and Redis client
+dependencies are optional and live in `requirements-distributed.txt`; selecting
+those backends without the optional dependency fails visibly.
+
+High-churn runtime state that historically had JSON files (thread settings,
+active turns, work-item state, turn queues, bot bindings/connections and
+auxiliary state) is StateStore-primary. JSON files remain compatibility mirrors
+for rollback, not an alternate authority. The project registry and work-item
+event journal likewise use shared StateStore state in shared deployments.
 
 ## Scaling principles
 
@@ -39,6 +54,33 @@ The scaling architecture separates three responsibilities:
    - may be implemented by the same product used for transport, but remains a distinct architectural boundary
 
 Keeping these responsibilities separate prevents a broker outage, transport replay, or lease-store implementation detail from redefining canonical application state.
+
+## Deployment modes and fail-closed enablement
+
+`CODEX_WEB_STATE_BACKEND` selects `sqlite` (default) or `postgresql`.
+`CODEX_WEB_EVENT_TRANSPORT` selects `in-process` (default), `redis-streams`,
+or an explicitly disabled transport. `CODEX_WEB_DEPLOYMENT_MODE` is `local`
+by default.
+
+A requested `replicated` deployment fails startup unless all three invariants
+are true:
+
+- the configured StateStore reports shared durability;
+- CoordinationBackend is shared;
+- EventTransport is durable and provides consumer-group semantics.
+
+The check prevents installing PostgreSQL or Redis from silently implying
+active/active safety. Singleton watchdog/recovery responsibilities and long-lived
+bot provider sockets use renewable coordination leases. Per-thread queue drains
+use renewable exclusive leases before an execution assignment exists; after
+assignment, the worker plane's existing lease token and monotonic assignment
+fence remain authoritative.
+
+Scheduler instances may run on multiple replicas because schedule claims are
+transactional and completion validates owner/revision; occurrence publication is
+canonical-event-idempotent. Shared transport consumer groups are the only
+subscriber dispatch path in replicated delivery mode, so the producer does not
+also invoke local subscribers.
 
 ## Durable outbox boundary
 
@@ -91,13 +133,12 @@ The contract should support the smallest useful common semantics:
 - consumer identity/group semantics where supported
 - health and capability inspection
 
-The local implementation should remain available:
-
-```text
-InProcessEventTransport
-```
-
-so a normal single-instance codex-web deployment does not require an external broker.
+The local implementation is `InProcessEventTransport`, so a normal
+single-instance codex-web deployment does not require an external broker.
+`RedisStreamsEventTransport` is the first shared adapter. It preserves
+canonical event IDs inside each message while Redis stream IDs remain delivery
+metadata. The Redis client is injected at the adapter boundary and imported only
+when that backend is selected.
 
 Distributed adapters can then be added without changing canonical event/domain code, for example:
 
@@ -130,7 +171,15 @@ A message broker and a distributed coordination system solve related but differe
 
 Stale owners must be fenced from protected mutations after lease takeover.
 
-A Redis-backed deployment may initially implement both `EventTransport` and `CoordinationBackend`, but codex-web must keep the contracts separate so Redis does not become an architectural dependency.
+`StateStoreCoordinationBackend` is the first coordination implementation. On
+SQLite it provides local/single-host serialization; on PostgreSQL the same
+transactional namespace becomes shared coordination. Lease takeover increments a
+monotonic fencing token, and `fenced_update` verifies the live lease and
+canonical mutation in one cross-namespace StateStore transaction. Stale owners
+cannot release, renew, or perform a fenced protected mutation after takeover.
+
+Redis may still be used for EventTransport independently. A future Redis-backed
+CoordinationBackend can be added without changing transport or domain code.
 
 ## Before a replicated deployment
 
@@ -199,6 +248,43 @@ A reasonable progression is:
 
 This preserves the local-first installation model while allowing codex-web to scale without rewriting orchestration around a specific broker.
 
+## Operations and diagnostics
+
+`GET /api/operations/distributed` exposes deployment mode and instance ID,
+StateStore backend/health, EventTransport backend/health, durable outbox
+pending/published/dead-letter counts, CoordinationBackend health, current
+singleton ownership/fencing tokens, and transport-runtime recovery state.
+Transport degradation is reported independently from canonical database health.
+
+A broker outage therefore appears as outbox backlog/degraded transport while
+committed canonical events remain in the database. Broker acknowledgement only
+records delivery completion; it never establishes a work-item transition,
+approval, ActionIntent outcome, or provider side effect.
+
+## SQLite to shared-store migration
+
+The migration tool is deterministic and re-runnable:
+
+```text
+python -m codex_web.state_migration migrate \
+  --sqlite /path/state.sqlite3 \
+  --postgres-dsn '<dsn>' \
+  --backup /safe/path/pre-postgres.sqlite3 \
+  --manifest /safe/path/state-migration.json
+```
+
+It takes a SQLite-native backup first, copies canonical StateStore documents,
+compares per-namespace canonical JSON and whole-state SHA-256 checksums, and
+writes a private manifest naming only namespaces it inserted. Re-running against
+an unchanged target verifies equal namespaces without duplicating data.
+Unexpected destination namespaces or mismatched content fail closed.
+
+`verify` repeats count/content/checksum validation without mutation.
+`rollback-target` removes only namespaces inserted by the recorded migration
+and only when their values still match the source snapshot; the source SQLite
+database is never mutated by migration, so deployment rollback remains a
+configuration switch plus the preserved backup.
+
 ## Migration sequence
 
 1. Keep the current repository/service interfaces as the application boundary.
@@ -211,6 +297,20 @@ This preserves the local-first installation model while allowing codex-web to sc
 8. Exercise broker outage/recovery, duplicate delivery, outbox replay, stale-owner fencing, and two-instance failover before declaring replicated mode supported.
 
 The SQLite backup/status methods added here are prerequisites for migration tooling; they are not a claim that codex-web is already safe for active/active deployment.
+
+## Validation contract
+
+The shared-runtime conformance suite exercises the same EventTransport semantics
+against the in-process transport and a Redis Streams-compatible client boundary.
+Two independently constructed coordination clients over the same durable store
+exercise lease exclusion, expiry/takeover, monotonically increasing fencing and
+stale-owner rejection. Durable-event tests force a transport failure immediately
+after canonical commit and verify later outbox recovery, canonical identity
+preservation, inbox deduplication and one subscriber execution. Concurrent
+project and same-thread queue tests exercise shared-store delta merge behavior.
+
+The final merge gate remains the repository-wide Python, JavaScript, Chromium
+and Docker CI suite.
 
 ## Required validation
 

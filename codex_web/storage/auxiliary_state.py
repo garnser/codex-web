@@ -10,14 +10,14 @@ from pydantic import BaseModel
 
 from codex_web.models import ApprovalSlackMessage, BotThreadDetail
 from codex_web.storage.json_files import atomic_write_text
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 T = TypeVar("T", bound=BaseModel)
 
 
 class NestedModelListMapRepository(Generic[T]):
-    """SQLite-primary mapping of IDs to model lists with rollback-safe JSON mirroring.
+    """StateStore-primary mapping of IDs to model lists with rollback-safe JSON mirroring.
 
     Each top-level key is merged independently against the latest committed
     document. This prevents concurrent updates for different thread/request IDs
@@ -26,7 +26,7 @@ class NestedModelListMapRepository(Generic[T]):
 
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         namespace: str,
         legacy_path: Path,
@@ -108,7 +108,7 @@ class JsonMapRepository:
 
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         namespace: str,
         legacy_path: Path,
@@ -197,7 +197,7 @@ class ServiceDeskStateRepository:
 
     namespace = "support_servicedesk_state"
 
-    def __init__(self, store: SQLiteStateStore, legacy_path: Path) -> None:
+    def __init__(self, store: StateStore, legacy_path: Path) -> None:
         self.store = store
         self.legacy_path = legacy_path
         self._snapshot: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -285,7 +285,7 @@ def _normalize_semantic_events(value: dict[str, Any]) -> dict[str, float]:
 class AuxiliaryStateRepositories:
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         bot_details_file: Path,
         approval_messages_file: Path,
@@ -321,7 +321,7 @@ class AuxiliaryStateRepositories:
 
 
 def install_auxiliary_state(app: Any, host: Any) -> AuxiliaryStateRepositories:
-    """Wire the remaining mutable JSON documents to the shared SQLite store."""
+    """Wire the remaining mutable JSON documents to the configured canonical StateStore."""
 
     from codex_web.paths import (
         APPROVAL_MESSAGES_FILE,
@@ -335,7 +335,7 @@ def install_auxiliary_state(app: Any, host: Any) -> AuxiliaryStateRepositories:
         repositories = existing
     else:
         repositories = AuxiliaryStateRepositories(
-            app.state.sqlite_state_store,
+            getattr(app.state, "state_store", app.state.sqlite_state_store),
             bot_details_file=BOT_DETAILS_FILE,
             approval_messages_file=APPROVAL_MESSAGES_FILE,
             support_servicedesk_state_file=SUPPORT_SERVICEDESK_STATE_FILE,

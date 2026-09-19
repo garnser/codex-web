@@ -10,23 +10,23 @@ from pydantic import BaseModel
 
 from codex_web.models import ActiveThreadTurn, ThreadRunSettings, WorkItemState
 from codex_web.storage.json_files import atomic_write_text
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 T = TypeVar("T", bound=BaseModel)
 
 
 class ModelMapRepository(Generic[T]):
-    """SQLite-primary map storage with rollback-safe legacy JSON mirroring.
+    """StateStore-primary map storage with rollback-safe legacy JSON mirroring.
 
     A load/save pair keeps a context-local snapshot. save() computes only the
     keys changed by that caller and atomically merges the delta into the latest
-    SQLite document, preventing unrelated concurrent updates from being lost.
+    shared-store document, preventing unrelated concurrent updates from being lost.
     """
 
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         namespace: str,
         legacy_path: Path,
@@ -111,7 +111,7 @@ class ModelMapRepository(Generic[T]):
 class RuntimeStateRepositories:
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         thread_settings_file: Path,
         active_turns_file: Path,

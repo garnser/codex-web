@@ -4,23 +4,38 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.canonical_events import (
+    CanonicalEventInboxReceipt,
+    CanonicalEventOutboxRecord,
+    CanonicalEventOutboxStatus,
+)
 from codex_web.compatibility import CanonicalEventEnvelope, ContractSpec, MigrationRegistry
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 CANONICAL_EVENT_STATE_CONTRACT = ContractSpec(
     "canonical-event-state",
-    "1.0",
-    ("1.0",),
+    "2.0",
+    ("1.0", "2.0"),
 )
 CANONICAL_EVENT_STATE_MIGRATIONS = MigrationRegistry("canonical-event-state")
 CANONICAL_EVENT_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": CANONICAL_EVENT_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         "events": list(payload.get("events") or []),
         "idempotency": dict(payload.get("idempotency") or {}),
+    },
+)
+CANONICAL_EVENT_STATE_MIGRATIONS.register(
+    "1.0",
+    "2.0",
+    lambda payload: {
+        **payload,
+        "schema_version": "2.0",
+        "outbox": dict(payload.get("outbox") or {}),
+        "inbox": list(payload.get("inbox") or []),
     },
 )
 
@@ -31,6 +46,8 @@ class CanonicalEventState(BaseModel):
     schema_version: str = CANONICAL_EVENT_STATE_CONTRACT.current
     events: list[CanonicalEventEnvelope] = Field(default_factory=list)
     idempotency: dict[str, str] = Field(default_factory=dict)
+    outbox: dict[str, CanonicalEventOutboxRecord] = Field(default_factory=dict)
+    inbox: list[CanonicalEventInboxReceipt] = Field(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
         CANONICAL_EVENT_STATE_CONTRACT.require(self.schema_version)
@@ -50,7 +67,7 @@ class CanonicalEventStore:
         payload.pop("correlation_id", None)
         return payload
 
-    def __init__(self, store: SQLiteStateStore, *, max_events: int = 5000) -> None:
+    def __init__(self, store: StateStore, *, max_events: int = 5000) -> None:
         self.store = store
         self.max_events = max(1, int(max_events))
 
@@ -77,6 +94,7 @@ class CanonicalEventStore:
         event: CanonicalEventEnvelope,
         *,
         idempotency_key: str,
+        enqueue_transport: bool = False,
     ) -> tuple[CanonicalEventEnvelope, bool]:
         key = str(idempotency_key or "").strip()
         if not key:
@@ -97,6 +115,10 @@ class CanonicalEventStore:
                     raise CanonicalEventConflictError(
                         "idempotency key was reused for a different canonical event"
                     )
+                if enqueue_transport and existing.event_id not in state.outbox:
+                    state.outbox[existing.event_id] = CanonicalEventOutboxRecord(
+                        event_id=existing.event_id
+                    )
                 result["event"] = existing
                 result["inserted"] = False
                 return state.model_dump(mode="json")
@@ -108,20 +130,46 @@ class CanonicalEventStore:
                         "canonical event id was reused with different content"
                     )
                 state.idempotency[key] = event.event_id
+                if enqueue_transport and existing.event_id not in state.outbox:
+                    state.outbox[existing.event_id] = CanonicalEventOutboxRecord(
+                        event_id=existing.event_id
+                    )
                 result["event"] = existing
                 result["inserted"] = False
                 return state.model_dump(mode="json")
 
             state.events.append(event)
             state.idempotency[key] = event.event_id
+            if enqueue_transport:
+                state.outbox[event.event_id] = CanonicalEventOutboxRecord(
+                    event_id=event.event_id
+                )
             if len(state.events) > self.max_events:
-                state.events = state.events[-self.max_events :]
-                retained = {item.event_id for item in state.events}
-                state.idempotency = {
-                    candidate: event_id
-                    for candidate, event_id in state.idempotency.items()
-                    if event_id in retained
-                }
+                overflow = len(state.events) - self.max_events
+                removable: set[str] = set()
+                for candidate in state.events:
+                    outbox = state.outbox.get(candidate.event_id)
+                    if (
+                        outbox is None
+                        or outbox.status == CanonicalEventOutboxStatus.PUBLISHED
+                    ):
+                        removable.add(candidate.event_id)
+                        overflow -= 1
+                        if overflow <= 0:
+                            break
+                if removable:
+                    state.events = [
+                        item
+                        for item in state.events
+                        if item.event_id not in removable
+                    ]
+                    state.idempotency = {
+                        candidate: candidate_event_id
+                        for candidate, candidate_event_id in state.idempotency.items()
+                        if candidate_event_id not in removable
+                    }
+                    for event_id in removable:
+                        state.outbox.pop(event_id, None)
             result["event"] = event
             result["inserted"] = True
             return state.model_dump(mode="json")
@@ -132,6 +180,245 @@ class CanonicalEventStore:
             default=CanonicalEventState().model_dump(mode="json"),
         )
         return result["event"], bool(result["inserted"])
+
+    def record_with_document_mutation(
+        self,
+        namespace: str,
+        default: Any,
+        updater,
+        event: CanonicalEventEnvelope,
+        *,
+        idempotency_key: str,
+        enqueue_transport: bool = False,
+    ) -> tuple[Any, CanonicalEventEnvelope, bool]:
+        """Atomically mutate one canonical document and append event/outbox.
+
+        Replaying the same event idempotency key returns the persisted event and
+        leaves the guarded domain document unchanged.
+        """
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("canonical event idempotency key must not be empty")
+        if namespace == self.namespace:
+            raise ValueError("guarded namespace must differ from canonical events")
+        result: dict[str, Any] = {}
+
+        def apply(documents: dict[str, Any]) -> dict[str, Any]:
+            state = self._decode(documents[self.namespace])
+            by_id = {item.event_id: item for item in state.events}
+            existing_id = state.idempotency.get(key)
+            if existing_id is not None:
+                existing = by_id.get(existing_id)
+                if existing is None:
+                    raise CanonicalEventConflictError(
+                        "canonical event idempotency index points to missing event"
+                    )
+                if self._semantic_payload(existing) != self._semantic_payload(event):
+                    raise CanonicalEventConflictError(
+                        "idempotency key was reused for a different canonical event"
+                    )
+                if enqueue_transport and existing.event_id not in state.outbox:
+                    state.outbox[existing.event_id] = CanonicalEventOutboxRecord(
+                        event_id=existing.event_id
+                    )
+                result["domain"] = documents[namespace]
+                result["event"] = existing
+                result["inserted"] = False
+                return {
+                    self.namespace: state.model_dump(mode="json"),
+                    namespace: documents[namespace],
+                }
+
+            if event.event_id in by_id:
+                raise CanonicalEventConflictError(
+                    "canonical event id already exists under a different idempotency key"
+                )
+
+            updated_domain = updater(documents[namespace])
+            state.events.append(event)
+            state.idempotency[key] = event.event_id
+            if enqueue_transport:
+                state.outbox[event.event_id] = CanonicalEventOutboxRecord(
+                    event_id=event.event_id
+                )
+            result["domain"] = updated_domain
+            result["event"] = event
+            result["inserted"] = True
+            return {
+                self.namespace: state.model_dump(mode="json"),
+                namespace: updated_domain,
+            }
+
+        self.store.update_many(
+            {
+                self.namespace: CanonicalEventState().model_dump(mode="json"),
+                namespace: default,
+            },
+            apply,
+        )
+        return result["domain"], result["event"], bool(result["inserted"])
+
+    def event(self, event_id: str) -> CanonicalEventEnvelope | None:
+        return next(
+            (item for item in self.load().events if item.event_id == event_id),
+            None,
+        )
+
+    def pending_outbox(
+        self,
+        *,
+        now: float,
+        limit: int = 100,
+    ) -> list[CanonicalEventOutboxRecord]:
+        rows = [
+            item
+            for item in self.load().outbox.values()
+            if item.status == CanonicalEventOutboxStatus.PENDING
+            and (item.not_before is None or item.not_before <= now)
+        ]
+        rows.sort(key=lambda item: (item.created_at, item.event_id))
+        return rows[: max(0, int(limit))]
+
+    def mark_outbox_published(
+        self,
+        event_id: str,
+        *,
+        backend_id: str,
+        delivery_id: str | None,
+        now: float,
+    ) -> CanonicalEventOutboxRecord:
+        result: list[CanonicalEventOutboxRecord] = []
+
+        def apply(raw: Any) -> dict[str, Any]:
+            state = self._decode(raw)
+            current = state.outbox.get(event_id)
+            if current is None:
+                raise CanonicalEventConflictError("canonical event outbox entry not found")
+            updated = current.model_copy(
+                update={
+                    "status": CanonicalEventOutboxStatus.PUBLISHED,
+                    "attempts": current.attempts + 1,
+                    "transport_backend_id": backend_id,
+                    "transport_delivery_id": delivery_id,
+                    "last_error_code": None,
+                    "published_at": now,
+                    "updated_at": now,
+                }
+            )
+            state.outbox[event_id] = updated
+            result.append(updated)
+            return state.model_dump(mode="json")
+
+        self.store.update(
+            self.namespace,
+            apply,
+            default=CanonicalEventState().model_dump(mode="json"),
+        )
+        return result[0]
+
+    def mark_outbox_failed(
+        self,
+        event_id: str,
+        *,
+        error_code: str,
+        now: float,
+        max_attempts: int,
+        backoff_seconds: float,
+    ) -> CanonicalEventOutboxRecord:
+        result: list[CanonicalEventOutboxRecord] = []
+
+        def apply(raw: Any) -> dict[str, Any]:
+            state = self._decode(raw)
+            current = state.outbox.get(event_id)
+            if current is None:
+                raise CanonicalEventConflictError("canonical event outbox entry not found")
+            attempts = current.attempts + 1
+            dead = attempts >= max(1, int(max_attempts))
+            updated = current.model_copy(
+                update={
+                    "status": (
+                        CanonicalEventOutboxStatus.DEAD_LETTER
+                        if dead
+                        else CanonicalEventOutboxStatus.PENDING
+                    ),
+                    "attempts": attempts,
+                    "last_error_code": error_code[:200],
+                    "not_before": (
+                        None
+                        if dead
+                        else now + max(0.0, float(backoff_seconds))
+                    ),
+                    "updated_at": now,
+                }
+            )
+            state.outbox[event_id] = updated
+            result.append(updated)
+            return state.model_dump(mode="json")
+
+        self.store.update(
+            self.namespace,
+            apply,
+            default=CanonicalEventState().model_dump(mode="json"),
+        )
+        return result[0]
+
+    def inbox_seen(
+        self,
+        *,
+        event_id: str,
+        backend_id: str,
+    ) -> bool:
+        # backend_id identifies the transport consumer-group boundary. Dedupe
+        # by canonical event identity rather than broker delivery ID so replay,
+        # reclaim, or a newly published transport message cannot re-run an
+        # already completed canonical event on another replica.
+        return any(
+            item.event_id == event_id
+            and item.transport_backend_id == backend_id
+            for item in self.load().inbox
+        )
+
+    def record_inbox_receipt(
+        self,
+        receipt: CanonicalEventInboxReceipt,
+        *,
+        max_receipts: int = 10000,
+    ) -> CanonicalEventInboxReceipt:
+        def apply(raw: Any) -> dict[str, Any]:
+            state = self._decode(raw)
+            duplicate = next(
+                (
+                    item
+                    for item in state.inbox
+                    if item.event_id == receipt.event_id
+                    and item.transport_backend_id == receipt.transport_backend_id
+                ),
+                None,
+            )
+            if duplicate is not None:
+                return state.model_dump(mode="json")
+            state.inbox.append(receipt)
+            if len(state.inbox) > max_receipts:
+                state.inbox = state.inbox[-max_receipts:]
+            return state.model_dump(mode="json")
+
+        self.store.update(
+            self.namespace,
+            apply,
+            default=CanonicalEventState().model_dump(mode="json"),
+        )
+        return receipt
+
+    def outbox_status(self) -> dict[str, int]:
+        state = self.load()
+        counts = {
+            status.value: 0
+            for status in CanonicalEventOutboxStatus
+        }
+        for item in state.outbox.values():
+            counts[item.status.value] += 1
+        return counts
 
     def recent(self, *, limit: int = 100) -> list[CanonicalEventEnvelope]:
         count = max(0, min(int(limit), self.max_events))

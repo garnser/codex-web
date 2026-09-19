@@ -11,14 +11,14 @@ from pydantic import BaseModel
 from codex_web.models import BotBinding, BotConnection, BotReplyTarget, QueuedTurn
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.runtime_state import ModelMapRepository
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 T = TypeVar("T", bound=BaseModel)
 
 
 class ModelListRepository(Generic[T]):
-    """SQLite-primary list storage with rollback-safe JSON mirroring.
+    """StateStore-primary list storage with rollback-safe JSON mirroring.
 
     Lists of models with stable `id` fields are delta-merged against the latest
     SQLite value so concurrent connection/binding updates do not overwrite
@@ -27,7 +27,7 @@ class ModelListRepository(Generic[T]):
 
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         namespace: str,
         legacy_path: Path,
@@ -126,9 +126,9 @@ class ModelListRepository(Generic[T]):
 
 
 class QueuedTurnRepository:
-    """Persist per-thread turn queues as one transactional SQLite document."""
+    """Persist per-thread turn queues as one transactional shared-store document."""
 
-    def __init__(self, store: SQLiteStateStore, legacy_path: Path) -> None:
+    def __init__(self, store: StateStore, legacy_path: Path) -> None:
         self.store = store
         self.legacy_path = legacy_path
         self.namespace = "turn_queues"
@@ -180,11 +180,74 @@ class QueuedTurnRepository:
             }
             deleted = set(base) - set(payload)
 
+            def merge_queue(
+                base_items: list[Any],
+                desired_items: list[Any],
+                latest_items: list[Any],
+            ) -> list[Any]:
+                base_by_id = {
+                    str(item.get("id")): item
+                    for item in base_items
+                    if isinstance(item, dict) and item.get("id")
+                }
+                desired_by_id = {
+                    str(item.get("id")): item
+                    for item in desired_items
+                    if isinstance(item, dict) and item.get("id")
+                }
+                changed_by_id = {
+                    item_id: item
+                    for item_id, item in desired_by_id.items()
+                    if base_by_id.get(item_id) != item
+                }
+                deleted_ids = set(base_by_id) - set(desired_by_id)
+                result: list[Any] = []
+                seen_ids: set[str] = set()
+                for item in latest_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = str(item.get("id") or "")
+                    if not item_id or item_id in deleted_ids:
+                        continue
+                    result.append(changed_by_id.get(item_id, item))
+                    seen_ids.add(item_id)
+                for item in desired_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = str(item.get("id") or "")
+                    if item_id and item_id in changed_by_id and item_id not in seen_ids:
+                        result.append(changed_by_id[item_id])
+                        seen_ids.add(item_id)
+
+                # Preserve the queue's existing duplicate contract across
+                # replicas: one pending entry per source/message pair.
+                deduped: list[Any] = []
+                seen_semantics: set[tuple[str, str]] = set()
+                for item in result:
+                    semantic = (
+                        str(item.get("source") or ""),
+                        str(item.get("message") or ""),
+                    )
+                    if semantic in seen_semantics:
+                        continue
+                    seen_semantics.add(semantic)
+                    deduped.append(item)
+                return deduped
+
             def merge(current: Any) -> dict[str, Any]:
                 latest = dict(current) if isinstance(current, dict) else {}
                 for key in deleted:
                     latest.pop(key, None)
-                latest.update(changed)
+                for key, desired_items in changed.items():
+                    base_items = base.get(key)
+                    latest_items = latest.get(key)
+                    latest[key] = merge_queue(
+                        base_items if isinstance(base_items, list) else [],
+                        desired_items if isinstance(desired_items, list) else [],
+                        latest_items if isinstance(latest_items, list) else [],
+                    )
+                    if not latest[key]:
+                        latest.pop(key, None)
                 return latest
 
             merged = self.store.update(self.namespace, merge, default={})
@@ -200,7 +263,7 @@ class QueuedTurnRepository:
 class OperationalStateRepositories:
     def __init__(
         self,
-        store: SQLiteStateStore,
+        store: StateStore,
         *,
         turn_queue_file: Path,
         bot_connections_file: Path,
@@ -240,7 +303,7 @@ class OperationalStateRepositories:
 
 
 def install_operational_state(app: Any, host: Any) -> OperationalStateRepositories:
-    """Wire high-churn queue/bot state to the existing SQLite store."""
+    """Wire high-churn queue/bot state to the configured canonical StateStore."""
 
     from codex_web.paths import (
         BOT_DELIVERY_TARGETS_FILE,
@@ -255,7 +318,7 @@ def install_operational_state(app: Any, host: Any) -> OperationalStateRepositori
         repositories = existing
     else:
         repositories = OperationalStateRepositories(
-            app.state.sqlite_state_store,
+            getattr(app.state, "state_store", app.state.sqlite_state_store),
             turn_queue_file=TURN_QUEUE_FILE,
             bot_connections_file=BOTS_CONNECTIONS_FILE,
             bot_bindings_file=BOTS_BINDINGS_FILE,

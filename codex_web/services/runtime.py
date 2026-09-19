@@ -171,6 +171,67 @@ class RuntimeService:
             },
         }
 
+    async def distributed_status(self) -> dict[str, Any]:
+        state = getattr(self.host.app, "state", None)
+        store = getattr(state, "state_store", None)
+        coordination = getattr(state, "coordination_backend", None)
+        ownership = getattr(state, "replicated_ownership_service", None)
+        bus = getattr(state, "canonical_event_bus", None)
+        transport_runtime = getattr(state, "event_transport_runtime", None)
+
+        transport_health = (
+            await bus.transport_health()
+            if bus is not None
+            else None
+        )
+        outbox = (
+            bus.store.outbox_status()
+            if bus is not None
+            else {}
+        )
+        coordination_health = (
+            coordination.health().model_dump(mode="json")
+            if coordination is not None
+            else None
+        )
+        return {
+            "deploymentMode": getattr(state, "deployment_mode", "local"),
+            "instanceId": getattr(state, "instance_id", None),
+            "stateStore": store.status() if store is not None else None,
+            "eventTransport": (
+                transport_health.model_dump(mode="json")
+                if transport_health is not None
+                else None
+            ),
+            "outbox": outbox,
+            "coordination": coordination_health,
+            "ownership": ownership.status() if ownership is not None else None,
+            "transportRuntime": (
+                await transport_runtime.status()
+                if transport_runtime is not None
+                else None
+            ),
+            "replicatedSafety": {
+                "sharedStore": bool(
+                    store is not None
+                    and store.status().get("shared", False)
+                ),
+                "sharedCoordination": bool(
+                    coordination is not None
+                    and coordination.shared
+                ),
+                "durableConsumerGroupTransport": bool(
+                    getattr(
+                        getattr(state, "event_transport", None),
+                        "capabilities",
+                        None,
+                    )
+                    and state.event_transport.capabilities.durable
+                    and state.event_transport.capabilities.consumer_groups
+                ),
+            },
+        }
+
     async def rate_limits(self) -> dict[str, Any]:
         return await self.host.codex.request("account/rateLimits/read")
 
