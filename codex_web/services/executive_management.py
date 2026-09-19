@@ -199,7 +199,10 @@ class ExecutiveManagementService:
                 reasons.append(f"subscribed to {payload.event_type}")
             for keyword in role.keywords:
                 if self._keyword_match(text, keyword):
-                    weight = 4 if " " in keyword else 2
+                    if role.id == catalog.fallback_role_id:
+                        weight = 2 if " " in keyword else 1
+                    else:
+                        weight = 4 if " " in keyword else 2
                     score += weight
                     reasons.append(f"keyword:{keyword}")
             if payload.goal_ids and ExecutiveObjectType.GOAL in role.observable_information:
