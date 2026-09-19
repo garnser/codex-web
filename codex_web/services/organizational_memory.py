@@ -467,6 +467,7 @@ class OrganizationalMemoryService:
             classification=governance.classification,
             governance_record_id=governance.id,
             retention_expires_at=governance.retention_expires_at,
+            retention_action=governance.retention_action,
             deny_model_context=governance.deny_model_context,
             required_role_ids=payload.required_role_ids,
             review_after=payload.review_after,
@@ -537,6 +538,17 @@ class OrganizationalMemoryService:
                 "only the current knowledge version can be revised"
             )
 
+        state_snapshot = self.store.load()
+        prior_relationships = tuple(
+            KnowledgeRelationshipCreate(
+                target_knowledge_id=row.target_knowledge_id,
+                relationship_type=row.relationship_type,
+                note=row.note,
+            )
+            for row in state_snapshot.relationships
+            if row.source_knowledge_id == current.id
+            and row.relationship_type != KnowledgeRelationshipType.SUPERSEDES
+        )
         merged_provenance = payload.provenance.model_copy(
             update={
                 "source_governance_record_ids": tuple(
@@ -570,7 +582,11 @@ class OrganizationalMemoryService:
                 if payload.canonical_refs is not None
                 else current.canonical_refs
             ),
-            relationships=payload.relationships or (),
+            relationships=(
+                payload.relationships
+                if payload.relationships is not None
+                else prior_relationships
+            ),
             provenance=merged_provenance,
             classification=payload.classification or current.classification,
             retention_expires_at=(
@@ -581,7 +597,7 @@ class OrganizationalMemoryService:
             retention_action=(
                 payload.retention_action
                 if payload.retention_action is not None
-                else GovernanceAction.REDACT
+                else current.retention_action
             ),
             deny_model_context=(
                 payload.deny_model_context
@@ -647,6 +663,7 @@ class OrganizationalMemoryService:
             classification=governance.classification,
             governance_record_id=governance.id,
             retention_expires_at=governance.retention_expires_at,
+            retention_action=governance.retention_action,
             deny_model_context=governance.deny_model_context,
             required_role_ids=normalized.required_role_ids,
             review_after=normalized.review_after,
