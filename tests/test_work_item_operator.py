@@ -159,6 +159,20 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(detail["actions"]["reconcile"]["allowed"])
         self.assertEqual(detail["diagnostics"][0]["kind"], "execution_failure")
 
+    def test_catalog_advertises_builtin_enterprise_sources_before_configuration(self) -> None:
+        catalog = self.service.task_source_catalog()
+        by_type = {
+            item["source_type"]: item
+            for item in catalog["items"]
+            if item["project_id"] is None
+        }
+
+        self.assertIn("gitlab", by_type)
+        self.assertIn("jira", by_type)
+        self.assertIn("servicenow", by_type)
+        self.assertIn("discovery", by_type["jira"]["capabilities"])
+        self.assertIn("create", by_type["servicenow"]["capabilities"])
+
     async def test_retry_uses_canonical_execution_state_and_dispatch_seam(self) -> None:
         result = await self.service.retry("TASK-42", actor="operator", reason="try again")
 
