@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 import uuid
@@ -25,6 +26,7 @@ from codex_web.storage.scheduler import SchedulerStore
 
 
 Clock = Callable[[], float]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,7 +385,12 @@ class SchedulerService:
 
     async def run_forever(self) -> None:
         while True:
-            await self.run_due()
+            try:
+                await self.run_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("durable scheduler tick failed")
             now = float(self.clock())
             next_due = self.store.next_due_at(now=now)
             timeout = self.max_idle_sleep_seconds
