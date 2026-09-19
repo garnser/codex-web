@@ -33,6 +33,7 @@ from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.orchestration import build_orchestration_router
+from codex_web.api.organizational_memory import build_organizational_memory_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.resources import build_resources_router
@@ -155,6 +156,7 @@ from codex_web.services.goal_decompositions import GoalDecompositionService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.orchestration_inspector import OrchestrationInspectorService
+from codex_web.services.organizational_memory import OrganizationalMemoryService
 from codex_web.services.projects import ProjectService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
@@ -205,6 +207,7 @@ from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.model_gateway import ModelGatewayStore
+from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
@@ -426,6 +429,18 @@ authority_role_service = install_authority_roles(
     resource_catalog_service,
 )
 app.state.authority_role_service = authority_role_service
+
+organizational_memory_store = OrganizationalMemoryStore(state_store)
+organizational_memory_service = OrganizationalMemoryService(
+    organizational_memory_store,
+    data_governance_service,
+    authority_role_service,
+)
+app.state.organizational_memory_store = organizational_memory_store
+app.state.organizational_memory_service = organizational_memory_service
+app.include_router(
+    build_organizational_memory_router(organizational_memory_service)
+)
 
 approval_request_store = ApprovalRequestStore(state_store)
 approval_request_service = ApprovalRequestService(
