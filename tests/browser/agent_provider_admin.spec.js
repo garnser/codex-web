@@ -126,6 +126,7 @@ function installRoutes(page, actions = [], state = {}) {
       }),
     })),
     page.route('**/api/agent-sessions/*/*', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
       actions.push({
         url: route.request().url(),
         method: route.request().method(),
