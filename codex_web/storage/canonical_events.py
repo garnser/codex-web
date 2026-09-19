@@ -181,6 +181,84 @@ class CanonicalEventStore:
         )
         return result["event"], bool(result["inserted"])
 
+    def record_with_document_mutation(
+        self,
+        namespace: str,
+        default: Any,
+        updater,
+        event: CanonicalEventEnvelope,
+        *,
+        idempotency_key: str,
+        enqueue_transport: bool = False,
+    ) -> tuple[Any, CanonicalEventEnvelope, bool]:
+        """Atomically mutate one canonical document and append event/outbox.
+
+        Replaying the same event idempotency key returns the persisted event and
+        leaves the guarded domain document unchanged.
+        """
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("canonical event idempotency key must not be empty")
+        if namespace == self.namespace:
+            raise ValueError("guarded namespace must differ from canonical events")
+        result: dict[str, Any] = {}
+
+        def apply(documents: dict[str, Any]) -> dict[str, Any]:
+            state = self._decode(documents[self.namespace])
+            by_id = {item.event_id: item for item in state.events}
+            existing_id = state.idempotency.get(key)
+            if existing_id is not None:
+                existing = by_id.get(existing_id)
+                if existing is None:
+                    raise CanonicalEventConflictError(
+                        "canonical event idempotency index points to missing event"
+                    )
+                if self._semantic_payload(existing) != self._semantic_payload(event):
+                    raise CanonicalEventConflictError(
+                        "idempotency key was reused for a different canonical event"
+                    )
+                if enqueue_transport and existing.event_id not in state.outbox:
+                    state.outbox[existing.event_id] = CanonicalEventOutboxRecord(
+                        event_id=existing.event_id
+                    )
+                result["domain"] = documents[namespace]
+                result["event"] = existing
+                result["inserted"] = False
+                return {
+                    self.namespace: state.model_dump(mode="json"),
+                    namespace: documents[namespace],
+                }
+
+            if event.event_id in by_id:
+                raise CanonicalEventConflictError(
+                    "canonical event id already exists under a different idempotency key"
+                )
+
+            updated_domain = updater(documents[namespace])
+            state.events.append(event)
+            state.idempotency[key] = event.event_id
+            if enqueue_transport:
+                state.outbox[event.event_id] = CanonicalEventOutboxRecord(
+                    event_id=event.event_id
+                )
+            result["domain"] = updated_domain
+            result["event"] = event
+            result["inserted"] = True
+            return {
+                self.namespace: state.model_dump(mode="json"),
+                namespace: updated_domain,
+            }
+
+        self.store.update_many(
+            {
+                self.namespace: CanonicalEventState().model_dump(mode="json"),
+                namespace: default,
+            },
+            apply,
+        )
+        return result["domain"], result["event"], bool(result["inserted"])
+
     def event(self, event_id: str) -> CanonicalEventEnvelope | None:
         return next(
             (item for item in self.load().events if item.event_id == event_id),
