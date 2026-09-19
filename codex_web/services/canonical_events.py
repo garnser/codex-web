@@ -146,7 +146,19 @@ class CanonicalEventBus:
     ) -> CanonicalEventDelivery:
         if not inserted:
             return CanonicalEventDelivery(event, False, 0)
-        dispatched = await self._dispatch_local(event)
+        distributed_transport = bool(
+            self.transport is not None
+            and self.transport.capabilities.durable
+            and self.transport.capabilities.consumer_groups
+        )
+        # Shared consumer-group transport is the wakeup/fan-out path in
+        # replicated mode. Do not also run process-local subscribers here or
+        # one canonical event could execute handlers twice.
+        dispatched = (
+            0
+            if distributed_transport
+            else await self._dispatch_local(event)
+        )
         transport_delivery_id = None
         transport_pending = False
         if self.transport is not None:
