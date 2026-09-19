@@ -404,3 +404,84 @@ class RedisStreamsEventTransport:
                 degraded=True,
                 reason=f"redis unavailable:{type(exc).__name__}",
             )
+
+
+def build_event_transport(
+    backend: str,
+    *,
+    redis_url: str | None = None,
+    redis_stream: str = "codex-web:events",
+    redis_group: str = "codex-web",
+):
+    normalized = str(backend or "in-process").strip().casefold()
+    if normalized in {"none", "disabled", "direct"}:
+        return None
+    if normalized in {"in-process", "inprocess", "local"}:
+        return InProcessEventTransport()
+    if normalized in {"redis", "redis-streams", "redis_streams"}:
+        if not redis_url:
+            raise RuntimeError(
+                "CODEX_WEB_REDIS_URL is required for Redis Streams event transport"
+            )
+        try:
+            import redis.asyncio as redis_asyncio  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "Redis Streams transport requires the optional 'redis' package"
+            ) from exc
+        client = redis_asyncio.from_url(redis_url, decode_responses=True)
+        return RedisStreamsEventTransport(
+            client,
+            stream=redis_stream,
+            group=redis_group,
+        )
+    raise RuntimeError(f"unsupported EventTransport backend: {backend}")
+
+
+class EventTransportRuntime:
+    """Recover durable outbox and consume transport wakeups with bounded work."""
+
+    def __init__(
+        self,
+        bus: Any,
+        *,
+        consumer_id: str,
+        idle_seconds: float = 0.25,
+        batch_size: int = 100,
+    ) -> None:
+        self.bus = bus
+        self.consumer_id = consumer_id
+        self.idle_seconds = max(0.05, float(idle_seconds))
+        self.batch_size = max(1, min(int(batch_size), 1000))
+        self.last_error: str | None = None
+
+    async def run_forever(self) -> None:
+        while True:
+            try:
+                outbox = await self.bus.dispatch_outbox_once(
+                    limit=self.batch_size
+                )
+                incoming = await self.bus.consume_transport_once(
+                    self.consumer_id,
+                    limit=self.batch_size,
+                    timeout_seconds=self.idle_seconds,
+                )
+                self.last_error = None
+                if outbox["attempted"] == 0 and incoming["received"] == 0:
+                    await asyncio.sleep(self.idle_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = type(exc).__name__
+                await asyncio.sleep(self.idle_seconds)
+
+    async def status(self) -> dict[str, Any]:
+        health = await self.bus.transport_health()
+        return {
+            "consumerId": self.consumer_id,
+            "transport": (
+                health.model_dump(mode="json") if health is not None else None
+            ),
+            "outbox": self.bus.store.outbox_status(),
+            "lastError": self.last_error,
+        }
