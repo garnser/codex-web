@@ -492,7 +492,14 @@ class ConversationChannelService:
         delivery = await self.canonical_events.ingest(
             event_type=CanonicalEventType.CONVERSATION_CHANNEL,
             source=source,
-            idempotency_key=event.delivery_id,
+            idempotency_key="::".join(
+                (
+                    actor.organization_id,
+                    actor.workspace_id,
+                    source,
+                    event.delivery_id,
+                )
+            ),
             occurred_at=event.occurred_at,
             tenant_id=actor.organization_id,
             workspace_id=actor.workspace_id,
