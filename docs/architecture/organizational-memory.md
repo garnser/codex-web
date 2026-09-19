@@ -46,15 +46,26 @@ Memory reads require the canonical `memory.read` authority capability at READ le
 
 The HTTP surface adds service-scope checks (`memory:read`, `memory:write`, `memory:admin`) and step-up assurance for human mutations, but those checks supplement rather than replace canonical Role authority.
 
-## Bounded hybrid retrieval
+## Pluggable derived retrieval
 
-Retrieval is deterministic and model-free. The initial implementation combines:
+Retrieval is deterministic and does not use an LLM to choose search results. Canonical `KnowledgeRecord` objects remain authoritative; search indexes, vectors, and embeddings are derived/rebuildable infrastructure.
 
-- structured filters (type, project, logical key, tags, relationship target, author/role metadata)
-- lexical overlap
-- a small local deterministic concept/feature hash encoder for semantic similarity.
+The code-owned `RetrievalBackend` contract supports:
 
-The local encoder is intentionally an implementation detail, not canonical truth. It can later be replaced by a pluggable embedding backend without changing the durable Knowledge contract or retrieval provenance.
+- lexical and/or vector search
+- structured tenant/workspace/project/type/lifecycle filters
+- an explicit canonical-ID allowlist supplied by the memory service after authority/governance filtering
+- bounded result counts
+- canonical source ID/version/content digest on every hit
+- backend health, capabilities, and index revision
+- upsert, delete-by-canonical-ID, and complete rebuild.
+
+The reference implementations are:
+
+- `LocalLexicalRetrievalBackend` — local deterministic lexical indexing with no embedding dependency
+- `LocalVectorRetrievalBackend` — local hybrid lexical/vector retrieval through the provider-neutral `EmbeddingProvider` contract.
+
+A backend never receives authority to decide which memory the caller may access. Tenant, Role/authority, lifecycle, classification, retention, and model-context checks remain in `OrganizationalMemoryService`; the resulting allowed canonical IDs are passed to the backend. This means replacing a backend cannot widen the caller's memory scope.
 
 Every query has explicit limits:
 
@@ -64,6 +75,25 @@ Every query has explicit limits:
 - optional progressive retrieval.
 
 Candidates are authority- and governance-filtered before their content can enter a result. Freshness penalties are explicit. Context excerpts are truncated to the remaining token budget; retrieval never silently over-packs the requested budget.
+
+## Embedding identity, rebuilds, and data egress
+
+Embedding providers carry versioned provider/model identity, model revision, dimensions, capability revision, locality, and residency tags. This uses the same provider/model identity vocabulary as the canonical model layer without creating a second durable provider registry.
+
+Non-local identities are validated against the active canonical ModelGateway provider/model registry before indexing: the provider and model must exist and be active, the model must declare the `embedding` capability and matching dimensions/revision, and the declared embedding residency must be represented by canonical provider/model configuration.
+
+The default provider is offline/local and deterministic. Changing its model revision makes the vector index unhealthy until it is rebuilt, preventing incompatible vectors from being silently mixed.
+
+For an external embedding provider, indexing is fail-closed:
+
+- startup does not automatically export memory to the provider
+- an authenticated administrator must explicitly rebuild the index
+- every record passes canonical model-context filtering, so Secret data and `deny_model_context` records are excluded
+- every record also passes canonical export authorization
+- governed residency tags must be a subset of the embedding provider's declared residency tags
+- denied records are removed from the derived index rather than retained as stale vectors.
+
+The Memory API exposes `GET /api/memory/index` for backend/index/embedding health and revision, and `POST /api/memory/index/rebuild` for an explicitly authorized rebuild. Loss or corruption of derived index state is therefore repairable from canonical memory without changing Knowledge IDs or provenance.
 
 ## Retrieval provenance
 
@@ -75,7 +105,9 @@ Each search writes a metadata-only `KnowledgeRetrievalRun` containing:
 - selected Knowledge IDs
 - selected scores and freshness states
 - denied Knowledge IDs with machine-readable reasons
-- candidate count and packed-token total.
+- candidate count and packed-token total
+- retrieval backend ID/index revision
+- embedding provider/model/revision where vector retrieval participated.
 
 Raw query text and returned memory content are intentionally not duplicated into retrieval audit state. Operators can therefore inspect what influenced reasoning without creating another sensitive-content store.
 
@@ -92,4 +124,4 @@ Examples:
 
 ## M10 follow-up
 
-Issue #118 builds ingestion adapters, verified reusable procedures, the Memory workspace/retrieval inspector, and integration that retrieves bounded relevant memory before Executive reasoning or major technical changes. Those consumers must use this service and its retrieval-run provenance rather than performing full-history replay or adding a second memory store.
+Issue #118 builds ingestion adapters, verified reusable procedures, the Memory workspace/retrieval inspector, and integration that retrieves bounded relevant memory before Executive reasoning or major technical changes. That UI must expose the retrieval backend/index revision and embedding identity recorded here without presenting the derived index as canonical truth. Those consumers must use this service and its retrieval-run provenance rather than performing full-history replay or adding a second memory store.

@@ -5,7 +5,7 @@ import math
 import re
 import time
 from collections import defaultdict
-from typing import Iterable
+from typing import Callable, Iterable
 
 from codex_web.authority import (
     AuthorityAutonomyRisk,
@@ -20,6 +20,7 @@ from codex_web.data_governance import (
     GovernedDataCreate,
     GovernedDataRecord,
     GovernanceAction,
+    ExportAuthorizationRequest,
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.organizational_memory import (
@@ -40,6 +41,14 @@ from codex_web.organizational_memory import (
     KnowledgeRevise,
     OrganizationalMemoryState,
 )
+from codex_web.retrieval import (
+    EmbeddingModelIdentity,
+    LocalVectorRetrievalBackend,
+    RetrievalBackend,
+    RetrievalBackendStatus,
+    RetrievalIndexDocument,
+    RetrievalSearchRequest,
+)
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.storage.organizational_memory import (
@@ -59,6 +68,12 @@ class KnowledgeAuthorizationError(OrganizationalMemoryError):
 
 class KnowledgeValidationError(OrganizationalMemoryError):
     pass
+
+
+EmbeddingIdentityValidator = Callable[
+    [EmbeddingModelIdentity, AuthenticationActor],
+    None,
+]
 
 
 class DeterministicSemanticEncoder:
@@ -151,17 +166,32 @@ class OrganizationalMemoryService:
         authority: AuthorityRoleService,
         *,
         encoder: DeterministicSemanticEncoder | None = None,
+        retrieval_backend: RetrievalBackend | None = None,
+        embedding_identity_validator: EmbeddingIdentityValidator | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
         self.governance = governance
         self.authority = authority
         self.encoder = encoder or DeterministicSemanticEncoder()
+        self.retrieval_backend = (
+            retrieval_backend or LocalVectorRetrievalBackend()
+        )
+        self.embedding_identity_validator = embedding_identity_validator
+        self._retrieval_index_dirty = False
         self.clock = clock
         self.governance.register_action_handler(
             "organizational_memory",
             self._governance_action,
         )
+        status = self.retrieval_backend.status()
+        if (
+            status.embedding_identity is not None
+            and not status.embedding_identity.local
+        ):
+            self._retrieval_index_dirty = True
+        else:
+            self.rebuild_retrieval_index()
 
     @staticmethod
     def _same_scope(
@@ -266,6 +296,217 @@ class OrganizationalMemoryService:
                 refs,
             )
         )
+
+
+    def _retrieval_document(
+        self,
+        item: KnowledgeRecord,
+    ) -> RetrievalIndexDocument:
+        return RetrievalIndexDocument(
+            knowledge_id=item.id,
+            canonical_version=item.version,
+            content_sha256=item.content_sha256,
+            organization_id=item.organization_id,
+            workspace_id=item.workspace_id,
+            project_id=item.project_id,
+            object_type=item.object_type.value,
+            lifecycle=item.lifecycle.value,
+            title=item.title,
+            summary=item.summary,
+            content=item.content,
+            tags=item.tags,
+            indexed_text=self._text_for_index(item),
+        )
+
+    @staticmethod
+    def _indexable(item: KnowledgeRecord) -> bool:
+        return item.lifecycle not in {
+            KnowledgeLifecycle.REDACTED,
+            KnowledgeLifecycle.DELETED,
+        }
+
+    def retrieval_status(self) -> RetrievalBackendStatus:
+        return self.retrieval_backend.status()
+
+    def rebuild_retrieval_index(
+        self,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> RetrievalBackendStatus:
+        state = self.store.load()
+        indexable = [
+            item
+            for item in state.records
+            if self._indexable(item)
+        ]
+        status = self.retrieval_backend.status()
+        identity = status.embedding_identity
+        if identity is not None and not identity.local:
+            if actor is None:
+                self._retrieval_index_dirty = True
+                raise KnowledgeAuthorizationError(
+                    "external embedding index rebuild requires an authenticated "
+                    "administrator for canonical export authorization"
+                )
+            if self.embedding_identity_validator is None:
+                self._retrieval_index_dirty = True
+                raise KnowledgeValidationError(
+                    "external embedding provider requires canonical ModelGateway "
+                    "identity validation"
+                )
+            self.embedding_identity_validator(identity, actor)
+            now = float(self.clock())
+            indexable = [
+                item
+                for item in indexable
+                if (
+                    item.retention_expires_at is None
+                    or now < item.retention_expires_at
+                )
+            ]
+            governed_ids = tuple(
+                item.governance_record_id
+                for item in indexable
+            )
+            context = self.governance.filter_context(
+                ContextFilterRequest(
+                    record_ids=governed_ids,
+                    max_classification=DataClassification.RESTRICTED,
+                ),
+                actor=actor,
+            )
+            manifest = self.governance.authorize_export(
+                ExportAuthorizationRequest(
+                    record_ids=governed_ids,
+                    max_classification=DataClassification.RESTRICTED,
+                ),
+                actor=actor,
+            )
+            context_allowed = set(context.allowed_record_ids)
+            export_allowed = {
+                item.record_id: item
+                for item in manifest.items
+            }
+            provider_residency = set(identity.residency_tags)
+            allowed = {
+                record_id
+                for record_id, item in export_allowed.items()
+                if record_id in context_allowed
+                and set(item.residency_tags).issubset(provider_residency)
+            }
+            indexable = [
+                item
+                for item in indexable
+                if item.governance_record_id in allowed
+            ]
+        records = tuple(
+            self._retrieval_document(item)
+            for item in indexable
+        )
+        try:
+            self.retrieval_backend.rebuild(records)
+        except Exception:
+            self._retrieval_index_dirty = True
+            raise
+        self._retrieval_index_dirty = False
+        return self.retrieval_backend.status()
+
+    def _mark_index_dirty(self) -> None:
+        self._retrieval_index_dirty = True
+
+    def _index_upsert(
+        self,
+        item: KnowledgeRecord,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> None:
+        try:
+            if not self._indexable(item):
+                self.retrieval_backend.delete(item.id)
+                return
+            status = self.retrieval_backend.status()
+            identity = status.embedding_identity
+            if identity is not None and not identity.local:
+                if actor is None:
+                    self._mark_index_dirty()
+                    return
+                if self.embedding_identity_validator is None:
+                    self._mark_index_dirty()
+                    return
+                self.embedding_identity_validator(identity, actor)
+                if (
+                    item.retention_expires_at is not None
+                    and float(self.clock()) >= item.retention_expires_at
+                ):
+                    self.retrieval_backend.delete(item.id)
+                    return
+                context = self.governance.filter_context(
+                    ContextFilterRequest(
+                        record_ids=(item.governance_record_id,),
+                        max_classification=DataClassification.RESTRICTED,
+                    ),
+                    actor=actor,
+                )
+                manifest = self.governance.authorize_export(
+                    ExportAuthorizationRequest(
+                        record_ids=(item.governance_record_id,),
+                        max_classification=DataClassification.RESTRICTED,
+                    ),
+                    actor=actor,
+                )
+                export_item = manifest.items[0] if manifest.items else None
+                residency_ok = (
+                    export_item is not None
+                    and set(export_item.residency_tags).issubset(
+                        set(identity.residency_tags)
+                    )
+                )
+                if (
+                    item.governance_record_id
+                    not in set(context.allowed_record_ids)
+                    or not residency_ok
+                ):
+                    self.retrieval_backend.delete(item.id)
+                    return
+            self.retrieval_backend.upsert(
+                self._retrieval_document(item)
+            )
+        except Exception:
+            self._mark_index_dirty()
+
+    def _index_delete(self, knowledge_id: str) -> None:
+        try:
+            self.retrieval_backend.delete(knowledge_id)
+        except Exception:
+            self._mark_index_dirty()
+
+    def _ensure_retrieval_index(
+        self,
+        *,
+        actor: AuthenticationActor,
+    ) -> RetrievalBackendStatus:
+        status = self.retrieval_backend.status()
+        identity = status.embedding_identity
+        if identity is not None and not identity.local:
+            expected = status.document_count
+        else:
+            expected = sum(
+                1
+                for item in self.store.load().records
+                if self._indexable(item)
+            )
+        if (
+            self._retrieval_index_dirty
+            or not status.healthy
+            or status.document_count != expected
+        ):
+            status = self.rebuild_retrieval_index(actor=actor)
+        if not status.healthy:
+            raise KnowledgeValidationError(
+                "organizational memory retrieval index is unavailable: "
+                + str(status.last_error or "unhealthy backend")
+            )
+        return status
 
     def _embedding_for(self, item: KnowledgeRecord) -> KnowledgeEmbedding:
         vector = self.encoder.encode(self._text_for_index(item))
@@ -507,8 +748,6 @@ class OrganizationalMemoryService:
             )
             for row in payload.relationships
         )
-        embedding = self._embedding_for(record)
-
         def apply(state: OrganizationalMemoryState) -> OrganizationalMemoryState:
             if any(item.id == record.id for item in state.records):
                 raise KnowledgeConflictError(
@@ -525,10 +764,10 @@ class OrganizationalMemoryService:
                 )
             state.records.append(record)
             state.relationships.extend(relationships)
-            state.embeddings.append(embedding)
             return state
 
         self.store.update_state(apply)
+        self._index_upsert(record, actor=actor)
         return record
 
     def revise(
@@ -716,8 +955,6 @@ class OrganizationalMemoryService:
             )
             for row in normalized.relationships
         )
-        embedding = self._embedding_for(next_record)
-
         def apply(state: OrganizationalMemoryState) -> OrganizationalMemoryState:
             stored = next(
                 (item for item in state.records if item.id == current.id),
@@ -742,10 +979,11 @@ class OrganizationalMemoryService:
             ]
             state.records.append(next_record)
             state.relationships.extend(new_relationships)
-            state.embeddings.append(embedding)
             return state
 
         self.store.update_state(apply)
+        self._index_upsert(self.store.get(current.id), actor=actor)
+        self._index_upsert(next_record, actor=actor)
         return next_record
 
     def invalidate(
@@ -782,7 +1020,9 @@ class OrganizationalMemoryService:
             ]
             return state, updated
 
-        return self.store.update(knowledge_id, apply)
+        updated = self.store.update(knowledge_id, apply)
+        self._index_upsert(updated, actor=actor)
+        return updated
 
     def get(
         self,
@@ -1037,11 +1277,45 @@ class OrganizationalMemoryService:
                     )
                 )
 
-        embedding_by_id = {
-            item.knowledge_id: item
-            for item in state.embeddings
+        authorized_rows = [
+            (item, freshness)
+            for item, freshness in lifecycle_filtered
+            if item.governance_record_id in governance_allowed
+        ]
+        canonical_by_id = {
+            item.id: (item, freshness)
+            for item, freshness in authorized_rows
         }
-        query_vector = self.encoder.encode(query.text)
+        retrieval_status = self._ensure_retrieval_index(actor=actor)
+        retrieval_request = RetrievalSearchRequest(
+            text=query.text,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            allowed_knowledge_ids=tuple(canonical_by_id),
+            project_ids=query.project_ids,
+            object_types=tuple(item.value for item in query.object_types),
+            lifecycles=tuple(
+                dict.fromkeys(
+                    item.lifecycle.value
+                    for item, _freshness in authorized_rows
+                )
+            ),
+            limit=query.budget.candidate_limit,
+        )
+        hits = self.retrieval_backend.search(retrieval_request)
+        stale_hits = [
+            hit
+            for hit in hits
+            if hit.knowledge_id not in canonical_by_id
+            or hit.canonical_version
+            != canonical_by_id[hit.knowledge_id][0].version
+            or hit.content_sha256
+            != canonical_by_id[hit.knowledge_id][0].content_sha256
+        ]
+        if stale_hits:
+            retrieval_status = self.rebuild_retrieval_index(actor=actor)
+            hits = self.retrieval_backend.search(retrieval_request)
+
         scored: list[
             tuple[
                 float,
@@ -1053,28 +1327,15 @@ class OrganizationalMemoryService:
             ]
         ] = []
 
-        for item, freshness in lifecycle_filtered:
-            if item.governance_record_id not in governance_allowed:
+        for hit in hits:
+            row = canonical_by_id.get(hit.knowledge_id)
+            if row is None:
                 continue
-            semantic = (
-                self._semantic_score(
-                    query_vector,
-                    embedding_by_id.get(item.id),
-                )
-                if query.text
-                else 1.0
-            )
-            lexical = (
-                self._lexical_score(query.text, item)
-                if query.text
-                else 1.0
-            )
-            score = 0.72 * semantic + 0.28 * lexical
-            reasons: list[str] = []
-            if semantic > 0:
-                reasons.append(f"semantic:{semantic:.3f}")
-            if lexical > 0:
-                reasons.append(f"lexical:{lexical:.3f}")
+            item, freshness = row
+            semantic = hit.vector_score
+            lexical = hit.lexical_score
+            score = hit.score
+            reasons = list(hit.reasons)
             if query.logical_keys and item.logical_key in query.logical_keys:
                 score += 0.15
                 reasons.append("logical_key")
@@ -1188,6 +1449,23 @@ class OrganizationalMemoryService:
                     lexical_score=round(lexical, 6),
                     estimated_tokens=estimated,
                     reasons=reasons,
+                    retrieval_backend_id=retrieval_status.backend_id,
+                    retrieval_index_revision=retrieval_status.index_revision,
+                    embedding_provider_id=(
+                        retrieval_status.embedding_identity.provider_id
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
+                    embedding_model_id=(
+                        retrieval_status.embedding_identity.model_id
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
+                    embedding_model_revision=(
+                        retrieval_status.embedding_identity.model_revision
+                        if retrieval_status.embedding_identity is not None
+                        else None
+                    ),
                 )
             )
             remaining -= estimated
@@ -1222,6 +1500,23 @@ class OrganizationalMemoryService:
             candidate_count=candidate_count,
             top_k=query.budget.top_k,
             max_context_tokens=query.budget.max_context_tokens,
+            retrieval_backend_id=retrieval_status.backend_id,
+            retrieval_index_revision=retrieval_status.index_revision,
+            embedding_provider_id=(
+                retrieval_status.embedding_identity.provider_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_id=(
+                retrieval_status.embedding_identity.model_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_revision=(
+                retrieval_status.embedding_identity.model_revision
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
             created_at=now,
         )
 
@@ -1242,6 +1537,23 @@ class OrganizationalMemoryService:
             candidate_count=candidate_count,
             top_k=query.budget.top_k,
             max_context_tokens=query.budget.max_context_tokens,
+            retrieval_backend_id=retrieval_status.backend_id,
+            retrieval_index_revision=retrieval_status.index_revision,
+            embedding_provider_id=(
+                retrieval_status.embedding_identity.provider_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_id=(
+                retrieval_status.embedding_identity.model_id
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
+            embedding_model_revision=(
+                retrieval_status.embedding_identity.model_revision
+                if retrieval_status.embedding_identity is not None
+                else None
+            ),
         )
 
     def _governance_action(
@@ -1342,6 +1654,8 @@ class OrganizationalMemoryService:
             return current
 
         self.store.update_state(apply)
+        for knowledge_id in affected:
+            self._index_delete(knowledge_id)
         return (
             f"memory:{target_id}:{action.value}:"
             + ",".join(sorted(affected))

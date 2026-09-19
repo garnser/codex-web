@@ -32,6 +32,12 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.organizational_memory import OrganizationalMemoryService
+from codex_web.retrieval import (
+    DeterministicLocalEmbeddingProvider,
+    LocalLexicalRetrievalBackend,
+    LocalVectorRetrievalBackend,
+    RetrievalSearchRequest,
+)
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.organizational_memory import OrganizationalMemoryStore
@@ -511,6 +517,147 @@ class OrganizationalMemoryTests(unittest.TestCase):
             actor=self.actor,
         )
         self.assertEqual(result.items, ())
+
+
+    def test_retrieval_backend_swap_preserves_canonical_memory_and_records_index_provenance(self) -> None:
+        record = self._create(
+            "architecture/retrieval-backend",
+            title="Retrieval backend decision",
+            summary="Canonical memory is independent from the derived index.",
+            content="Use a pluggable retrieval backend for memory search.",
+            object_type=KnowledgeObjectType.ARCHITECTURE_DECISION,
+            tags=("architecture", "retrieval"),
+        )
+
+        vector_result = self.service.search(
+            KnowledgeQuery(
+                text="pluggable retrieval backend",
+                budget=KnowledgeRetrievalBudget(top_k=3),
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(vector_result.items[0].knowledge_id, record.id)
+        self.assertEqual(vector_result.retrieval_backend_id, "local-vector")
+        self.assertEqual(vector_result.embedding_provider_id, "local")
+        self.assertEqual(vector_result.embedding_model_id, "concept-hash")
+        self.assertEqual(vector_result.embedding_model_revision, "1")
+        vector_run = self.service.retrieval_run(
+            vector_result.retrieval_id,
+            actor=self.actor,
+        )
+        self.assertEqual(
+            vector_run.retrieval_index_revision,
+            vector_result.retrieval_index_revision,
+        )
+
+        self.service.retrieval_backend = LocalLexicalRetrievalBackend(
+            backend_id="test-lexical"
+        )
+        rebuilt = self.service.rebuild_retrieval_index(actor=self.actor)
+        self.assertEqual(rebuilt.backend_id, "test-lexical")
+        self.assertEqual(rebuilt.document_count, 1)
+
+        lexical_result = self.service.search(
+            KnowledgeQuery(
+                text="retrieval backend",
+                logical_keys=(record.logical_key,),
+                budget=KnowledgeRetrievalBudget(top_k=3),
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(lexical_result.items[0].knowledge_id, record.id)
+        self.assertEqual(lexical_result.retrieval_backend_id, "test-lexical")
+        self.assertIsNone(lexical_result.embedding_provider_id)
+        current = self.service.get(record.id, actor=self.actor)
+        self.assertEqual(current.id, record.id)
+        self.assertEqual(current.content_sha256, record.content_sha256)
+
+    def test_external_embedding_index_requires_governed_export_and_excludes_secret_memory(self) -> None:
+        internal = self._create(
+            "policy/external-index-internal",
+            title="Internal indexing policy",
+            summary="Internal memory may be exported when governance authorizes it.",
+            content="governed external embedding test internal",
+            object_type=KnowledgeObjectType.POLICY,
+            classification=DataClassification.INTERNAL,
+        )
+        secret = self._create(
+            "policy/external-index-secret",
+            title="Secret indexing policy",
+            summary="Secret memory must not leave the governed boundary.",
+            content="governed external embedding test secret",
+            object_type=KnowledgeObjectType.POLICY,
+            classification=DataClassification.SECRET,
+        )
+
+        external = LocalVectorRetrievalBackend(
+            DeterministicLocalEmbeddingProvider(
+                provider_id="external-provider",
+                model_id="embedding-model",
+                model_revision="2026-09",
+                local=False,
+                residency_tags=("eu",),
+            ),
+            backend_id="external-vector",
+        )
+        self.service.retrieval_backend = external
+        self.service.embedding_identity_validator = (
+            lambda identity, actor: None
+        )
+        self.service._retrieval_index_dirty = True
+
+        with self.assertRaisesRegex(
+            Exception,
+            "requires an authenticated administrator",
+        ):
+            self.service.rebuild_retrieval_index()
+
+        status = self.service.rebuild_retrieval_index(actor=self.actor)
+        self.assertEqual(status.backend_id, "external-vector")
+        self.assertEqual(status.document_count, 1)
+        self.assertFalse(status.embedding_identity.local)
+        self.assertEqual(
+            status.embedding_identity.provider_id,
+            "external-provider",
+        )
+
+        internal_hits = external.search(
+            RetrievalSearchRequest(
+                text="governed external embedding test",
+                organization_id=self.actor.organization_id,
+                workspace_id=self.actor.workspace_id,
+                allowed_knowledge_ids=(internal.id, secret.id),
+                limit=10,
+            )
+        )
+        self.assertEqual(
+            {item.knowledge_id for item in internal_hits},
+            {internal.id},
+        )
+
+        later_secret = self._create(
+            "policy/external-index-secret-later",
+            title="Later secret indexing policy",
+            summary="Secret memory remains outside external embeddings.",
+            content="later external secret content",
+            object_type=KnowledgeObjectType.POLICY,
+            classification=DataClassification.SECRET,
+        )
+        self.assertNotIn(
+            later_secret.id,
+            {
+                item.knowledge_id
+                for item in external.search(
+                    RetrievalSearchRequest(
+                        text="later external secret content",
+                        organization_id=self.actor.organization_id,
+                        workspace_id=self.actor.workspace_id,
+                        allowed_knowledge_ids=(later_secret.id,),
+                        limit=10,
+                    )
+                )
+            },
+        )
 
 
 if __name__ == "__main__":

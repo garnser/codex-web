@@ -90,6 +90,25 @@ def build_organizational_memory_router(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return actor
 
+    def admin(request: Request):
+        actor = request_actor(request)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            if "memory:admin" not in actor.service_scopes:
+                raise HTTPException(
+                    status_code=403,
+                    detail="memory:admin service scope required",
+                )
+            return actor
+        try:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(
+                actor,
+                AuthenticationAssurance.MFA,
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return actor
+
     def view(item) -> dict[str, Any]:
         payload = item.model_dump(mode="json")
         if (
@@ -142,6 +161,26 @@ def build_organizational_memory_router(
         except Exception as exc:
             raise translate(exc) from exc
         return {"item": view(item)}
+
+    @router.get("/index")
+    async def retrieval_index_status(
+        request: Request,
+    ) -> dict[str, Any]:
+        reader(request)
+        return {
+            "status": service.retrieval_status().model_dump(mode="json")
+        }
+
+    @router.post("/index/rebuild")
+    async def rebuild_retrieval_index(
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = admin(request)
+        try:
+            status = service.rebuild_retrieval_index(actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"status": status.model_dump(mode="json")}
 
     @router.post("/search")
     async def search_memory(
