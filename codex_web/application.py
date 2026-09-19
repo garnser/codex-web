@@ -18,6 +18,7 @@ from codex_web.api.autonomy import build_autonomy_router
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
+from codex_web.api.capacity import build_capacity_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
 from codex_web.api.definitions import build_definitions_router
@@ -119,6 +120,7 @@ from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
+from codex_web.services.capacity import CapacityService
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.coordination import StateStoreCoordinationBackend
 from codex_web.services.event_transport import (
@@ -240,6 +242,7 @@ from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
@@ -902,6 +905,15 @@ assignment_bound_claude_session_manager = AssignmentBoundClaudeSessionManager(
 )
 app.state.assignment_bound_claude_session_manager = assignment_bound_claude_session_manager
 
+capacity_store = CapacityStore(state_store)
+capacity_service = CapacityService(
+    capacity_store,
+    evidence=artifact_evidence_service,
+)
+app.state.capacity_store = capacity_store
+app.state.capacity_service = capacity_service
+app.include_router(build_capacity_router(capacity_service))
+
 action_intent_store = ActionIntentStore(state_store)
 action_intent_service = ActionIntentService(
     action_intent_store,
@@ -912,6 +924,7 @@ action_intent_service = ActionIntentService(
     entitlements=entitlement_service,
     authority=authority_role_service,
     identity=identity_service,
+    capacity=capacity_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store

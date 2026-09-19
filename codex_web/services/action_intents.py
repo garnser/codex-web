@@ -23,6 +23,7 @@ from codex_web.action_intents import (
     TERMINAL_ACTION_INTENT_STATUSES,
 )
 from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.capacity import WorkloadKind, WorkloadPriority
 from codex_web.authority import (
     AuthorityAutonomyRisk,
     AuthorityEvaluationRequest,
@@ -50,6 +51,7 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.capacity import CapacityDeferredError, CapacityService
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
 from codex_web.services.identity import (
@@ -96,6 +98,7 @@ class ActionIntentService:
         entitlements: EntitlementService | None = None,
         authority: AuthorityRoleService | None = None,
         identity: IdentityService | None = None,
+        capacity: CapacityService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -105,6 +108,7 @@ class ActionIntentService:
         self.entitlements = entitlements
         self.authority = authority
         self.identity = identity
+        self.capacity = capacity
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -690,6 +694,64 @@ class ActionIntentService:
         self.store.update(apply)
         return intent
 
+    @staticmethod
+    def _capacity_priority(intent: ActionIntent) -> WorkloadPriority:
+        parameters = intent.request.parameters
+        if (
+            parameters.get("incident_id")
+            or parameters.get("recovery") is True
+            or "rollback" in intent.action_id.casefold()
+            or "reconcile" in intent.action_id.casefold()
+        ):
+            return WorkloadPriority.CRITICAL
+        risk = getattr(intent.action_definition.risk_class, "value", "")
+        if risk in {"high", "critical"}:
+            return WorkloadPriority.HIGH
+        return WorkloadPriority.NORMAL
+
+    @staticmethod
+    def _capacity_component(intent: ActionIntent) -> str:
+        return f"action:{intent.provider_type}:{intent.provider_instance}"
+
+    def _defer_for_capacity(
+        self,
+        intent_id: str,
+        *,
+        reason: str,
+        retry_at: float | None,
+    ) -> ActionIntent:
+        now = time.time()
+        not_before = max(
+            now + 0.25,
+            retry_at if retry_at is not None else now + 1.0,
+        )
+
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id != intent_id:
+                    continue
+                if item.status not in {
+                    ActionIntentStatus.CLAIMED,
+                    ActionIntentStatus.PENDING,
+                }:
+                    raise ActionIntentConflictError(
+                        "capacity deferral requires pending/claimed action intent"
+                    )
+                state.intents[index] = item.model_copy(
+                    update={
+                        "status": ActionIntentStatus.PENDING,
+                        "lease": None,
+                        "not_before": not_before,
+                        "updated_at": now,
+                        "last_error": f"capacity deferred: {reason}",
+                    }
+                )
+                return state
+            raise ActionIntentNotFoundError("action intent not found")
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent_id)
+
     def recover_stale_claims(
         self,
         *,
@@ -1127,7 +1189,31 @@ class ActionIntentService:
                     ActionIntentStatus.FAILED,
                     error=f"entitlement/quota denied before provider execution: {exc}",
                 )
-        intent = self._mark_executing(intent_id, worker_id, actor)
+        capacity_lease = None
+        component_key = self._capacity_component(pending)
+        if self.capacity is not None:
+            try:
+                capacity_lease = self.capacity.acquire(
+                    organization_id=pending.organization_id,
+                    workspace_id=pending.workspace_id,
+                    workload=WorkloadKind.ACTION,
+                    priority=self._capacity_priority(pending),
+                    owner_ref=pending.id,
+                    component_key=component_key,
+                    lease_seconds=pending.timeout_seconds + 30.0,
+                )
+            except CapacityDeferredError as exc:
+                return self._defer_for_capacity(
+                    pending.id,
+                    reason=exc.reason,
+                    retry_at=exc.retry_at,
+                )
+        try:
+            intent = self._mark_executing(intent_id, worker_id, actor)
+        except Exception:
+            if self.capacity is not None and capacity_lease is not None:
+                self.capacity.release(capacity_lease.id)
+            raise
         with correlated(
             correlation_id=intent.correlation_id,
             causation_id=intent.causation_id,
@@ -1147,6 +1233,16 @@ class ActionIntentService:
                     timeout=intent.timeout_seconds,
                 )
             except asyncio.TimeoutError:
+                if self.capacity is not None:
+                    self.capacity.record_failure(
+                        organization_id=intent.organization_id,
+                        workspace_id=intent.workspace_id,
+                        component_key=component_key,
+                        reason="provider_timeout",
+                    )
+                    if capacity_lease is not None:
+                        self.capacity.release(capacity_lease.id)
+                        capacity_lease = None
                 self._append_receipt(
                     intent,
                     result=None,
@@ -1158,7 +1254,22 @@ class ActionIntentService:
                     ActionIntentStatus.UNCERTAIN,
                     error="provider execution timed out; external outcome unknown",
                 )
+            except asyncio.CancelledError:
+                if self.capacity is not None and capacity_lease is not None:
+                    self.capacity.release(capacity_lease.id)
+                    capacity_lease = None
+                raise
             except Exception as exc:
+                if self.capacity is not None:
+                    self.capacity.record_failure(
+                        organization_id=intent.organization_id,
+                        workspace_id=intent.workspace_id,
+                        component_key=component_key,
+                        reason=type(exc).__name__,
+                    )
+                    if capacity_lease is not None:
+                        self.capacity.release(capacity_lease.id)
+                        capacity_lease = None
                 self._append_receipt(
                     intent,
                     result=None,
@@ -1171,6 +1282,9 @@ class ActionIntentService:
                     error=f"provider execution raised {type(exc).__name__}; external outcome unknown",
                 )
 
+        if self.capacity is not None and capacity_lease is not None:
+            self.capacity.release(capacity_lease.id)
+            capacity_lease = None
         self._append_receipt(
             intent,
             result=result,
@@ -1178,10 +1292,23 @@ class ActionIntentService:
         )
         current = self._intent(intent.id, actor)
         if result.status == "failed":
+            if self.capacity is not None:
+                self.capacity.record_failure(
+                    organization_id=intent.organization_id,
+                    workspace_id=intent.workspace_id,
+                    component_key=component_key,
+                    reason=result.error_code or "provider_failed",
+                )
             return self._set_status(
                 intent.id,
                 ActionIntentStatus.FAILED,
                 error=result.error_message or result.error_code or "provider returned failure",
+            )
+        if self.capacity is not None:
+            self.capacity.record_success(
+                organization_id=intent.organization_id,
+                workspace_id=intent.workspace_id,
+                component_key=component_key,
             )
         if result.status == "rolled_back":
             return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
