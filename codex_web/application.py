@@ -1801,7 +1801,11 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "telegram": replace_routes(
         app,
-        build_telegram_router(core, bot_routing_service),
+        build_telegram_router(
+            core,
+            bot_routing_service,
+            conversation_channel_service,
+        ),
         paths={"/bots/telegram/webhook"},
         key="telegram",
     ),
