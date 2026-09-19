@@ -10,7 +10,22 @@ from codex_web.agent_providers import (
     AgentProviderUpsert,
 )
 from codex_web.agent_routing import AgentRoutingRequest
+from codex_web.agent_routing_definitions import (
+    AGENT_ROUTING_POLICY_ID,
+    AGENT_ROUTING_POLICY_KIND,
+    AGENT_ROUTING_POLICY_SCHEMA_VERSION,
+)
 from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.configuration import (
+    ConfigurationDraftCreate,
+    ConfigurationPublishRequest,
+    ConfigurationScope,
+)
+from codex_web.definitions import (
+    DefinitionDraftCreate,
+    DefinitionPublishRequest,
+    DefinitionScope,
+)
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -24,8 +39,17 @@ from codex_web.model_gateway import (
 )
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing import AgentRoutingError, AgentRoutingService
+from codex_web.services.agent_routing_configuration import (
+    AGENT_ROUTING_PREFERRED_PROVIDERS,
+    install_agent_routing_configuration,
+)
+from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
+from codex_web.services.configuration import ConfigurationService
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.storage.agent_providers import AgentProviderStore
+from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -90,9 +114,17 @@ class _ModelGateway:
 class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
-        self.providers = AgentProviderService(AgentProviderStore(sqlite))
+        self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.providers = AgentProviderService(AgentProviderStore(self.sqlite))
         self.runtimes = AgentRuntimeRegistry()
+        self.configuration = ConfigurationService(
+            ConfigurationRegistryStore(self.sqlite)
+        )
+        install_agent_routing_configuration(self.configuration)
+        self.definitions = DefinitionRegistryService(
+            DefinitionRegistryStore(self.sqlite)
+        )
+        self.role_defaults = install_agent_routing_definitions(self.definitions)
         self.actor = _actor()
 
     async def asyncTearDown(self) -> None:
@@ -285,6 +317,89 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 actor=self.actor,
             )
+
+    async def test_project_workspace_and_role_defaults_are_resolved_with_provenance(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.SHELL_TOOLS,
+        )
+        self._provider("provider-a", capabilities)
+        self._provider("provider-b", capabilities)
+        self._runtime("provider-a", "runtime-a", capabilities, capability_revision=2)
+        self._runtime("provider-b", "runtime-b", capabilities, capability_revision=3)
+
+        workspace_preference = self.configuration.create_draft(
+            ConfigurationDraftCreate(
+                key=AGENT_ROUTING_PREFERRED_PROVIDERS,
+                scope_type=ConfigurationScope.WORKSPACE,
+                scope_id="workspace-a",
+                value=["provider-b"],
+                actor="admin-a",
+            )
+        )
+        self.configuration.publish(
+            workspace_preference.id,
+            ConfigurationPublishRequest(actor="admin-a"),
+        )
+
+        role_policy = self.definitions.create_draft(
+            DefinitionDraftCreate(
+                definition_id=AGENT_ROUTING_POLICY_ID,
+                kind=AGENT_ROUTING_POLICY_KIND,
+                definition_schema_version=AGENT_ROUTING_POLICY_SCHEMA_VERSION,
+                scope_type=DefinitionScope.PROJECT,
+                scope_id="project-a",
+                payload={
+                    "roles": [
+                        {
+                            "role_id": "developer",
+                            "required_capabilities": ["shell_tools"],
+                            "preferred_provider_ids": ["provider-a"],
+                        }
+                    ]
+                },
+                actor="admin-a",
+            )
+        )
+        self.definitions.publish(
+            role_policy.record_id,
+            DefinitionPublishRequest(actor="admin-a"),
+        )
+
+        service = AgentRoutingService(
+            self.providers,
+            self.runtimes,
+            configuration=self.configuration,
+            role_defaults=self.role_defaults,
+        )
+        result = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                role_id="developer",
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(result.selected_runtime.provider_id, "provider-a")
+        self.assertIsNotNone(result.role_definition_ref)
+        self.assertEqual(
+            result.role_definition_ref.record_id,
+            role_policy.record_id,
+        )
+        preference_source = next(
+            item
+            for item in result.configuration_sources
+            if item.key == AGENT_ROUTING_PREFERRED_PROVIDERS
+        )
+        self.assertEqual(preference_source.scope_type, "workspace")
+        self.assertEqual(preference_source.scope_id, "workspace-a")
+
+        without_role = await service.route(
+            AgentRoutingRequest(project_id="project-a"),
+            actor=self.actor,
+        )
+        self.assertEqual(without_role.selected_runtime.provider_id, "provider-b")
+
 
     async def test_allowlist_never_expands_during_fallback(self) -> None:
         capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
