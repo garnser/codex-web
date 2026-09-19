@@ -42,6 +42,7 @@ from codex_web.api.identity import build_identity_router, install_identity_middl
 from codex_web.api.projects import build_projects_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
+from codex_web.api.recovery import build_recovery_router
 from codex_web.api.releases import build_releases_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
@@ -182,6 +183,7 @@ from codex_web.services.provider_capacity import (
 )
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
+from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
@@ -246,6 +248,7 @@ from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
+from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.releases import ReleaseStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
@@ -993,6 +996,36 @@ app.include_router(
     )
 )
 app.include_router(build_autonomy_audit_router(autonomy_audit_service))
+
+recovery_store = RecoveryStore(state_store)
+recovery_service_actor = identity_service.bootstrap_service_actor(
+    identity_id="recovery-service",
+    name="Recovery Service",
+    scope=identity_service.local_trusted_actor().tenant,
+    service_scopes=(
+        "crypto:admin",
+        "recovery:admin",
+        "artifact-evidence:admin",
+    ),
+)
+local_backup_destination = LocalBackupDestination(
+    STATE_DB_FILE.parent / "backups"
+)
+recovery_service = RecoveryService(
+    recovery_store,
+    state_store=state_store,
+    crypto=crypto_key_service,
+    evidence=artifact_evidence_service,
+    audit=autonomy_audit_service,
+    scheduler=scheduler_service,
+    canonical_events=canonical_event_ingestion,
+    service_actor=recovery_service_actor,
+    destinations=(local_backup_destination,),
+)
+app.state.recovery_store = recovery_store
+app.state.recovery_service = recovery_service
+app.state.local_backup_destination = local_backup_destination
+app.include_router(build_recovery_router(recovery_service))
 
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,
