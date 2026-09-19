@@ -207,6 +207,9 @@ class AnthropicAuthDelegationService:
             "--verbose",
             "--permission-mode",
             "default",
+            "--permission-prompt-tool",
+            "stdio",
+            "--setting-sources=",
         )
 
     def issue(
