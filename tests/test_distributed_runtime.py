@@ -384,6 +384,18 @@ class _FakeRedis:
         self.streams[stream] = self.streams.get(stream, [])[len(rows):]
         return [(stream, rows)] if rows else []
 
+    async def xautoclaim(
+        self,
+        stream,
+        group,
+        consumer,
+        min_idle_time,
+        start_id="0-0",
+        count=10,
+    ):
+        del stream, group, consumer, min_idle_time, start_id, count
+        return ("0-0", [], [])
+
     async def xack(self, stream, group, message_id):
         self.acked.append((stream, group, message_id))
         return 1
@@ -605,7 +617,12 @@ class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
                 workspace_id="ws",
             )
             original = transport.queue[0]
-            transport.queue.append(original.model_copy())
+            # Simulate broker replay as a fresh infrastructure delivery ID.
+            transport.queue.append(
+                original.model_copy(
+                    update={"transport_message_id": "msg-replayed"}
+                )
+            )
 
             first = await bus.consume_transport_once(
                 "consumer-a",
@@ -615,6 +632,47 @@ class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first["received"], 2)
             self.assertEqual(first["dispatched"], 1)
             self.assertEqual(handled, [delivery.event.event_id])
+
+    async def test_failed_subscriber_is_nacked_without_inbox_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            store = SQLiteStateStore(Path(root) / "state.sqlite3")
+            events = CanonicalEventStore(store)
+            transport = _SwitchTransport()
+            transport.fail_publish = False
+            bus = CanonicalEventBus(events, transport=transport)
+            ingestion = CanonicalEventIngestionService(bus)
+
+            def fail(_event):
+                raise RuntimeError("consumer failed")
+
+            bus.subscribe(fail)
+            delivery = await ingestion.ingest(
+                event_type="test.event",
+                source="test",
+                idempotency_key="failed-subscriber",
+                payload={},
+                tenant_id="org",
+                workspace_id="ws",
+            )
+            consumed = await bus.consume_transport_once(
+                "consumer-a",
+                limit=10,
+                timeout_seconds=0,
+            )
+            self.assertEqual(consumed["received"], 1)
+            self.assertEqual(consumed["acknowledged"], 0)
+            self.assertFalse(
+                events.inbox_seen(
+                    event_id=delivery.event.event_id,
+                    backend_id=transport.backend_id,
+                )
+            )
+            # The transport retry is a new delivery but keeps canonical identity.
+            self.assertEqual(len(transport.queue), 1)
+            self.assertEqual(
+                transport.queue[0].canonical_event_id,
+                delivery.event.event_id,
+            )
 
 
 if __name__ == "__main__":
