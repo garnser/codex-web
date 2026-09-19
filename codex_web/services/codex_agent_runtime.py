@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from codex_web.agent_runtime import (
+    AgentRuntimeEvent,
     AgentRuntimeHealth,
     AgentRuntimeListRequest,
     AgentRuntimeResult,
@@ -36,10 +38,72 @@ class CodexAgentRuntimeAdapter:
         self.transport = transport
 
     async def health(self) -> AgentRuntimeHealth:
+        status = getattr(self.transport, "status", None)
+        if callable(status):
+            value = status()
+            if getattr(value, "last_error", None):
+                return AgentRuntimeHealth.DEGRADED
+            if getattr(value, "ready", True) is False:
+                return AgentRuntimeHealth.UNAVAILABLE
         proc = getattr(self.transport, "proc", None)
         if proc is not None and getattr(proc, "poll", lambda: None)() is not None:
             return AgentRuntimeHealth.UNAVAILABLE
         return AgentRuntimeHealth.HEALTHY
+
+    def _event_hub(self):
+        host = getattr(self.transport, "host", None)
+        if host is None:
+            runtime = getattr(self.transport, "runtime", None)
+            host = getattr(runtime, "host", None)
+        return getattr(host, "hub", None)
+
+    def subscribe_events(
+        self,
+        listener: Callable[[AgentRuntimeEvent], None],
+    ) -> Callable[[], None]:
+        hub = self._event_hub()
+        if hub is None:
+            raise RuntimeError("Codex runtime event hub is unavailable")
+
+        def project(event: dict[str, Any]) -> None:
+            if event.get("type") != "codex.event":
+                return
+            message = event.get("message") or {}
+            params = message.get("params") or {} if isinstance(message, dict) else {}
+            turn = params.get("turn") or {} if isinstance(params, dict) else {}
+            listener(
+                AgentRuntimeEvent(
+                    event_type=str(message.get("method") or "codex.event"),
+                    provider_native_session_id=(
+                        params.get("threadId")
+                        or (turn.get("threadId") if isinstance(turn, dict) else None)
+                    ),
+                    provider_native_turn_id=(
+                        params.get("turnId")
+                        or (turn.get("id") if isinstance(turn, dict) else None)
+                    ),
+                    payload=message if isinstance(message, dict) else {},
+                )
+            )
+
+        hub.subscribe(project)
+
+        def unsubscribe() -> None:
+            hub.unsubscribe(project)
+
+        return unsubscribe
+
+    async def recover(self) -> AgentRuntimeHealth:
+        ensure_started = getattr(self.transport, "ensure_started", None)
+        if callable(ensure_started):
+            await ensure_started()
+        return await self.health()
+
+    async def shutdown(self) -> None:
+        stop = getattr(self.transport, "stop", None)
+        if not callable(stop):
+            raise RuntimeError("Codex runtime shutdown is unavailable")
+        await stop()
 
     @staticmethod
     def _thread(result: Any) -> dict[str, Any]:
@@ -172,6 +236,29 @@ class CodexAgentRuntimeAdapter:
             provider_native_session_id=provider_native_session_id,
             payload=response if isinstance(response, dict) else {},
         )
+
+    async def compact_session(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        response = await self.transport.request(
+            "thread/compact/start",
+            {"threadId": provider_native_session_id},
+        )
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload=response if isinstance(response, dict) else {},
+        )
+
+    async def respond_approval(
+        self,
+        request_id: int | str,
+        result: dict[str, Any],
+    ) -> None:
+        respond = getattr(self.transport, "respond_to_server_request", None)
+        if not callable(respond):
+            raise RuntimeError("Codex runtime approval response is unavailable")
+        await respond(request_id, result)
 
     async def start_turn(
         self,
