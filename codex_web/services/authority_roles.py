@@ -89,6 +89,16 @@ class AuthorityRoleService:
 
     @staticmethod
     def _binding_matches(binding, actor: AuthenticationActor, project_id: str | None) -> bool:
+        if (
+            binding.organization_id is not None
+            and binding.organization_id != actor.organization_id
+        ):
+            return False
+        if (
+            binding.workspace_id is not None
+            and binding.workspace_id != actor.workspace_id
+        ):
+            return False
         if binding.project_ids:
             if project_id is None or project_id not in binding.project_ids:
                 return False
@@ -104,6 +114,16 @@ class AuthorityRoleService:
         now: float,
     ) -> bool:
         if delegation.delegate_identity_id != actor.identity_id:
+            return False
+        if (
+            delegation.organization_id is not None
+            and delegation.organization_id != actor.organization_id
+        ):
+            return False
+        if (
+            delegation.workspace_id is not None
+            and delegation.workspace_id != actor.workspace_id
+        ):
             return False
         if delegation.expires_at <= now:
             return False
