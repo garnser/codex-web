@@ -3,12 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.agent_runtime import (
     AgentRuntimeHealth,
     AgentRuntimeResult,
+    AgentRuntimeUnsupportedCapability,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
     AgentSessionStatus,
@@ -55,6 +57,7 @@ class _Runtime:
     def __init__(self) -> None:
         self.native_id = "native-1"
         self.calls: list[tuple[str, object]] = []
+        self.fail_turn = False
 
     async def health(self):
         return AgentRuntimeHealth.HEALTHY
@@ -77,6 +80,8 @@ class _Runtime:
 
     async def start_turn(self, provider_native_session_id, request):
         self.calls.append(("turn", provider_native_session_id))
+        if self.fail_turn:
+            raise RuntimeError("provider crashed")
         return AgentRuntimeResult(
             provider_native_session_id=provider_native_session_id,
             provider_native_turn_id="turn-1",
@@ -130,6 +135,67 @@ class AgentSessionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed.provider_native_session_id, "native-2")
         self.assertEqual(resumed.recovery_attempts, 1)
         self.assertEqual(resumed.status, AgentSessionStatus.READY)
+
+    async def test_legacy_adoption_is_idempotent_and_does_not_duplicate(self) -> None:
+        request = AgentRuntimeSessionRequest(project_id="project-a")
+        first = self.service.adopt(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            runtime_type="test-runtime",
+            provider_native_session_id="legacy-native-1",
+            request=request,
+            actor=self.actor,
+            capability_snapshot=self.runtime.capabilities,
+        )
+        second = self.service.adopt(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            runtime_type="test-runtime",
+            provider_native_session_id="legacy-native-1",
+            request=request,
+            actor=self.actor,
+            capability_snapshot=self.runtime.capabilities,
+        )
+
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(len(self.service.list(self.actor)), 1)
+
+    async def test_provider_crash_marks_canonical_session_failed(self) -> None:
+        created = await self.service.create(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            request=AgentRuntimeSessionRequest(project_id="project-a"),
+            actor=self.actor,
+        )
+        self.runtime.fail_turn = True
+
+        with self.assertRaisesRegex(RuntimeError, "provider crashed"):
+            await self.service.start_turn(
+                created.id,
+                AgentRuntimeTurnRequest(message="fail"),
+                actor=self.actor,
+            )
+
+        failed = self.service.get(created.id, self.actor)
+        self.assertEqual(failed.status, AgentSessionStatus.FAILED)
+        self.assertEqual(failed.failure_reason, "provider crashed")
+
+    async def test_unsupported_capability_fails_deterministically(self) -> None:
+        created = await self.service.create(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            request=AgentRuntimeSessionRequest(project_id="project-a"),
+            actor=self.actor,
+        )
+        self.runtime.capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+
+        with self.assertRaises(AgentRuntimeUnsupportedCapability) as caught:
+            await self.service.interrupt(created.id, actor=self.actor)
+
+        self.assertEqual(
+            caught.exception.capability,
+            AgentProviderCapability.INTERRUPT_CANCEL,
+        )
 
     async def test_session_scope_hides_other_tenant(self) -> None:
         created = await self.service.create(
@@ -214,6 +280,61 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
             transport.request.await_args_list[2].args,
             ("turn/interrupt", {"threadId": "codex-thread-1"}),
         )
+
+    async def test_compaction_approval_recovery_and_events_use_adapter_surface(self) -> None:
+        class Hub:
+            def __init__(self):
+                self.listeners = set()
+
+            def subscribe(self, listener):
+                self.listeners.add(listener)
+
+            def unsubscribe(self, listener):
+                self.listeners.discard(listener)
+
+            def emit(self, event):
+                for listener in list(self.listeners):
+                    listener(event)
+
+        hub = Hub()
+        transport = SimpleNamespace(
+            host=SimpleNamespace(hub=hub),
+            request=AsyncMock(return_value={"ok": True}),
+            respond_to_server_request=AsyncMock(),
+            ensure_started=AsyncMock(),
+        )
+        adapter = CodexAgentRuntimeAdapter(transport)
+        events = []
+        unsubscribe = adapter.subscribe_events(events.append)
+
+        hub.emit(
+            {
+                "type": "codex.event",
+                "message": {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turn": {"id": "turn-1"},
+                    },
+                },
+            }
+        )
+        compacted = await adapter.compact_session("thread-1")
+        await adapter.respond_approval("approval-1", {"decision": "accept"})
+        health = await adapter.recover()
+        unsubscribe()
+
+        self.assertEqual(events[0].event_type, "turn/completed")
+        self.assertEqual(events[0].provider_native_session_id, "thread-1")
+        self.assertEqual(events[0].provider_native_turn_id, "turn-1")
+        self.assertEqual(compacted.provider_native_session_id, "thread-1")
+        transport.respond_to_server_request.assert_awaited_once_with(
+            "approval-1",
+            {"decision": "accept"},
+        )
+        transport.ensure_started.assert_awaited_once()
+        self.assertEqual(health, AgentRuntimeHealth.HEALTHY)
+        self.assertEqual(hub.listeners, set())
 
     async def test_codex_capabilities_are_explicit(self) -> None:
         adapter = CodexAgentRuntimeAdapter(type("Transport", (), {})())
