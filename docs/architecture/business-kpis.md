@@ -210,7 +210,7 @@ currentness independently.
 
 ## Executive integration
 
-Issue #343 consumes CompanyOperatingView and CompanyOperatingSnapshot as
+Executive integration consumes CompanyOperatingView and CompanyOperatingSnapshot as
 minimum-sufficient structured inputs for CFO/CRO/CMO/CPO/Customer Success
 Executive roles.
 
