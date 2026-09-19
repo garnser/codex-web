@@ -13,7 +13,6 @@ from codex_web.models import (
 from codex_web.secrets import SecretStatus
 from codex_web.services.identity import IdentityService
 from codex_web.services.jira_task_source import JiraTaskSource
-from codex_web.services.projects import ProjectService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.servicenow_task_source import (
     ServiceNowFieldMapping,
@@ -226,12 +225,12 @@ class BuiltInTaskSourceRuntime:
     def __init__(
         self,
         registry: TaskSourceRegistry,
-        projects: ProjectService,
+        host: Any,
         identity: IdentityService,
         secrets: SecretBroker,
     ) -> None:
         self.registry = registry
-        self.projects = projects
+        self.host = host
         self.identity = identity
         self.secrets = secrets
 
@@ -353,13 +352,28 @@ class BuiltInTaskSourceRuntime:
             return self._servicenow(configuration, actor=actor)
         return None
 
+    def _project(self, project_id: str, scope: TenantScope) -> Any:
+        project = next(
+            (
+                item
+                for item in self.host._load_projects()
+                if getattr(item, "id", None) == project_id
+                and getattr(item, "organization_id", None) == scope.organization_id
+                and getattr(item, "workspace_id", None) == scope.workspace_id
+            ),
+            None,
+        )
+        if project is None:
+            raise TaskSourceResolutionError("Project not found in task-source tenant")
+        return project
+
     def source_for_project(
         self,
         configuration: TaskSourceConfiguration,
         project_id: str,
         scope: TenantScope,
     ) -> TaskSource | None:
-        project = self.projects.get(project_id, scope)
+        project = self._project(project_id, scope)
         if project.authoritative_task_source != configuration:
             raise TaskSourceResolutionError(
                 "Project task-source binding changed during resolution"
@@ -374,7 +388,7 @@ class BuiltInTaskSourceRuntime:
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
-        project = self.projects.get(project_id, scope)
+        project = self._project(project_id, scope)
         configuration = project.authoritative_task_source
         if configuration is None:
             return None
@@ -400,13 +414,13 @@ class BuiltInTaskSourceRuntime:
 
 def install_builtin_task_source_runtime(
     registry: TaskSourceRegistry,
-    projects: ProjectService,
+    host: Any,
     identity: IdentityService,
     secrets: SecretBroker,
 ) -> BuiltInTaskSourceRuntime:
     return BuiltInTaskSourceRuntime(
         registry,
-        projects,
+        host,
         identity,
         secrets,
     ).install()
