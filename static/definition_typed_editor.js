@@ -243,19 +243,16 @@ function renderExecution() {
 function render() {
   const addBinding = document.getElementById('definition-typed-add-binding');
   const addDelegation = document.getElementById('definition-typed-add-delegation');
-  const retire = document.getElementById('definition-typed-retire');
   if (!state.source || !state.payload) {
     const host = document.getElementById('definition-typed-editor-host');
     if (host) host.innerHTML = '';
     if (addBinding) addBinding.hidden = true;
     if (addDelegation) addDelegation.hidden = true;
-    if (retire) retire.hidden = true;
     return;
   }
   const authority = state.source.kind === 'authority-role-catalog';
   if (addBinding) addBinding.hidden = !authority;
   if (addDelegation) addDelegation.hidden = !authority;
-  if (retire) retire.hidden = authority || state.source.lifecycle !== 'published';
   if (authority) renderAuthority();
   else renderExecution();
 }
@@ -542,37 +539,6 @@ async function saveDraft() {
   document.getElementById('refresh-definitions')?.click();
 }
 
-async function retireDefinition() {
-  if (!state.source || state.source.kind === 'authority-role-catalog') {
-    setStatus('Authority catalogs must be disabled through an explicit restrictive draft.');
-    return;
-  }
-  if (state.source.lifecycle !== 'published') {
-    setStatus('Only the active published revision can be retired.');
-    return;
-  }
-  const lifecycle = window.prompt('Retire as "deprecated" or "disabled"', 'deprecated');
-  if (!['deprecated', 'disabled'].includes(lifecycle || '')) return;
-  const reason = window.prompt('Retirement reason', '');
-  if (!reason?.trim()) return;
-  const response = await apiRequest(
-    '/api/definitions/' + encodeURIComponent(state.source.record_id) + '/retire',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        lifecycle,
-        reason: reason.trim(),
-        expected_active_revision: state.source.revision,
-      }),
-    },
-  );
-  setStatus(
-    'Created immutable r' + response.record.revision + ' ' + response.record.lifecycle
-      + ' retirement revision · ' + response.record.record_id + '.',
-  );
-  document.getElementById('refresh-definitions')?.click();
-}
-
 function loadSource(recordId) {
   const record = state.records.find((item) => item.record_id === recordId) || null;
   state.source = record;
@@ -635,9 +601,6 @@ function bind() {
   document.getElementById('definition-typed-add-delegation')?.addEventListener('click', addDelegation);
   document.getElementById('definition-typed-save')?.addEventListener('click', () => {
     saveDraft().catch((error) => setStatus('Typed draft failed: ' + error.message));
-  });
-  document.getElementById('definition-typed-retire')?.addEventListener('click', () => {
-    retireDefinition().catch((error) => setStatus('Retirement failed: ' + error.message));
   });
   document.getElementById('definition-typed-editor-host')?.addEventListener('click', handleEditorAction);
   render();
