@@ -18,8 +18,10 @@ from codex_web.identity import (
 from codex_web.organizational_memory import (
     KnowledgeCreate,
     KnowledgeFreshness,
+    KnowledgeIngestBatch,
     KnowledgeLifecycle,
     KnowledgeObjectType,
+    KnowledgeProcedurePromotion,
     KnowledgeProvenance,
     KnowledgeQuery,
     KnowledgeRelationshipCreate,
@@ -658,6 +660,172 @@ class OrganizationalMemoryTests(unittest.TestCase):
                 )
             },
         )
+
+
+    def test_ingestion_is_idempotent_and_revises_changed_authorized_source(self) -> None:
+        first = KnowledgeCreate(
+            logical_key="github/issue/118",
+            object_type=KnowledgeObjectType.OTHER,
+            title="Memory ingestion issue",
+            summary="Track governed memory ingestion.",
+            content="Initial source snapshot.",
+            project_id="project-a",
+            tags=("github", "issue"),
+            provenance=KnowledgeProvenance(
+                source_kind=KnowledgeSourceKind.ISSUE,
+                source_ref="github:garnser/codex-web#118",
+                source_url="https://github.com/garnser/codex-web/issues/118",
+                source_revision="updated-1",
+                authored_by="maintainer-a",
+                observed_at=self.now,
+            ),
+        )
+        created = self.service.ingest(
+            KnowledgeIngestBatch(items=(first,)),
+            actor=self.actor,
+        )
+        self.assertEqual(created[0][0], "created")
+        self.assertEqual(created[0][1].version, 1)
+
+        unchanged = self.service.ingest(
+            KnowledgeIngestBatch(items=(first,)),
+            actor=self.actor,
+        )
+        self.assertEqual(unchanged[0][0], "unchanged")
+        self.assertEqual(unchanged[0][1].id, created[0][1].id)
+
+        changed = first.model_copy(
+            update={
+                "content": "Revised source snapshot with retrieval inspection.",
+                "provenance": first.provenance.model_copy(
+                    update={"source_revision": "updated-2"}
+                ),
+            }
+        )
+        revised = self.service.ingest(
+            KnowledgeIngestBatch(
+                items=(changed,),
+                reason="Git issue source revision changed",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(revised[0][0], "revised")
+        self.assertEqual(revised[0][1].version, 2)
+        self.assertEqual(
+            revised[0][1].provenance.source_revision,
+            "updated-2",
+        )
+        versions = self.service.versions(
+            revised[0][1].id,
+            actor=self.actor,
+        )
+        self.assertEqual(
+            [item.lifecycle for item in versions],
+            [KnowledgeLifecycle.SUPERSEDED, KnowledgeLifecycle.CURRENT],
+        )
+
+    def test_verified_recurring_solution_promotes_to_governed_procedure(self) -> None:
+        incident = self._create(
+            "incident/database-lock",
+            title="Database lock incident",
+            summary="A recurring lock caused failed deploys.",
+            content="Release the stale lease, verify ownership, then retry.",
+            object_type=KnowledgeObjectType.INCIDENT,
+            project_id="project-a",
+            tags=("database", "lease"),
+            classification=DataClassification.CONFIDENTIAL,
+        )
+        postmortem = self._create(
+            "postmortem/database-lock",
+            title="Database lock postmortem",
+            summary="Validated recovery sequence.",
+            content="The recovery sequence succeeded twice without data loss.",
+            object_type=KnowledgeObjectType.POSTMORTEM,
+            project_id="project-a",
+            tags=("database", "recovery"),
+        )
+
+        procedure = self.service.promote_procedure(
+            KnowledgeProcedurePromotion(
+                source_knowledge_ids=(incident.id, postmortem.id),
+                evidence_ids=("evidence-run-1", "evidence-run-2"),
+                logical_key="procedure/database-lock-recovery",
+                title="Recover stale database execution lease",
+                summary="Deterministic recovery procedure for the known lock pattern.",
+                content=(
+                    "Detect the verified stale-lock signature, release the expired "
+                    "lease, verify ownership, then retry once."
+                ),
+                project_id="project-a",
+                tags=("database", "recovery"),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(procedure.object_type, KnowledgeObjectType.PROCEDURE)
+        self.assertEqual(procedure.classification, DataClassification.CONFIDENTIAL)
+        self.assertIn("known-pattern", procedure.tags)
+        self.assertEqual(
+            procedure.provenance.evidence_ids,
+            ("evidence-run-1", "evidence-run-2"),
+        )
+        self.assertEqual(
+            set(procedure.provenance.source_governance_record_ids),
+            {
+                incident.governance_record_id,
+                postmortem.governance_record_id,
+            },
+        )
+        relationships = self.service.relationships(
+            procedure.id,
+            actor=self.actor,
+        )
+        self.assertEqual(
+            {
+                item.target_knowledge_id
+                for item in relationships
+                if item.relationship_type == KnowledgeRelationshipType.DERIVED_FROM
+            },
+            {incident.id, postmortem.id},
+        )
+
+    def test_project_retrieval_can_include_company_policy_and_retrieval_runs_are_inspectable(self) -> None:
+        company = self._create(
+            "policy/company-database",
+            title="Company database policy",
+            summary="Use the approved relational database baseline.",
+            content="All transactional services use PostgreSQL unless a Decision supersedes this policy.",
+            object_type=KnowledgeObjectType.POLICY,
+            tags=("database",),
+        )
+        project = self._create(
+            "architecture/project-database",
+            title="Project database architecture",
+            summary="Project A follows the company database policy.",
+            content="Project A will provision PostgreSQL.",
+            object_type=KnowledgeObjectType.ARCHITECTURE_DECISION,
+            project_id="project-a",
+            tags=("database",),
+        )
+
+        result = self.service.search(
+            KnowledgeQuery(
+                text="PostgreSQL database policy",
+                project_ids=("project-a",),
+                include_company_scope=True,
+                budget=KnowledgeRetrievalBudget(top_k=8, max_context_tokens=512),
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(
+            {item.knowledge_id for item in result.items},
+            {company.id, project.id},
+        )
+        runs = self.service.retrieval_runs(actor=self.actor)
+        self.assertEqual(runs[0].id, result.retrieval_id)
+        self.assertEqual(runs[0].selected_knowledge_ids, tuple(item.knowledge_id for item in result.items))
+        self.assertLessEqual(runs[0].packed_tokens, 512)
+
 
 
 if __name__ == "__main__":
