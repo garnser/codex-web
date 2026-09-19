@@ -633,7 +633,6 @@ class ActionIntentService:
         )
         denied = (
             authority_decision.outcome == ActionDecisionOutcome.DENY
-            or payload.authority_decision.outcome == ActionDecisionOutcome.DENY
             or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
             or security_decision.outcome == SecurityDecisionOutcome.DENY
         )
@@ -675,11 +674,6 @@ class ActionIntentService:
             last_error=(
                 authority_decision.reason
                 if authority_decision.outcome == ActionDecisionOutcome.DENY
-                else (
-                    "caller authority veto: "
-                    + (payload.authority_decision.reason or "explicit deny")
-                )
-                if payload.authority_decision.outcome == ActionDecisionOutcome.DENY
                 else "; ".join(security_decision.reasons)
                 if security_decision.outcome == SecurityDecisionOutcome.DENY
                 else "policy denied action"
