@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractVersion
+from codex_web.identity import (
+    ASSURANCE_RANK,
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.definitions import (
     DEFINITION_SCOPE_PRECEDENCE,
     DefinitionContext,
@@ -395,15 +402,57 @@ class DefinitionRegistryService:
         self,
         record_id: str,
         *,
-        actor: str,
-        organization_id: str,
-        workspace_id: str,
+        actor: AuthenticationActor,
         reason: str,
     ) -> DefinitionPublicationApproval:
         assessment = self.publication_preflight(record_id)
         if not assessment.requires_approval:
             raise DefinitionConflictError(
                 "publication approval is not required for this revision"
+            )
+        selected_for_scope = self.get_record(record_id)
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            required_scope = (
+                "definitions:global-approve"
+                if selected_for_scope.scope_type == DefinitionScope.GLOBAL
+                else "definitions:approve"
+            )
+            if required_scope not in actor.service_scopes:
+                raise DefinitionConflictError(
+                    f"{required_scope} service scope required for publication approval"
+                )
+        else:
+            if not actor.has_role(MembershipRole.OWNER, MembershipRole.APPROVER):
+                raise DefinitionConflictError(
+                    "definition publication approval requires owner/approver role"
+                )
+            if (
+                ASSURANCE_RANK[actor.assurance]
+                < ASSURANCE_RANK[AuthenticationAssurance.MFA]
+            ):
+                raise DefinitionConflictError(
+                    "definition publication approval requires MFA assurance"
+                )
+            if (
+                selected_for_scope.scope_type == DefinitionScope.GLOBAL
+                and actor.assurance != AuthenticationAssurance.LOCAL_TRUSTED
+            ):
+                raise DefinitionConflictError(
+                    "global definition approval requires local-trusted assurance"
+                )
+        if (
+            selected_for_scope.scope_type == DefinitionScope.ORGANIZATION
+            and selected_for_scope.scope_id != actor.organization_id
+        ):
+            raise DefinitionConflictError(
+                "cross-tenant organization definition approval denied"
+            )
+        if (
+            selected_for_scope.scope_type == DefinitionScope.WORKSPACE
+            and selected_for_scope.scope_id != actor.workspace_id
+        ):
+            raise DefinitionConflictError(
+                "cross-tenant workspace definition approval denied"
             )
         approved: list[DefinitionPublicationApproval] = []
 
@@ -416,7 +465,7 @@ class DefinitionRegistryService:
                 raise DefinitionNotFoundError(
                     f"definition record not found: {record_id}"
                 )
-            if selected.created_by == actor:
+            if selected.created_by == actor.identity_id:
                 raise DefinitionConflictError(
                     "definition creator cannot approve their own sensitive publication"
                 )
@@ -433,7 +482,7 @@ class DefinitionRegistryService:
                     item
                     for item in selected.publication_approvals
                     if item.fingerprint == current.fingerprint
-                    and item.approved_by == actor
+                    and item.approved_by == actor.identity_id
                 ),
                 None,
             )
@@ -444,9 +493,12 @@ class DefinitionRegistryService:
                 record_id=selected.record_id,
                 fingerprint=current.fingerprint,
                 active_revision=current.active_revision,
-                approved_by=actor,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
+                approved_by=actor.identity_id,
+                approver_principal_kind=actor.principal_kind.value,
+                approver_roles=tuple(role.value for role in actor.roles),
+                approver_assurance=actor.assurance.value,
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
                 reason=reason,
             )
             approved.append(evidence)
