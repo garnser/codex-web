@@ -284,6 +284,8 @@ class BusinessDataSourceCreate(BaseModel):
     object_type: str = Field(min_length=1, max_length=200)
     entity_type: BusinessEntityType
     entity_key_namespace: str = Field(min_length=1, max_length=200)
+    entity_name_authority: FactSourceAuthority = FactSourceAuthority.OBSERVED
+    entity_name_priority: int = Field(default=0, ge=0, le=1000)
     field_mappings: tuple[BusinessDataFieldMapping, ...] = ()
     credential_ref: str | None = Field(default=None, max_length=1000)
     classification: DataClassification = DataClassification.INTERNAL
@@ -323,6 +325,8 @@ class BusinessDataSourceRecord(BaseModel):
     object_type: str
     entity_type: BusinessEntityType
     entity_key_namespace: str
+    entity_name_authority: FactSourceAuthority
+    entity_name_priority: int = Field(default=0, ge=0, le=1000)
     field_mappings: tuple[BusinessDataFieldMapping, ...] = ()
     credential_ref: str | None = None
     classification: DataClassification
