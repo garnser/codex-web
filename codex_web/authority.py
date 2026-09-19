@@ -150,6 +150,8 @@ class AuthorityRoleBinding(BaseModel):
     role_id: str = Field(min_length=1)
     subject_kind: Literal["identity", "team"]
     subject_id: str = Field(min_length=1)
+    organization_id: str | None = None
+    workspace_id: str | None = None
     project_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -173,6 +175,8 @@ class AuthorityDelegation(BaseModel):
     role_id: str = Field(min_length=1)
     delegate_identity_id: str = Field(min_length=1)
     delegated_by_identity_id: str = Field(min_length=1)
+    organization_id: str | None = None
+    workspace_id: str | None = None
     project_ids: tuple[str, ...] = ()
     expires_at: float = Field(gt=0.0)
     reason: str = Field(min_length=1)
