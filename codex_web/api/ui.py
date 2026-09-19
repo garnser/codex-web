@@ -22,7 +22,11 @@ def build_ui_router(host: Any) -> APIRouter:
         html = html.replace('src="static/app.js"', f'src="static/app.js?v={version}"')
         html = html.replace(
             "</body>",
-            f'<script src="static/work_items_ui.js?v={version}" type="module"></script>\n  </body>',
+            (
+                f'<script src="static/work_items_ui.js?v={version}" type="module"></script>\n'
+                f'  <script src="static/orchestration_ui.js?v={version}" type="module"></script>\n'
+                "  </body>"
+            ),
         )
         return HTMLResponse(html)
 
