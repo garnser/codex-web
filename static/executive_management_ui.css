@@ -1,0 +1,42 @@
+.exec-mgmt-dialog{width:min(1260px,96vw);height:min(900px,94vh);padding:0;border:1px solid var(--border,#313744);border-radius:14px;background:var(--surface,#11151d);color:var(--text,#eef2f7)}
+.exec-mgmt-dialog::backdrop{background:rgba(0,0,0,.58)}
+.exec-mgmt-shell{height:100%;display:grid;grid-template-rows:auto auto 1fr;min-height:0}
+.exec-mgmt-header{display:flex;justify-content:space-between;gap:16px;padding:18px 20px 12px;border-bottom:1px solid var(--border,#313744)}
+.exec-mgmt-header h2,.exec-mgmt-card h3,.exec-mgmt-card h4,.exec-mgmt-sidebar h3{margin:0}
+.exec-mgmt-header p,.exec-mgmt-card p{margin:5px 0 0;color:var(--muted,#9aa4b5)}
+.exec-mgmt-toolbar{display:flex;align-items:center;gap:9px;padding:10px 20px;border-bottom:1px solid var(--border,#313744);flex-wrap:wrap}
+.exec-mgmt-status{font-size:11px;color:var(--muted,#9aa4b5)}.exec-mgmt-status.error,.exec-mgmt-error{color:var(--danger,#ff7272)}
+.exec-mgmt-layout{display:grid;grid-template-columns:minmax(260px,330px) 1fr;min-height:0}
+.exec-mgmt-sidebar{overflow:auto;border-right:1px solid var(--border,#313744);padding:10px;display:grid;align-content:start;gap:18px}
+.exec-mgmt-sidebar section{display:grid;gap:7px}.exec-mgmt-sidebar h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#9aa4b5)}
+.exec-mgmt-role-list,.exec-mgmt-activation-list{display:grid;gap:6px}
+.exec-mgmt-row{width:100%;display:grid;gap:4px;text-align:left;padding:9px;border:1px solid var(--border,#313744);border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.exec-mgmt-row:hover,.exec-mgmt-row.selected{background:var(--surface-2,#202632)}
+.exec-mgmt-row span,.exec-mgmt-row small{font-size:10px;color:var(--muted,#9aa4b5)}
+.exec-mgmt-detail{overflow:auto;padding:14px;display:grid;align-content:start;gap:12px}
+.exec-mgmt-card{border:1px solid var(--border,#313744);border-radius:10px;padding:12px;background:var(--surface-2,#1a2029)}
+.exec-mgmt-summary{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.exec-mgmt-title-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.exec-mgmt-definition{display:grid;gap:3px;text-align:right;min-width:180px}.exec-mgmt-definition span{font-size:9px;text-transform:uppercase;color:var(--muted,#9aa4b5)}.exec-mgmt-definition strong{font-size:10px;overflow-wrap:anywhere}
+.exec-mgmt-badge{display:inline-flex;width:max-content;padding:2px 6px;border:1px solid currentColor;border-radius:999px;font-size:9px;text-transform:uppercase}
+.exec-mgmt-badge.completed,.exec-mgmt-badge.materialized,.exec-mgmt-badge.active{color:#69d69d}.exec-mgmt-badge.escalated{color:#ffbe63}.exec-mgmt-badge.failed,.exec-mgmt-badge.rejected{color:#ff7272}.exec-mgmt-badge.consulting,.exec-mgmt-badge.planned,.exec-mgmt-badge.proposed{color:#9ab9ff}
+.exec-mgmt-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:8px}.exec-mgmt-grid.compact{grid-template-columns:repeat(3,minmax(0,1fr))}
+.exec-mgmt-grid>div{display:grid;gap:3px;min-width:0}.exec-mgmt-grid span,.exec-mgmt-result>span,.exec-mgmt-ref-groups>div>span,.exec-mgmt-small-list>span,.exec-mgmt-callout>span{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#9aa4b5)}.exec-mgmt-grid strong{overflow-wrap:anywhere}
+.exec-mgmt-list{margin:8px 0 0;padding-left:18px;font-size:12px;display:grid;gap:5px}
+.exec-mgmt-subcards,.exec-mgmt-consultations,.exec-mgmt-proposals{display:grid;gap:8px;margin-top:8px}.exec-mgmt-subcards article,.exec-mgmt-consultation,.exec-mgmt-proposal,.exec-mgmt-subcard-button{display:grid;gap:4px;padding:9px;border:1px dashed var(--border,#313744);border-radius:8px;background:transparent;color:inherit;text-align:left}
+.exec-mgmt-subcards small,.exec-mgmt-consultation small,.exec-mgmt-proposal small,.exec-mgmt-muted{font-size:10px;color:var(--muted,#9aa4b5)}
+.exec-mgmt-subcard-button{cursor:pointer}.exec-mgmt-subcard-button:hover{background:rgba(255,255,255,.03)}
+.exec-mgmt-ref-groups{display:grid;gap:9px;margin-top:8px}.exec-mgmt-ref-groups>div{display:grid;gap:5px}
+.exec-mgmt-link-row{display:flex;gap:6px;flex-wrap:wrap}.exec-mgmt-link{border:1px solid var(--border,#313744);background:transparent;color:inherit;border-radius:999px;padding:4px 7px;font-size:10px;cursor:pointer}.exec-mgmt-link:hover{text-decoration:underline}
+.exec-mgmt-budget{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.exec-mgmt-budget span{font-size:10px;padding:3px 6px;border:1px solid var(--border,#313744);border-radius:999px;color:var(--muted,#9aa4b5)}
+.exec-mgmt-consultation p,.exec-mgmt-proposal p,.exec-mgmt-synthesis p{font-size:12px}
+.exec-mgmt-small-list{display:grid;gap:3px}.exec-mgmt-small-list ul{margin:0;padding-left:17px;font-size:10px}
+.exec-mgmt-callout,.exec-mgmt-result{display:grid;gap:4px;margin-top:8px;padding:8px;border-radius:8px;background:rgba(255,255,255,.03)}.exec-mgmt-callout strong{font-size:11px}
+.exec-mgmt-synthesis{display:grid;gap:5px;margin-top:8px;padding:9px;border:1px solid var(--border,#313744);border-radius:8px}.exec-mgmt-synthesis.escalated{border-width:2px}
+.exec-mgmt-proposal{border-style:solid}.exec-mgmt-proposal>.primary-button{width:max-content;margin-top:4px}
+.exec-mgmt-history{display:grid;gap:5px;margin-top:8px}.exec-mgmt-history>div{display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:8px;font-size:10px}.exec-mgmt-history span{color:var(--muted,#9aa4b5)}
+.exec-mgmt-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.exec-mgmt-create-form{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:12px}.exec-mgmt-create-form label{display:grid;gap:4px;font-size:10px;color:var(--muted,#9aa4b5)}.exec-mgmt-create-form input,.exec-mgmt-create-form textarea{width:100%;border:1px solid var(--border,#313744);border-radius:8px;background:var(--input-bg,#0f131b);color:inherit;padding:8px;font:inherit}.exec-mgmt-create-form .wide{grid-column:1/-1}
+.exec-mgmt-break{word-break:break-all}.exec-mgmt-empty{padding:16px;color:var(--muted,#9aa4b5)}
+@media(max-width:820px){.exec-mgmt-dialog{width:100vw;height:100vh;max-width:none;max-height:none;border-radius:0}.exec-mgmt-layout{grid-template-columns:1fr;grid-template-rows:auto 1fr}.exec-mgmt-sidebar{display:grid;grid-template-columns:1fr 1fr;max-height:260px;border-right:0;border-bottom:1px solid var(--border,#313744)}.exec-mgmt-summary{display:grid}.exec-mgmt-definition{text-align:left}.exec-mgmt-grid,.exec-mgmt-grid.compact{grid-template-columns:1fr 1fr}}
+@media(max-width:520px){.exec-mgmt-sidebar{grid-template-columns:1fr;max-height:310px}.exec-mgmt-grid,.exec-mgmt-grid.compact,.exec-mgmt-create-form{grid-template-columns:1fr}.exec-mgmt-create-form .wide{grid-column:1}.exec-mgmt-header{padding:12px}.exec-mgmt-detail{padding:10px}.exec-mgmt-history>div{grid-template-columns:1fr}}
