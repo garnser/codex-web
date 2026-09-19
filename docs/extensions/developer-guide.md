@@ -140,3 +140,6 @@ for provider credentials, and keep all external mutation in
 ActionProvider/ActionIntent implementations. Register the adapter factory only
 while the extension is compatible and enabled; quarantine must make the adapter
 unavailable to synchronization.
+
+
+For a complete connector walkthrough, manifest guidance and conformance checklist, see [Build a governed BusinessDataSource connector](business-data-source-guide.md). A packaged synthetic example lives under `examples/extensions/reference_business_data_source/`.
