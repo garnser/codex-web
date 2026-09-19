@@ -265,6 +265,11 @@ class MetricService:
             ):
                 raise MetricValidationError("metric observation source is not permitted")
 
+            observed_at = (
+                payload.observed_at
+                if payload.observed_at is not None
+                else time.time()
+            )
             existing = next(
                 (
                     row
@@ -279,7 +284,11 @@ class MetricService:
                 expected = {
                     "value": payload.value,
                     "unit": unit,
-                    "observed_at": payload.observed_at,
+                    "observed_at": (
+                        payload.observed_at
+                        if payload.observed_at is not None
+                        else existing.observed_at
+                    ),
                     "window_start": payload.window_start,
                     "window_end": payload.window_end,
                     "source": payload.source,
@@ -314,7 +323,7 @@ class MetricService:
                 metric_revision=definition.revision,
                 value=payload.value,
                 unit=unit,
-                observed_at=payload.observed_at,
+                observed_at=observed_at,
                 window_start=payload.window_start,
                 window_end=payload.window_end,
                 source=payload.source,
