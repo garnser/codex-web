@@ -93,3 +93,33 @@ Escalation proposals are never automatically materialized into company state. Th
 The older Executive chat/delegation API remains available during migration, but its `/api/executive/agents` metadata is sourced from the canonical Executive role catalog when the catalog service is installed. Existing execution-role delegation remains governed by the separate canonical execution-role contract and Work Item ownership state.
 
 The new canonical management API lives under `/api/executive/roles` and `/api/executive/activations...`. Milestone 9 UI work in issue #116 should visualize these records rather than creating a dashboard-owned Executive lifecycle.
+
+
+## Management workspace and explainability
+
+The canonical Executive/Organization workspace is a read-through and command surface over the M9 APIs. It does not own an Executive-specific task or approval lifecycle.
+
+The workspace exposes:
+
+- the current Executive role Definition revision, responsibilities, observable object types, event subscriptions, consultation relationships, proposal permissions, and required authority capabilities
+- recent durable Executive activations
+- the exact trigger kind, event type/reference, initiator, deterministic role-selection score, and selection reasons answering “why was this Executive activated?”
+- captured canonical Goal, Decision, Work, WorkGraph, and Evidence context
+- specialist consultation outputs and Model Gateway invocation IDs
+- bounded activation budgets
+- synthesis, disagreement, and explicit escalation reason
+- advisory proposal state, authority capability/reasons, materializing actor, and resulting canonical reference
+- activation revision history
+
+Creating an activation and running consultation are separate UI actions. Creation records canonical routing/context state but makes no model call. Consultation performs the bounded model work defined by the backend. Proposal materialization is a third, separately authorized action.
+
+Navigation from Executive activity reuses existing canonical views:
+
+- Goal references open the Goal workspace
+- Decision references open the Decision workspace
+- Work and ActionIntent references open the canonical ActionIntent timeline/search
+- Evidence references open the canonical Artifact/Evidence explorer/search
+
+The workspace can dispatch navigation to these views, but it does not copy their records into browser-owned state as a new source of truth. External consequences shown from a materialized Work proposal remain visibly chained through approved Decision → ActionIntent → ActionProvider rather than being presented as an “Executive action.”
+
+The legacy Executive advisor drawer remains available during migration for conversational compatibility. The Organization workspace is the canonical management/explainability surface; a chat transcript remains non-authoritative.
