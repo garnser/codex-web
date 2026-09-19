@@ -155,8 +155,14 @@ class SlackConversationChannel(_ReadUnsupported):
         text = str(event.get("text") or "").strip()
         thread = str(event.get("thread_ts") or ts).strip()
         occurred = 0.0
+        ordering_timestamp = (
+            provider_revision
+            if event_kind == ConversationEventKind.MESSAGE_EDITED
+            and provider_revision
+            else ts
+        )
         try:
-            occurred = float(ts)
+            occurred = float(ordering_timestamp)
         except ValueError:
             pass
         return ConversationChannelEvent(
