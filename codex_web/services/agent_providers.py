@@ -14,6 +14,7 @@ from codex_web.agent_providers import (
 from codex_web.extensions import (
     ExtensionHealthStatus,
     ExtensionLifecycleState,
+    ExtensionType,
 )
 from codex_web.identity import (
     AuthenticationActor,
@@ -225,6 +226,23 @@ class AgentProviderService:
             extension_id = installation.extension_id
             extension_version = installation.version
             extension_digest = installation.manifest.provenance.digest
+            types = set(installation.manifest.types)
+            if (
+                AgentProviderCapability.MODEL_INFERENCE
+                in payload.declared_capabilities
+                and ExtensionType.MODEL_PROVIDER not in types
+            ):
+                raise AgentProviderConflictError(
+                    "model-inference provider extension must declare model_provider type"
+                )
+            if (
+                AgentProviderCapability.AGENT_EXECUTION
+                in payload.declared_capabilities
+                and ExtensionType.WORKER not in types
+            ):
+                raise AgentProviderConflictError(
+                    "execution-agent provider extension must declare worker type"
+                )
 
         existing = next(
             (
@@ -327,14 +345,15 @@ class AgentProviderService:
                 for capability in provider.declared_capabilities
                 if capability in set(provider.granted_capabilities)
             )
+            availability_blocked = bool(reasons)
+            if availability_blocked:
+                effective = ()
             missing = required - set(effective)
             if missing:
                 reasons.append(
                     "missing required capabilities: "
                     + ", ".join(sorted(item.value for item in missing))
                 )
-            if reasons:
-                effective = ()
             results.append(
                 AgentProviderDiscovery(
                     provider=provider,
