@@ -21,6 +21,7 @@ from codex_web.identity import (
 )
 from codex_web.models import ApprovalSlackMessage
 from codex_web.services.approval_requests import ApprovalRequestService
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.storage.approval_requests import ApprovalRequestNotFoundError
 
@@ -90,7 +91,10 @@ class ApprovalService:
 
         for runtime in self._approval_runtimes():
             if request_id in runtime.pending_approvals:
-                await runtime.respond_to_server_request(request_id, result)
+                await CodexAgentRuntimeAdapter(runtime).respond_approval(
+                    request_id,
+                    result,
+                )
                 return
         from fastapi import HTTPException
 
