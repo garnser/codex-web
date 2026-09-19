@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -80,6 +81,15 @@ class AgentRuntimeTurnRequest(BaseModel):
     developer_instructions: str | None = None
 
 
+class AgentRuntimeEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_type: str
+    provider_native_session_id: str | None = None
+    provider_native_turn_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentRuntimeResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -150,6 +160,15 @@ class AgentRuntimeAdapter(Protocol):
 
     async def health(self) -> AgentRuntimeHealth: ...
 
+    def subscribe_events(
+        self,
+        listener: Callable[[AgentRuntimeEvent], None],
+    ) -> Callable[[], None]: ...
+
+    async def recover(self) -> AgentRuntimeHealth: ...
+
+    async def shutdown(self) -> None: ...
+
     async def list_sessions(
         self,
         request: AgentRuntimeListRequest,
@@ -180,6 +199,17 @@ class AgentRuntimeAdapter(Protocol):
         self,
         provider_native_session_id: str,
     ) -> AgentRuntimeResult: ...
+
+    async def compact_session(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult: ...
+
+    async def respond_approval(
+        self,
+        request_id: int | str,
+        result: dict[str, Any],
+    ) -> None: ...
 
     async def start_turn(
         self,
