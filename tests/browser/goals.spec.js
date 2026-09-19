@@ -222,7 +222,7 @@ test('Goal workspace exposes canonical health, provenance, decomposition and com
   await expect(dialog).toContainText('model-invocation-7');
   await expect(dialog).toContainText('action-intent-1');
   await expect(dialog).toContainText('provider outcome unknown');
-  await expect(dialog).toContainText('approval:release-owner');
+  await expect(dialog.locator('[data-criterion-id="manual-review"] .goal-observation-source')).toHaveValue('approval:release-owner');
   await expect(dialog).toContainText('work_item:team/project-a#43');
   await expect(dialog).toContainText('Revision 4');
   expect(posts).toEqual([]);
