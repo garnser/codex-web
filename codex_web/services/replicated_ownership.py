@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -114,6 +116,45 @@ class ReplicatedOwnershipService:
         finally:
             state.lease = None
         return released
+
+    async def run_exclusive(
+        self,
+        name: str,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> tuple[bool, Any | None]:
+        """Run one operation while continuously renewing its fenced lease.
+
+        If renewal fails because another instance has taken ownership, the local
+        operation is cancelled before it can continue making unfenced progress.
+        """
+
+        lease = self.acquire(name)
+        if lease is None:
+            return False, None
+        task = asyncio.create_task(operation())
+        renew_interval = max(1.0, self.lease_seconds / 3.0)
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {task},
+                    timeout=renew_interval,
+                )
+                if task in done:
+                    return True, await task
+                renewed = self.acquire(name)
+                if renewed is None or renewed.fencing_token != lease.fencing_token:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                    return False, None
+                lease = renewed
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            with contextlib.suppress(Exception):
+                self.release(name)
 
     async def run_if_owner(
         self,
