@@ -43,6 +43,7 @@ The first code-owned event classes are:
 - `incident.status`
 - `failure.observed`
 - `task_source.event`
+- `schedule.due`
 
 Provider-specific actions and status values remain structured payload facts
 instead of expanding the top-level taxonomy for every provider event name.
@@ -76,6 +77,10 @@ Issue #111 owns the later bounded autonomy controller and reasoning gate.
 Consumers must not treat untrusted event content as authority; canonical
 identity, policy, approval, ActionIntent, worker, and evidence boundaries still
 apply.
+
+Durable scheduler firings from #158 use `schedule.due` with the stable schedule
+ID and scheduled occurrence in the payload. Scheduler retries reuse the same
+event idempotency boundary rather than dispatching a second timer-specific path.
 
 External side-effect completion and reconciliation remain owned by the durable
 ActionIntent/ActionProvider boundary from #137. The event bus does not create a

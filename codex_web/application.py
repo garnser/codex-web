@@ -30,6 +30,7 @@ from codex_web.api.resources import build_resources_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
 from codex_web.api.runtime import build_runtime_router
+from codex_web.api.scheduler import build_scheduler_router
 from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
 from codex_web.api.telegram import build_telegram_router
@@ -115,6 +116,7 @@ from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
@@ -162,6 +164,7 @@ from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
+from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.thread_index import install_thread_index_repository
@@ -187,6 +190,13 @@ canonical_event_ingestion = CanonicalEventIngestionService(canonical_event_bus)
 app.state.canonical_event_store = canonical_event_store
 app.state.canonical_event_bus = canonical_event_bus
 app.state.canonical_event_ingestion = canonical_event_ingestion
+
+scheduler_store = SchedulerStore(state_store)
+scheduler_service = SchedulerService(scheduler_store, canonical_event_ingestion)
+app.state.scheduler_store = scheduler_store
+app.state.scheduler_service = scheduler_service
+app.include_router(build_scheduler_router(scheduler_service))
+
 configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
