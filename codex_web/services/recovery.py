@@ -295,9 +295,12 @@ class RecoveryService:
         status = self.state_store.status()
         root_hash, checkpoint_id = self._audit_anchor(actor)
         now = float(self.clock())
-        backup_id = f"backup-{hashlib.sha256(
-            f'{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}'.encode()
-        ).hexdigest()[:32]}"
+        backup_material = (
+            f"{actor.organization_id}:{actor.workspace_id}:{now}:{checksum}"
+        ).encode("utf-8")
+        backup_id = (
+            f"backup-{hashlib.sha256(backup_material).hexdigest()[:32]}"
+        )
         key_manifest = self.crypto.manifest(actor)
         snapshot = BackupSnapshot(
             organization_id=actor.organization_id,
