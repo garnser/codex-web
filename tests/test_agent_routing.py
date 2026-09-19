@@ -215,6 +215,14 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.selected_runtime.provider_id, "anthropic")
         self.assertEqual(result.selected_runtime.runtime_id, "claude-code")
         self.assertEqual(result.selected_runtime.capability_revision, 4)
+        self.assertEqual(
+            result.selected_runtime.execution_binding().model_dump(mode="json"),
+            {
+                "provider_id": "anthropic",
+                "runtime_id": "claude-code",
+                "capability_revision": 4,
+            },
+        )
         self.assertEqual(result.model_route.candidates[0].provider_id, "openai")
         self.assertEqual(len(models.calls), 1)
 
