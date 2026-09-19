@@ -185,6 +185,7 @@
         handle(button).catch(console.error);
       }
     });
+    document.documentElement.dataset.definitionPublicationManagementReady = "true";
     loadActor().catch(console.error);
   }
 
