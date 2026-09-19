@@ -11,6 +11,16 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from codex_web.api.identity import request_actor
 from codex_web.execution_contracts import execution_roles
 from codex_web.identity import AuthenticationActor
+from codex_web.organizational_memory import (
+    KnowledgeCreate,
+    KnowledgeIngestBatch,
+    KnowledgeInvalidate,
+    KnowledgeObjectType,
+    KnowledgeProvenance,
+    KnowledgeQuery,
+    KnowledgeRetrievalBudget,
+    KnowledgeSourceKind,
+)
 from codex_web.model_gateway import (
     MODEL_CLASS_HIGH_REASONING,
     MODEL_CLASS_LIGHTWEIGHT,
@@ -29,6 +39,7 @@ from codex_web.executive import (
     ExecutiveService,
 )
 from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.organizational_memory import OrganizationalMemoryService
 from codex_web.services.executive_roles import ExecutiveRoleDefinitionService
 from codex_web.services.executive_knowledge import (
     ExecutiveKnowledgeStore,
@@ -45,6 +56,7 @@ class MultiProviderExecutiveService(ExecutiveService):
         host: Any,
         *,
         model_gateway: ModelGatewayService | None = None,
+        organizational_memory: OrganizationalMemoryService | None = None,
         require_canonical_work_item: bool = False,
     ):
         super().__init__(host)
@@ -53,6 +65,7 @@ class MultiProviderExecutiveService(ExecutiveService):
         # compatibility mirrors for rollback.
         self.store = ExecutiveStateStore(host)
         self.knowledge = ExecutiveKnowledgeStore(host)
+        self.organizational_memory = organizational_memory
         self.model_gateway = model_gateway
         self.require_canonical_work_item = require_canonical_work_item
         self._knowledge_prompt: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -211,6 +224,55 @@ class MultiProviderExecutiveService(ExecutiveService):
             ).strip()
         return str(content or "").strip()
 
+    def _knowledge_context(
+        self,
+        query: str,
+        *,
+        actor: AuthenticationActor | None,
+        project_id: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Retrieve minimum-sufficient governed memory before Executive reasoning."""
+
+        effective_actor = actor or self._fallback_actor()
+        if self.organizational_memory is None or effective_actor is None:
+            return self.knowledge.prompt_for(
+                query,
+                project_id=project_id,
+            ), None
+
+        result = self.organizational_memory.search(
+            KnowledgeQuery(
+                text=query,
+                project_ids=(project_id,) if project_id else (),
+                include_company_scope=bool(project_id),
+                budget=KnowledgeRetrievalBudget(
+                    top_k=8,
+                    candidate_limit=100,
+                    max_context_tokens=6000,
+                    progressive=True,
+                ),
+            ),
+            actor=effective_actor,
+        )
+        if not result.items:
+            return "", result.retrieval_id
+        rows = [
+            (
+                f"- [memory:{item.knowledge_id}@v{item.version}] "
+                f"{item.title} "
+                f"(source={item.provenance.source_kind.value}:{item.provenance.source_ref}; "
+                f"freshness={item.freshness.value}; score={item.score:.4f})\n"
+                f"  {item.context_excerpt}"
+            )
+            for item in result.items
+        ]
+        prompt = (
+            f"retrieval_run={result.retrieval_id}; "
+            f"packed_tokens={result.packed_tokens}/{result.max_context_tokens}\n"
+            + "\n".join(rows)
+        )
+        return prompt, result.retrieval_id
+
     async def _respond(
         self,
         instructions: str,
@@ -223,9 +285,11 @@ class MultiProviderExecutiveService(ExecutiveService):
         if knowledge_prompt:
             instructions = (
                 f"{instructions}\n\nDURABLE COMPANY / PROJECT KNOWLEDGE\n"
-                "The following entries are explicitly maintained operational knowledge. "
-                "Use them as factual context, preserve their scope/provenance, and do not "
-                "invent facts that are not present.\n"
+                "The following entries are canonical governed operational knowledge. "
+                "Use only relevant entries as factual context, preserve scope/provenance, "
+                "and do not invent facts that are not present. When a material factual "
+                "claim or recommendation relies on an entry, cite its [memory:<id>@v<version>] "
+                "marker exactly so the operator can trace it to the retrieval run.\n"
                 f"{knowledge_prompt}"
             )
 
@@ -299,7 +363,11 @@ class MultiProviderExecutiveService(ExecutiveService):
         *,
         actor: AuthenticationActor | None = None,
     ):
-        knowledge_prompt = self.knowledge.prompt_for(request.message)
+        knowledge_prompt, retrieval_id = self._knowledge_context(
+            request.message,
+            actor=actor,
+            project_id=request.project_id,
+        )
         knowledge_token = self._knowledge_prompt.set(knowledge_prompt)
         actor_token = self._request_actor.set(actor) if actor is not None else None
         invocation_ids: list[str] = []
@@ -311,6 +379,9 @@ class MultiProviderExecutiveService(ExecutiveService):
                 update={
                     "model_class": MODEL_CLASS_STRATEGIC,
                     "model_invocation_ids": list(invocation_ids),
+                    "memory_retrieval_ids": (
+                        [retrieval_id] if retrieval_id is not None else []
+                    ),
                 }
             )
         finally:
@@ -319,7 +390,12 @@ class MultiProviderExecutiveService(ExecutiveService):
                 self._request_actor.reset(actor_token)
             self._knowledge_prompt.reset(knowledge_token)
 
-    async def delegate(self, request: DelegateRequest) -> dict[str, Any]:
+    async def delegate(
+        self,
+        request: DelegateRequest,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> dict[str, Any]:
         if self.require_canonical_work_item and not request.work_item_ref:
             raise RuntimeError(
                 "Executive delegation requires a canonical work_item_ref; "
@@ -332,7 +408,11 @@ class MultiProviderExecutiveService(ExecutiveService):
                 project_id = state.project_id or project_id
             except Exception:
                 pass
-        knowledge_prompt = self.knowledge.prompt_for(request.task, project_id=project_id)
+        knowledge_prompt, _retrieval_id = self._knowledge_context(
+            request.task,
+            actor=actor,
+            project_id=project_id,
+        )
         if knowledge_prompt:
             existing = request.executive_reply.strip()
             augmented = (
@@ -354,8 +434,14 @@ class MultiProviderExecutiveService(ExecutiveService):
             "maxContextTokens": self.store.max_context_tokens,
             "compactTargetTokens": self.store.compact_target_tokens,
             "stateBackend": "sqlite",
-            "knowledgeEntries": len(self.knowledge.list()),
-            "knowledgeBackend": "sqlite",
+            "knowledgeEntries": (
+                None if self.organizational_memory is not None else len(self.knowledge.list())
+            ),
+            "knowledgeBackend": (
+                "organizational_memory"
+                if self.organizational_memory is not None
+                else "legacy_sqlite"
+            ),
         }
 
 
@@ -365,6 +451,7 @@ def install_executive_integrated(
     *,
     model_gateway: ModelGatewayService | None = None,
     executive_roles: ExecutiveRoleDefinitionService | None = None,
+    organizational_memory: OrganizationalMemoryService | None = None,
 ) -> MultiProviderExecutiveService:
     """Attach the Executive API router to the existing application once."""
 
@@ -375,6 +462,7 @@ def install_executive_integrated(
     service = MultiProviderExecutiveService(
         host,
         model_gateway=model_gateway,
+        organizational_memory=organizational_memory,
         require_canonical_work_item=executive_roles is not None,
     )
     router = APIRouter()
@@ -432,30 +520,148 @@ def install_executive_integrated(
 
     @router.get("/api/executive/knowledge")
     async def list_knowledge(
+        request: Request,
         scope: str | None = None,
         project_id: str | None = None,
         q: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
+        if service.organizational_memory is None:
+            if q:
+                entries = service.knowledge.search(q, project_id=project_id, limit=limit)
+            else:
+                entries = service.knowledge.list(
+                    scope=scope,
+                    project_id=project_id,
+                )[: max(1, min(limit, 100))]
+            return {"items": [entry.model_dump() for entry in entries], "backend": "legacy_sqlite"}
+
+        actor = request_actor(request)
         if q:
-            entries = service.knowledge.search(q, project_id=project_id, limit=limit)
+            result = service.organizational_memory.search(
+                KnowledgeQuery(
+                    text=q,
+                    project_ids=(project_id,) if project_id else (),
+                    include_company_scope=bool(project_id),
+                    budget=KnowledgeRetrievalBudget(
+                        top_k=max(1, min(limit, 50)),
+                        candidate_limit=max(20, min(limit * 5, 500)),
+                        max_context_tokens=6000,
+                    ),
+                ),
+                actor=actor,
+            )
+            ids = {item.knowledge_id for item in result.items}
+            entries = [
+                item
+                for item in service.organizational_memory.list(
+                    actor=actor,
+                    include_inactive=False,
+                )
+                if item.id in ids
+            ]
         else:
-            entries = service.knowledge.list(scope=scope, project_id=project_id)[: max(1, min(limit, 100))]
-        return {"items": [entry.model_dump() for entry in entries]}
+            entries = list(
+                service.organizational_memory.list(
+                    actor=actor,
+                    project_id=project_id if scope == "project" or project_id else None,
+                    include_inactive=False,
+                )
+            )
+            if scope == "company":
+                entries = [item for item in entries if item.project_id is None]
+            entries = entries[: max(1, min(limit, 100))]
+        return {
+            "items": [entry.model_dump(mode="json") for entry in entries],
+            "backend": "organizational_memory",
+        }
 
     @router.post("/api/executive/knowledge")
-    async def upsert_knowledge(payload: ExecutiveKnowledgeUpsert) -> dict[str, Any]:
+    async def upsert_knowledge(
+        payload: ExecutiveKnowledgeUpsert,
+        request: Request,
+    ) -> dict[str, Any]:
+        if service.organizational_memory is None:
+            try:
+                entry = service.knowledge.upsert(payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {"ok": True, "item": entry.model_dump(), "backend": "legacy_sqlite"}
+
+        actor = request_actor(request)
+        stable_id = (payload.id or "").strip()
+        if not stable_id:
+            stable_id = __import__("hashlib").sha256(
+                f"{payload.scope}:{payload.project_id or ''}:{payload.title}".encode("utf-8")
+            ).hexdigest()[:24]
+        safe_id = "".join(
+            char if char.isalnum() or char in "._-" else "-"
+            for char in stable_id
+        ).strip("-") or "entry"
+        project_id = (
+            (payload.project_id or "").strip() or None
+            if payload.scope == "project"
+            else None
+        )
+        if payload.scope == "project" and project_id is None:
+            raise HTTPException(status_code=422, detail="project_id is required for project-scoped knowledge")
+        batch = KnowledgeIngestBatch(
+            items=(
+                KnowledgeCreate(
+                    logical_key=f"executive/compat/{safe_id}",
+                    object_type=KnowledgeObjectType.OTHER,
+                    title=payload.title,
+                    summary=payload.content[:8000],
+                    content=payload.content,
+                    project_id=project_id,
+                    tags=tuple(payload.tags),
+                    provenance=KnowledgeProvenance(
+                        source_kind=KnowledgeSourceKind.MANUAL,
+                        source_ref=payload.source or "executive-compat",
+                        authored_by=actor.identity_id,
+                    ),
+                ),
+            ),
+            reason="migrate deprecated Executive knowledge write into canonical memory",
+        )
         try:
-            entry = service.knowledge.upsert(payload)
-        except ValueError as exc:
+            status, entry = service.organizational_memory.ingest(
+                batch,
+                actor=actor,
+            )[0]
+        except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"ok": True, "item": entry.model_dump()}
+        return {
+            "ok": True,
+            "status": status,
+            "item": entry.model_dump(mode="json"),
+            "backend": "organizational_memory",
+        }
 
     @router.delete("/api/executive/knowledge/{entry_id}")
-    async def delete_knowledge(entry_id: str) -> dict[str, Any]:
-        if not service.knowledge.delete(entry_id):
-            raise HTTPException(status_code=404, detail="Executive knowledge entry not found")
-        return {"ok": True}
+    async def delete_knowledge(
+        entry_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        if service.organizational_memory is None:
+            if not service.knowledge.delete(entry_id):
+                raise HTTPException(status_code=404, detail="Executive knowledge entry not found")
+            return {"ok": True, "backend": "legacy_sqlite"}
+        try:
+            item = service.organizational_memory.invalidate(
+                entry_id,
+                KnowledgeInvalidate(
+                    reason="deprecated Executive knowledge API removal"
+                ),
+                actor=request_actor(request),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "item": item.model_dump(mode="json"),
+            "backend": "organizational_memory",
+        }
 
     @router.get("/api/executive/runtime")
     async def executive_runtime() -> dict[str, Any]:
@@ -493,9 +699,15 @@ def install_executive_integrated(
             raise HTTPException(status_code=502, detail=detail) from exc
 
     @router.post("/api/executive/delegate")
-    async def executive_delegate(payload: DelegateRequest) -> dict[str, Any]:
+    async def executive_delegate(
+        payload: DelegateRequest,
+        request: Request,
+    ) -> dict[str, Any]:
         try:
-            return await service.delegate(payload)
+            return await service.delegate(
+                payload,
+                actor=request_actor(request),
+            )
         except HTTPException:
             raise
         except Exception as exc:
