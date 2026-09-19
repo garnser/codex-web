@@ -171,13 +171,15 @@ class RedisStreamsEventTransport:
         group: str = "codex-web",
         dead_letter_stream: str = "codex-web:events:dead",
         max_attempts: int = 5,
+        claim_idle_ms: int = 30000,
     ) -> None:
         self.client = client
         self.stream = stream
         self.group = group
         self.dead_letter_stream = dead_letter_stream
         self.max_attempts = max(1, int(max_attempts))
-        self.backend_id = f"redis-streams:{stream}"
+        self.claim_idle_ms = max(1000, int(claim_idle_ms))
+        self.backend_id = f"redis-streams:{stream}:{group}"
         self._group_ready = False
 
     async def _await(self, value: Any) -> Any:
@@ -280,23 +282,28 @@ class RedisStreamsEventTransport:
         timeout_seconds: float = 1.0,
     ) -> tuple[TransportDelivery, ...]:
         await self._ensure_group()
+        count = max(1, min(int(limit), 1000))
+        rows: list[TransportDelivery] = []
         try:
-            result = await self._await(
-                self.client.xreadgroup(
+            # First reclaim deliveries abandoned by crashed consumers. XAUTOCLAIM
+            # transfers ownership inside the same consumer group without
+            # changing canonical event identity.
+            claimed = await self._await(
+                self.client.xautoclaim(
+                    self.stream,
                     self.group,
                     consumer_id,
-                    {self.stream: ">"},
-                    count=max(1, min(int(limit), 1000)),
-                    block=max(0, int(float(timeout_seconds) * 1000)),
+                    min_idle_time=self.claim_idle_ms,
+                    start_id="0-0",
+                    count=count,
                 )
             )
-        except Exception as exc:
-            raise EventTransportError(
-                f"redis stream consume failed: {type(exc).__name__}"
-            ) from exc
-        rows: list[TransportDelivery] = []
-        for _stream_name, messages in result or []:
-            for message_id, fields in messages:
+            claimed_messages = (
+                claimed[1]
+                if isinstance(claimed, (list, tuple)) and len(claimed) >= 2
+                else []
+            )
+            for message_id, fields in claimed_messages or []:
                 rows.append(
                     self._decode_message(
                         message_id,
@@ -304,6 +311,31 @@ class RedisStreamsEventTransport:
                         self.backend_id,
                     )
                 )
+
+            remaining = count - len(rows)
+            if remaining > 0:
+                result = await self._await(
+                    self.client.xreadgroup(
+                        self.group,
+                        consumer_id,
+                        {self.stream: ">"},
+                        count=remaining,
+                        block=max(0, int(float(timeout_seconds) * 1000)),
+                    )
+                )
+                for _stream_name, messages in result or []:
+                    for message_id, fields in messages:
+                        rows.append(
+                            self._decode_message(
+                                message_id,
+                                fields,
+                                self.backend_id,
+                            )
+                        )
+        except Exception as exc:
+            raise EventTransportError(
+                f"redis stream consume failed: {type(exc).__name__}"
+            ) from exc
         return tuple(rows)
 
     async def acknowledge(
