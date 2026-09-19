@@ -23,6 +23,8 @@ from codex_web.services.action_providers import (
     ActionExecutionService,
     ActionProviderRegistry,
 )
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.identity import IdentityService
 from codex_web.services.reference_task_source import ReferenceTaskSource
 from codex_web.services.resources import ResourceCatalogService
@@ -40,6 +42,7 @@ from codex_web.services.task_sources import (
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -80,9 +83,9 @@ class TaskSourceActionProviderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
-        identity = IdentityService(IdentityStateStore(sqlite))
-        identity.bootstrap_local()
-        self.actor = identity.local_trusted_actor()
+        self.identity = IdentityService(IdentityStateStore(sqlite))
+        self.identity.bootstrap_local()
+        self.actor = self.identity.local_trusted_actor()
         self.worker = AuthenticationActor(
             identity_id="action-worker",
             principal_kind=PrincipalKind.SERVICE,
@@ -123,12 +126,21 @@ class TaskSourceActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.provider = TaskSourceActionProvider(self.work_items)
         self.resources = ResourceCatalogService(ResourceCatalogStore(sqlite))
+        self.definition_registry = DefinitionRegistryService(
+            DefinitionRegistryStore(sqlite)
+        )
+        self.authority = install_authority_roles(
+            self.definition_registry,
+            self.resources,
+        )
         self.registry = ActionProviderRegistry(ActionProviderStateStore(sqlite))
         self.registry.register(self.provider)
         self.execution = ActionExecutionService(self.registry, self.resources)
         self.intents = ActionIntentService(
             ActionIntentStore(sqlite),
             self.execution,
+            authority=self.authority,
+            identity=self.identity,
         )
         self.binding = self.registry.bind(
             ActionProviderBindingCreate(
