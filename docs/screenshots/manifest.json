@@ -39,7 +39,8 @@
         "work lifecycle",
         "blockers",
         "handoff and reconciliation"
-      ]
+      ],
+      "open_selector": "#work-items-button"
     },
     {
       "name": "orchestration-and-actions",
@@ -65,7 +66,8 @@
         "goal outcome",
         "decomposition",
         "linked work"
-      ]
+      ],
+      "open_selector": "#goals-button"
     },
     {
       "name": "decisions",
@@ -78,20 +80,24 @@
         "rationale",
         "provenance",
         "related goals/work"
-      ]
+      ],
+      "open_selector": "#decisions-button"
     },
     {
       "name": "executive-management",
-      "fixture": "tests/browser/executive_management_fixture.html",
+      "fixture": "tests/browser/executive_control_plane_fixture.html",
       "title": "Executive management",
       "landmarks": [
-        "Executive"
+        "Executive advisor",
+        "Board review",
+        "FixtureCo"
       ],
       "annotations": [
         "advisory reasoning",
         "delegation",
         "management context"
-      ]
+      ],
+      "open_selector": "#executive-launch"
     },
     {
       "name": "policy-and-authority",
