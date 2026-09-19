@@ -34,6 +34,23 @@ class AgentRuntimeHealth(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class AgentRuntimeRegistration(BaseModel):
+    """Code-owned runtime capability metadata used for deterministic routing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    provider_id: str = Field(min_length=1)
+    runtime_id: str = Field(min_length=1)
+    runtime_type: str = Field(min_length=1)
+    capabilities: tuple[AgentProviderCapability, ...] = ()
+    capability_revision: int = Field(default=1, ge=1)
+    sandbox_profiles: tuple[str, ...] = ()
+    network_profiles: tuple[str, ...] = ()
+    residency_tags: tuple[str, ...] = ()
+    compliance_tags: tuple[str, ...] = ()
+    max_session_cost_usd: float | None = Field(default=None, ge=0.0)
+
+
 class AgentRuntimeUnsupportedCapability(RuntimeError):
     def __init__(self, capability: AgentProviderCapability) -> None:
         self.capability = capability
