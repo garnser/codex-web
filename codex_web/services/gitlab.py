@@ -12,16 +12,26 @@ from typing import Any
 
 from fastapi import Request
 
+from codex_web.canonical_events import CanonicalEventType
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.services.canonical_events import CanonicalEventIngestionService
+from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.models import GitLabProjectRoutingSettings, GitLabRoutingSettings, WorkItemState
 
 
 class GitLabService:
     """Own GitLab routing, webhook, ServiceDesk and semantic-dedupe workflows."""
 
-    def __init__(self, host: Any, gitlab: GitLabClient | None = None) -> None:
+    def __init__(
+        self,
+        host: Any,
+        gitlab: GitLabClient | None = None,
+        *,
+        canonical_events: CanonicalEventIngestionService | None = None,
+    ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
+        self.canonical_events = canonical_events
         self._event_ids: dict[str, float] = {}
 
     def event_target_agents(
@@ -583,6 +593,105 @@ class GitLabService:
         attrs = payload.get("object_attributes") or {}
         return attrs.get("url") or attrs.get("web_url") or (payload.get("project") or {}).get("web_url")
 
+    def _project_scope(self, project_id: str) -> tuple[str | None, str | None]:
+        project = None
+        resolver = getattr(self.host, "_project", None)
+        if callable(resolver):
+            try:
+                project = resolver(project_id)
+            except Exception:
+                project = None
+        if project is None:
+            loader = getattr(self.host, "_load_projects", None)
+            if callable(loader):
+                try:
+                    project = next(
+                        (
+                            item
+                            for item in loader()
+                            if getattr(item, "id", None) == project_id
+                        ),
+                        None,
+                    )
+                except Exception:
+                    project = None
+        return (
+            getattr(project, "organization_id", None),
+            getattr(project, "workspace_id", None),
+        )
+
+    @staticmethod
+    def _canonical_gitlab_type(
+        kind: str,
+        payload: dict[str, Any],
+    ) -> CanonicalEventType:
+        normalized = str(kind or "").strip().casefold().replace(" ", "_")
+        if normalized in {"merge_request", "merge request"}:
+            return CanonicalEventType.PULL_REQUEST
+        if normalized in {"pipeline", "build", "job"}:
+            return CanonicalEventType.CI_PIPELINE
+        if normalized in {"deployment", "deployment_status"}:
+            return CanonicalEventType.DEPLOYMENT
+        if normalized in {"incident"}:
+            return CanonicalEventType.INCIDENT
+        attrs = payload.get("object_attributes") or {}
+        outcome = str(
+            attrs.get("status")
+            or attrs.get("state")
+            or payload.get("status")
+            or ""
+        ).strip().casefold()
+        if outcome in {"failed", "failure", "error"}:
+            return CanonicalEventType.FAILURE
+        return CanonicalEventType.TASK_SOURCE
+
+    async def _ingest_canonical_event(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+        event_id: str,
+        kind: str,
+    ):
+        if self.canonical_events is None:
+            return None
+        organization_id, workspace_id = self._project_scope(project_id)
+        task_source = GitLabWebhookTaskSource(
+            self.host.GITLAB_API_BASE,
+            client=self.gitlab,
+        )
+        normalized = task_source.normalize_event_sync(payload)
+        if normalized is not None:
+            return await self.canonical_events.ingest_task_source(
+                normalized,
+                project_id=project_id,
+                tenant_id=organization_id,
+                workspace_id=workspace_id,
+                event_cursor=event_id,
+            )
+
+        attrs = payload.get("object_attributes") or {}
+        project = payload.get("project") or {}
+        minimal = {
+            "project_id": project_id,
+            "provider_event_type": kind,
+            "project_path": project.get("path_with_namespace"),
+            "action": attrs.get("action"),
+            "status": attrs.get("status"),
+            "state": attrs.get("state"),
+            "iid": attrs.get("iid"),
+            "ref": attrs.get("ref"),
+            "url": attrs.get("url") or attrs.get("web_url"),
+        }
+        return await self.canonical_events.ingest(
+            event_type=self._canonical_gitlab_type(kind, payload),
+            source=f"gitlab:{self.host.GITLAB_API_BASE.rstrip('/')}",
+            idempotency_key=event_id,
+            payload={key: value for key, value in minimal.items() if value is not None},
+            tenant_id=organization_id,
+            workspace_id=workspace_id,
+        )
+
     async def handle_event(self, request: Request) -> dict[str, Any]:
         h = self.host
         h._verify_gitlab_webhook(request)
@@ -636,6 +745,21 @@ class GitLabService:
         semantic_key = h._gitlab_semantic_key(payload)
         if not h._remember_gitlab_semantic_key(semantic_key, reason="gitlab-webhook"):
             return {"ok": True, "ignored": True, "reason": "semantic_duplicate", "eventId": event_id}
+
+        canonical_delivery = await self._ingest_canonical_event(
+            payload,
+            project_id=project_id,
+            event_id=event_id,
+            kind=kind,
+        )
+        if canonical_delivery is not None and not canonical_delivery.inserted:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "canonical_duplicate",
+                "eventId": event_id,
+                "canonicalEventId": canonical_delivery.event.event_id,
+            }
 
         projected_state = h._upsert_work_item_state_from_gitlab_event(payload, project_id=project_id)
         agents = h._gitlab_event_target_agents(payload, project_settings, projected_state)
@@ -741,14 +865,26 @@ class GitLabService:
         }
 
 
-def install_gitlab_service(app: Any, host: Any, gitlab: GitLabClient | None = None) -> GitLabService:
+def install_gitlab_service(
+    app: Any,
+    host: Any,
+    gitlab: GitLabClient | None = None,
+    *,
+    canonical_events: CanonicalEventIngestionService | None = None,
+) -> GitLabService:
     """Install one GitLab domain service and preserve legacy host entrypoints."""
 
     existing = getattr(app.state, "gitlab_service", None)
     if isinstance(existing, GitLabService) and existing.host is host:
         service = existing
+        if canonical_events is not None:
+            service.canonical_events = canonical_events
     else:
-        service = GitLabService(host, gitlab)
+        service = GitLabService(
+            host,
+            gitlab,
+            canonical_events=canonical_events,
+        )
         app.state.gitlab_service = service
 
     bindings = {
