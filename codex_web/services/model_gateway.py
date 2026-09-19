@@ -879,6 +879,7 @@ class ModelGatewayService:
                     output_tokens=result.usage.output_tokens,
                     actual_cost_usd=actual_cost,
                     provider_request_id=result.provider_request_id,
+                    provider_stop_reason=result.stop_reason,
                     started_at=started,
                     completed_at=completed,
                 )
