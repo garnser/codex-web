@@ -398,13 +398,15 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
     async def test_bootstrap_turn_dispatches_to_owning_non_codex_runtime(self) -> None:
         host = _Host()
         binding_service = _BindingService()
-        default_manager = _SessionManager(None)
+        default_manager = _SessionManager()
+        default_manager.session = None
         selected = ExecutionRuntimeBinding(
             provider_id="anthropic",
             runtime_id="claude-code",
             capability_revision=1,
         )
-        claude_manager = _SessionManager(_AlternateSession(selected))
+        claude_manager = _SessionManager()
+        claude_manager.session = _AlternateSession(selected)
         adapters = []
 
         def factory(binding, session):
