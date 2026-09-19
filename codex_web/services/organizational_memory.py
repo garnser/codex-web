@@ -371,14 +371,35 @@ class OrganizationalMemoryService:
     def _mark_index_dirty(self) -> None:
         self._retrieval_index_dirty = True
 
-    def _index_upsert(self, item: KnowledgeRecord) -> None:
+    def _index_upsert(
+        self,
+        item: KnowledgeRecord,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> None:
         try:
-            if self._indexable(item):
-                self.retrieval_backend.upsert(
-                    self._retrieval_document(item)
-                )
-            else:
+            if not self._indexable(item):
                 self.retrieval_backend.delete(item.id)
+                return
+            status = self.retrieval_backend.status()
+            identity = status.embedding_identity
+            if identity is not None and not identity.local:
+                if actor is None:
+                    self._mark_index_dirty()
+                    return
+                manifest = self.governance.authorize_export(
+                    ExportAuthorizationRequest(
+                        record_ids=(item.governance_record_id,),
+                        max_classification=DataClassification.RESTRICTED,
+                    ),
+                    actor=actor,
+                )
+                if not manifest.items:
+                    self.retrieval_backend.delete(item.id)
+                    return
+            self.retrieval_backend.upsert(
+                self._retrieval_document(item)
+            )
         except Exception:
             self._mark_index_dirty()
 
@@ -675,7 +696,7 @@ class OrganizationalMemoryService:
             return state
 
         self.store.update_state(apply)
-        self._index_upsert(record)
+        self._index_upsert(record, actor=actor)
         return record
 
     def revise(
@@ -890,8 +911,8 @@ class OrganizationalMemoryService:
             return state
 
         self.store.update_state(apply)
-        self._index_upsert(self.store.get(current.id))
-        self._index_upsert(next_record)
+        self._index_upsert(self.store.get(current.id), actor=actor)
+        self._index_upsert(next_record, actor=actor)
         return next_record
 
     def invalidate(
@@ -929,7 +950,7 @@ class OrganizationalMemoryService:
             return state, updated
 
         updated = self.store.update(knowledge_id, apply)
-        self._index_upsert(updated)
+        self._index_upsert(updated, actor=actor)
         return updated
 
     def get(
