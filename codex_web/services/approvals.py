@@ -317,7 +317,7 @@ class ApprovalService:
                 actor=current_actor,
             )
         if updated.status == ApprovalRequestStatus.APPROVED:
-            await self._consume_native_approval(
+            updated = await self._consume_native_approval(
                 updated,
                 actor=current_actor,
                 request_id=normalized_id,
