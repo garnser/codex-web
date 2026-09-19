@@ -23,6 +23,7 @@ from codex_web.action_intents import (
     TERMINAL_ACTION_INTENT_STATUSES,
 )
 from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.capacity import WorkloadKind, WorkloadPriority
 from codex_web.authority import (
     AuthorityAutonomyRisk,
     AuthorityEvaluationRequest,
@@ -50,6 +51,7 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.capacity import CapacityDeferredError, CapacityService
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
 from codex_web.services.identity import (
@@ -96,6 +98,7 @@ class ActionIntentService:
         entitlements: EntitlementService | None = None,
         authority: AuthorityRoleService | None = None,
         identity: IdentityService | None = None,
+        capacity: CapacityService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -105,6 +108,7 @@ class ActionIntentService:
         self.entitlements = entitlements
         self.authority = authority
         self.identity = identity
+        self.capacity = capacity
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
