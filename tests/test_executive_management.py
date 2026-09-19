@@ -119,15 +119,52 @@ class _Authority:
 class _Goals:
     def __init__(self) -> None:
         self.created = []
+        self.items = []
 
-    def create(self, payload, *, scope, actor_id):
+    def create(
+        self,
+        payload,
+        *,
+        scope,
+        actor_id,
+        originating_executive_activation_id=None,
+        originating_executive_proposal_id=None,
+    ):
         self.created.append((payload, scope, actor_id))
-        return SimpleNamespace(id="goal-created")
+        item = SimpleNamespace(
+            id="goal-created",
+            originating_executive_activation_id=originating_executive_activation_id,
+            originating_executive_proposal_id=originating_executive_proposal_id,
+        )
+        self.items.append(item)
+        return item
+
+    def list(self, *, scope):
+        return tuple(self.items)
 
 
 class _Decisions:
-    async def create(self, payload, *, actor):
-        return SimpleNamespace(id="decision-created")
+    def __init__(self) -> None:
+        self.items = []
+
+    async def create(
+        self,
+        payload,
+        *,
+        actor,
+        originating_executive_activation_id=None,
+        originating_executive_proposal_id=None,
+    ):
+        item = SimpleNamespace(
+            id="decision-created",
+            originating_executive_activation_id=originating_executive_activation_id,
+            originating_executive_proposal_id=originating_executive_proposal_id,
+        )
+        self.items.append(item)
+        return item
+
+    def list(self, *, actor):
+        return tuple(self.items)
 
     def get(self, decision_id, *, actor):
         raise AssertionError(f"unexpected Decision lookup: {decision_id}")
@@ -171,6 +208,7 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
         self.gateway = _Gateway()
         self.authority = _Authority()
         self.goals = _Goals()
+        self.decisions = _Decisions()
         self.decision_work = _DecisionWork()
         self.service = ExecutiveManagementService(
             self.store,
@@ -178,7 +216,7 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
             self.gateway,
             self.authority,
             self.goals,
-            _Decisions(),
+            self.decisions,
             self.decision_work,
             _WorkItems(),
             _WorkGraph(),
@@ -325,6 +363,14 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(materialized.resulting_ref, "goal:goal-created")
         self.assertEqual(materialized.materialized_by, self.actor.identity_id)
+        self.assertEqual(
+            self.goals.items[0].originating_executive_activation_id,
+            completed.id,
+        )
+        self.assertEqual(
+            self.goals.items[0].originating_executive_proposal_id,
+            proposal.id,
+        )
 
     async def test_authority_denial_keeps_proposal_advisory_and_side_effect_free(self):
         self.authority.allow = False
