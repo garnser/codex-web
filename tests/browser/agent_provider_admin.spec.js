@@ -42,6 +42,27 @@ function installRoutes(page, actions = [], state = {}) {
         ],
       }),
     })),
+    page.route('**/api/provider-capacity', async (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            provider_id: 'openai',
+            runtime_id: 'codex',
+            status: 'depleted',
+            retry_at: 1900000120,
+            reason: 'primary usage window exhausted',
+          },
+        ],
+        waits: [
+          {
+            id: 'capacity-wait-1',
+            status: 'waiting',
+            retry_at: 1900000120,
+          },
+        ],
+      }),
+    })),
     page.route('**/api/agent-runtimes', async (route) => route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -238,6 +259,8 @@ test('shared AgentSession UI is capability-aware for Claude and Codex', async ({
   await expect(card).toContainText('agent-session-codex');
   await expect(card).toContainText('agent-session-claude');
   await expect(card).toContainText('partial');
+  await expect(card).toContainText('capacity depleted');
+  await expect(card).toContainText('1 capacity wait');
 
   const claude = card.locator('.agent-session-item', { hasText: 'agent-session-claude' });
   const codex = card.locator('.agent-session-item', { hasText: 'agent-session-codex' });
