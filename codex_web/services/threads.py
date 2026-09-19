@@ -37,12 +37,19 @@ from codex_web.services.turn_execution_binding import (
 
 
 class _ThreadRuntimeTransport:
-    def __init__(self, host: Any, thread_id: str) -> None:
-        self.host = host
+    def __init__(
+        self,
+        request_for_thread: Callable[
+            [str, str, dict[str, Any] | None],
+            Any,
+        ],
+        thread_id: str,
+    ) -> None:
+        self.request_for_thread = request_for_thread
         self.thread_id = thread_id
 
     async def request(self, method: str, params: dict[str, Any] | None = None):
-        return await self.host._codex_request_for_thread(
+        return await self.request_for_thread(
             self.thread_id,
             method,
             params or {},
@@ -56,8 +63,13 @@ class ThreadService:
 
     def __init__(
         self,
-        host: Any,
         *,
+        runtime_transport: Any,
+        runtime_request_for_thread: Callable[
+            [str, str, dict[str, Any] | None],
+            Any,
+        ],
+        event_sink: Callable[[dict[str, Any]], None],
         binding_service: TurnExecutionBindingService | None = None,
         session_manager: AssignmentBoundAgentSessionManager | None = None,
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
@@ -75,7 +87,9 @@ class ThreadService:
         thread_index: ThreadIndexRepository | None = None,
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
-        self.host = host
+        self.runtime_transport = runtime_transport
+        self.runtime_request_for_thread = runtime_request_for_thread
+        self.event_sink = event_sink
         self.binding_service = binding_service
         self.session_manager = session_manager
         self.bootstrap_bindings = bootstrap_bindings
@@ -219,9 +233,12 @@ class ThreadService:
         thread_id: str | None = None,
     ) -> CodexAgentRuntimeAdapter:
         transport = (
-            self.host.codex
+            self.runtime_transport
             if thread_id is None
-            else _ThreadRuntimeTransport(self.host, thread_id)
+            else _ThreadRuntimeTransport(
+                self.runtime_request_for_thread,
+                thread_id,
+            )
         )
         return CodexAgentRuntimeAdapter(transport)
 
@@ -611,7 +628,7 @@ class ThreadService:
             reasoning_effort=reasoning_effort,
             developer_instructions=None,
         )
-        self.host._append_bot_event(
+        self.event_sink(
             {
                 "type": "thread_bootstrap_bound",
                 "thread_id": thread_id,
@@ -654,7 +671,7 @@ class ThreadService:
         turn_limit: int | None = None,
     ) -> dict[str, Any]:
         self._recovery().raise_if_thread_replaced(thread_id)
-        limit = self.host._coerce_thread_message_limit(
+        limit = self.coerce_message_limit(
             message_limit if message_limit is not None else turn_limit
         )
         resume_task = self._resume().active_task(thread_id)
@@ -672,7 +689,7 @@ class ThreadService:
             if self._resume().is_timeout_error(exc):
                 return self._resume().read_timeout_response(thread_id, limit, exc)
             raise
-        return self.host._trim_thread_messages(response, limit)
+        return self.trim_messages(response, limit)
 
     async def rename(self, thread_id: str, name: str) -> dict[str, Any]:
         self._recovery().raise_if_thread_replaced(thread_id)
