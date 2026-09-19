@@ -569,6 +569,70 @@ class DefinitionAuthorityApprovalTests(unittest.TestCase):
         )
         self.assertEqual(restored.lifecycle.value, "published")
 
+    def test_reactivating_disabled_or_deprecated_role_is_sensitive(self):
+        disabled_roles = tuple(
+            role.model_copy(update={"lifecycle": "disabled"})
+            if role.id == "developer"
+            else role
+            for role in self.base.roles
+        )
+        disabled = self.base.model_copy(update={"roles": disabled_roles})
+        disabled_draft = self._draft(disabled)
+        disabled_record = self.service.publish(
+            disabled_draft.record_id,
+            DefinitionPublishRequest(
+                actor="publisher",
+                expected_active_revision=self.active.revision,
+            ),
+        )
+        self.active = disabled_record
+
+        reactivated_draft = self._draft(self.base)
+        reactivated = self.service.publication_assessment(
+            reactivated_draft.record_id
+        )
+        self.assertTrue(reactivated.requires_independent_approval)
+        self.assertTrue(
+            any("reactivated" in reason for reason in reactivated.reasons),
+            reactivated.reasons,
+        )
+
+        deprecated_roles = tuple(
+            role.model_copy(update={"lifecycle": "deprecated"})
+            if role.id == "developer"
+            else role
+            for role in self.base.roles
+        )
+        deprecated = self.base.model_copy(update={"roles": deprecated_roles})
+        deprecated_draft = self._draft(deprecated)
+        self.service.approve_publication(
+            deprecated_draft.record_id,
+            actor="approver",
+            reference="CAB-deprecated",
+            reason="move from disabled to deprecated",
+        )
+        deprecated_record = self.service.publish(
+            deprecated_draft.record_id,
+            DefinitionPublishRequest(
+                actor="publisher",
+                expected_active_revision=self.active.revision,
+            ),
+        )
+        self.active = deprecated_record
+
+        active_draft = self._draft(self.base)
+        active_assessment = self.service.publication_assessment(
+            active_draft.record_id
+        )
+        self.assertTrue(active_assessment.requires_independent_approval)
+        self.assertTrue(
+            any(
+                "returned to active" in reason
+                for reason in active_assessment.reasons
+            ),
+            active_assessment.reasons,
+        )
+
     def test_generic_definition_kind_remains_unchanged(self):
         self.service.register_schema(
             DefinitionKindSchema(
