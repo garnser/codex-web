@@ -18,10 +18,12 @@ from codex_web.business_context import (
     FactValueType,
 )
 from codex_web.business_kpis import (
+    BUSINESS_KPI_TEMPLATES,
     BusinessKPIDefinitionCreate,
     BusinessKPIDefinitionUpdate,
     BusinessKPIDomain,
     BusinessKPIFormula,
+    BusinessKPIPack,
     BusinessKPIFormulaKind,
     BusinessKPIReadiness,
     BusinessKPIFactTerm,
@@ -214,6 +216,7 @@ class BusinessKPITests(unittest.TestCase):
                 owner_identity_id="finance-owner",
                 unit="usd",
                 freshness_seconds=120,
+                window_seconds=86400,
                 direction=MetricDirection.HIGHER_IS_BETTER,
                 thresholds=(
                     MetricThreshold(
@@ -248,6 +251,11 @@ class BusinessKPITests(unittest.TestCase):
         self.assertEqual(current.value, 300.0)
         self.assertEqual(current.freshness, MetricFreshness.FRESH)
         self.assertEqual(current.metric_revision, kpi.metric_revision)
+        metric_definition = self.metrics.get_definition(
+            kpi.metric_id,
+            scope=self.admin.tenant,
+        )
+        self.assertEqual(metric_definition.window_seconds, 86400)
 
         view = self.service.operating_view(actor=self.admin, at=100.0)
         self.assertTrue(view.current)
@@ -255,6 +263,7 @@ class BusinessKPITests(unittest.TestCase):
         self.assertEqual(item.readiness, BusinessKPIReadiness.CURRENT)
         self.assertEqual(item.value, 300.0)
         self.assertEqual(item.currency, "USD")
+        self.assertEqual(item.window_seconds, 86400)
         self.assertEqual(item.thresholds[0].state.value, "met")
         self.assertEqual(item.thresholds[0].variance, 50.0)
         self.assertEqual(item.fact_keys, ("arr",))
@@ -427,6 +436,8 @@ class BusinessKPITests(unittest.TestCase):
                 kpi_id=kpi.id,
                 target_kind=BusinessKPITargetKind.GOAL,
                 target_id="goal-growth",
+                window_start=90.0,
+                window_end=100.0,
                 purpose="Growth target",
             ),
             actor=self.admin,
@@ -462,8 +473,52 @@ class BusinessKPITests(unittest.TestCase):
             "decision-budget",
             actor=self.admin,
         )
-        self.assertEqual(goal_rows[0].metric_snapshot_id, item.metric_snapshot_id)
+        self.assertNotEqual(goal_rows[0].metric_snapshot_id, item.metric_snapshot_id)
+        self.assertEqual(goal_rows[0].window_start, 90.0)
+        self.assertEqual(goal_rows[0].window_end, 100.0)
+        self.assertEqual(goal_rows[0].observation_ids, (refresh.observation_id,))
+        self.assertEqual(goal_rows[0].kpi_revision, 1)
+        self.assertEqual(goal_rows[0].metric_revision, 1)
         self.assertEqual(decision_rows[0].metric_snapshot_id, item.metric_snapshot_id)
+
+    def test_role_packs_cover_requested_business_domains_without_hidden_formulas(self) -> None:
+        packs = {item.pack for item in BUSINESS_KPI_TEMPLATES}
+        self.assertEqual(
+            packs,
+            {
+                BusinessKPIPack.CFO,
+                BusinessKPIPack.CRO,
+                BusinessKPIPack.CMO,
+                BusinessKPIPack.CPO,
+                BusinessKPIPack.CUSTOMER_SUCCESS,
+            },
+        )
+        keys = {item.key for item in BUSINESS_KPI_TEMPLATES}
+        for key in (
+            "recurring_revenue",
+            "gross_margin_inputs",
+            "cloud_service_cost",
+            "pipeline",
+            "conversion",
+            "retention_or_churn",
+            "campaign_performance",
+            "product_adoption",
+            "support_responsiveness",
+            "customer_health",
+        ):
+            self.assertIn(key, keys)
+        for template in BUSINESS_KPI_TEMPLATES:
+            self.assertTrue(template.required_explicit_inputs)
+            self.assertTrue(template.supported_formula_kinds)
+            self.assertIn("defined", template.notes.casefold())
+
+    def test_empty_workspace_is_not_reported_as_current_operating_state(self) -> None:
+        view = self.service.operating_view(actor=self.admin, at=100.0)
+        self.assertFalse(view.current)
+        self.assertEqual(
+            view.blockers,
+            ("no business KPI definitions configured",),
+        )
 
     def test_cross_tenant_business_kpi_state_is_isolated(self) -> None:
         entity = self.entity("A")
@@ -547,6 +602,10 @@ class BusinessKPIApiTests(unittest.TestCase):
             json=self.body(),
         )
         self.assertEqual(view.status_code, 200)
+        self.assertFalse(view.json()["item"]["current"])
+        templates = self.client.get("/api/business-kpis/templates")
+        self.assertEqual(templates.status_code, 200)
+        self.assertGreaterEqual(templates.json()["count"], 10)
         self.assertEqual(denied.status_code, 403)
         self.assertIn("mfa", denied.json()["detail"].lower())
 
