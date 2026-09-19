@@ -221,7 +221,7 @@ function render() {
   detail.innerHTML = `
     <section class="business-kpi-card business-kpi-summary">
       <div>
-        <small>${esc(item.kpi_id)} · definition r${esc(item.kpi_revision)}</small>
+        <small>${esc(item.kpi_id)} · KPI r${esc(item.kpi_revision)} / Metric r${esc(item.metric_revision)}</small>
         <h3>${esc(item.name)}</h3>
         <p>${esc(definition?.description || '')}</p>
       </div>
