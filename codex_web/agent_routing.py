@@ -7,6 +7,7 @@ from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.definitions import DefinitionReference
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.model_gateway import ModelInvocationRequest, ModelRouteResult
+from codex_web.provider_capacity import ProviderCapacityStatus
 
 
 class AgentRoutingRequest(BaseModel):
@@ -77,6 +78,8 @@ class AgentRuntimeRouteCandidate(BaseModel):
     sandbox_profiles: tuple[str, ...] = ()
     network_profiles: tuple[str, ...] = ()
     estimated_session_cost_usd: float | None = None
+    capacity_status: ProviderCapacityStatus = ProviderCapacityStatus.AVAILABLE
+    capacity_retry_at: float | None = None
     routing_reason: str
 
     def execution_binding(self) -> ExecutionRuntimeBinding:
@@ -105,6 +108,7 @@ class AgentRoutingResult(BaseModel):
     runtime_candidates: tuple[AgentRuntimeRouteCandidate, ...]
     model_route: ModelRouteResult | None = None
     fallback_allowed: bool
+    earliest_capacity_retry_at: float | None = None
     rejected_reasons: tuple[str, ...] = ()
     configuration_sources: tuple[AgentRoutingConfigurationSource, ...] = ()
     role_definition_ref: DefinitionReference | None = None
