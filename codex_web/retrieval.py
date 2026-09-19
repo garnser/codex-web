@@ -62,6 +62,8 @@ class DeterministicLocalEmbeddingProvider:
         model_revision: str = "1",
         dimensions: int = 128,
         capability_revision: int = 1,
+        local: bool = True,
+        residency_tags: tuple[str, ...] = (),
     ) -> None:
         self._identity = EmbeddingModelIdentity(
             provider_id=provider_id,
@@ -69,6 +71,8 @@ class DeterministicLocalEmbeddingProvider:
             model_revision=model_revision,
             dimensions=dimensions,
             capability_revision=capability_revision,
+            local=local,
+            residency_tags=residency_tags,
         )
 
     @property
