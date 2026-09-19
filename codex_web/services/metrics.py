@@ -281,35 +281,28 @@ class MetricService:
                 None,
             )
             if existing is not None:
-                expected = {
-                    "value": payload.value,
-                    "unit": unit,
-                    "observed_at": (
-                        payload.observed_at
-                        if payload.observed_at is not None
-                        else existing.observed_at
-                    ),
-                    "window_start": payload.window_start,
-                    "window_end": payload.window_end,
-                    "source": payload.source,
-                    "provider": payload.provider,
-                    "external_record_ref": payload.external_record_ref,
-                    "evidence_ids": tuple(dict.fromkeys(payload.evidence_ids)),
-                    "partial": payload.partial,
-                }
-                actual = {
-                    "value": existing.value,
-                    "unit": existing.unit,
-                    "observed_at": existing.observed_at,
-                    "window_start": existing.window_start,
-                    "window_end": existing.window_end,
-                    "source": existing.source,
-                    "provider": existing.provider,
-                    "external_record_ref": existing.external_record_ref,
-                    "evidence_ids": existing.evidence_ids,
-                    "partial": existing.partial,
-                }
-                if actual != expected:
+                same_value = (
+                    existing.value is payload.value
+                    if type(existing.value) is bool or type(payload.value) is bool
+                    else float(existing.value) == float(payload.value)
+                )
+                same_request = (
+                    same_value
+                    and existing.unit == unit
+                    and (
+                        payload.observed_at is None
+                        or existing.observed_at == payload.observed_at
+                    )
+                    and existing.window_start == payload.window_start
+                    and existing.window_end == payload.window_end
+                    and existing.source == payload.source
+                    and existing.provider == payload.provider
+                    and existing.external_record_ref == payload.external_record_ref
+                    and tuple(existing.evidence_ids)
+                    == tuple(dict.fromkeys(payload.evidence_ids))
+                    and existing.partial == payload.partial
+                )
+                if not same_request:
                     raise MetricConflictError(
                         "metric idempotency key was reused with different content"
                     )
