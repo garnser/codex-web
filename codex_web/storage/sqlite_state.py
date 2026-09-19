@@ -242,3 +242,22 @@ class SQLiteStateStore:
                 (namespace,),
             ).fetchone()
         return row is not None
+
+    def delete(self, namespace: str) -> bool:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "DELETE FROM state_documents WHERE namespace = ?",
+                (namespace,),
+            )
+            return bool(cursor.rowcount)
+
+    def documents(self) -> dict[str, Any]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT namespace, payload FROM state_documents ORDER BY namespace"
+            ).fetchall()
+        return {
+            str(namespace): json.loads(payload)
+            for namespace, payload in rows
+        }
