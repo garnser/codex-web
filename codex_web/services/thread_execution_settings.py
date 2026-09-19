@@ -7,17 +7,32 @@ from typing import Any, Callable
 
 from codex_web.models import BotBinding, ThreadRunSettings
 from codex_web.security import security_boundary_instructions
+from codex_web.services.bot_binding_selection import BotBindingSelectionService
 
 
 class ThreadExecutionSettingsService:
     """Own thread run settings and developer-instruction contract composition."""
 
-    def __init__(self, host: Any) -> None:
-        self.host = host
-
-    def _override(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
-        candidate = getattr(self.host, name, None)
-        return candidate if callable(candidate) else fallback
+    def __init__(
+        self,
+        *,
+        load_settings: Callable[[], dict[str, ThreadRunSettings]],
+        save_settings: Callable[[dict[str, ThreadRunSettings]], None],
+        bindings: BotBindingSelectionService,
+        load_bindings: Callable[[], list[BotBinding]],
+        save_bindings: Callable[[list[BotBinding]], None],
+        gitlab_routing_enabled_for_project: Callable[[str], bool],
+        binding_report_name: Callable[[BotBinding], str | None],
+        binding_prefix: Callable[[BotBinding], str | None],
+    ) -> None:
+        self.load_settings = load_settings
+        self.save_settings = save_settings
+        self.bindings = bindings
+        self.load_bindings = load_bindings
+        self.save_bindings = save_bindings
+        self.gitlab_routing_enabled_for_project = gitlab_routing_enabled_for_project
+        self.binding_report_name = binding_report_name
+        self.binding_prefix = binding_prefix
 
     def remember(
         self,
@@ -29,7 +44,7 @@ class ThreadExecutionSettingsService:
         reasoning_effort: str | None = None,
         developer_instructions: str | None = None,
     ) -> ThreadRunSettings:
-        all_settings = self.host._load_thread_settings()
+        all_settings = self.load_settings()
         current = all_settings.get(thread_id, ThreadRunSettings())
         if sandbox is not None:
             current.sandbox = sandbox
@@ -40,25 +55,25 @@ class ThreadExecutionSettingsService:
         if reasoning_effort is not None:
             current.reasoning_effort = reasoning_effort or None
         if developer_instructions is not None:
-            current.developer_instructions = self._override(
-                "_base_developer_instructions",
-                self.base_developer_instructions,
-            )(thread_id, developer_instructions)
+            current.developer_instructions = self.base_developer_instructions(
+                thread_id,
+                developer_instructions,
+            )
         all_settings[thread_id] = current
-        self.host._save_thread_settings(all_settings)
-        self._override("_sync_bot_binding_settings", self.sync_bot_binding_settings)(thread_id, current)
+        self.save_settings(all_settings)
+        self.sync_bot_binding_settings(thread_id, current)
         return current
 
     def all(self) -> dict[str, ThreadRunSettings]:
-        return dict(self.host._load_thread_settings())
+        return dict(self.load_settings())
 
     def get(self, thread_id: str | None) -> ThreadRunSettings:
         if not thread_id:
             return ThreadRunSettings()
-        settings = self.host._load_thread_settings().get(thread_id)
+        settings = self.load_settings().get(thread_id)
         if settings:
             return settings
-        bindings = self.host._bindings_for_thread(thread_id)
+        bindings = self.bindings.for_thread(thread_id)
         if bindings:
             return ThreadRunSettings(
                 sandbox=bindings[0].sandbox,
@@ -77,19 +92,20 @@ class ThreadExecutionSettingsService:
     def work_item_contract_binding(self, thread_id: str | None) -> BotBinding | None:
         if not thread_id:
             return None
-        bindings = self.host._bindings_for_thread(thread_id)
+        bindings = self.bindings.for_thread(thread_id)
         return max(bindings, key=lambda item: item.updated_at) if bindings else None
 
     def work_item_contract_instructions(self, thread_id: str | None) -> str | None:
-        binding = self._override(
-            "_work_item_contract_binding",
-            self.work_item_contract_binding,
-        )(thread_id)
-        if not binding or not self.host._gitlab_routing_enabled_for_project(binding.project_id):
+        binding = self.work_item_contract_binding(thread_id)
+        if not binding or not self.gitlab_routing_enabled_for_project(binding.project_id):
             return None
-        role = (self.host._binding_report_name(binding) or self.host._binding_prefix(binding) or "Agent").strip()
+        role = (
+            self.binding_report_name(binding)
+            or self.binding_prefix(binding)
+            or "Agent"
+        ).strip()
         role_key = role.lower()
-        base_url = self._override("_codex_web_internal_base_url", self.internal_base_url)()
+        base_url = self.internal_base_url()
         lines = [
             "codex-web structured work-item contract. These rules are mandatory for GitLab-driven work.",
             f"Use `{base_url}/api/work-items` as the system of record for ownership, handoff, and progress.",
@@ -132,10 +148,7 @@ class ThreadExecutionSettingsService:
         return "\n".join(lines)
 
     def effective_developer_instructions(self, thread_id: str | None, instructions: str | None) -> str | None:
-        contract = self._override(
-            "_work_item_contract_instructions",
-            self.work_item_contract_instructions,
-        )(thread_id)
+        contract = self.work_item_contract_instructions(thread_id)
         trust_boundary = security_boundary_instructions()
         parts = [
             part.strip()
@@ -150,10 +163,7 @@ class ThreadExecutionSettingsService:
         if not instructions or not instructions.strip():
             return None
         normalized = instructions.strip()
-        contract = self._override(
-            "_work_item_contract_instructions",
-            self.work_item_contract_instructions,
-        )(thread_id)
+        contract = self.work_item_contract_instructions(thread_id)
         removable = [security_boundary_instructions()]
         if contract:
             removable.append(contract)
@@ -164,7 +174,7 @@ class ThreadExecutionSettingsService:
         return normalized or None
 
     def sync_bot_binding_settings(self, thread_id: str, settings: ThreadRunSettings) -> None:
-        bindings = self.host._load_bot_bindings()
+        bindings = self.load_bindings()
         changed = False
         for binding in bindings:
             if binding.thread_id != thread_id:
@@ -180,17 +190,32 @@ class ThreadExecutionSettingsService:
                 binding.updated_at = time.time()
                 changed = True
         if changed:
-            self.host._save_bot_bindings(bindings)
+            self.save_bindings(bindings)
 
 
-def install_thread_execution_settings_service(app: Any, host: Any) -> ThreadExecutionSettingsService:
-    existing = getattr(app.state, "thread_execution_settings_service", None)
-    if isinstance(existing, ThreadExecutionSettingsService) and existing.host is host:
-        service = existing
-    else:
-        service = ThreadExecutionSettingsService(host)
-        app.state.thread_execution_settings_service = service
+def install_thread_execution_settings_service(
+    app: Any,
+    host: Any,
+    *,
+    load_settings: Callable[[], dict[str, ThreadRunSettings]] | None = None,
+    save_settings: Callable[[dict[str, ThreadRunSettings]], None] | None = None,
+    bindings: BotBindingSelectionService | None = None,
+    load_bindings: Callable[[], list[BotBinding]] | None = None,
+    save_bindings: Callable[[list[BotBinding]], None] | None = None,
+) -> ThreadExecutionSettingsService:
+    service = ThreadExecutionSettingsService(
+        load_settings=load_settings or host._load_thread_settings,
+        save_settings=save_settings or host._save_thread_settings,
+        bindings=bindings or app.state.bot_binding_selection_service,
+        load_bindings=load_bindings or host._load_bot_bindings,
+        save_bindings=save_bindings or host._save_bot_bindings,
+        gitlab_routing_enabled_for_project=host._gitlab_routing_enabled_for_project,
+        binding_report_name=host._binding_report_name,
+        binding_prefix=host._binding_prefix,
+    )
+    app.state.thread_execution_settings_service = service
 
+    # Compatibility aliases for direct import-server consumers.
     host._remember_thread_run_settings = service.remember
     host._thread_run_settings_all = service.all
     host._thread_run_settings = service.get
