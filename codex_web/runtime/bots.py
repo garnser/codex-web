@@ -31,6 +31,7 @@ class BotRuntime:
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
         self.ownership = ownership
+        self.conversation_channels: Any | None = None
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
         self.slack_payload_locks: dict[str, asyncio.Lock] = {}
@@ -244,30 +245,75 @@ class BotRuntime:
                     lastEventAt=time.time(),
                     lastEventType=event.get("type"),
                 )
-            if event.get("type") not in {"message", "app_mention"}:
-                return
-            if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
-                return
-            text = self.host._strip_slack_mentions(event.get("text") or "")
-            channel = event.get("channel") or connection.default_external_conversation_id
-            if not text or not channel:
+            channel = (
+                event.get("channel")
+                or (event.get("item") or {}).get("channel")
+                if isinstance(event.get("item"), dict)
+                else event.get("channel")
+                or connection.default_external_conversation_id
+            )
+            if not channel:
                 return
             lock_key = f"{connection.id}:{channel}"
             lock = self.slack_payload_locks.setdefault(lock_key, asyncio.Lock())
             async with lock:
-                result = await self.host._handle_bot_inbound(
-                    BotInboundMessage(
-                        provider="slack",
-                        external_conversation_id=channel,
+                if self.conversation_channels is not None:
+                    normalized_payload = dict(payload)
+                    normalized_event = dict(event)
+                    if normalized_event.get("text"):
+                        normalized_event["text"] = self.host._strip_slack_mentions(
+                            normalized_event.get("text") or ""
+                        )
+                    if (
+                        normalized_event.get("subtype") == "message_changed"
+                        and isinstance(normalized_event.get("message"), dict)
+                    ):
+                        changed = dict(normalized_event["message"])
+                        changed["text"] = self.host._strip_slack_mentions(
+                            changed.get("text") or ""
+                        )
+                        normalized_event["message"] = changed
+                    normalized_payload["event"] = normalized_event
+                    actor = self.host._bot_runtime_actor(connection.project_id)
+                    receipts = await self.conversation_channels.ingest_raw(
+                        "slack",
+                        connection.id,
+                        normalized_payload,
+                        actor=actor,
                         connection_id=connection.id,
-                        external_name=connection.default_external_name or channel,
-                        sender_id=event.get("user"),
-                        text=text,
                         project_id=connection.project_id,
-                        external_thread_id=event.get("thread_ts") or event.get("ts"),
-                        message_id=event.get("ts"),
                     )
-                )
+                    if not receipts:
+                        return
+                    result = self.conversation_channels.legacy_routing_result(
+                        receipts[0]
+                    )
+                    if not result.get("routed", True) and not result.get("threadId"):
+                        return
+                else:
+                    if event.get("type") not in {"message", "app_mention"}:
+                        return
+                    if event.get("bot_id") or event.get("subtype") in {
+                        "bot_message",
+                        "message_deleted",
+                    }:
+                        return
+                    text = self.host._strip_slack_mentions(event.get("text") or "")
+                    if not text:
+                        return
+                    result = await self.host._handle_bot_inbound(
+                        BotInboundMessage(
+                            provider="slack",
+                            external_conversation_id=channel,
+                            connection_id=connection.id,
+                            external_name=connection.default_external_name or channel,
+                            sender_id=event.get("user"),
+                            text=text,
+                            project_id=connection.project_id,
+                            external_thread_id=event.get("thread_ts") or event.get("ts"),
+                            message_id=event.get("ts"),
+                        )
+                    )
             if result.get("ambiguous") and self._credential_identity(connection, "bot_token"):
                 binding = self.host._first_binding_for_connection("slack", channel)
                 async def send_ambiguous(token: str):
@@ -350,6 +396,17 @@ class BotRuntime:
                 if update_id is not None:
                     offset = int(update_id) + 1
                 message_payload = update.get("message") or update.get("edited_message") or {}
+                if self.conversation_channels is not None:
+                    actor = self.host._bot_runtime_actor(connection.project_id)
+                    await self.conversation_channels.ingest_raw(
+                        "telegram",
+                        connection.id,
+                        update,
+                        actor=actor,
+                        connection_id=connection.id,
+                        project_id=connection.project_id,
+                    )
+                    continue
                 text = (message_payload.get("text") or "").strip()
                 chat = message_payload.get("chat") or {}
                 chat_id = chat.get("id")
@@ -360,11 +417,17 @@ class BotRuntime:
                     BotInboundMessage(
                         provider="telegram",
                         external_conversation_id=str(chat_id),
+                        connection_id=connection.id,
                         external_name=chat.get("title") or chat.get("username") or str(chat_id),
                         sender_id=str(sender.get("id")) if sender.get("id") is not None else None,
                         sender_name=sender.get("username") or sender.get("first_name"),
                         text=text,
                         project_id=connection.project_id,
+                        external_thread_id=(
+                            str(message_payload.get("message_thread_id"))
+                            if message_payload.get("message_thread_id") is not None
+                            else None
+                        ),
                         message_id=(
                             str(message_payload.get("message_id"))
                             if message_payload.get("message_id") is not None
