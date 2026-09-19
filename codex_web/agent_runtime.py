@@ -56,6 +56,15 @@ class AgentRuntimeSessionRequest(BaseModel):
     resource_ids: tuple[str, ...] = ()
 
 
+class AgentRuntimeListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    workspace_cwd: str | None = None
+    archived: bool = False
+    search: str | None = None
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
 class AgentRuntimeTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -133,6 +142,11 @@ class AgentRuntimeAdapter(Protocol):
     capabilities: tuple[AgentProviderCapability, ...]
 
     async def health(self) -> AgentRuntimeHealth: ...
+
+    async def list_sessions(
+        self,
+        request: AgentRuntimeListRequest,
+    ) -> AgentRuntimeResult: ...
 
     async def create_session(
         self,
