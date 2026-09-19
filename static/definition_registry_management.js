@@ -39,6 +39,19 @@
     return scopeType !== "global" || actor.assurance === "local_trusted";
   }
 
+  function canApprove(scopeType) {
+    if (!actor) return false;
+    if (actor.principal_kind === "service") {
+      return scopeType === "global"
+        ? (actor.service_scopes || []).includes("definitions:global-approve")
+        : (actor.service_scopes || []).includes("definitions:approve");
+    }
+    const elevated = ["mfa", "local_trusted"].includes(actor.assurance)
+      && (actor.roles || []).some((role) => ["owner", "approver"].includes(role));
+    if (!elevated) return false;
+    return scopeType !== "global" || actor.assurance === "local_trusted";
+  }
+
   function sameSlot(left, right) {
     return left.definition_id === right.definition_id
       && left.kind === right.kind
@@ -114,19 +127,25 @@
 
   function actionButtons(record) {
     const manageable = canManage(record.scope_type);
-    if (!manageable) {
-      return '<small>Lifecycle mutation unavailable for the current actor/assurance.</small>';
+    const approvable = canApprove(record.scope_type);
+    if (!manageable && !approvable) {
+      return '<small>Lifecycle mutation/approval unavailable for the current actor/assurance.</small>';
     }
     const actions = [];
     if (["draft", "validated"].includes(record.lifecycle)) {
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
-      actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      if (manageable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="validate" data-record-id="${escapeHtml(record.record_id)}">Validate schema</button>`);
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="publish" data-record-id="${escapeHtml(record.record_id)}">Publish revision</button>`);
+      }
+      if (approvable) {
+        actions.push(`<button type="button" class="ghost-button" data-definition-action="approve-publication" data-record-id="${escapeHtml(record.record_id)}">Approve sensitive publication</button>`);
+      }
     }
-    if (record.lifecycle !== "quarantined") {
+    if (manageable && record.lifecycle !== "quarantined") {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="quarantine" data-record-id="${escapeHtml(record.record_id)}">Quarantine</button>`);
     }
     const active = activeFor(record);
-    if (active && active.record_id !== record.record_id) {
+    if (manageable && active && active.record_id !== record.record_id) {
       actions.push(`<button type="button" class="ghost-button" data-definition-action="rollback" data-record-id="${escapeHtml(record.record_id)}">Rollback to r${escapeHtml(record.revision)}</button>`);
     }
     return actions.length
@@ -207,62 +226,6 @@
     }
   }
 
-  async function publishRecord(record) {
-    const active = activeFor(record);
-    let impactCount = 0;
-    if (active) {
-      try {
-        const usage = await apiRequest(
-          `/api/definitions/${encodeURIComponent(active.record_id)}/usage`,
-        );
-        impactCount = Number(usage.count || 0);
-      } catch (_) {
-        impactCount = -1;
-      }
-    }
-    const reason = window.prompt(
-      `Publication reason for ${record.definition_id} r${record.revision}:`,
-      "",
-    );
-    if (reason === null) return;
-    const approvalRaw = window.prompt(
-      "Approval metadata as JSON object (optional):",
-      "{}",
-    );
-    if (approvalRaw === null) return;
-    let approvalMetadata;
-    try {
-      approvalMetadata = JSON.parse(approvalRaw || "{}");
-      if (!approvalMetadata || Array.isArray(approvalMetadata) || typeof approvalMetadata !== "object") throw new Error("object required");
-    } catch (error) {
-      setStatus(`Approval metadata must be a JSON object: ${error.message}`);
-      return;
-    }
-    const impact = active
-      ? ` Active r${active.revision} will be superseded; ${impactCount < 0 ? "usage impact could not be loaded" : `${impactCount} tenant-visible usage reference(s) currently point to it`}.`
-      : " No active revision currently occupies this canonical slot.";
-    if (!window.confirm(
-      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
-    )) return;
-    try {
-      await apiRequest(
-        `/api/definitions/${encodeURIComponent(record.record_id)}/publish`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            reason: reason.trim() || null,
-            expected_active_revision: active?.revision ?? null,
-            approval_metadata: approvalMetadata,
-          }),
-        },
-      );
-      setStatus(`Published ${record.definition_id} r${record.revision}.`);
-      document.getElementById("refresh-definitions")?.click();
-    } catch (error) {
-      setStatus(`Definition publication failed: ${error.message}`);
-    }
-  }
-
   async function quarantineRecord(record) {
     const reason = window.prompt(
       `Quarantine reason for ${record.definition_id} r${record.revision}:`,
@@ -322,7 +285,6 @@
     button.disabled = true;
     try {
       if (action === "validate") await validateRecord(record);
-      else if (action === "publish") await publishRecord(record);
       else if (action === "quarantine") await quarantineRecord(record);
       else if (action === "rollback") await rollbackRecord(record);
     } finally {
@@ -406,11 +368,20 @@
     document.getElementById("import-definitions")?.addEventListener("click", () => importDefinitions().catch(console.error));
     document.getElementById("definition-registry-list")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-definition-action]");
-      if (button) mutate(button).catch(console.error);
+      if (
+        button
+        && !["publish", "approve-publication"].includes(button.dataset.definitionAction)
+      ) {
+        mutate(button).catch(console.error);
+      }
     });
     loadActor().catch(console.error);
   }
 
   window.addEventListener("codex:definition-registry-rendered", (event) => hydrate(event.detail || {}));
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", bind, { once: true });
+  } else {
+    bind();
+  }
 })();
