@@ -17,6 +17,7 @@ class CanonicalEventType(StrEnum):
     FAILURE = "failure.observed"
     TASK_SOURCE = "task_source.event"
     BUSINESS_DATA = "business_data.event"
+    CONVERSATION_CHANNEL = "conversation_channel.event"
     SCHEDULE = "schedule.due"
     APPROVAL = "approval.transition"
     DECISION = "decision.transition"
