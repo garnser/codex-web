@@ -86,8 +86,14 @@ class RuntimeSupervisor:
             return
         while True:
             try:
-                if responsibility is None or self._owns(responsibility):
+                ownership = self._ownership()
+                if responsibility is None or ownership is None:
                     await cycle()
+                else:
+                    await ownership.run_exclusive(
+                        responsibility,
+                        cycle,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
