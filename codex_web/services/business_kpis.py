@@ -813,11 +813,15 @@ class BusinessKPIService:
             readiness = BusinessKPIReadiness.PARTIAL
             reasons.extend(latest.findings or ("latest KPI refresh is partial",))
 
-        history = self.metrics.history(
-            item.metric_id,
-            scope=actor.tenant,
-            limit=2,
-        )
+        history = tuple(
+            row
+            for row in self.metrics.history(
+                item.metric_id,
+                scope=actor.tenant,
+                limit=100,
+            )
+            if row.metric_revision == metric_definition.revision
+        )[:2]
         trend_delta = trend_percent = None
         if (
             readiness == BusinessKPIReadiness.CURRENT
