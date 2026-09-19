@@ -129,6 +129,7 @@ from codex_web.services.execution_role_definitions import install_execution_role
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
+from codex_web.services.decision_work import DecisionWorkService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
@@ -895,15 +896,26 @@ decision_deliberation_service = DecisionDeliberationService(
 app.state.decision_store = decision_store
 app.state.decision_service = decision_service
 app.state.decision_deliberation_service = decision_deliberation_service
+goal_store = GoalStore(state_store)
+goal_service = GoalService(goal_store, project_service, work_graph_service)
+decision_service.goals = goal_service
+decision_work_service = DecisionWorkService(
+    decision_service,
+    goal_service,
+    work_item_service,
+    work_graph_service,
+    action_intent_service,
+    action_execution_service,
+    action_provider_registry,
+)
+app.state.decision_work_service = decision_work_service
 app.include_router(
     build_decisions_router(
         decision_service,
         decision_deliberation_service,
+        decision_work_service,
     )
 )
-
-goal_store = GoalStore(state_store)
-goal_service = GoalService(goal_store, project_service, work_graph_service)
 goal_decomposition_store = GoalDecompositionStore(state_store)
 goal_decomposition_service = GoalDecompositionService(
     goal_decomposition_store,
