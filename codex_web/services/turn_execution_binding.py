@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Mapping
 
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
@@ -105,6 +105,7 @@ class TurnExecutionBindingService:
         *,
         control_actor: AuthenticationActor,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -114,6 +115,10 @@ class TurnExecutionBindingService:
         self.workers = workers
         self.control_actor = control_actor
         self.runtime_binding = runtime_binding
+        self.runtime_credential_configs = dict(
+            runtime_credential_configs
+            or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
+        )
         self._clock = clock
 
     @staticmethod
@@ -177,10 +182,22 @@ class TurnExecutionBindingService:
         self,
         project: Project,
         subject: ExecutionSubject,
+        runtime_binding: ExecutionRuntimeBinding | None,
     ) -> str:
+        if runtime_binding is None:
+            raise TurnExecutionBindingError(
+                "agent runtime binding is required for worker credential selection"
+            )
+        config_key = self.runtime_credential_configs.get(
+            (runtime_binding.provider_id, runtime_binding.runtime_id)
+        )
+        if not config_key:
+            raise TurnExecutionBindingError(
+                "agent runtime has no worker credential reference configuration"
+            )
         try:
             effective = self.configuration.resolve(
-                CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+                config_key,
                 ConfigurationContext(
                     organization_id=self.control_actor.organization_id,
                     workspace_id=self.control_actor.workspace_id,
@@ -191,7 +208,8 @@ class TurnExecutionBindingService:
             reference = ConfigurationSecretReference.model_validate(effective.value)
         except (ConfigurationError, ConfigurationNotFoundError, ValueError) as exc:
             raise TurnExecutionBindingError(
-                "Codex worker credential reference configuration is unavailable"
+                "worker credential reference configuration is unavailable "
+                f"for {runtime_binding.provider_id}/{runtime_binding.runtime_id}"
             ) from exc
         return reference.secret_id
 
@@ -340,7 +358,7 @@ class TurnExecutionBindingService:
             )
 
         project_resources, repository = self._project_resources(project)
-        secret_ref = self._secret_ref(project, subject)
+        secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
             wall_seconds=session_seconds

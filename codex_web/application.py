@@ -96,13 +96,17 @@ from codex_web.services.bots import BotService
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
+from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.codex_worker_configuration import install_codex_worker_configuration
+from codex_web.services.claude_agent_runtime import ClaudeAgentRuntimeAdapter
+from codex_web.services.codex_worker_configuration import CODEX_WORKER_ACCESS_TOKEN_CONFIG, install_codex_worker_configuration
+from codex_web.services.anthropic_worker_configuration import ANTHROPIC_WORKER_API_KEY_CONFIG, install_anthropic_worker_configuration
 from codex_web.services.agent_model_egress import (
     AgentRuntimeModelEgressEndpoint,
     model_egress_endpoints_from_base_urls,
 )
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.claude_worker_session import AssignmentBoundClaudeSessionManager
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
@@ -221,11 +225,15 @@ configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
+anthropic_worker_configuration_spec = install_anthropic_worker_configuration(
+    configuration_service
+)
 agent_routing_configuration_specs = install_agent_routing_configuration(
     configuration_service
 )
 app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
+app.state.anthropic_worker_configuration_spec = anthropic_worker_configuration_spec
 app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
@@ -461,6 +469,11 @@ codex_execution_runtime_binding = ExecutionRuntimeBinding(
     runtime_id="codex",
     capability_revision=1,
 )
+claude_execution_runtime_binding = ExecutionRuntimeBinding(
+    provider_id="anthropic",
+    runtime_id="claude-code",
+    capability_revision=1,
+)
 
 turn_execution_binding_service = TurnExecutionBindingService(
     configuration_service,
@@ -470,6 +483,10 @@ turn_execution_binding_service = TurnExecutionBindingService(
     execution_worker_service,
     control_actor=identity_service.local_trusted_actor(),
     runtime_binding=codex_execution_runtime_binding,
+    runtime_credential_configs={
+        ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+        ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
+    },
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
@@ -539,7 +556,9 @@ app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service
 
 codex_auth_delegation_service = CodexAuthDelegationService(secret_broker)
+anthropic_auth_delegation_service = AnthropicAuthDelegationService(secret_broker)
 app.state.codex_auth_delegation_service = codex_auth_delegation_service
+app.state.anthropic_auth_delegation_service = anthropic_auth_delegation_service
 
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
@@ -591,6 +610,33 @@ assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
 )
 app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
+def _claude_model_egress_endpoints():
+    providers = model_gateway_service.list_providers(
+        identity_service.local_trusted_actor()
+    )
+    active = [
+        provider
+        for provider in providers
+        if getattr(provider.status, "value", provider.status) == "active"
+        and provider.adapter_type == "anthropic"
+    ]
+    return model_egress_endpoints_from_base_urls(
+        [provider.base_url for provider in active],
+        default_endpoints=(
+            AgentRuntimeModelEgressEndpoint("api.anthropic.com", 443),
+        ),
+    )
+
+
+assignment_bound_claude_session_manager = AssignmentBoundClaudeSessionManager(
+    local_execution_worker_runtime,
+    core,
+    egress_endpoints_resolver=_claude_model_egress_endpoints,
+    credential_provider=anthropic_auth_delegation_service,
+    runtime_binding=claude_execution_runtime_binding,
+)
+app.state.assignment_bound_claude_session_manager = assignment_bound_claude_session_manager
+
 action_intent_store = ActionIntentStore(state_store)
 action_intent_service = ActionIntentService(
     action_intent_store,
@@ -637,7 +683,7 @@ codex_approval_requester = identity_service.bootstrap_service_actor(
 )
 approval_service = ApprovalService(
     core,
-    assignment_sessions=assignment_bound_codex_session_manager,
+    assignment_sessions=(assignment_bound_codex_session_manager, assignment_bound_claude_session_manager),
     canonical=approval_request_service,
     canonical_requester=codex_approval_requester,
     compatibility_actor=approval_compatibility_actor,
@@ -777,6 +823,62 @@ agent_runtime_registry.register(
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
+
+class _ClaudeRegistryTransport:
+    """Resolve the assignment-bound Claude session named in canonical requests."""
+
+    def __init__(self, manager):
+        self.manager = manager
+        self.host = core
+
+    async def _session(self, params):
+        assignment_id = str((params or {}).get("assignment_id") or "").strip()
+        if not assignment_id:
+            raise RuntimeError("Claude runtime requires canonical assignment_id")
+        return await self.manager.start(assignment_id)
+
+    async def request(self, method, params=None):
+        values = params if isinstance(params, dict) else {}
+        if method == "session/create":
+            session = await self._session(values)
+            return await session.request(method, values)
+        assignment_id = str(values.get("assignment_id") or "").strip()
+        if assignment_id:
+            session = await self.manager.start(assignment_id)
+            return await session.request(method, values)
+        native_session_id = values.get("session_id")
+        if native_session_id:
+            for session in self.manager.sessions.values():
+                runtime = session.runtime
+                if runtime is not None and runtime.native_session_id == str(native_session_id):
+                    return await session.request(method, values)
+        raise RuntimeError("Claude runtime session is not active")
+
+    async def respond_to_server_request(self, request_id, result):
+        for session in self.manager.sessions.values():
+            runtime = session.runtime
+            if runtime is not None and request_id in runtime.pending_approvals:
+                await runtime.respond_to_server_request(request_id, result)
+                return
+        raise RuntimeError("Claude approval request is not active")
+
+    async def stop(self):
+        await self.manager.stop_all()
+
+
+claude_registry_transport = _ClaudeRegistryTransport(
+    assignment_bound_claude_session_manager
+)
+agent_runtime_registry.register(
+    ClaudeAgentRuntimeAdapter(claude_registry_transport),
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write"),
+    network_profiles=("brokered-model-egress",),
+)
+app.state.claude_agent_runtime_adapter = agent_runtime_registry.get(
+    "anthropic",
+    "claude-code",
+)
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(
     app,

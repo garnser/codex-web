@@ -3,6 +3,7 @@
 FROM python:3.14-slim-bookworm
 
 ARG CODEX_VERSION=0.154.0
+ARG CLAUDE_CODE_VERSION=2.1.276
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -27,8 +28,9 @@ RUN apt-get update \
         > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" \
+    && npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && codex --version \
+    && claude --version \
     && node --version \
     && npm --version \
     && rm -rf /var/lib/apt/lists/* /root/.npm

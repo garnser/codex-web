@@ -100,6 +100,39 @@ class AssignmentBoundApprovalRoutingTests(unittest.IsolatedAsyncioTestCase):
         ):
             service.pending()
 
+    async def test_pending_view_can_aggregate_multiple_runtime_managers(self) -> None:
+        global_runtime = _Runtime()
+        codex_runtime = _Runtime(
+            {"assignment-codex:1": {"id": "assignment-codex:1", "method": "codex"}}
+        )
+        claude_runtime = _Runtime(
+            {"assignment-claude:1": {"id": "assignment-claude:1", "method": "claude"}}
+        )
+        host = SimpleNamespace(codex=global_runtime)
+        managers = (
+            SimpleNamespace(
+                sessions={"assignment-codex": SimpleNamespace(runtime=codex_runtime)}
+            ),
+            SimpleNamespace(
+                sessions={"assignment-claude": SimpleNamespace(runtime=claude_runtime)}
+            ),
+        )
+        service = ApprovalService(host, assignment_sessions=managers)
+
+        self.assertEqual(
+            set(service.pending()),
+            {"assignment-codex:1", "assignment-claude:1"},
+        )
+        await service.respond(
+            "assignment-claude:1",
+            {"decision": "decline"},
+        )
+        self.assertEqual(codex_runtime.responses, [])
+        self.assertEqual(
+            claude_runtime.responses,
+            [("assignment-claude:1", {"decision": "decline"})],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
