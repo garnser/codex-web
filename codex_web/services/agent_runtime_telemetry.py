@@ -493,12 +493,24 @@ class AgentRuntimeTelemetryService:
                 observed_model_ids=tuple(
                     dict.fromkeys(
                         [
-                            *(session.model,) if session.model else (),
+                            *((session.model,) if session.model else ()),
                             *self._models(event.payload),
                         ]
                     )
                 ),
                 runtime_version=self._runtime_version(event.payload),
+                context_compaction_count=(
+                    1
+                    if "compact" in event.event_type.casefold()
+                    and "completed" in event.event_type.casefold()
+                    else 0
+                ),
+                model_call_count=(
+                    1
+                    if outcome != RuntimeTerminalOutcome.UNKNOWN
+                    and any(value is not None for value in usage.values())
+                    else None
+                ),
                 telemetry_completeness=completeness,
                 terminal_outcome=outcome,
                 started_at=now if outcome == RuntimeTerminalOutcome.UNKNOWN else None,
