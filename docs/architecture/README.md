@@ -138,3 +138,4 @@ The target architecture is:
 - [Business KPI catalogs and operating views](business-kpis.md) — explicit versioned CompanyFact formulas projected into canonical Metrics, role-oriented starter packs, deterministic current/trend/threshold state and exact Goal/Decision snapshot provenance.
 
 - [Governed Executive business context](executive-business-context.md) — role-specific business domains, bounded governed facts/KPIs, exact recommendation provenance, stale/conflict handling and canonical action boundaries.
+\n- [API authorization](api-authorization.md)\n

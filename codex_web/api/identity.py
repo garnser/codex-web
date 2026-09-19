@@ -140,6 +140,24 @@ def install_identity_middleware(app: Any, service: IdentityService) -> None:
                 request.state.identity_actor = actor
                 request.state.tenant_scope = actor.tenant
                 request.state.used_cookie_session = used_cookie_session
+
+            api_authorization = getattr(
+                request.app.state,
+                "api_authorization_service",
+                None,
+            )
+            if api_authorization is not None:
+                try:
+                    api_authorization.authorize_request(request, actor)
+                except Exception as exc:
+                    from codex_web.api.authorization import ApiAuthorizationError
+                    if isinstance(exc, ApiAuthorizationError):
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(
+                            status_code=exc.status_code,
+                            content={"detail": str(exc)},
+                        )
+                    raise
         except IdentityError as exc:
             error = identity_http_error(exc)
             from fastapi.responses import JSONResponse

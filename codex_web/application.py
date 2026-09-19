@@ -11,6 +11,7 @@ from codex_web.api.agent_sessions import build_agent_sessions_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.approval_requests import build_approval_requests_router
+from codex_web.api.authorization import install_api_authorization
 from codex_web.api.attention import build_attention_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
@@ -1819,6 +1820,12 @@ core.executive_service = install_executive_integrated(
     executive_roles=executive_role_definition_service,
     organizational_memory=organizational_memory_service,
 )
+
+api_authorization_service = install_api_authorization(
+    app,
+    authority_role_service,
+)
+app.state.api_authorization_service = api_authorization_service
 
 
 def main() -> None:
