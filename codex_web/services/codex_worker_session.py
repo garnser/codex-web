@@ -19,7 +19,9 @@ from codex_web.execution_workers import (
 from codex_web.runtime.codex import CodexRuntime
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStatus,
+    AssignmentRuntimeCredentialGrant,
     AssignmentRuntimeCredentialProvider,
+    AssignmentRuntimeLaunchInput,
 )
 from codex_web.services.codex_auth_delegation import (
     CodexAuthDelegation,
@@ -99,7 +101,7 @@ class AssignmentBoundCodexSession:
         self._sleep = sleep
 
         self.runtime: CodexRuntime | None = None
-        self.delegation: CodexAuthDelegation | None = None
+        self.delegation: AssignmentRuntimeCredentialGrant | None = None
         self.fence: int | None = None
         self.workspace_path: Path | None = None
         self.git_metadata_path: Path | None = None
@@ -236,7 +238,7 @@ class AssignmentBoundCodexSession:
                 "Codex process launch requires an active worker lease"
             )
 
-        def launch(launch_input: CodexDelegatedLaunch):
+        def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
             trusted_mounts: tuple[tuple[Path, Path], ...] = ()
@@ -291,7 +293,6 @@ class AssignmentBoundCodexSession:
             fence=lease.fence,
             actor=self.local_worker.worker_actor,
             consumer=launch,
-            subcommand=("app-server",),
         )
 
     def _validate_egress_state(self) -> ExecutionAssignment:
