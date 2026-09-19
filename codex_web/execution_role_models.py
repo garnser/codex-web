@@ -126,4 +126,16 @@ class ExecutionRoleCatalogDefinition(BaseModel):
 def validate_execution_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     """Definition Registry validator/normalizer for execution-role catalogs."""
 
-    return ExecutionRoleCatalogDefinition.model_validate(payload).model_dump(mode="json")
+    normalized = ExecutionRoleCatalogDefinition.model_validate(payload).model_dump(
+        mode="json"
+    )
+    original_roles = {
+        str(item.get("id")): item
+        for item in payload.get("roles", [])
+        if isinstance(item, dict)
+    }
+    for role in normalized["roles"]:
+        original = original_roles.get(role["id"], {})
+        if "lifecycle" not in original:
+            role.pop("lifecycle", None)
+    return normalized
