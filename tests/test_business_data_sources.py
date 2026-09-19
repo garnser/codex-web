@@ -426,6 +426,30 @@ class BusinessDataSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed.cursor_before, "1")
         self.assertEqual(len(self.context.list_entities(actor=self.admin)), 2)
 
+    async def test_rate_limit_uses_shared_capacity_backoff_without_cursor_loss(self) -> None:
+        class RateLimitError(RuntimeError):
+            status_code = 429
+            headers = {"Retry-After": "30"}
+
+        self.crm.snapshots = [
+            self.snapshot(external_id="crm-1")
+        ]
+        source = self.create_crm()
+        self.crm.fail_with = RateLimitError("too many requests")
+
+        with self.assertRaises(RateLimitError):
+            await self.service.sync(source.id, actor=self.admin)
+
+        stored = self.service.get(source.id, actor=self.admin)
+        self.assertIsNone(stored.cursor)
+        capacity = self.capacity.get(
+            source.provider_id,
+            source.id,
+            actor=self.admin,
+        )
+        self.assertEqual(capacity.status.value, "throttled")
+        self.assertEqual(capacity.retry_at, 130.0)
+
     async def test_full_resync_is_bounded_and_idempotent(self) -> None:
         self.billing.snapshots = [
             self.snapshot(external_id="bill-1"),
