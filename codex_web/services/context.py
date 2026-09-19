@@ -7,6 +7,24 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+
+
+class _ThreadRuntimeTransport:
+    def __init__(self, host: Any, thread_id: str) -> None:
+        self.host = host
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        request_for_thread = getattr(self.host, "_codex_request_for_thread", None)
+        if callable(request_for_thread):
+            return await request_for_thread(
+                self.thread_id,
+                method,
+                params or {},
+            )
+        return await self.host.codex.request(method, params or {})
+
 
 class ContextCompactionService:
     """Coordinates manual and automatic native Codex thread compaction."""
@@ -172,7 +190,11 @@ class ContextCompactionService:
             }
         )
         try:
-            result = await self.host.codex.request("thread/compact/start", {"threadId": thread_id})
+            result = (
+                await CodexAgentRuntimeAdapter(
+                    _ThreadRuntimeTransport(self.host, thread_id)
+                ).compact_session(thread_id)
+            ).payload
         except Exception as exc:
             await self.host.hub.publish(
                 {

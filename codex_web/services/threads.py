@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSessionRequest
 from codex_web.identity import AuthenticationActor
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
@@ -14,6 +15,8 @@ from codex_web.models import (
     ThreadRunSettings,
 )
 
+from codex_web.services.agent_runtime import AgentSessionService
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_session import (
     AssignmentBoundCodexSessionManager,
 )
@@ -23,6 +26,19 @@ from codex_web.services.thread_bootstrap_bindings import (
 from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingService,
 )
+
+
+class _ThreadRuntimeTransport:
+    def __init__(self, host: Any, thread_id: str) -> None:
+        self.host = host
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        return await self.host._codex_request_for_thread(
+            self.thread_id,
+            method,
+            params or {},
+        )
 
 
 class ThreadService:
@@ -38,12 +54,14 @@ class ThreadService:
         session_manager: AssignmentBoundCodexSessionManager | None = None,
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
         control_actor: AuthenticationActor | None = None,
+        agent_sessions: AgentSessionService | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
         self.session_manager = session_manager
         self.bootstrap_bindings = bootstrap_bindings
         self.control_actor = control_actor
+        self.agent_sessions = agent_sessions
 
     def _require_bootstrap_routing(self) -> tuple[
         TurnExecutionBindingService,
@@ -67,6 +85,66 @@ class ThreadService:
             self.bootstrap_bindings,
             self.control_actor,
         )
+
+    def _codex_adapter(
+        self,
+        thread_id: str | None = None,
+    ) -> CodexAgentRuntimeAdapter:
+        transport = (
+            self.host.codex
+            if thread_id is None
+            else _ThreadRuntimeTransport(self.host, thread_id)
+        )
+        return CodexAgentRuntimeAdapter(transport)
+
+    def _adopt_legacy_thread(
+        self,
+        item: dict[str, Any],
+        *,
+        project_id: str | None,
+    ) -> None:
+        if self.agent_sessions is None or self.control_actor is None:
+            return
+        native_id = item.get("id") or item.get("threadId")
+        if not native_id:
+            return
+        existing = self.agent_sessions.find_by_native_id(
+            str(native_id),
+            self.control_actor,
+            provider_id="openai",
+            runtime_id="codex",
+        )
+        if existing is not None:
+            item["agentSessionId"] = existing.id
+            return
+
+        project = None
+        if project_id:
+            with contextlib.suppress(Exception):
+                project = self.host._project(project_id)
+        if project is None:
+            project_for_cwd = getattr(self.host, "_project_for_cwd", None)
+            if callable(project_for_cwd):
+                with contextlib.suppress(Exception):
+                    project = project_for_cwd(item.get("cwd"))
+        if project is None:
+            return
+
+        adapter = self._codex_adapter()
+        session = self.agent_sessions.adopt(
+            provider_id=adapter.provider_id,
+            runtime_id=adapter.runtime_id,
+            runtime_type=adapter.runtime_type,
+            provider_native_session_id=str(native_id),
+            request=AgentRuntimeSessionRequest(
+                project_id=project.id,
+                workspace_cwd=item.get("cwd"),
+                model=item.get("model") or getattr(project, "model", None),
+            ),
+            actor=self.control_actor,
+            capability_snapshot=adapter.capabilities,
+        )
+        item["agentSessionId"] = session.id
 
     def default_message_limit(self) -> int:
         try:
@@ -126,19 +204,15 @@ class ThreadService:
         search: str | None = None,
     ) -> dict[str, Any]:
         project_path = self.host._project(project_id).path if project_id else None
-        params: dict[str, Any] = {
-            "limit": 100,
-            "archived": archived,
-            "sortKey": "updated_at",
-            "sortDirection": "desc",
-            "sourceKinds": ["appServer", "cli", "vscode", "exec"],
-        }
-        if project_path:
-            params["cwd"] = project_path
-        if search:
-            params["searchTerm"] = search
+        runtime_request = AgentRuntimeListRequest(
+            workspace_cwd=project_path,
+            archived=archived,
+            search=search,
+            limit=100,
+        )
         try:
-            result = await self.host.codex.request("thread/list", params)
+            runtime_result = await self._codex_adapter().list_sessions(runtime_request)
+            result = runtime_result.payload
         except Exception as exc:
             if archived:
                 raise HTTPException(status_code=504, detail=str(exc)) from exc
@@ -202,6 +276,9 @@ class ThreadService:
             existing_ids.add(indexed.id)
 
         items.sort(key=lambda item: item.get("updatedAt") or 0, reverse=True)
+        for item in items:
+            if isinstance(item, dict):
+                self._adopt_legacy_thread(item, project_id=project_id)
         if "data" in result:
             result["data"] = items
         elif "threads" in result:
@@ -276,8 +353,23 @@ class ThreadService:
             workspace_cwd,
         )
 
+        runtime_request = AgentRuntimeSessionRequest(
+            project_id=project.id,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
+            approval_reviewer=params.get("approvalsReviewer"),
+            workspace_cwd=workspace_cwd,
+            sandbox_policy=params.get("sandboxPolicy"),
+            execution_id=binding.execution_id,
+            assignment_id=binding.assignment_id,
+            execution_workspace_id=binding.workspace_id,
+            worker_id=status.worker_id,
+            model=model or project.model,
+        )
+        codex_adapter = CodexAgentRuntimeAdapter(session)
         try:
-            response = await session.request("thread/start", params)
+            runtime_result = await codex_adapter.create_session(runtime_request)
+            response = runtime_result.payload
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await session_manager.complete(
@@ -325,6 +417,18 @@ class ThreadService:
                 )
             raise
 
+        canonical_session = None
+        if self.agent_sessions is not None:
+            canonical_session = self.agent_sessions.adopt(
+                provider_id=codex_adapter.provider_id,
+                runtime_id=codex_adapter.runtime_id,
+                runtime_type=codex_adapter.runtime_type,
+                provider_native_session_id=thread_id,
+                request=runtime_request,
+                actor=control_actor,
+                capability_snapshot=codex_adapter.capabilities,
+            )
+
         self.host._remember_thread_run_settings(
             thread_id,
             sandbox=effective_sandbox,
@@ -343,8 +447,13 @@ class ThreadService:
                 "execution_workspace_id": bootstrap.execution_workspace_id,
                 "worker_id": status.worker_id,
                 "fence": status.fence,
+                "agent_session_id": (
+                    canonical_session.id if canonical_session is not None else None
+                ),
             }
         )
+        if canonical_session is not None and isinstance(response, dict):
+            response = {**response, "agentSessionId": canonical_session.id}
         return response
 
     async def read(
@@ -366,11 +475,8 @@ class ThreadService:
                 event_type="web_read_deferred_for_resume",
             )
         try:
-            response = await self.host._codex_request_for_thread(
-                thread_id,
-                "thread/read",
-                {"threadId": thread_id, "includeTurns": True},
-            )
+            runtime_result = await self._codex_adapter(thread_id).read_session(thread_id)
+            response = runtime_result.payload
         except Exception as exc:
             if self.host._is_codex_timeout_error(exc):
                 return self.host._thread_read_timeout_response(thread_id, limit, exc)
@@ -435,16 +541,16 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "thread/archive", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).close_session(thread_id)
+        ).payload
 
     async def unarchive(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "thread/unarchive", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).restore_session(thread_id)
+        ).payload
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
-        return await self.host._codex_request_for_thread(
-            thread_id, "turn/interrupt", {"threadId": thread_id}
-        )
+        return (
+            await self._codex_adapter(thread_id).interrupt(thread_id)
+        ).payload

@@ -9,14 +9,29 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurnRequest
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
 )
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
+
+
+class _ThreadRuntimeTransport:
+    def __init__(self, service: "TurnExecutionService", thread_id: str) -> None:
+        self.service = service
+        self.thread_id = thread_id
+
+    async def request(self, method: str, params: dict[str, Any] | None = None):
+        return await self.service.request_for_thread(
+            self.thread_id,
+            method,
+            params or {},
+        )
 
 
 class TurnExecutionService:
@@ -537,8 +552,26 @@ class TurnExecutionService:
                     effective_sandbox,
                     workspace_cwd,
                 )
+            runtime_session_request = AgentRuntimeSessionRequest(
+                project_id=project.id,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
+                approval_reviewer=resume_params.get("approvalsReviewer"),
+                workspace_cwd=workspace_cwd,
+                sandbox_policy=resume_params.get("sandboxPolicy"),
+                execution_id=canonical_execution_id,
+                assignment_id=assignment_id,
+                execution_workspace_id=workspace_id,
+                worker_id=status.worker_id,
+                model=effective_model,
+                developer_instructions=effective_developer_instructions,
+            )
+            runtime_adapter = CodexAgentRuntimeAdapter(session)
             try:
-                await session.request("thread/resume", resume_params)
+                await runtime_adapter.resume_session(
+                    thread_id,
+                    runtime_session_request,
+                )
             except Exception as exc:
                 with contextlib.suppress(Exception):
                     await session_manager.complete(
@@ -587,8 +620,22 @@ class TurnExecutionService:
                 params["input"][0]["text"],
                 h._turn_source_for_relay_guard(thread_id, source),
             )
+            runtime_turn_request = AgentRuntimeTurnRequest(
+                message=params["input"][0]["text"],
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                workspace_cwd=workspace_cwd,
+                approval_policy=effective_approval_policy,
+                sandbox_policy=params.get("sandboxPolicy"),
+                developer_instructions=effective_developer_instructions,
+            )
             try:
-                response = await session.request("turn/start", params)
+                response = (
+                    await runtime_adapter.start_turn(
+                        thread_id,
+                        runtime_turn_request,
+                    )
+                ).payload
             except Exception as exc:
                 if not h._is_codex_timeout_error(exc):
                     self.clear_thread_active(thread_id)
@@ -816,10 +863,11 @@ class TurnExecutionService:
                     project = h._project(active.project_id)
             if project is None:
                 with contextlib.suppress(Exception):
-                    thread_response = await h.codex.request(
-                        "thread/read",
-                        {"threadId": thread_id, "includeTurns": False},
-                    )
+                    thread_response = (
+                        await CodexAgentRuntimeAdapter(
+                            _ThreadRuntimeTransport(self, thread_id)
+                        ).read_session(thread_id)
+                    ).payload
                     thread = (
                         thread_response.get("thread", thread_response)
                         if isinstance(thread_response, dict)

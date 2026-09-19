@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+
 
 class RuntimeService:
     def __init__(self, host: Any) -> None:
@@ -18,7 +20,7 @@ class RuntimeService:
 
     async def status(self) -> dict[str, Any]:
         try:
-            await self.host.codex.ensure_started()
+            await CodexAgentRuntimeAdapter(self.host.codex).recover()
         except Exception:
             pass
         return {
@@ -43,7 +45,7 @@ class RuntimeService:
     async def recovery_resume(self) -> dict[str, Any]:
         h = self.host
         try:
-            await h.codex.ensure_started()
+            await CodexAgentRuntimeAdapter(h.codex).recover()
         except Exception:
             pass
         now = time.time()
