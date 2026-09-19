@@ -96,8 +96,6 @@ class TurnExecutionService:
         routed = await self.routing_service.route(
             AgentRoutingRequest(
                 project_id=project_id,
-                required_sandbox_profile=sandbox,
-                required_network_profile="brokered-model-egress",
                 require_persistent_session=True,
             ),
             actor=self.control_actor,
@@ -314,11 +312,22 @@ class TurnExecutionService:
         try:
             manager, session = self._session_for_assignment(assignment_id)
         except HTTPException as exc:
-            detail = (
-                "thread bootstrap binding has no live agent runtime session"
-                if bootstrap is not None
-                else "active thread assignment has no live agent runtime session"
+            codex_compatibility_only = not any(
+                key != ("openai", "codex")
+                for key in self.session_managers
             )
+            if codex_compatibility_only:
+                detail = (
+                    "thread bootstrap binding has no live Codex session"
+                    if bootstrap is not None
+                    else "active thread assignment has no live Codex session"
+                )
+            else:
+                detail = (
+                    "thread bootstrap binding has no live agent runtime session"
+                    if bootstrap is not None
+                    else "active thread assignment has no live agent runtime session"
+                )
             raise HTTPException(status_code=503, detail=detail) from exc
         assignment = session.validate_current()
         return manager, session, assignment
@@ -333,7 +342,7 @@ class TurnExecutionService:
         if resolved is None:
             return await self.host.codex.request(method, params)
         _manager, session, assignment = resolved
-        binding = assignment.runtime_binding
+        binding = getattr(assignment, "runtime_binding", None)
         if binding is None or (
             binding.provider_id == "openai" and binding.runtime_id == "codex"
         ):
@@ -583,7 +592,7 @@ class TurnExecutionService:
                     bootstrap.assignment_id
                 )
                 assignment = session.validate_current()
-                runtime_binding = assignment.runtime_binding
+                runtime_binding = getattr(assignment, "runtime_binding", None)
                 if (
                     assignment.id != bootstrap.assignment_id
                     or assignment.execution_id != bootstrap.execution_id
@@ -643,7 +652,7 @@ class TurnExecutionService:
                     runtime_binding=runtime_binding,
                 )
                 session = await session_manager.start(binding.assignment_id)
-                runtime_binding = binding.runtime_binding
+                runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
                 assignment_id = binding.assignment_id
                 workspace_id = binding.workspace_id
 
