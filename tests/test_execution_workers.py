@@ -187,7 +187,7 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.2")
+        self.assertEqual(state.schema_version, "1.3")
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
@@ -242,6 +242,42 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertNotIn("actual-secret-value", serialized)
         self.assertEqual(assignment.network.enabled, False)
         self.assertEqual(assignment.limits.process_count, 32)
+
+    def test_worker_rejects_unsupported_execution_contract_version(self) -> None:
+        assignment = self._assignment(
+            execution_id="exec-contract-mismatch",
+            execution_contract_version="2.0",
+        )
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+        self.assertIsNone(claimed)
+
+        compatible = self.service.register(
+            ExecutionWorkerRegister(
+                service_identity_id="worker-service",
+                pool="compat",
+                version="2.0.0",
+                capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                ),
+                supported_execution_contract_versions=("2.0",),
+                max_concurrency=1,
+            ),
+            actor=self.admin,
+        )
+        claimed = self.service.claim(
+            compatible.id,
+            AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.assigned_worker_id, compatible.id)
 
     def test_worker_can_claim_start_and_complete_with_fenced_lease(self) -> None:
         assignment = self._assignment()
