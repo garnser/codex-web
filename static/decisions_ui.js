@@ -192,7 +192,7 @@ function renderTrace(decision) {
       .map((item) => [item.intent.id, item]),
   );
   const goalLine = decision.goal_id
-    ? `<div class="decision-trace-node"><span>Goal</span><strong>${esc(goal?.title || decision.goal_id)}</strong><small>${esc(decision.goal_id)} · ${esc(goal?.status || 'linked')}</small></div>`
+    ? `<div class="decision-trace-node"><span>Goal</span><strong><a class="decision-link" href="/api/goals/${encodeURIComponent(decision.goal_id)}" target="_blank" rel="noopener">${esc(goal?.title || decision.goal_id)}</a></strong><small>${esc(decision.goal_id)} · ${esc(goal?.status || 'linked')}</small></div>`
     : '<div class="decision-trace-node"><span>Goal</span><strong>Not linked</strong><small>This Decision is workspace/project scoped.</small></div>';
 
   const work = workLinks.length
@@ -208,8 +208,8 @@ function renderTrace(decision) {
             <p>${esc(link.description)}</p>
             <div class="decision-grid">
               <div><span>Project</span><strong>${esc(link.project_id)}</strong></div>
-              <div><span>ActionIntent</span><strong class="decision-break">${esc(link.action_intent_id || 'planned')}</strong></div>
-              <div><span>Work Item</span><strong>${esc(link.work_item_ref || 'not reconciled')}</strong></div>
+              <div><span>ActionIntent</span><strong class="decision-break">${link.action_intent_id ? `<a class="decision-link" href="/api/action-intents/${encodeURIComponent(link.action_intent_id)}" target="_blank" rel="noopener">${esc(link.action_intent_id)}</a>` : 'planned'}</strong></div>
+              <div><span>Work Item</span><strong>${link.work_item_ref ? `<a class="decision-link" href="/api/work-items/${encodeURIComponent(link.work_item_ref)}" target="_blank" rel="noopener">${esc(link.work_item_ref)}</a>` : 'not reconciled'}</strong></div>
               <div><span>Work stage</span><strong>${esc(item?.current_stage || '—')}</strong></div>
               <div><span>Outcome</span><strong>${esc(item?.terminal_outcome || intent?.status || '—')}</strong></div>
               <div><span>Expected result</span><strong>${esc(link.expected_result || '—')}</strong></div>
