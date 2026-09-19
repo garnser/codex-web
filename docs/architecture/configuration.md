@@ -105,6 +105,6 @@ Startup-only settings must be presented as requiring restart/reload. The UI must
 
 ## Security and observability
 
-Configuration records contain actor/time/reason provenance but are not a substitute for the immutable autonomy/security audit introduced later. Sensitive administration will additionally require human identity, step-up authentication, and M6 authority controls.
+Configuration records contain actor/time/reason provenance but are not a substitute for the immutable autonomy/security audit introduced later. Sensitive administration will additionally require human identity, step-up authentication, and canonical role-authority controls.
 
 Configuration resolution is deterministic and must never require an LLM.
