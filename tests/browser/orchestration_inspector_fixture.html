@@ -1,0 +1,222 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Orchestration inspector fixture</title>
+</head>
+<body>
+  <details id="developer-panel" open>
+    <summary>Developer</summary>
+    <div class="developer-grid"></div>
+  </details>
+  <script>
+    window.__orchRequests = [];
+    const inspector = {
+      control: {
+        mode: 'active',
+        dry_run: false,
+        simulation: false,
+        reasoning_threshold: 0.7,
+        cooldown_seconds: 30,
+        max_reasoning_attempts: 3,
+        reasoning_backoff_seconds: 1,
+        max_recursion_depth: 4,
+        max_actions_per_cycle: 5
+      },
+      cycle_count: 1,
+      event_count: 1,
+      dead_letters: [],
+      dependencies: {
+        scheduler: { available: true, issue: 158, reason: 'canonical durable scheduler is projected read-only' },
+        evaluation_replay: { available: true, issue: 159, reason: 'canonical evaluation/replay state is projected read-only' },
+        attention_queue: { available: true, issue: 160, reason: 'canonical Attention state is projected read-only' }
+      },
+      timeline: [{
+        event: {
+          event_id: 'event-a',
+          event_type: 'ci.pipeline',
+          source: 'gitlab:fixture',
+          occurred_at: 1890000000,
+          idempotency_key: 'pipeline-42',
+          correlation_id: 'corr-a',
+          causation_id: null
+        },
+        filtering_result: 'completed',
+        reasoning: { invoked: true, reasons: ['pipeline failure requires diagnosis'] },
+        resulting_action_intent_ids: ['intent-a'],
+        action_intents: [{
+          id: 'intent-a',
+          status: 'succeeded',
+          attempt: 1,
+          receipts: [{ id: 'receipt-a', outcome: 'completed' }],
+          verifications: [{ id: 'verify-a', verified: true }]
+        }],
+        approval_requests: [{
+          id: 'approval-a',
+          status: 'approved'
+        }],
+        attention_items: [{
+          id: 'attention-a',
+          status: 'open'
+        }],
+        agent_sessions: [{
+          id: 'session-a',
+          provider_id: 'anthropic',
+          runtime_id: 'claude-code'
+        }],
+        runtime_usage: [],
+        model_invocations: [{
+          id: 'model-a',
+          selected_provider_id: 'openai',
+          selected_model_id: 'gpt-test',
+          route_reason: 'capability match'
+        }],
+        evidence: [{
+          id: 'evidence-a',
+          result: 'pass'
+        }],
+        cycles: [{
+          id: 'cycle-a',
+          outcome: 'completed',
+          reasoning_invoked: true,
+          reasoning_attempts: 1,
+          recursion_depth: 0,
+          action_count: 1,
+          action_intent_ids: ['intent-a'],
+          reason: 'reasoned diagnosis',
+          completed_at: 1890000002
+        }],
+        pipeline: [
+          { stage: 'event', status: 'observed', detail: { event_type: 'ci.pipeline' } },
+          { stage: 'deterministic_filter', status: 'completed', detail: { reason: 'reasoned diagnosis' } },
+          { stage: 'reasoning_gate', status: 'invoked', detail: { attempts: 1, reasons: ['pipeline failure requires diagnosis'] } },
+          { stage: 'routing', status: 'selected', detail: {
+            agent_sessions: [{ id: 'session-a', provider_id: 'anthropic', runtime_id: 'claude-code' }],
+            runtime_usage: [],
+            model_invocations: [{ selected_provider_id: 'openai', selected_model_id: 'gpt-test' }]
+          }},
+          { stage: 'authority_approval', status: 'recorded', detail: { action_intents: [{ id: 'intent-a' }], approval_requests: [{ id: 'approval-a' }] } },
+          { stage: 'execution', status: 'recorded', detail: { actions: [{ id: 'intent-a', status: 'succeeded', attempt: 1, receipts: [{ id: 'receipt-a' }] }] } },
+          { stage: 'verification', status: 'recorded', detail: { verifications: [{ intent_id: 'intent-a' }], evidence: [{ id: 'evidence-a' }] } },
+          { stage: 'human_attention', status: 'pending', detail: { attention_items: [{ id: 'attention-a' }] } }
+        ]
+      }],
+      schedules: [{
+        id: 'schedule-a',
+        name: 'Daily review',
+        tenant_id: 'org-a',
+        workspace_id: 'workspace-a',
+        trigger_type: 'review.due',
+        kind: 'recurring',
+        due_at: 1890000000,
+        recurrence: { kind: 'daily', local_time: '09:00:00', timezone: 'Europe/Stockholm' },
+        misfire_policy: 'fire_once',
+        misfire_grace_seconds: 60,
+        catch_up_limit: 3,
+        status: 'active',
+        next_run_at: 1890086400,
+        last_fired_at: 1890000000,
+        last_scheduled_for: 1890000000,
+        firing_count: 1,
+        created_by: 'admin-a',
+        canonical_event_source: 'scheduler:schedule-a',
+        recent_firings: [{ event_id: 'event-schedule-a', occurred_at: 1890000000, scheduled_for: 1890000000 }]
+      }],
+      evaluations: {
+        runs: [{
+          id: 'evaluation-run-a',
+          scenario_id: 'autonomy.smoke',
+          scenario_version: '1',
+          replay_fixture_id: 'candidate-v2',
+          fixture_checksum_sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          backend_id: 'recorded',
+          mode: 'candidate',
+          passed: false,
+          failure_injection: null,
+          definitions: [{ definition_id: 'role.catalog', revision: 2 }],
+          runtime: { agent_provider_id: 'anthropic', runtime_id: 'claude-code', capability_revision: 4 },
+          models: [{
+            provider_id: 'openai',
+            model_id: 'gpt-test',
+            model_version: '2026-09',
+            prompt_template_id: 'generic.system',
+            prompt_template_version: '4',
+            policy_fingerprint_sha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+          }],
+          trace: { reasoning_calls: 2, input_tokens: 200, output_tokens: 50, cost_usd: 0.04, actions: [{ action_kind: 'provider.action' }], retries: 1 },
+          assertions: [{ kind: 'tokens', passed: false, expected: '<= 200', actual: '250', detail: 'token budget exceeded' }],
+          evidence_id: 'evaluation-evidence-a',
+          baseline_run_id: 'evaluation-run-base'
+        }],
+        comparisons: [{
+          id: 'comparison-a',
+          scenario_id: 'autonomy.smoke',
+          scenario_version: '1',
+          baseline_run_id: 'evaluation-run-base',
+          candidate_run_id: 'evaluation-run-a',
+          passed: false,
+          token_delta: 50,
+          cost_delta_usd: 0.02,
+          latency_delta_seconds: 1.2,
+          action_delta: 1,
+          intervention_delta: 0,
+          definition_resolution_changed: true,
+          runtime_changed: false,
+          model_or_prompt_changed: true,
+          regression_reasons: ['token usage regression exceeds configured threshold']
+        }],
+        suite_runs: []
+      },
+      attention_items: [{
+        id: 'attention-a',
+        type: 'action.uncertain',
+        severity: 'high',
+        status: 'open',
+        reason: 'Provider result requires reconciliation',
+        source: { object_type: 'action_intent', object_id: 'intent-a' },
+        owner_identity_id: 'admin-a',
+        due_at: 1890001000,
+        escalation_count: 1
+      }],
+      approval_requests: [{
+        id: 'approval-a',
+        status: 'approved',
+        target: { operation: 'deploy.release', object_type: 'action_intent', object_id: 'intent-a', target_version: '2' },
+        requirement: { quorum: 2, distinct_humans: true, required_assurance: 'mfa' },
+        decisions: [{ outcome: 'approve' }, { outcome: 'approve' }],
+        policy_source: 'policy.release',
+        authority_source: 'role.release-manager',
+        expires_at: 1890005000
+      }]
+    };
+
+    window.fetch = async (url, options = {}) => {
+      const parsed = new URL(url, window.location.href);
+      window.__orchRequests.push({
+        path: parsed.pathname,
+        search: parsed.search,
+        method: options.method || 'GET',
+        body: options.body || null
+      });
+      if (parsed.pathname === '/api/orchestration/inspector') {
+        return new Response(JSON.stringify(inspector), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (parsed.pathname === '/api/schedules/schedule-a/pause' && (options.method || 'GET') === 'POST') {
+        inspector.schedules[0].status = 'paused';
+        return new Response(JSON.stringify({ schedule: inspector.schedules[0] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+  </script>
+  <script src="/static/orchestration_ui.js"></script>
+</body>
+</html>
