@@ -232,9 +232,11 @@ class AutonomyAuditService:
                 context["intent_statuses"]
             )[:500]
         if cycle.last_error:
-            # Only the bounded exception class/reason code is persisted by callers;
-            # never persist prompts, provider payloads or secret material here.
-            details["last_error"] = cycle.last_error[:500]
+            # Immutable audit keeps proof that an error existed without retaining
+            # provider exception text, which may contain sensitive material.
+            details["last_error_sha256"] = hashlib.sha256(
+                cycle.last_error.encode("utf-8", errors="replace")
+            ).hexdigest()
 
         payload = AutonomyAuditPayload(
             kind=AutonomyAuditKind.CYCLE,
@@ -387,6 +389,64 @@ class AutonomyAuditService:
         ).encode("utf-8")
         return payload_hash, hashlib.sha256(digest_input).hexdigest()
 
+    @staticmethod
+    def _expected_checkpoint_hash(
+        checkpoint: AutonomyAuditCheckpoint,
+    ) -> str:
+        return hashlib.sha256(
+            (
+                f"{CHECKPOINT_HASH_ALGORITHM}\x00{checkpoint.partition_id}\x00"
+                f"{checkpoint.sequence}\x00{checkpoint.root_hash}\x00"
+                f"{checkpoint.previous_checkpoint_hash}\x00"
+                f"{checkpoint.created_at:.6f}"
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _verify_checkpoints(
+        self,
+        partition: str,
+        rows: list[AutonomyAuditRecord],
+    ) -> tuple[AutonomyAuditCheckpoint | None, str | None]:
+        checkpoints = sorted(
+            (
+                item
+                for item in self.store.load().checkpoints
+                if item.partition_id == partition
+            ),
+            key=lambda item: (item.created_at, item.sequence, item.id),
+        )
+        previous_hash = GENESIS_HASH
+        latest: AutonomyAuditCheckpoint | None = None
+        row_by_sequence = {item.sequence: item for item in rows}
+        for checkpoint in checkpoints:
+            if checkpoint.previous_checkpoint_hash != previous_hash:
+                return checkpoint, "audit_checkpoint_previous_hash_mismatch"
+            if checkpoint.checkpoint_hash != self._expected_checkpoint_hash(checkpoint):
+                return checkpoint, "audit_checkpoint_hash_mismatch"
+            if checkpoint.sequence == 0:
+                if checkpoint.root_hash != GENESIS_HASH:
+                    return checkpoint, "audit_empty_checkpoint_root_mismatch"
+            else:
+                record = row_by_sequence.get(checkpoint.sequence)
+                if record is None or record.record_hash != checkpoint.root_hash:
+                    return checkpoint, "audit_checkpoint_root_mismatch"
+            if checkpoint.signature is not None:
+                if self.signer is None:
+                    return checkpoint, "audit_checkpoint_signature_verifier_unavailable"
+                signature = AuditSignature(
+                    algorithm=checkpoint.signature_algorithm or "unknown",
+                    key_ref=checkpoint.signing_key_ref or "unknown",
+                    signature=checkpoint.signature,
+                )
+                if not self.signer.verify(
+                    checkpoint.signing_payload(),
+                    signature,
+                ):
+                    return checkpoint, "audit_checkpoint_signature_invalid"
+            previous_hash = checkpoint.checkpoint_hash
+            latest = checkpoint
+        return latest, None
+
     def verify(
         self,
         *,
@@ -463,57 +523,21 @@ class AutonomyAuditService:
             previous_hash = item.record_hash
             expected_sequence += 1
 
-        checkpoint = self._latest_checkpoint(partition)
-        if checkpoint is not None:
-            checkpoint_row = next(
-                (item for item in rows if item.sequence == checkpoint.sequence),
-                None,
+        checkpoint, checkpoint_error = self._verify_checkpoints(
+            partition,
+            rows,
+        )
+        if checkpoint_error is not None:
+            return AuditIntegrityResult(
+                status=AuditIntegrityStatus.FAILED,
+                partition_id=partition,
+                records_checked=len(rows),
+                first_sequence=rows[0].sequence,
+                last_sequence=rows[-1].sequence,
+                root_hash=rows[-1].record_hash,
+                checkpoint_id=checkpoint.id if checkpoint is not None else None,
+                reason=checkpoint_error,
             )
-            if (
-                checkpoint_row is None
-                or checkpoint_row.record_hash != checkpoint.root_hash
-            ):
-                return AuditIntegrityResult(
-                    status=AuditIntegrityStatus.FAILED,
-                    partition_id=partition,
-                    records_checked=len(rows),
-                    first_sequence=rows[0].sequence,
-                    last_sequence=rows[-1].sequence,
-                    root_hash=rows[-1].record_hash,
-                    checkpoint_id=checkpoint.id,
-                    reason="audit_checkpoint_root_mismatch",
-                )
-            if checkpoint.signature is not None:
-                if self.signer is None:
-                    return AuditIntegrityResult(
-                        status=AuditIntegrityStatus.FAILED,
-                        partition_id=partition,
-                        records_checked=len(rows),
-                        first_sequence=rows[0].sequence,
-                        last_sequence=rows[-1].sequence,
-                        root_hash=rows[-1].record_hash,
-                        checkpoint_id=checkpoint.id,
-                        reason="audit_checkpoint_signature_verifier_unavailable",
-                    )
-                signature = AuditSignature(
-                    algorithm=checkpoint.signature_algorithm or "unknown",
-                    key_ref=checkpoint.signing_key_ref or "unknown",
-                    signature=checkpoint.signature,
-                )
-                if not self.signer.verify(
-                    checkpoint.signing_payload(),
-                    signature,
-                ):
-                    return AuditIntegrityResult(
-                        status=AuditIntegrityStatus.FAILED,
-                        partition_id=partition,
-                        records_checked=len(rows),
-                        first_sequence=rows[0].sequence,
-                        last_sequence=rows[-1].sequence,
-                        root_hash=rows[-1].record_hash,
-                        checkpoint_id=checkpoint.id,
-                        reason="audit_checkpoint_signature_invalid",
-                    )
 
         return AuditIntegrityResult(
             status=AuditIntegrityStatus.VERIFIED,
