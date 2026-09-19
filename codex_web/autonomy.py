@@ -26,6 +26,37 @@ class AutonomyMode(StrEnum):
     KILLED = "killed"
 
 
+class AutonomyPauseScope(StrEnum):
+    IDENTITY = "identity"
+    PROJECT = "project"
+    RESOURCE = "resource"
+
+
+class AutonomyScopedPause(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    id: str = Field(default_factory=lambda: f"autonomy-pause-{uuid.uuid4().hex}")
+    scope: AutonomyPauseScope
+    scope_id: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=4000)
+    created_by: str = Field(min_length=1, max_length=500)
+    created_at: float = Field(default_factory=time.time)
+    expires_at: float | None = None
+
+    def active(self, now: float | None = None) -> bool:
+        current = time.time() if now is None else float(now)
+        return self.expires_at is None or self.expires_at > current
+
+
+class AutonomyScopedPauseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scope: AutonomyPauseScope
+    scope_id: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=4000)
+    expires_at: float | None = None
+
+
 class AutonomyCycleOutcome(StrEnum):
     DETERMINISTIC = "deterministic"
     SKIPPED = "skipped"
@@ -51,6 +82,7 @@ class AutonomyControl(BaseModel):
     max_recursion_depth: int = Field(default=4, ge=0, le=16)
     max_actions_per_cycle: int = Field(default=4, ge=0, le=32)
     trigger_event_types: tuple[str, ...] = ()
+    scoped_pauses: tuple[AutonomyScopedPause, ...] = ()
     policy: AutonomyPolicy = Field(default_factory=AutonomyPolicy)
 
     @model_validator(mode="after")
@@ -60,6 +92,31 @@ class AutonomyControl(BaseModel):
             "trigger_event_types",
             tuple(dict.fromkeys(item.strip() for item in self.trigger_event_types if item.strip())),
         )
+        object.__setattr__(
+            self,
+            "scoped_pauses",
+            tuple(
+                dict.fromkeys(
+                    (
+                        item.scope.value,
+                        item.scope_id,
+                        item.id,
+                    )
+                    for item in self.scoped_pauses
+                )
+            ),
+        )
+        # Rebuild the tuple after duplicate-key filtering while preserving
+        # the first canonical pause record for each unique ID/scope pair.
+        seen = set()
+        pauses = []
+        for item in self.scoped_pauses:
+            key = (item.scope.value, item.scope_id, item.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            pauses.append(item)
+        object.__setattr__(self, "scoped_pauses", tuple(pauses))
         return self
 
 
