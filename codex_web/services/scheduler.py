@@ -82,6 +82,11 @@ class SchedulerService:
         self.max_idle_sleep_seconds = max(0.05, float(max_idle_sleep_seconds))
         self._wake = asyncio.Event()
 
+    def notify_state_changed(self) -> None:
+        """Wake the runtime after another canonical transaction changed schedules."""
+
+        self._wake.set()
+
     def create(self, payload: ScheduleCreate, *, actor_id: str) -> ScheduleRecord:
         schedule = ScheduleRecord.from_create(
             payload,

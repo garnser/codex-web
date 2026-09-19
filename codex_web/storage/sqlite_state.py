@@ -199,6 +199,42 @@ class SQLiteStateStore:
             self._upsert(connection, namespace, updated)
             return updated
 
+    def update_many(
+        self,
+        defaults: dict[str, Any],
+        updater: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically read, transform, and replace multiple namespace documents.
+
+        This is the cross-domain transaction primitive for operations whose
+        safety invariant spans canonical documents, such as consuming an
+        ApprovalRequest in the same commit as the guarded mutation. All
+        namespaces are read after one BEGIN IMMEDIATE writer lock is acquired.
+        """
+
+        namespaces = tuple(dict.fromkeys(defaults))
+        if not namespaces:
+            raise ValueError("update_many requires at least one namespace")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current: dict[str, Any] = {}
+            for namespace in namespaces:
+                row = connection.execute(
+                    "SELECT payload FROM state_documents WHERE namespace = ?",
+                    (namespace,),
+                ).fetchone()
+                current[namespace] = self._decode(row, defaults[namespace])
+
+            updated = updater(current)
+            if set(updated) != set(namespaces):
+                raise ValueError(
+                    "update_many updater must return exactly the requested namespaces"
+                )
+            for namespace in namespaces:
+                self._upsert(connection, namespace, updated[namespace])
+            return updated
+
     def contains(self, namespace: str) -> bool:
         with self._connection() as connection:
             row = connection.execute(

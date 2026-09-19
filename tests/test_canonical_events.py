@@ -178,6 +178,7 @@ class CanonicalEventTests(unittest.IsolatedAsyncioTestCase):
                 "failure.observed",
                 "task_source.event",
                 "schedule.due",
+                "approval.transition",
             },
         )
 

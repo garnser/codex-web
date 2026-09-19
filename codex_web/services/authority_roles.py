@@ -183,6 +183,51 @@ class AuthorityRoleService:
             )
         )
 
+    def role_ids_for_actor(
+        self,
+        actor: AuthenticationActor,
+        *,
+        project_id: str | None = None,
+        now: float | None = None,
+    ) -> tuple[str, ...]:
+        """Return live operational Role IDs for deterministic eligibility checks."""
+
+        evaluated_at = time.time() if now is None else float(now)
+        record = self.catalog_record(
+            actor=actor,
+            project_id=project_id,
+            now=evaluated_at,
+        )
+        catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
+        roots: list[tuple[str, str | None, float | None]] = []
+        for binding in catalog.bindings:
+            if self._binding_matches(binding, actor, project_id):
+                roots.append((binding.role_id, None, None))
+        for delegation in catalog.delegations:
+            if self._delegation_matches(
+                delegation,
+                actor,
+                project_id,
+                evaluated_at,
+            ):
+                roots.append(
+                    (
+                        delegation.role_id,
+                        delegation.id,
+                        delegation.expires_at,
+                    )
+                )
+        if not roots:
+            return ()
+        return tuple(
+            sorted(
+                {
+                    path.role_id
+                    for path in self._expand_role_paths(catalog, roots)
+                }
+            )
+        )
+
     def _resource_findings(
         self,
         grant: AuthorityGrant,

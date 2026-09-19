@@ -5,6 +5,7 @@ import asyncio
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
+from codex_web.api.approval_requests import build_approval_requests_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
 from codex_web.api.autonomy import build_autonomy_router
@@ -70,6 +71,7 @@ from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
+from codex_web.services.approval_requests import ApprovalRequestService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
@@ -140,6 +142,7 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_items import WorkItemService
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
@@ -334,6 +337,18 @@ authority_role_service = install_authority_roles(
     resource_catalog_service,
 )
 app.state.authority_role_service = authority_role_service
+
+approval_request_store = ApprovalRequestStore(state_store)
+approval_request_service = ApprovalRequestService(
+    approval_request_store,
+    identity_service,
+    canonical_event_ingestion,
+    scheduler=scheduler_service,
+    authority_roles=authority_role_service,
+)
+app.state.approval_request_store = approval_request_store
+app.state.approval_request_service = approval_request_service
+app.include_router(build_approval_requests_router(approval_request_service))
 
 action_provider_state_store = ActionProviderStateStore(state_store)
 action_provider_registry = ActionProviderRegistry(action_provider_state_store)
@@ -531,9 +546,19 @@ def _resource_ids_for_project(project_id: str) -> list[str]:
 
 core._resource_ids_for_project = _resource_ids_for_project
 runtime_service = RuntimeService(core)
+approval_compatibility_actor = identity_service.local_trusted_actor()
+codex_approval_requester = identity_service.bootstrap_service_actor(
+    identity_id="service-codex-approval-requester",
+    name="Codex approval requester",
+    scope=approval_compatibility_actor.tenant,
+    service_scopes=("approvals:request",),
+)
 approval_service = ApprovalService(
     core,
     assignment_sessions=assignment_bound_codex_session_manager,
+    canonical=approval_request_service,
+    canonical_requester=codex_approval_requester,
+    compatibility_actor=approval_compatibility_actor,
 )
 thread_service = ThreadService(
     core,

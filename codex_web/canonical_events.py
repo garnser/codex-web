@@ -14,6 +14,7 @@ class CanonicalEventType(StrEnum):
     FAILURE = "failure.observed"
     TASK_SOURCE = "task_source.event"
     SCHEDULE = "schedule.due"
+    APPROVAL = "approval.transition"
 
 
 def task_source_event_type(provider_event_type: str) -> CanonicalEventType:
