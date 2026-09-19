@@ -93,10 +93,10 @@ SELF_SERVICE_MUTATIONS = frozenset(
     }
 )
 
-ADMIN_MUTATION_PREFIXES = (
+ADMIN_MFA_MUTATION_PREFIXES = (
     "/api/identity",
     "/api/secrets",
-    "/api/crypto-keys",
+    "/api/crypto/",
     "/api/extensions",
     "/api/configuration",
     "/api/definitions",
@@ -104,10 +104,7 @@ ADMIN_MUTATION_PREFIXES = (
     "/api/entitlements",
     "/api/execution-workers",
     "/api/execution-workspaces",
-    "/api/model-gateway",
     "/api/agent-providers",
-    "/api/agent-runtimes",
-    "/api/provider-capacity",
     "/api/releases",
     "/api/upgrades",
     "/api/recovery",
@@ -116,7 +113,64 @@ ADMIN_MUTATION_PREFIXES = (
     "/api/business-data-sources",
     "/api/business-kpis",
     "/api/company-operations",
-    "/api/data-governance",
+    "/api/goals",
+    "/api/metrics",
+    "/api/schedules",
+)
+
+ADMIN_ROLE_MUTATION_PREFIXES = (
+    "/api/projects",
+)
+
+# These POST-style operations are reads/simulations/invocations rather than
+# configuration mutations. Their existing domain checks remain authoritative.
+AUTHENTICATED_MUTATION_PATHS = frozenset(
+    {
+        ("POST", "/api/authority/simulate"),
+        ("POST", "/api/configuration/resolve"),
+        ("POST", "/api/definitions/resolve"),
+        ("POST", "/api/data-governance/context/filter"),
+        ("POST", "/api/model-gateway/route"),
+        ("POST", "/api/memory/search"),
+    }
+)
+
+# Mixed domains intentionally stay coarse-authenticated here because their
+# endpoint/service layers already apply exact service scopes, approvals,
+# ownership, leases, entitlements, or stronger authority checks. Listing the
+# family is still an explicit API policy declaration; an unknown new mutation
+# family fails closed below.
+AUTHENTICATED_MUTATION_PREFIXES = (
+    "/api/action-intents",
+    "/api/action-providers",
+    "/api/agent-routing",
+    "/api/agent-sessions",
+    "/api/approval-requests",
+    "/api/approvals",
+    "/api/artifacts",
+    "/api/evidence",
+    "/api/verifications",
+    "/api/evidence-requirements",
+    "/api/evidence-evaluations",
+    "/api/artifact-evidence",
+    "/api/attention",
+    "/api/authority",
+    "/api/autonomy",
+    "/api/bots",
+    "/api/capacity",
+    "/api/decisions",
+    "/api/evaluations",
+    "/api/executive",
+    "/api/goal-decompositions",
+    "/api/integrations",
+    "/api/memory",
+    "/api/model-gateway",
+    "/api/organizational-memory",
+    "/api/provider-capacity",
+    "/api/diagnostics",
+    "/api/threads",
+    "/api/turns",
+    "/api/work-graph",
 )
 
 OPERATIONAL_MUTATION_PREFIXES: tuple[tuple[str, str, AuthorityLevel], ...] = (
@@ -157,7 +211,15 @@ def classify_api_policy(
                     "addition to endpoint/domain authorization."
                 ),
             )
-    if path.startswith(ADMIN_MUTATION_PREFIXES):
+    if (method, path) in AUTHENTICATED_MUTATION_PATHS:
+        return APIAuthorizationPolicy(
+            kind=APIAuthorizationKind.AUTHENTICATED,
+            description=(
+                "Authenticated tenant member/service operation; existing "
+                "domain-specific authorization remains authoritative."
+            ),
+        )
+    if path.startswith(ADMIN_MFA_MUTATION_PREFIXES):
         return APIAuthorizationPolicy(
             kind=APIAuthorizationKind.ADMIN,
             human_roles=(MembershipRole.OWNER, MembershipRole.ADMIN),
@@ -168,14 +230,26 @@ def classify_api_policy(
                 "must satisfy the endpoint's exact service-scope policy."
             ),
         )
-    return APIAuthorizationPolicy(
-        kind=APIAuthorizationKind.AUTHENTICATED,
-        description=(
-            "Authenticated tenant member/service operation. Existing endpoint "
-            "Role, service-scope, ApprovalRequest, authority and policy checks "
-            "remain authoritative and may be stricter."
-        ),
-    )
+    if path.startswith(ADMIN_ROLE_MUTATION_PREFIXES):
+        return APIAuthorizationPolicy(
+            kind=APIAuthorizationKind.ADMIN,
+            human_roles=(MembershipRole.OWNER, MembershipRole.ADMIN),
+            service_scope_mode=APIServiceScopeMode.DOMAIN,
+            description=(
+                "Human callers require Owner/Admin; service callers remain "
+                "subject to the endpoint's exact service-scope policy."
+            ),
+        )
+    if path.startswith(AUTHENTICATED_MUTATION_PREFIXES):
+        return APIAuthorizationPolicy(
+            kind=APIAuthorizationKind.AUTHENTICATED,
+            service_scope_mode=APIServiceScopeMode.DOMAIN,
+            description=(
+                "Authenticated mutation with endpoint/domain authorization "
+                "remaining authoritative and potentially stricter."
+            ),
+        )
+    return None
 
 
 def _route_methods(route: APIRoute) -> tuple[str, ...]:
