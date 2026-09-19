@@ -122,6 +122,14 @@ Examples:
 - a remembered policy cannot grant authority; Role/Authority definitions are resolved canonically at action time
 - remembered credentials are forbidden by governance and may not enter model context.
 
-## M10 follow-up
+## Ingestion, reusable procedures, and reasoning integration
 
-Issue #118 builds ingestion adapters, verified reusable procedures, the Memory workspace/retrieval inspector, and integration that retrieves bounded relevant memory before Executive reasoning or major technical changes. That UI must expose the retrieval backend/index revision and embedding identity recorded here without presenting the derived index as canonical truth. Those consumers must use this service and its retrieval-run provenance rather than performing full-history replay or adding a second memory store.
+Authorized source adapters normalize repository, pull-request, issue, architecture-decision, and other provider snapshots into `KnowledgeCreate` records and submit them through the batch ingestion boundary. The memory service owns deterministic idempotency: a retry with the same logical key, content, governance metadata, and source revision is unchanged; a changed source snapshot becomes a new canonical version and explicitly supersedes the prior version.
+
+Verified recurring solutions can be promoted into `PROCEDURE` memory only with explicit Evidence IDs and source Knowledge IDs. The promoted procedure records typed `derived_from` relationships plus source governance provenance. It inherits the strongest source classification, earliest source retention expiry, delete semantics, model-context denial, and operational-role restrictions. Promotion creates reusable governed knowledge; it does not grant execution authority or bypass ActionIntent/Approval policy.
+
+Executive reasoning retrieves memory before model invocation. Both the compatibility Executive chat path and canonical M9 Executive Management use the same `OrganizationalMemoryService.search` boundary with bounded Top-K/candidate/context budgets. Canonical Executive activations retain the exact retrieval-run ID, while prompt context carries exact `[memory:<id>@v<version>]` citations. Retrieval does not add a model call.
+
+The Memory workspace is an inspectable operator surface over canonical knowledge and retrieval provenance. It exposes scope, type, lifecycle/freshness, classification/retention, provenance, versions, relationships, derived backend/index/embedding revision, selected/denied candidates, scores, reasons, and packed token budgets. The UI explicitly labels the index as derived/rebuildable state rather than canonical truth and remains usable at phone viewport widths.
+
+The legacy `/api/executive/knowledge` compatibility surface routes to Organizational Memory when the composed application is running. It no longer creates a second Executive reasoning source; standalone compatibility tests may still instantiate the legacy store when Organizational Memory is intentionally absent.
