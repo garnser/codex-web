@@ -449,7 +449,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 launch["trusted_readonly_mounts"],
-                ((broker_root, Path("/run/codex-model-egress")),),
+                ((broker_root, Path("/run/agent-model-egress")),),
             )
             self.assertTrue(broker_root.exists())
         finally:
