@@ -743,9 +743,12 @@ class UpgradeService:
                 step.approval_request_id,
                 actor=actor,
             )
-            if approval.status != ApprovalRequestStatus.APPROVED:
+            if approval.status not in {
+                ApprovalRequestStatus.APPROVED,
+                ApprovalRequestStatus.CONSUMED,
+            }:
                 raise UpgradeConflictError(
-                    "irreversible upgrade approval is not approved"
+                    "irreversible upgrade approval is not approved/consumed for resume"
                 )
             target = self._approval_target(plan, step, actor=actor)
             await self.approvals.consume(
