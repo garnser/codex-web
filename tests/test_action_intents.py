@@ -780,10 +780,10 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(accepted.duplicate)
 
-    async def test_denied_authority_is_persisted_but_never_claimable(self) -> None:
+    async def test_denied_policy_is_persisted_but_never_claimable(self) -> None:
         intent = self._create(
-            authority_decision=ActionDecisionSnapshot(
-                decision_id="authority-1",
+            policy_decision=ActionDecisionSnapshot(
+                decision_id="policy-1",
                 outcome=ActionDecisionOutcome.DENY,
                 source="test-policy",
                 reason="not allowed",
