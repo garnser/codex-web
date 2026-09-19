@@ -4,8 +4,10 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from codex_web.compatibility import CanonicalEventEnvelope
+from codex_web.models import Project, WorkItemEvent
 from codex_web.coordination import CoordinationFenceError
 from codex_web.event_transport import (
     EventTransportCapabilities,
@@ -24,7 +26,9 @@ from codex_web.services.event_transport import (
     RedisStreamsEventTransport,
 )
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
+from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.state_store import StateStoreMigrator
 
@@ -60,6 +64,54 @@ class StateStoreMigrationTests(unittest.TestCase):
             removed = migrator.rollback_destination(source, target, first)
             self.assertEqual(set(removed), {"a", "b"})
             self.assertEqual(target.documents(), {})
+
+
+class SharedCanonicalStateTests(unittest.TestCase):
+    def test_project_registry_uses_shared_store_as_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            store = SQLiteStateStore(path / "shared.sqlite3")
+            legacy = path / "projects.json"
+            repository = ProjectRepository(legacy, store=store)
+            repository.save(
+                [
+                    Project(
+                        id="alpha",
+                        name="Alpha",
+                        path=str(path / "alpha"),
+                    )
+                ]
+            )
+            self.assertTrue(legacy.exists())
+            legacy.unlink()
+
+            restarted = ProjectRepository(legacy, store=store)
+            loaded = restarted.load()
+            self.assertEqual([item.id for item in loaded], ["alpha"])
+            self.assertEqual(store.get("projects")[0]["id"], "alpha")
+
+    def test_work_item_event_journal_is_shared_store_primary_with_jsonl_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            store = SQLiteStateStore(path / "shared.sqlite3")
+            host = SimpleNamespace(
+                DATA_DIR=path,
+                WORK_ITEM_EVENTS_FILE=path / "work-item-events.jsonl",
+            )
+            machine = WorkItemStateMachine(host, store=store)
+            event = WorkItemEvent(
+                ref="work-1",
+                event_type="progress",
+                created_at=100.0,
+                actor="agent-a",
+                payload={"stage": "implementation_active"},
+            )
+            machine._append_work_item_event(event)
+
+            rows = store.get("work_item_events")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["ref"], "work-1")
+            self.assertTrue(host.WORK_ITEM_EVENTS_FILE.exists())
 
 
 class CoordinationFailoverTests(unittest.TestCase):
@@ -162,6 +214,48 @@ class CoordinationFailoverTests(unittest.TestCase):
             with self.assertRaises(CoordinationFenceError):
                 first.require_fence("release-gate")
 
+
+
+
+class ReplicatedExclusiveExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_one_replica_executes_same_singleton_responsibility(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "shared.sqlite3"
+            first = ReplicatedOwnershipService(
+                StateStoreCoordinationBackend(SQLiteStateStore(path)),
+                instance_id="instance-a",
+                lease_seconds=30,
+            )
+            second = ReplicatedOwnershipService(
+                StateStoreCoordinationBackend(SQLiteStateStore(path)),
+                instance_id="instance-b",
+                lease_seconds=30,
+            )
+            started = asyncio.Event()
+            finish = asyncio.Event()
+            executions: list[str] = []
+
+            async def first_operation() -> None:
+                executions.append("a")
+                started.set()
+                await finish.wait()
+
+            first_task = asyncio.create_task(
+                first.run_exclusive("critical-loop", first_operation)
+            )
+            await started.wait()
+
+            ran_second, _ = await second.run_exclusive(
+                "critical-loop",
+                lambda: asyncio.sleep(0),
+            )
+            self.assertFalse(ran_second)
+            self.assertEqual(executions, ["a"])
+
+            finish.set()
+            ran_first, _ = await first_task
+            self.assertTrue(ran_first)
+            self.assertEqual(executions, ["a"])
 
 class _FakeRedis:
     def __init__(self) -> None:
