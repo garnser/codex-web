@@ -217,7 +217,7 @@ function refreshWorkspaceCards(id) {
   });
 }
 
-function setActiveInternal(id) {
+function setActiveInternal(id, { updateHash = true } = {}) {
   activeWorkspace = id;
   document.querySelectorAll("[data-product-workspace-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.productWorkspacePanel !== id;
@@ -234,7 +234,7 @@ function setActiveInternal(id) {
   if (description) description.textContent = item.description;
   renderWorkspaceActions(id);
   refreshWorkspaceCards(id);
-  setHash(id);
+  if (updateHash) setHash(id);
 }
 
 function renderWorkspaceActions(id) {
@@ -478,7 +478,7 @@ function buildShell() {
     topbar.prepend(launch);
   }
 
-  setActiveInternal("overview");
+  setActiveInternal("overview", { updateHash: false });
 }
 
 function installObservers() {
