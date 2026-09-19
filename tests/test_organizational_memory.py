@@ -601,6 +601,9 @@ class OrganizationalMemoryTests(unittest.TestCase):
             backend_id="external-vector",
         )
         self.service.retrieval_backend = external
+        self.service.embedding_identity_validator = (
+            lambda identity, actor: None
+        )
         self.service._retrieval_index_dirty = True
 
         with self.assertRaisesRegex(
