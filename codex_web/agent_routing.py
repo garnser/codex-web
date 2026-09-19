@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.agent_providers import AgentProviderCapability, AgentProviderHealth
 from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.definitions import DefinitionReference
+from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.model_gateway import ModelInvocationRequest, ModelRouteResult
 
 
@@ -77,6 +78,13 @@ class AgentRuntimeRouteCandidate(BaseModel):
     network_profiles: tuple[str, ...] = ()
     estimated_session_cost_usd: float | None = None
     routing_reason: str
+
+    def execution_binding(self) -> ExecutionRuntimeBinding:
+        return ExecutionRuntimeBinding(
+            provider_id=self.provider_id,
+            runtime_id=self.runtime_id,
+            capability_revision=self.capability_revision,
+        )
 
 
 class AgentRoutingConfigurationSource(BaseModel):
