@@ -13,6 +13,7 @@ class CanonicalEventType(StrEnum):
     INCIDENT = "incident.status"
     FAILURE = "failure.observed"
     TASK_SOURCE = "task_source.event"
+    SCHEDULE = "schedule.due"
 
 
 def task_source_event_type(provider_event_type: str) -> CanonicalEventType:
