@@ -10,6 +10,7 @@ from codex_web.autonomy import (
     AutonomyDeadLetter,
     AutonomyState,
 )
+from codex_web.autonomy_policy import AutonomyBreakGlassGrant
 from codex_web.compatibility import MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -19,12 +20,21 @@ AUTONOMY_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": AUTONOMY_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         "control": payload.get("control") or {},
         "cycles": list(payload.get("cycles") or []),
         "dead_letters": list(payload.get("dead_letters") or []),
         "updated_at": float(payload.get("updated_at") or time.time()),
         "updated_by": str(payload.get("updated_by") or "migration"),
+    },
+)
+AUTONOMY_STATE_MIGRATIONS.register(
+    "1.0",
+    "2.0",
+    lambda payload: {
+        **payload,
+        "schema_version": "2.0",
+        "break_glass_grants": list(payload.get("break_glass_grants") or []),
     },
 )
 
@@ -90,3 +100,36 @@ class AutonomyStateStore:
             return state
 
         return self.update(apply)
+
+    def add_break_glass_grant(
+        self,
+        grant: AutonomyBreakGlassGrant,
+    ) -> AutonomyState:
+        def apply(state: AutonomyState) -> AutonomyState:
+            state.break_glass_grants = [
+                item
+                for item in state.break_glass_grants
+                if item.id != grant.id
+            ]
+            state.break_glass_grants.append(grant)
+            return state
+
+        return self.update(apply)
+
+    def active_break_glass_grants(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        now: float,
+        project_id: str | None = None,
+    ) -> tuple[AutonomyBreakGlassGrant, ...]:
+        state = self.load()
+        return tuple(
+            item
+            for item in state.break_glass_grants
+            if item.organization_id == organization_id
+            and item.workspace_id == workspace_id
+            and item.expires_at > now
+            and (item.project_id is None or item.project_id == project_id)
+        )
