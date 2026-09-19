@@ -14,7 +14,7 @@ from codex_web.attention import (
 )
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.compatibility import CanonicalEventEnvelope
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import AuthenticationActor, MembershipRole
 from codex_web.scheduler import MisfirePolicy, ScheduleCreate
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.scheduler import SchedulerService
@@ -55,7 +55,7 @@ class AttentionService:
                 or actor.identity_id in item.recipient_identity_ids
                 or bool(set(actor.team_ids) & set(item.recipient_team_ids))
                 or actor.identity_id == item.owner_identity_id
-                or actor.has_role("owner", "admin")
+                or actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
             )
         ]
 
