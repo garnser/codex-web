@@ -19,8 +19,15 @@ from codex_web.autonomy import (
     AutonomyObservation,
     AutonomyReasoningResult,
 )
+from codex_web.approval_requests import (
+    ApprovalDecisionOutcome,
+    ApprovalDecisionSubmit,
+    ApprovalRequestStatus,
+)
 from codex_web.autonomy_policy import (
     AutonomyActionCharge,
+    AutonomyBreakGlassPolicy,
+    AutonomyBreakGlassRequest,
     AutonomyBudgetLimits,
     AutonomyLevel,
     AutonomyMaintenanceWindow,
@@ -33,14 +40,26 @@ from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
+    HumanIdentity,
+    Membership,
     MembershipRole,
     PrincipalKind,
+    TenantScope,
 )
 from codex_web.resources import ResourceCreate, ResourceRisk, ResourceType
+from codex_web.services.approval_requests import ApprovalRequestService
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_policy import AutonomyPolicyService
+from codex_web.services.canonical_events import (
+    CanonicalEventBus,
+    CanonicalEventIngestionService,
+)
+from codex_web.services.identity import IdentityService
 from codex_web.services.resources import ResourceCatalogService
+from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.autonomy import AutonomyStateStore
+from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -481,6 +500,199 @@ class AutonomyLevelControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cycle.outcome, AutonomyCycleOutcome.PREPARED)
         self.assertEqual(len(intents.execution.prepared), 1)
         self.assertEqual(intents.calls, [])
+
+
+class CanonicalAutonomyApprovalTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.autonomy_store = AutonomyStateStore(self.sqlite)
+        self.identity_store = IdentityStateStore(self.sqlite)
+        self.identity = IdentityService(self.identity_store)
+        self.identity.bootstrap_local()
+        event_store = CanonicalEventStore(self.sqlite)
+        self.events = CanonicalEventIngestionService(CanonicalEventBus(event_store))
+        self.approvals = ApprovalRequestService(
+            ApprovalRequestStore(self.sqlite),
+            self.identity,
+            self.events,
+        )
+        self.requester = self._human_actor("requester", MembershipRole.MEMBER)
+        self.approver_a = self._human_actor("approver-a", MembershipRole.APPROVER)
+        self.approver_b = self._human_actor("approver-b", MembershipRole.APPROVER)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _human_actor(self, identity_id: str, role: MembershipRole):
+        def seed(state):
+            if not any(item.id == identity_id for item in state.humans):
+                state.humans.append(
+                    HumanIdentity(id=identity_id, display_name=identity_id)
+                )
+            return state
+
+        self.identity_store.update(seed)
+        self.identity.add_membership(
+            Membership(
+                identity_id=identity_id,
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id="local",
+                workspace_id="default",
+                roles=[role],
+            )
+        )
+        credentials = self.identity.create_session(
+            identity_id=identity_id,
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.MFA,
+        )
+        return self.identity.authenticate_session(
+            credentials.session_token,
+            touch=False,
+        ).actor
+
+    def policy_service(self, policy: AutonomyPolicy) -> AutonomyPolicyService:
+        self.autonomy_store.set_control(
+            AutonomyControl(policy=policy),
+            actor_id="test",
+        )
+        return AutonomyPolicyService(
+            self.autonomy_store,
+            approvals=self.approvals,
+            clock=lambda: 2_000_000_000.0,
+        )
+
+    @staticmethod
+    def critical_definition() -> ActionDefinition:
+        return ActionDefinition(
+            action_id="production.deploy",
+            title="Production deploy",
+            risk_class=ActionRiskClass.CRITICAL,
+            capabilities=ActionCapability(
+                prepare=True,
+                execute=True,
+                rollback=True,
+                verification=True,
+            ),
+            reversible=True,
+        )
+
+    @staticmethod
+    def action() -> ActionIntentCreate:
+        return ActionIntentCreate(
+            binding_id="deploy-provider",
+            request=ActionRequest(
+                action_id="production.deploy",
+                organization_id="local",
+                workspace_id="default",
+                project_id="project-a",
+                idempotency_key="deploy-r1",
+            ),
+        )
+
+    async def test_critical_action_requires_distinct_human_canonical_quorum(self):
+        service = self.policy_service(
+            AutonomyPolicy(
+                level=AutonomyLevel.EXECUTE_BROAD,
+                required_qualification_gates=(),
+            )
+        )
+        action = self.action()
+        decision = service.evaluate_action(
+            self.critical_definition(),
+            action.request,
+            actor=self.requester,
+        )
+        approval = await service.ensure_action_approval(
+            action,
+            decision,
+            actor=self.requester,
+        )
+        self.assertIsNotNone(approval)
+        self.assertEqual(approval.requirement.quorum, 2)
+        self.assertTrue(approval.requirement.distinct_humans)
+        self.assertFalse(approval.requirement.allow_self_approval)
+        self.assertEqual(approval.status, ApprovalRequestStatus.PENDING)
+
+        approval = await self.approvals.decide(
+            approval.id,
+            ApprovalDecisionSubmit(
+                outcome=ApprovalDecisionOutcome.APPROVE,
+                reason="verified release evidence",
+                idempotency_key="approve-a",
+            ),
+            actor=self.approver_a,
+        )
+        self.assertEqual(
+            approval.status,
+            ApprovalRequestStatus.PARTIALLY_APPROVED,
+        )
+        approval = await self.approvals.decide(
+            approval.id,
+            ApprovalDecisionSubmit(
+                outcome=ApprovalDecisionOutcome.APPROVE,
+                reason="independent production review",
+                idempotency_key="approve-b",
+            ),
+            actor=self.approver_b,
+        )
+        self.assertEqual(approval.status, ApprovalRequestStatus.APPROVED)
+
+        consumed = await service.consume_action_approval(
+            approval,
+            action,
+            actor=self.requester,
+            cycle_id="cycle-a",
+        )
+        self.assertEqual(consumed.status, ApprovalRequestStatus.CONSUMED)
+
+    async def test_break_glass_is_approval_backed_time_bounded_and_consumed(self):
+        service = self.policy_service(
+            AutonomyPolicy(
+                level=AutonomyLevel.OBSERVE,
+                required_qualification_gates=(),
+                break_glass=AutonomyBreakGlassPolicy(
+                    enabled=True,
+                    quorum=2,
+                    max_duration_seconds=600,
+                ),
+            )
+        )
+        approval = await service.request_break_glass(
+            AutonomyBreakGlassRequest(
+                project_id="project-a",
+                reason="restore a critical production service",
+            ),
+            actor=self.requester,
+        )
+        self.assertEqual(approval.requirement.quorum, 2)
+        self.assertFalse(approval.requirement.allow_self_approval)
+
+        for index, approver in enumerate((self.approver_a, self.approver_b), start=1):
+            approval = await self.approvals.decide(
+                approval.id,
+                ApprovalDecisionSubmit(
+                    outcome=ApprovalDecisionOutcome.APPROVE,
+                    reason="emergency authorization",
+                    idempotency_key=f"break-glass-{index}",
+                ),
+                actor=approver,
+            )
+        self.assertEqual(approval.status, ApprovalRequestStatus.APPROVED)
+
+        grant = await service.activate_break_glass(
+            approval.id,
+            actor=self.requester,
+        )
+        self.assertEqual(grant.approval_request_id, approval.id)
+        self.assertLessEqual(
+            grant.expires_at - grant.activated_at,
+            600,
+        )
+        canonical = self.approvals.get(approval.id, actor=self.requester)
+        self.assertEqual(canonical.status, ApprovalRequestStatus.CONSUMED)
+        self.assertEqual(canonical.resulting_operation_reference, grant.id)
 
 
 if __name__ == "__main__":
