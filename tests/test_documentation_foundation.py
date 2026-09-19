@@ -160,9 +160,11 @@ class DocumentationFoundationTests(unittest.TestCase):
             self.assertIn(term, text, term)
 
     def test_definition_admin_guide_documents_lifecycle_and_code_boundary(self) -> None:
-        text = (
-            ROOT / "docs/administration/definition-registry.md"
-        ).read_text(encoding="utf-8").casefold()
+        text = " ".join(
+            (
+                ROOT / "docs/administration/definition-registry.md"
+            ).read_text(encoding="utf-8").casefold().split()
+        )
         for term in (
             "draft",
             "validate",
