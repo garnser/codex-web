@@ -257,7 +257,7 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(intent.status, ActionIntentStatus.CANCELLED)
         self.assertEqual(intent.security_decision.outcome, SecurityDecisionOutcome.DENY)
-        self.assertIn("trusted explicit authority", " ".join(intent.security_decision.reasons))
+        self.assertIn("trusted explicit policy allow", " ".join(intent.security_decision.reasons))
         self.assertEqual(provider.executions, 0)
         events = self.security.events(self.actor, violation_only=True)
         self.assertTrue(events)
