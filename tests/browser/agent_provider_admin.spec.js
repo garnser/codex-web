@@ -1,6 +1,9 @@
 const { test, expect } = require('@playwright/test');
 
-function installRoutes(page, actions = []) {
+function installRoutes(page, actions = [], state = {}) {
+  state.threadCreates ||= [];
+  state.configurationDrafts ||= [];
+  state.configurationPublishes ||= [];
   return Promise.all([
     page.route('**/api/agent-providers/discover', async (route) => route.fulfill({
       contentType: 'application/json',
@@ -131,6 +134,73 @@ function installRoutes(page, actions = []) {
         },
       }),
     })),
+    page.route('**/api/identity/me', async (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'admin',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+        assurance: 'mfa',
+      }),
+    })),
+    page.route('**/api/threads?*', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      state.threadCreates.push(route.request().url());
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          thread: { id: 'thread-created', cwd: '/workspace' },
+          agentSessionId: 'agent-session-new',
+        }),
+      });
+    }),
+    page.route('**/api/configuration/resolve', async (route) => {
+      const payload = route.request().postDataJSON();
+      const values = {
+        'agent.routing.preferred_provider_ids': ['anthropic'],
+        'agent.routing.preferred_runtime_ids': ['claude-code'],
+        'agent.routing.allow_fallback': false,
+      };
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          effective: {
+            key: payload.key,
+            value: values[payload.key],
+            source: 'project',
+            scope_type: 'project',
+            scope_id: payload.context?.project_id || 'project-a',
+          },
+        }),
+      });
+    }),
+    page.route('**/api/configuration/drafts', async (route) => {
+      const payload = route.request().postDataJSON();
+      state.configurationDrafts.push(payload);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          record: {
+            id: `draft-${state.configurationDrafts.length}`,
+            revision: state.configurationDrafts.length,
+          },
+        }),
+      });
+    }),
+    page.route('**/api/configuration/*/validate', async (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ valid: true }),
+    })),
+    page.route('**/api/configuration/*/publish', async (route) => {
+      state.configurationPublishes.push({
+        url: route.request().url(),
+        payload: route.request().postDataJSON(),
+      });
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ record: { state: 'published' } }),
+      });
+    }),
   ]);
 }
 
@@ -171,6 +241,56 @@ test('routing explanation is rendered from canonical route response', async ({ p
   await expect(result).toContainText('Selected: anthropic /claude-code');
   await expect(result).toContainText('preferred provider; capabilities satisfied');
   await expect(result).toContainText('Rejected:');
+});
+
+test('explicit runtime thread creation forces the selected runtime through the thread API', async ({ page }) => {
+  const state = {};
+  await installRoutes(page, [], state);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html');
+
+  const card = page.locator('#agent-provider-card');
+  await card.locator('.agent-new-project').fill('project-a');
+  await card.locator('.agent-new-runtime').selectOption('anthropic/claude-code');
+  await card.locator('.agent-new-thread').click();
+
+  await expect.poll(() => state.threadCreates.length).toBe(1);
+  const url = new URL(state.threadCreates[0]);
+  expect(url.searchParams.get('project_id')).toBe('project-a');
+  expect(url.searchParams.get('provider_id')).toBe('anthropic');
+  expect(url.searchParams.get('runtime_id')).toBe('claude-code');
+  await expect(card.locator('.agent-new-thread-status')).toContainText('AgentSession agent-session-new');
+});
+
+test('project runtime preference publishes existing typed routing configuration keys', async ({ page }) => {
+  const state = {};
+  await installRoutes(page, [], state);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html');
+
+  const card = page.locator('#agent-provider-card');
+  await card.locator('.agent-preference-project').fill('project-a');
+  await card.locator('.agent-preference-load').click();
+  await expect(card.locator('.agent-preference-runtime')).toHaveValue('anthropic/claude-code');
+  await expect(card.locator('.agent-preference-fallback')).not.toBeChecked();
+
+  await card.locator('.agent-preference-runtime').selectOption('openai/codex');
+  await card.locator('.agent-preference-fallback').check();
+  await card.locator('.agent-preference-save').click();
+
+  await expect.poll(() => state.configurationDrafts.length).toBe(3);
+  expect(state.configurationDrafts.map((item) => item.key)).toEqual([
+    'agent.routing.preferred_provider_ids',
+    'agent.routing.preferred_runtime_ids',
+    'agent.routing.allow_fallback',
+  ]);
+  expect(state.configurationDrafts[0]).toMatchObject({
+    scope_type: 'project',
+    scope_id: 'project-a',
+    value: ['openai'],
+  });
+  expect(state.configurationDrafts[1].value).toEqual(['codex']);
+  expect(state.configurationDrafts[2].value).toBe(true);
+  await expect.poll(() => state.configurationPublishes.length).toBe(3);
+  await expect(card.locator('.agent-preference-status')).toContainText('Effective source');
 });
 
 test('Agent Providers surface remains usable on narrow screens', async ({ page }) => {
