@@ -16,6 +16,7 @@ from codex_web.code_hosts import (
     CodeHostPullRequestFact,
     CodeHostRefFact,
     CodeHostReleaseFact,
+    CodeHostRepositoryFact,
     CodeHostReviewFact,
     CodeHostTransientError,
     CodeHostWebhookFact,
