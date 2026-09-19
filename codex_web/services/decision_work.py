@@ -220,27 +220,20 @@ class DecisionWorkService:
         return tuple(rows)
 
     @staticmethod
-    def _same_spec(
-        links: tuple[DecisionWorkLink, ...],
-        payload: DecisionWorkCommitRequest,
+    def _link_matches_item(
+        link: DecisionWorkLink,
+        item: DecisionWorkItemRequest,
     ) -> bool:
-        if {item.item_id for item in links} != {item.id for item in payload.items}:
-            return False
-        requested = {item.id: item for item in payload.items}
-        for link in links:
-            item = requested[link.item_id]
-            if (
-                link.project_id != item.project_id
-                or link.title != item.title
-                or link.description != item.description
-                or link.expected_result != item.expected_result
-                or link.owner_identity_id != item.owner_identity_id
-                or link.labels != item.labels
-                or link.parent_item_id != item.parent_item_id
-                or link.blocked_by_item_ids != item.blocked_by_item_ids
-            ):
-                return False
-        return True
+        return (
+            link.project_id == item.project_id
+            and link.title == item.title
+            and link.description == item.description
+            and link.expected_result == item.expected_result
+            and link.owner_identity_id == item.owner_identity_id
+            and link.labels == item.labels
+            and link.parent_item_id == item.parent_item_id
+            and link.blocked_by_item_ids == item.blocked_by_item_ids
+        )
 
     async def commit(
         self,
@@ -255,20 +248,31 @@ class DecisionWorkService:
             raise DecisionStateError(
                 "Decision work can only be generated after canonical approval"
             )
-        if decision.work_links:
-            if not self._same_spec(decision.work_links, payload):
+        existing = {item.item_id: item for item in decision.work_links}
+        requested = {item.id: item for item in payload.items}
+        for item_id in sorted(set(existing) & set(requested)):
+            if not self._link_matches_item(existing[item_id], requested[item_id]):
                 raise DecisionConflictError(
-                    "Decision already has a different durable work specification"
+                    f"Decision work item {item_id} already exists with a different specification"
                 )
-            planned = decision
-        else:
-            links = await self._plan(decision, payload, actor=actor)
+
+        new_items = tuple(
+            item for item in payload.items if item.id not in existing
+        )
+        if new_items:
+            new_payload = DecisionWorkCommitRequest(
+                items=new_items,
+                reason=payload.reason,
+            )
+            links = await self._plan(decision, new_payload, actor=actor)
             planned = await self.decisions.record_work_links(
                 decision.id,
-                links,
+                (*decision.work_links, *links),
                 actor=actor,
                 reason=f"{payload.reason}: preflighted Decision work",
             )
+        else:
+            planned = decision
 
         changed: list[DecisionWorkLink] = []
         for link in planned.work_links:
