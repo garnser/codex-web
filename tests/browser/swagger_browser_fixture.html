@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Swagger browser fixture</title>
+  <style>
+    :root {
+      --surface: #fff;
+      --line: #ddd;
+      --text: #111;
+      --muted: #666;
+      --backdrop: rgba(0,0,0,.25);
+    }
+    .controls { display: flex; gap: 8px; }
+    button, a { min-height: 32px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="controls">
+      <button id="theme-toggle" type="button">Theme</button>
+    </div>
+  </header>
+  <script>
+    if (new URLSearchParams(window.location.search).has("proxied")) {
+      history.replaceState({}, "", "/codex/swagger-browser-fixture");
+    }
+  </script>
+  <script src="/static/swagger_browser.js" type="module"></script>
+</body>
+</html>

@@ -212,7 +212,7 @@ Webhook verification fails closed when the required verification secret is not c
 
 ## API and operations
 
-FastAPI exposes the application API and OpenAPI documentation.
+FastAPI exposes the application API and OpenAPI documentation. The top-bar **API** button opens the live Swagger UI inside Codex Web; the browser also provides direct access to the generated OpenAPI JSON and a standalone Swagger tab.
 
 Operational surfaces include:
 
