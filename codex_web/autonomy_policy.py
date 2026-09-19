@@ -312,6 +312,10 @@ class AutonomyActionDecision(BaseModel):
     role_ids: tuple[str, ...] = ()
     approval_required: bool = False
     approval_quorum: int = 0
+    approval_expiry_seconds: float = 0.0
+    required_assurance: AuthenticationAssurance = AuthenticationAssurance.MFA
+    distinct_humans: bool = True
+    allow_self_approval: bool = False
     rollback_required: bool = False
     verification_required: bool = False
     preflight_required: bool = False
@@ -331,6 +335,19 @@ class AutonomyCycleBudgetUsage(BaseModel):
     monetary_impact_usd: float = Field(default=0.0, ge=0.0)
     cloud_spend_usd: float = Field(default=0.0, ge=0.0)
     production_changes: int = Field(default=0, ge=0)
+
+
+class AutonomyBreakGlassRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: str | None = Field(default=None, max_length=500)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class AutonomyBreakGlassActivate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    approval_request_id: str = Field(min_length=1, max_length=500)
 
 
 class AutonomyBreakGlassGrant(BaseModel):
