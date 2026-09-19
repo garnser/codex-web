@@ -265,11 +265,12 @@ class ExternalRecordRef(BaseModel):
     governance_record_id: str | None = None
     created_by: str = Field(min_length=1)
 
-    def stable_key(self) -> tuple[str, str, str, str, str]:
+    def stable_key(self) -> tuple[str, str, str, str, str, str]:
         return (
             self.organization_id,
             self.workspace_id,
             self.system.casefold(),
+            (self.provider_instance or "").casefold(),
             self.object_type.casefold(),
             self.external_id,
         )
