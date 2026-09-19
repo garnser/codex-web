@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "captures": [
+    {
+      "name": "onboarding-control-plane",
+      "fixture": "tests/browser/control_plane_fixture.html",
+      "title": "Onboarding and control-plane setup",
+      "landmarks": ["Developer", "Projects"],
+      "annotations": ["project/workspace setup", "threads and runtime controls"]
+    },
+    {
+      "name": "providers-and-credentials",
+      "fixture": "tests/browser/agent_provider_admin_fixture.html",
+      "title": "Providers and credential references",
+      "landmarks": ["Agent"],
+      "annotations": ["provider configuration", "credential references", "runtime capability"]
+    },
+    {
+      "name": "work-items-and-handoffs",
+      "fixture": "tests/browser/work_items_fixture.html",
+      "title": "Canonical work state and handoffs",
+      "landmarks": ["Work"],
+      "annotations": ["work lifecycle", "blockers", "handoff and reconciliation"]
+    },
+    {
+      "name": "orchestration-and-actions",
+      "fixture": "tests/browser/orchestration_inspector_fixture.html",
+      "title": "Orchestration, action history and evidence",
+      "landmarks": ["Orchestration"],
+      "annotations": ["trigger timeline", "ActionIntent provenance", "approvals/evidence"]
+    },
+    {
+      "name": "goals",
+      "fixture": "tests/browser/goals_fixture.html",
+      "title": "Goals and decomposition",
+      "landmarks": ["Goal"],
+      "annotations": ["goal outcome", "decomposition", "linked work"]
+    },
+    {
+      "name": "decisions",
+      "fixture": "tests/browser/decisions_fixture.html",
+      "title": "Decisions and traceability",
+      "landmarks": ["Decision"],
+      "annotations": ["rationale", "provenance", "related goals/work"]
+    },
+    {
+      "name": "executive-management",
+      "fixture": "tests/browser/executive_management_fixture.html",
+      "title": "Executive management",
+      "landmarks": ["Executive"],
+      "annotations": ["advisory reasoning", "delegation", "management context"]
+    },
+    {
+      "name": "policy-and-authority",
+      "fixture": "tests/browser/authority_policy_explorer_fixture.html",
+      "title": "Policy, role authority and impact preview",
+      "landmarks": ["Authority"],
+      "annotations": ["effective policy", "role authority", "impact/simulation"]
+    },
+    {
+      "name": "autonomy-control-center",
+      "fixture": "tests/browser/autonomy_control_center_fixture.html",
+      "title": "Autonomy, approvals, audit and operations",
+      "landmarks": ["Autonomy Control Center", "Audit integrity"],
+      "annotations": ["approvals", "incidents", "recovery", "capacity", "upgrades", "audit"]
+    }
+  ],
+  "forbidden_markers": [
+    "sk-live-",
+    "ghp_",
+    "glpat-",
+    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN OPENSSH PRIVATE KEY-----"
+  ]
+}
