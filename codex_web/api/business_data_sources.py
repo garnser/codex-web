@@ -8,6 +8,7 @@ from codex_web.api.identity import request_actor
 from codex_web.business_data_sources import (
     BusinessDataSourceCreate,
     BusinessDataSourceStatusUpdate,
+    UnsupportedBusinessDataSourceCapability,
 )
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.business_data_sources import (
@@ -32,7 +33,12 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(
         exc,
-        (BusinessDataSourceValidationError, BusinessDataSourceError, ValueError),
+        (
+            BusinessDataSourceValidationError,
+            BusinessDataSourceError,
+            UnsupportedBusinessDataSourceCapability,
+            ValueError,
+        ),
     ):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
@@ -80,7 +86,12 @@ def build_business_data_sources_router(
                 payload,
                 actor=mutation_actor(request),
             )
-        except (AuthorizationError, BusinessDataSourceError, ValueError) as exc:
+        except (
+            AuthorizationError,
+            BusinessDataSourceError,
+            UnsupportedBusinessDataSourceCapability,
+            ValueError,
+        ) as exc:
             raise _error(exc) from exc
         return {"item": item.model_dump(mode="json")}
 
@@ -108,7 +119,12 @@ def build_business_data_sources_router(
                 payload.status,
                 actor=mutation_actor(request),
             )
-        except (AuthorizationError, BusinessDataSourceError, ValueError) as exc:
+        except (
+            AuthorizationError,
+            BusinessDataSourceError,
+            UnsupportedBusinessDataSourceCapability,
+            ValueError,
+        ) as exc:
             raise _error(exc) from exc
         return {"item": item.model_dump(mode="json")}
 
@@ -126,7 +142,12 @@ def build_business_data_sources_router(
                 max_pages=max_pages,
                 full_resync=full_resync,
             )
-        except (AuthorizationError, BusinessDataSourceError, ValueError) as exc:
+        except (
+            AuthorizationError,
+            BusinessDataSourceError,
+            UnsupportedBusinessDataSourceCapability,
+            ValueError,
+        ) as exc:
             raise _error(exc) from exc
         return {"item": item.model_dump(mode="json")}
 
@@ -142,7 +163,12 @@ def build_business_data_sources_router(
                 payload,
                 actor=mutation_actor(request),
             )
-        except (AuthorizationError, BusinessDataSourceError, ValueError) as exc:
+        except (
+            AuthorizationError,
+            BusinessDataSourceError,
+            UnsupportedBusinessDataSourceCapability,
+            ValueError,
+        ) as exc:
             raise _error(exc) from exc
         return {
             "item": (
