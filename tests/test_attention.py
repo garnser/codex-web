@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from codex_web.attention import AttentionStatus
+from codex_web.canonical_events import CanonicalEventType
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
+from codex_web.services.attention import (
+    AttentionService,
+    install_attention_event_bridges,
+)
+from codex_web.services.canonical_events import (
+    CanonicalEventBus,
+    CanonicalEventIngestionService,
+)
+from codex_web.services.scheduler import SchedulerService
+from codex_web.storage.attention import AttentionStore
+from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.scheduler import SchedulerStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+class _Clock:
+    def __init__(self, value: float = 100.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
+class _FailingNotifier:
+    async def deliver(self, item) -> None:
+        raise RuntimeError("provider down")
+
+
+class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.event_store = CanonicalEventStore(sqlite)
+        self.bus = CanonicalEventBus(self.event_store)
+        self.ingestion = CanonicalEventIngestionService(self.bus)
+        self.clock = _Clock()
+        self.scheduler_store = SchedulerStore(sqlite)
+        self.scheduler = SchedulerService(
+            self.scheduler_store,
+            self.ingestion,
+            clock=self.clock,
+        )
+        self.store = AttentionStore(sqlite)
+        self.service = AttentionService(
+            self.store,
+            self.ingestion,
+            scheduler=self.scheduler,
+            clock=self.clock,
+        )
+        self.unsubscribe = install_attention_event_bridges(self.bus, self.service)
+        self.actor = AuthenticationActor(
+            identity_id="operator-a",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.MFA,
+        )
+
+    def tearDown(self) -> None:
+        self.unsubscribe()
+        self.temp.cleanup()
+
+    async def _approval_event(
+        self,
+        status: str,
+        *,
+        key: str,
+        expires_at: float | None = None,
+    ):
+        return await self.ingestion.ingest(
+            event_type=CanonicalEventType.APPROVAL,
+            source="approval:approval-1",
+            idempotency_key=key,
+            payload={
+                "approval_request_id": "approval-1",
+                "status": status,
+                "expires_at": expires_at,
+            },
+            tenant_id="local",
+            workspace_id="default",
+        )
+
+    async def test_approval_events_dedupe_and_resolution_use_one_attention_item(self) -> None:
+        await self._approval_event("pending", key="pending")
+        await self._approval_event("partially_approved", key="partial")
+
+        items = self.store.list()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].source.object_id, "approval-1")
+        self.assertEqual(items[0].status, AttentionStatus.OPEN)
+
+        await self._approval_event("approved", key="approved")
+        resolved = self.store.list()[0]
+        self.assertEqual(resolved.status, AttentionStatus.RESOLVED)
+        self.assertEqual(resolved.resolved_by_identity_id, "approval-bridge")
+
+        await self._approval_event("invalidated", key="invalidated")
+        reopened = self.store.list()[0]
+        self.assertEqual(reopened.status, AttentionStatus.OPEN)
+        self.assertEqual(reopened.type, "approval.invalidated")
+
+    async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
+        self.service.register_notification_adapter(_FailingNotifier())
+
+        await self._approval_event("pending", key="provider-down")
+
+        items = self.store.list()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].status, AttentionStatus.OPEN)
+
+    async def test_acknowledge_and_resolve_are_attributable(self) -> None:
+        await self._approval_event("pending", key="pending-a")
+        item = self.store.list()[0]
+
+        acknowledged = await self.service.acknowledge(item.id, actor=self.actor)
+        self.assertEqual(acknowledged.status, AttentionStatus.ACKNOWLEDGED)
+        self.assertEqual(acknowledged.acknowledged_by_identity_id, "operator-a")
+
+        resolved = await self.service.resolve(
+            item.id,
+            actor=self.actor,
+            reason="handled",
+        )
+        self.assertEqual(resolved.status, AttentionStatus.RESOLVED)
+        self.assertEqual(resolved.resolved_by_identity_id, "operator-a")
+        self.assertEqual(resolved.resolution_reason, "handled")
+
+    async def test_scheduler_backed_escalation_is_durable_and_idempotent(self) -> None:
+        await self._approval_event("pending", key="pending-expiring", expires_at=110.0)
+        item = self.store.list()[0]
+        self.assertIsNotNone(item.escalation_schedule_id)
+        schedule = self.scheduler_store.get(str(item.escalation_schedule_id))
+        self.assertEqual(schedule.next_run_at, 110.0)
+
+        self.clock.value = 110.0
+        result = await self.scheduler.run_due()
+        self.assertEqual(result.emitted, 1)
+
+        escalated = self.store.get(item.id)
+        self.assertEqual(escalated.status, AttentionStatus.ESCALATED)
+        self.assertEqual(escalated.escalation_count, 1)
+
+        again = await self.scheduler.run_due()
+        self.assertEqual(again.emitted, 0)
+        self.assertEqual(self.store.get(item.id).escalation_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
