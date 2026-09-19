@@ -457,7 +457,6 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
             ExecutiveActivationCreate(
                 subject="Database architecture",
                 request="Choose the database for a new transactional service.",
-                project_id="project-a",
                 requested_role_ids=("cto",),
                 budget=ExecutiveReasoningBudget(
                     max_input_tokens=12000,
@@ -478,8 +477,8 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
             "[memory:knowledge-policy-a@v3]",
         )
         query, query_actor = memory.queries[0]
-        self.assertEqual(query.project_ids, ("project-a",))
-        self.assertTrue(query.include_company_scope)
+        self.assertEqual(query.project_ids, ())
+        self.assertFalse(query.include_company_scope)
         self.assertEqual(query_actor.identity_id, self.actor.identity_id)
 
         completed = await self.service.consult(
