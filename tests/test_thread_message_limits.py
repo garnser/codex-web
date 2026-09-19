@@ -11,7 +11,8 @@ from codex_web.services.threads import ThreadService
 
 class ThreadMessageLimitTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.service = ThreadService(object())
+        # These helpers are self-contained and do not require runtime composition.
+        self.service = ThreadService.__new__(ThreadService)
 
     def test_default_limit_and_environment_overrides(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
