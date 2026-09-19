@@ -130,6 +130,23 @@
         "upgrades",
         "audit"
       ]
+    },
+    {
+      "name": "company-operations",
+      "fixture": "tests/browser/company_operations_docs_fixture.html",
+      "title": "Company Operations business-data diagnostics",
+      "landmarks": [
+        "Company Operations",
+        "DEGRADED",
+        "fact Northstar Demo Retail/arr: conflict"
+      ],
+      "annotations": [
+        "canonical business facts",
+        "provider source health",
+        "KPI currentness",
+        "Executive/action explainability"
+      ],
+      "open_selector": "#company-operations-button"
     }
   ],
   "forbidden_markers": [

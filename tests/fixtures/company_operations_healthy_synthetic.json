@@ -1,0 +1,64 @@
+{
+  "fixture": "company-operations-synthetic-healthy-v1",
+  "synthetic": true,
+  "organization": "Example Co",
+  "workspace": "demo",
+  "entities": [
+    {
+      "id": "business-entity-demo-customer",
+      "type": "customer",
+      "name": "Northstar Demo Retail"
+    }
+  ],
+  "external_records": [
+    {
+      "id": "external-record-demo-crm",
+      "provider": "reference-crm",
+      "object_type": "account",
+      "external_id": "demo-account-001",
+      "source_sequence": 43
+    },
+    {
+      "id": "external-record-demo-billing",
+      "provider": "reference-billing",
+      "object_type": "customer",
+      "external_id": "demo-customer-001"
+    }
+  ],
+  "facts": [
+    {
+      "key": "arr",
+      "provider_values": [
+        {"provider": "reference-crm", "value": 1200, "authority": "authoritative"},
+        {"provider": "reference-billing", "value": 1200, "authority": "secondary"}
+      ],
+      "expected_resolution": "fresh-agreement"
+    }
+  ],
+  "source_state": {
+    "provider_capacity": "available",
+    "cursor": "43",
+    "checkpoint": "43",
+    "expected_drift_conflicts": 0
+  },
+  "kpi": {
+    "key": "arr",
+    "readiness": "current",
+    "value": 1200,
+    "unit": "usd",
+    "currency": "USD"
+  },
+  "action": {
+    "risk_class": "high",
+    "resource_ids": ["resource-demo-billing"],
+    "approval_status": "approved",
+    "intent_status": "succeeded",
+    "provider_receipt_outcome": "confirmed",
+    "verification": "passed"
+  },
+  "notes": [
+    "All values and names are synthetic.",
+    "This fixture is the healthy counterpart to company_operations_synthetic.json.",
+    "No credentials or real provider endpoints are included."
+  ]
+}

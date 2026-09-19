@@ -53,6 +53,10 @@ REQUIRED_DOCS = (
     "docs/troubleshooting/operator-matrix.md",
     "docs/advanced-adoption/README.md",
     "docs/extensions/developer-guide.md",
+    "docs/extensions/business-data-source-guide.md",
+    "docs/advanced-adoption/business-operations.md",
+    "docs/examples/business-operations-crm-billing.md",
+    "docs/examples/business-executive-roles.md",
 )
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
@@ -221,6 +225,105 @@ class DocumentationFoundationTests(unittest.TestCase):
             "unknown provider outcome",
         ):
             self.assertIn(heading, text, heading)
+
+    def test_business_operations_adoption_package_is_complete_and_safe(self) -> None:
+        documents = {
+            "connector": ROOT / "docs/extensions/business-data-source-guide.md",
+            "scenario": ROOT / "docs/examples/business-operations-crm-billing.md",
+            "roles": ROOT / "docs/examples/business-executive-roles.md",
+            "migration": ROOT / "docs/advanced-adoption/business-operations.md",
+        }
+        text = {
+            key: path.read_text(encoding="utf-8").casefold()
+            for key, path in documents.items()
+        }
+        for term in (
+            "businessdatasource",
+            "actionprovider",
+            "actionintent",
+            "secretreference",
+            "cursor",
+            "tombstone",
+            "conformance",
+            "read/sync",
+        ):
+            self.assertIn(term, text["connector"], term)
+        for term in (
+            "stale source",
+            "provider disagreement",
+            "revoked credential",
+            "provider outage",
+            "rate limit",
+            "denied action authority",
+            "expired approval",
+            "unknown action result",
+        ):
+            self.assertIn(term, text["scenario"], term)
+        for term in (
+            "cfo",
+            "cro",
+            "cmo",
+            "cpo",
+            "customer success",
+            "coo",
+            "chief of staff",
+        ):
+            self.assertIn(term, text["roles"], term)
+        for term in (
+            "engineering-only",
+            "businessdatasource",
+            "business kpi",
+            "advisory executive",
+            "actionprovider/actionintent",
+            "production qualification",
+        ):
+            self.assertIn(term, text["migration"], term)
+
+    def test_business_operations_fixtures_are_synthetic_and_credential_free(self) -> None:
+        for relative in (
+            "tests/fixtures/company_operations_synthetic.json",
+            "tests/fixtures/company_operations_healthy_synthetic.json",
+        ):
+            path = ROOT / relative
+            self.assertTrue(path.is_file(), relative)
+            text = path.read_text(encoding="utf-8")
+            lowered = text.casefold()
+            self.assertIn('"synthetic": true', lowered, relative)
+            self.assertNotIn("sk-live-", text, relative)
+            self.assertNotIn("ghp_", text, relative)
+            self.assertNotIn("glpat-", text, relative)
+            self.assertNotIn("private key", lowered, relative)
+        degraded = (
+            ROOT / "tests/fixtures/company_operations_synthetic.json"
+        ).read_text(encoding="utf-8").casefold()
+        healthy = (
+            ROOT / "tests/fixtures/company_operations_healthy_synthetic.json"
+        ).read_text(encoding="utf-8").casefold()
+        self.assertIn('"readiness": "partial"', degraded)
+        self.assertIn('"provider_capacity": "throttled"', degraded)
+        self.assertIn('"readiness": "current"', healthy)
+        self.assertIn('"provider_capacity": "available"', healthy)
+
+    def test_reference_business_data_source_example_is_read_only(self) -> None:
+        root = ROOT / "examples/extensions/reference_business_data_source"
+        for name in (
+            "README.md",
+            "adapter.py",
+            "manifest.template.json",
+            "build.py",
+        ):
+            self.assertTrue((root / name).is_file(), name)
+        adapter = (root / "adapter.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "async def write(",
+            "async def create(",
+            "async def update(",
+            "async def delete(",
+        ):
+            self.assertNotIn(forbidden, adapter)
+        readme = (root / "README.md").read_text(encoding="utf-8").casefold()
+        self.assertIn("read/sync only", readme)
+        self.assertIn("no provider-write method", readme)
 
     def test_root_readme_links_product_documentation(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

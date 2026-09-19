@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Company Operations Documentation Fixture</title></head>
+<body>
+  <div class="topbar"><div class="controls"></div></div>
+  <button data-attention-launch hidden>Inbox</button>
+  <button id="business-kpi-button" hidden>Operating view</button>
+  <button id="executive-management-button" hidden>Organization</button>
+  <script>
+    const demoOverview = {
+      organization_id: 'org-demo',
+      workspace_id: 'workspace-demo',
+      evaluated_at: 1890000000,
+      overall_health: 'degraded',
+      counts: {
+        business_entities: 1, external_records: 2, fact_diagnostics: 1,
+        sources: 2, kpis: 1, goals: 1, decisions: 1,
+        executive_activations: 1, attention_items: 1,
+        pending_approvals: 1, action_intents: 1
+      },
+      business_domains: ['revenue'],
+      business_entities: [{
+        id: 'business-entity-demo-customer',
+        name: 'Northstar Demo Retail',
+        entity_type: 'customer',
+        lifecycle: 'active',
+        classification: 'confidential'
+      }],
+      fact_diagnostics: [{
+        business_entity_id: 'business-entity-demo-customer',
+        entity_name: 'Northstar Demo Retail',
+        entity_type: 'customer',
+        fact_key: 'arr',
+        freshness: 'fresh',
+        conflict: true,
+        selected_fact_id: 'company-fact-demo-crm',
+        selected_value: 1200,
+        unit: 'usd',
+        provider: 'reference-crm',
+        external_record_ref_id: 'external-record-demo-crm',
+        candidate_fact_ids: ['company-fact-demo-crm','company-fact-demo-billing'],
+        conflict_fact_ids: ['company-fact-demo-crm','company-fact-demo-billing'],
+        stale_fact_ids: [],
+        revoked_source_fact_ids: [],
+        reason: 'synthetic provider conflict retained'
+      }],
+      external_records: [{
+        id: 'external-record-demo-crm',
+        provider: 'reference-crm',
+        object_type: 'account',
+        external_id: 'demo-account-001',
+        lifecycle: 'active'
+      },{
+        id: 'external-record-demo-billing',
+        provider: 'reference-billing',
+        object_type: 'customer',
+        external_id: 'demo-customer-001',
+        lifecycle: 'active'
+      }],
+      sources: [{
+        source_id: 'business-source-demo-crm',
+        name: 'Demo CRM Accounts',
+        source_type: 'reference-crm',
+        provider_id: 'demo-crm',
+        provider_instance: 'crm://synthetic',
+        object_type: 'account',
+        entity_type: 'customer',
+        status: 'degraded',
+        capabilities: ['incremental_sync','events','tombstones'],
+        credential_ref: 'secret://demo/crm',
+        cursor: '42',
+        checkpoint: '42',
+        last_success_at: 1889999900,
+        last_error: 'HTTP 429 synthetic rate limit',
+        projected_records: 12,
+        stale_events: 2,
+        duplicate_events: 1,
+        capacity_status: 'throttled',
+        capacity_reason: 'HTTP 429 synthetic rate limit',
+        retry_at: 1890000300,
+        consecutive_failures: 2,
+        drift_count: 1,
+        conflict_count: 1,
+        health: 'degraded',
+        issues: ['provider capacity throttled','1 reconciliation conflict(s) require inspection']
+      }],
+      kpi_view: {
+        current: false,
+        blockers: ['arr: partial'],
+        evaluated_at: 1890000000,
+        items: [{
+          kpi_id: 'business-kpi-demo-arr',
+          name: 'Annual recurring revenue',
+          domain: 'revenue',
+          value: 1200,
+          unit: 'usd',
+          currency: 'USD',
+          readiness: 'partial',
+          freshness: 'partial',
+          kpi_revision: 2,
+          metric_revision: 3,
+          readiness_reasons: ['synthetic provider conflict']
+        }]
+      },
+      goals: [{id:'goal-demo-growth',title:'Grow synthetic revenue',status:'active'}],
+      decisions: [{id:'decision-demo-budget',title:'Synthetic budget review',status:'approved'}],
+      executive_activations: [{
+        id:'executive-demo-1',
+        subject:'Synthetic revenue review',
+        status:'planned',
+        trigger_kind:'event',
+        selections:[{role_id:'cro',score:50}]
+      }],
+      attention_items: [{
+        id:'attention-demo-1',
+        reason:'Synthetic provider conflict requires review',
+        type:'business_sync',
+        severity:'high',
+        status:'open'
+      }],
+      approval_requests: [{
+        id:'approval-demo-1',
+        status:'pending',
+        target_fingerprint:'synthetic-fingerprint',
+        target:{operation:'execute',object_type:'decision',object_id:'decision-demo-budget',resource_ids:['resource-demo-billing']}
+      }],
+      action_intents: [{
+        id:'action-intent-demo-1',
+        status:'requires_reconciliation',
+        provider_type:'billing',
+        resource_ids:['resource-demo-billing'],
+        action_id:'plan.change',
+        action_definition:{title:'Change synthetic billing plan',risk_class:'high'}
+      }],
+      blockers:[
+        'arr: partial',
+        'fact Northstar Demo Retail/arr: conflict',
+        'action action-intent-demo-1: requires_reconciliation'
+      ]
+    };
+
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+      if (url.pathname === '/api/company-operations/overview') {
+        return new Response(JSON.stringify({item: demoOverview}), {
+          status: 200,
+          headers: {'Content-Type': 'application/json'}
+        });
+      }
+      return originalFetch(input, init);
+    };
+  </script>
+  <script src="../../static/company_operations_ui.js" type="module"></script>
+</body>
+</html>
