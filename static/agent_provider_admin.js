@@ -1,7 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
-  let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null };
+  let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null, capacity: [], capacityWaits: [] };
 
   const capabilityLabel = (value) => String(value || '').replaceAll('_', ' ');
   const hasCapability = (session, capability) => (
@@ -76,7 +76,7 @@
     return root;
   }
 
-  function providerView(discovery, runtimeByProvider) {
+  function providerView(discovery, runtimeByProvider, capacityRecords = []) {
     const provider = discovery.provider || discovery;
     const item = document.createElement('article');
     item.className = 'agent-provider-item';
@@ -108,11 +108,24 @@
     if (effective.includes('model_inference')) kinds.push('model inference');
     if (effective.includes('agent_execution')) kinds.push('execution agent');
     const runtimes = runtimeByProvider.get(provider.id) || [];
+    const providerCapacity = capacityRecords.find((record) => (
+      record.provider_id === provider.id && !record.runtime_id
+    ));
     item.appendChild(textNode(
       'div',
       'agent-provider-meta',
       `${kinds.join(' + ') || 'No effective capabilities'} · ${runtimes.length} runtime${runtimes.length === 1 ? '' : 's'}`,
     ));
+    if (providerCapacity) {
+      const retry = providerCapacity.retry_at
+        ? new Date(Number(providerCapacity.retry_at) * 1000).toLocaleString()
+        : 'no reset time';
+      item.appendChild(textNode(
+        'div',
+        'agent-provider-note',
+        `Capacity ${providerCapacity.status} · ${retry}${providerCapacity.reason ? ` · ${providerCapacity.reason}` : ''}`,
+      ));
+    }
 
     if (provider.credential_refs?.length) {
       item.appendChild(textNode(
@@ -129,10 +142,16 @@
       ));
     }
     for (const runtime of runtimes) {
+      const capacity = capacityRecords.find((record) => (
+        record.provider_id === provider.id && record.runtime_id === runtime.runtime_id
+      ));
+      const retry = capacity?.retry_at
+        ? new Date(Number(capacity.retry_at) * 1000).toLocaleString()
+        : null;
       item.appendChild(textNode(
         'div',
         'agent-provider-note',
-        `Runtime ${runtime.runtime_id} · ${runtime.runtime_type} · capability rev ${runtime.capability_revision} · ${runtime.health}`,
+        `Runtime ${runtime.runtime_id} · ${runtime.runtime_type} · capability rev ${runtime.capability_revision} · ${runtime.health}${capacity ? ` · capacity ${capacity.status}${retry ? ` until ${retry}` : ''}` : ''}`,
       ));
     }
     return item;
@@ -287,7 +306,7 @@
   }
 
   async function loadInventory() {
-    const [providers, runtimes, sessions, actor] = await Promise.all([
+    const [providers, runtimes, sessions, actor, capacity] = await Promise.all([
       apiRequest('/api/agent-providers/discover', {
         method: 'POST',
         body: JSON.stringify({ required_capabilities: [] }),
@@ -295,12 +314,15 @@
       apiRequest('/api/agent-runtimes'),
       apiRequest('/api/agent-sessions'),
       apiRequest('/api/identity/me').catch(() => null),
+      apiRequest('/api/provider-capacity').catch(() => ({ items: [], waits: [] })),
     ]);
     return {
       providers: providers.items || [],
       runtimes: runtimes.items || [],
       sessions: sessions.items || [],
       actor,
+      capacity: capacity.items || [],
+      capacityWaits: capacity.waits || [],
     };
   }
 
@@ -488,7 +510,7 @@
       providerList.appendChild(textNode('div', 'agent-empty', 'No AgentProvider records are configured.'));
     } else {
       for (const provider of inventory.providers) {
-        providerList.appendChild(providerView(provider, runtimeByProvider));
+        providerList.appendChild(providerView(provider, runtimeByProvider, inventory.capacity));
       }
     }
 
@@ -509,7 +531,8 @@
     try {
       const inventory = await loadInventory();
       renderInventory(card, inventory, () => refreshCard(card));
-      status.textContent = `${inventory.providers.length} provider${inventory.providers.length === 1 ? '' : 's'} · ${inventory.runtimes.length} runtime${inventory.runtimes.length === 1 ? '' : 's'} · ${inventory.sessions.length} session${inventory.sessions.length === 1 ? '' : 's'}`;
+      const waiting = inventory.capacityWaits.filter((item) => item.status === 'waiting').length;
+      status.textContent = `${inventory.providers.length} provider${inventory.providers.length === 1 ? '' : 's'} · ${inventory.runtimes.length} runtime${inventory.runtimes.length === 1 ? '' : 's'} · ${inventory.sessions.length} session${inventory.sessions.length === 1 ? '' : 's'} · ${waiting} capacity wait${waiting === 1 ? '' : 's'}`;
     } catch (error) {
       status.textContent = `Agent provider state unavailable: ${error.message}`;
     } finally {
@@ -545,6 +568,8 @@
       status.textContent = [
         `Selected: ${selected.provider_id || '?'} /${selected.runtime_id || '?'}`,
         `Reason: ${selected.routing_reason || 'not supplied'}`,
+        selected.capacity_status ? `Capacity: ${selected.capacity_status}${selected.capacity_retry_at ? ` until ${new Date(Number(selected.capacity_retry_at) * 1000).toLocaleString()}` : ''}` : '',
+        route.earliest_capacity_retry_at ? `Earliest blocked-capacity reset: ${new Date(Number(route.earliest_capacity_retry_at) * 1000).toLocaleString()}` : '',
         candidates ? `Candidates:\n${candidates}` : '',
         rejected ? `Rejected:\n${rejected}` : '',
       ].filter(Boolean).join('\n');

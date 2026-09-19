@@ -95,6 +95,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Canonical human attention](attention.md) — durable deduped operator intervention state, source-domain references, scheduler-backed escalation and provider-neutral delivery.
 - [Canonical Agent Providers](agent-providers.md) — provider-neutral model/execution identity, declared-vs-granted capabilities, deterministic discovery and extension/model provenance.
 - [Capability-driven agent routing](agent-routing.md) — deterministic, independent model/runtime selection, constraint-preserving fallback, runtime health and exact provider/runtime revision provenance.
+- [Provider capacity, quota failover, and resume](provider-capacity.md) — canonical throttled/depleted state, Codex quota probes, bounded model/runtime fallback, scheduler-backed waits, and automatic work resume.
 - [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.

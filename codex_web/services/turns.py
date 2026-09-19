@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from codex_web.models import QueuedTurn, TurnCreate
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+from codex_web.services.provider_capacity import ProviderCapacityBlockedError
 
 
 class _ThreadRuntimeTransport:
@@ -144,7 +145,11 @@ class TurnService:
         )
         execution_id = f"thread-turn-{__import__('uuid').uuid4().hex}"
 
-        async def queue_web_turn(event_type: str, reason: str | None = None) -> dict[str, Any]:
+        async def queue_web_turn(
+            event_type: str,
+            reason: str | None = None,
+            capacity_error: ProviderCapacityBlockedError | None = None,
+        ) -> dict[str, Any]:
             queued = self.host._enqueue_turn(
                 thread_id=thread_id,
                 project_id=project.id,
@@ -167,7 +172,16 @@ class TurnService:
                 event_payload["reason"] = self.host._truncate_text(reason, 500)
             self.host._append_bot_event(event_payload)
             await self.host._publish_queue_status(thread_id)
-            if not self.host._thread_is_active(thread_id):
+            wait = None
+            if capacity_error is not None:
+                wait = self.host._wait_for_thread_capacity(
+                    thread_id=thread_id,
+                    execution_id=execution_id,
+                    provider_keys=(capacity_error.record.key,),
+                    retry_at=capacity_error.retry_at,
+                    reason=str(capacity_error),
+                )
+            elif not self.host._thread_is_active(thread_id):
                 asyncio.get_running_loop().call_later(
                     5,
                     self.host._schedule_queue_drain,
@@ -178,6 +192,13 @@ class TurnService:
                 "queuedId": queued.id,
                 "queueDepth": queue_depth,
                 "threadId": thread_id,
+                "waitingForCapacity": capacity_error is not None,
+                "capacityWaitId": getattr(wait, "id", None),
+                "retryAt": (
+                    capacity_error.retry_at
+                    if capacity_error is not None
+                    else None
+                ),
             }
 
         self.host._release_stale_active_turn(thread_id, "web:start")
@@ -195,6 +216,15 @@ class TurnService:
                 execution_id=execution_id,
             )
         except Exception as exc:
+            if isinstance(exc, ProviderCapacityBlockedError):
+                result = await queue_web_turn(
+                    "web_turn_waiting_for_capacity",
+                    str(exc),
+                    capacity_error=exc,
+                )
+                result["providerKey"] = exc.record.key
+                result["capacityStatus"] = exc.record.status.value
+                return result
             if (
                 isinstance(exc, HTTPException)
                 and exc.status_code == 409

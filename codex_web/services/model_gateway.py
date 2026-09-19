@@ -47,8 +47,14 @@ from codex_web.model_gateway import (
 from codex_web.model_providers import (
     ModelProviderAdapter,
     ModelProviderAdapterError,
+    ModelProviderCapacityError,
     ModelProviderTransientError,
 )
+from codex_web.provider_capacity import (
+    ProviderCapacityReport,
+    ProviderCapacityWaitCreate,
+)
+from codex_web.services.provider_capacity import ProviderCapacityService
 from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.identity import AuthorizationError
@@ -72,6 +78,32 @@ class ModelProviderUnavailableError(ModelGatewayError):
     pass
 
 
+class ModelCapacityRoutingError(ModelRoutingError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_at: float | None,
+        provider_keys: tuple[str, ...],
+    ) -> None:
+        self.retry_at = retry_at
+        self.provider_keys = provider_keys
+        super().__init__(message)
+
+
+class ModelProviderCapacityUnavailableError(ModelProviderUnavailableError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_at: float | None,
+        wait_id: str | None = None,
+    ) -> None:
+        self.retry_at = retry_at
+        self.wait_id = wait_id
+        super().__init__(message)
+
+
 InputPipelineResolver = Callable[
     [ModelInvocationRequest, AuthenticationActor],
     InputPluginPipeline | None,
@@ -87,6 +119,7 @@ class ModelGatewayService:
         entitlements: EntitlementService | None = None,
         input_pipeline: InputPluginPipeline | None = None,
         input_pipeline_resolver: InputPipelineResolver | None = None,
+        provider_capacity: ProviderCapacityService | None = None,
     ) -> None:
         if input_pipeline is not None and input_pipeline_resolver is not None:
             raise ValueError(
@@ -97,6 +130,7 @@ class ModelGatewayService:
         self.entitlements = entitlements
         self.input_pipeline = input_pipeline
         self.input_pipeline_resolver = input_pipeline_resolver
+        self.provider_capacity = provider_capacity
         self.adapters: dict[str, ModelProviderAdapter] = {}
 
     @staticmethod
@@ -577,6 +611,7 @@ class ModelGatewayService:
 
         candidates: list[tuple[int, int, int, str, ModelRouteCandidate]] = []
         rejected: list[str] = []
+        capacity_blocks = []
         for model in state.models:
             if not self._same_scope(model, actor):
                 continue
@@ -635,6 +670,23 @@ class ModelGatewayService:
                 if cost > effective_max_cost:
                     rejected.append(f"{model.id}:budget_exceeded")
                     continue
+            if self.provider_capacity is not None:
+                blocked = self.provider_capacity.blocking_record(
+                    provider.id,
+                    None,
+                    actor=actor,
+                )
+                if blocked is not None:
+                    rejected.append(
+                        f"{model.id}:capacity_{blocked.status.value}"
+                        + (
+                            f":retry_at={blocked.retry_at:.3f}"
+                            if blocked.retry_at is not None
+                            else ""
+                        )
+                    )
+                    capacity_blocks.append(blocked)
+                    continue
             preference = preferred.get(provider.id, len(preferred))
             degraded_penalty = 10000 if provider.status == ModelProviderStatus.DEGRADED else 0
             candidates.append(
@@ -663,6 +715,19 @@ class ModelGatewayService:
         routed = tuple(item[4] for item in candidates)
         if not routed:
             detail = ",".join(rejected[:20]) or "no models registered for class"
+            if capacity_blocks:
+                retries = [
+                    item.retry_at
+                    for item in capacity_blocks
+                    if item.retry_at is not None
+                ]
+                raise ModelCapacityRoutingError(
+                    f"no eligible model for class {request.model_class}: {detail}",
+                    retry_at=min(retries) if retries else None,
+                    provider_keys=tuple(
+                        dict.fromkeys(item.key for item in capacity_blocks)
+                    ),
+                )
             raise ModelRoutingError(
                 f"no eligible model for class {request.model_class}: {detail}"
             )
@@ -740,7 +805,36 @@ class ModelGatewayService:
             request,
             actor=actor,
         )
-        route = self.route(effective_request, actor=actor)
+        try:
+            route = self.route(effective_request, actor=actor)
+        except ModelCapacityRoutingError as exc:
+            wait_id = None
+            if (
+                self.provider_capacity is not None
+                and exc.retry_at is not None
+                and any(
+                    (
+                        effective_request.work_item_ref,
+                        effective_request.execution_id,
+                    )
+                )
+            ):
+                wait = self.provider_capacity.wait_for_capacity(
+                    ProviderCapacityWaitCreate(
+                        work_item_ref=effective_request.work_item_ref,
+                        execution_id=effective_request.execution_id,
+                        provider_keys=exc.provider_keys,
+                        retry_at=exc.retry_at,
+                        reason=str(exc),
+                    ),
+                    actor=actor,
+                )
+                wait_id = wait.id
+            raise ModelProviderCapacityUnavailableError(
+                str(exc),
+                retry_at=exc.retry_at,
+                wait_id=wait_id,
+            ) from exc
         state = self.store.load()
         template = next(
             item
@@ -759,6 +853,7 @@ class ModelGatewayService:
             }
         )
         attempts: list[ModelInvocationAttempt] = []
+        capacity_failures = []
         budget_remaining = route.effective_max_cost_usd
         final_error: Exception | None = None
 
@@ -822,6 +917,52 @@ class ModelGatewayService:
                             f"provider {provider.id} requires credential_ref"
                         )
                     result = await call(None)
+            except ModelProviderCapacityError as exc:
+                completed = time.time()
+                capacity_record = None
+                if self.provider_capacity is not None:
+                    retry_at = exc.retry_at
+                    if retry_at is None:
+                        retry_at = (
+                            float(self.provider_capacity.clock())
+                            + self.provider_capacity.default_retry_seconds
+                        )
+                    capacity_record = self.provider_capacity.report(
+                        ProviderCapacityReport(
+                            provider_id=provider.id,
+                            status=exc.capacity_status,
+                            reason=str(exc)[:500],
+                            retry_at=retry_at,
+                            source=f"model-provider:{provider.adapter_type}",
+                            metadata={
+                                "model_id": model.id,
+                                "error_type": type(exc).__name__,
+                            },
+                            observed_at=completed,
+                        ),
+                        actor=actor,
+                    )
+                    capacity_failures.append(capacity_record)
+                attempts.append(
+                    ModelInvocationAttempt(
+                        provider_id=provider.id,
+                        model_id=model.id,
+                        concrete_model=model.concrete_model,
+                        model_version=model.model_version,
+                        outcome="capacity_failure",
+                        error_code=exc.capacity_status.value,
+                        estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
+                        started_at=started,
+                        completed_at=completed,
+                    )
+                )
+                if budget_remaining is not None and candidate.estimated_upper_cost_usd is not None:
+                    budget_remaining = max(
+                        0.0,
+                        budget_remaining - candidate.estimated_upper_cost_usd,
+                    )
+                final_error = exc
+                continue
             except ModelProviderTransientError as exc:
                 completed = time.time()
                 attempts.append(
@@ -863,6 +1004,14 @@ class ModelGatewayService:
                 break
 
             completed = time.time()
+            if self.provider_capacity is not None:
+                self.provider_capacity.mark_available(
+                    provider.id,
+                    None,
+                    actor=actor,
+                    source="model-provider-success",
+                    metadata={"model_id": model.id},
+                )
             actual_cost = self._price(
                 model,
                 result.usage.input_tokens or candidate.estimated_input_tokens,
@@ -927,6 +1076,42 @@ class ModelGatewayService:
             return ModelInvocationResponse(text=result.text, invocation=record)
 
         completed = time.time()
+        retry_at = None
+        wait_id = None
+        all_capacity_failures = bool(attempts) and all(
+            item.outcome == "capacity_failure"
+            for item in attempts
+        )
+        if all_capacity_failures:
+            retries = [
+                item.retry_at
+                for item in capacity_failures
+                if item.retry_at is not None
+            ]
+            retry_at = min(retries) if retries else None
+            if (
+                self.provider_capacity is not None
+                and retry_at is not None
+                and any(
+                    (
+                        effective_request.work_item_ref,
+                        effective_request.execution_id,
+                    )
+                )
+            ):
+                wait = self.provider_capacity.wait_for_capacity(
+                    ProviderCapacityWaitCreate(
+                        work_item_ref=effective_request.work_item_ref,
+                        execution_id=effective_request.execution_id,
+                        provider_keys=tuple(
+                            dict.fromkeys(item.key for item in capacity_failures)
+                        ),
+                        retry_at=retry_at,
+                        reason="all eligible model attempts are capacity constrained",
+                    ),
+                    actor=actor,
+                )
+                wait_id = wait.id
         record = ModelInvocationRecord(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -957,10 +1142,16 @@ class ModelGatewayService:
                 input_result.gated_proposals if input_result is not None else ()
             ),
             attempts=tuple(attempts),
-            status="failed",
+            status=("waiting_for_capacity" if all_capacity_failures else "failed"),
             completed_at=completed,
         )
         self._append_invocation(record)
+        if all_capacity_failures:
+            raise ModelProviderCapacityUnavailableError(
+                str(final_error or "model provider capacity exhausted"),
+                retry_at=retry_at,
+                wait_id=wait_id,
+            ) from final_error
         if final_error is not None:
             raise ModelProviderUnavailableError(str(final_error)) from final_error
         raise ModelProviderUnavailableError("no model attempt could run within budget")

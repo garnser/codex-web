@@ -44,12 +44,18 @@ from codex_web.services.agent_routing_configuration import (
     install_agent_routing_configuration,
 )
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
+from codex_web.provider_capacity import (
+    ProviderCapacityReport,
+    ProviderCapacityStatus,
+)
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.provider_capacity import ProviderCapacityService
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -126,6 +132,10 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.role_defaults = install_agent_routing_definitions(self.definitions)
         self.actor = _actor()
+        self.capacity = ProviderCapacityService(
+            ProviderCapacityStore(self.sqlite),
+            clock=lambda: 1_900_000_000.0,
+        )
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
@@ -261,6 +271,53 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 actor=self.actor,
             )
+
+    async def test_depleted_preferred_runtime_falls_back_to_eligible_runtime(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.PERSISTENT_SESSIONS,
+        )
+        self._provider("openai", capabilities)
+        self._provider("anthropic", capabilities)
+        self._runtime("openai", "codex", capabilities)
+        self._runtime("anthropic", "claude-code", capabilities)
+        self.capacity.report(
+            ProviderCapacityReport(
+                provider_id="openai",
+                runtime_id="codex",
+                status=ProviderCapacityStatus.DEPLETED,
+                retry_at=1_900_000_120.0,
+                reason="Codex allocation exhausted",
+                source="test",
+                observed_at=1_900_000_000.0,
+            ),
+            actor=self.actor,
+        )
+        service = AgentRoutingService(
+            self.providers,
+            self.runtimes,
+            provider_capacity=self.capacity,
+        )
+
+        result = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                require_persistent_session=True,
+                preferred_provider_ids=("openai", "anthropic"),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(result.selected_runtime.provider_id, "anthropic")
+        self.assertEqual(result.selected_runtime.runtime_id, "claude-code")
+        self.assertEqual(
+            result.earliest_capacity_retry_at,
+            1_900_000_120.0,
+        )
+        self.assertIn(
+            "openai/codex:capacity_depleted:retry_at=1900000120.000",
+            result.rejected_reasons,
+        )
 
     async def test_constraints_and_runtime_budget_fail_closed(self) -> None:
         capabilities = (

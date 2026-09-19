@@ -2,7 +2,7 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const MAX_INVOCATIONS = 50;
-  let snapshot = { providers: [], models: [], prompts: [], policy: null, invocations: [] };
+  let snapshot = { providers: [], models: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -52,13 +52,22 @@
   function renderProviders(items) {
     const host = document.getElementById("model-provider-list");
     if (!host) return;
-    host.innerHTML = items.map((item) => `<div class="comm-entry">
+    host.innerHTML = items.map((item) => {
+      const capacity = snapshot.capacity.find((record) => (
+        record.provider_id === item.id && !record.runtime_id
+      ));
+      const capacityLine = capacity
+        ? `<small>Capacity: ${escapeHtml(capacity.status)} · retry/reset: ${timeText(capacity.retry_at)}${capacity.reason ? ` · ${escapeHtml(capacity.reason)}` : ""}</small>`
+        : "<small>Capacity: no active throttle/depletion record</small>";
+      return `<div class="comm-entry">
       <strong>${escapeHtml(item.display_name)} · ${escapeHtml(item.status)}</strong>
       <small>ID: ${escapeHtml(item.id)} · Adapter: ${escapeHtml(item.adapter_type)} · Base URL: ${escapeHtml(item.base_url || "provider default")}</small>
       <small>Credential reference: ${escapeHtml(item.credential_ref || "none")} · Credential required: ${item.credential_required ? "yes" : "no"}</small>
       <small>Residency: ${listText(item.residency_tags)} · Compliance: ${listText(item.compliance_tags)}</small>
+      ${capacityLine}
       <small>Updated by: ${escapeHtml(item.updated_by)} · ${timeText(item.updated_at)}</small>
-    </div>`).join("") || '<div class="comm-entry"><strong>No model providers registered.</strong></div>';
+    </div>`;
+    }).join("") || '<div class="comm-entry"><strong>No model providers registered.</strong></div>';
   }
 
   function renderModels(items) {
@@ -198,12 +207,13 @@
   async function refresh() {
     setStatus("Loading canonical model-gateway state...");
     try {
-      const [providers, models, prompts, policy, invocations] = await Promise.all([
+      const [providers, models, prompts, policy, invocations, capacity] = await Promise.all([
         apiRequest("/api/model-gateway/providers"),
         apiRequest("/api/model-gateway/models"),
         apiRequest("/api/model-gateway/prompts"),
         apiRequest("/api/model-gateway/policy"),
         apiRequest(`/api/model-gateway/invocations?limit=${MAX_INVOCATIONS}`),
+        apiRequest("/api/provider-capacity"),
       ]);
       snapshot = {
         providers: providers.items || [],
@@ -211,6 +221,8 @@
         prompts: prompts.items || [],
         policy: policy.item,
         invocations: invocations.items || [],
+        capacity: capacity.items || [],
+        capacityWaits: capacity.waits || [],
       };
       renderPolicy(snapshot.policy);
       renderProviders(snapshot.providers);
@@ -221,7 +233,8 @@
       window.dispatchEvent(new CustomEvent("codex:model-gateway-rendered", {
         detail: snapshot,
       }));
-      setStatus(`${snapshot.providers.length} provider(s) · ${snapshot.models.length} model(s) · ${snapshot.prompts.length} prompt version(s) · ${snapshot.invocations.length} invocation record(s). Credentials remain secret references.`);
+      const waiting = snapshot.capacityWaits.filter((item) => item.status === "waiting").length;
+      setStatus(`${snapshot.providers.length} provider(s) · ${snapshot.models.length} model(s) · ${snapshot.prompts.length} prompt version(s) · ${snapshot.invocations.length} invocation record(s) · ${waiting} capacity wait(s). Credentials remain secret references.`);
     } catch (error) {
       setStatus(`Model Gateway unavailable: ${error.message}`);
     }

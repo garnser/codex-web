@@ -37,6 +37,7 @@ from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.organizational_memory import build_organizational_memory_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
+from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
@@ -163,6 +164,10 @@ from codex_web.services.retrieval_embedding import (
     ModelGatewayEmbeddingIdentityValidator,
 )
 from codex_web.services.projects import ProjectService
+from codex_web.services.provider_capacity import (
+    ProviderCapacityService,
+    install_provider_capacity_event_bridge,
+)
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.identity import IdentityService
@@ -223,6 +228,7 @@ from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
+from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
@@ -377,12 +383,27 @@ app.state.agent_session_store = agent_session_store
 app.state.agent_runtime_registry = agent_runtime_registry
 app.state.agent_session_service = agent_session_service
 
+provider_capacity_store = ProviderCapacityStore(state_store)
+provider_capacity_service = ProviderCapacityService(
+    provider_capacity_store,
+    scheduler=scheduler_service,
+)
+provider_capacity_event_unsubscribe = install_provider_capacity_event_bridge(
+    canonical_event_bus,
+    provider_capacity_service,
+)
+app.state.provider_capacity_store = provider_capacity_store
+app.state.provider_capacity_service = provider_capacity_service
+app.state.provider_capacity_event_unsubscribe = provider_capacity_event_unsubscribe
+app.include_router(build_provider_capacity_router(provider_capacity_service))
+
 model_gateway_store = ModelGatewayStore(state_store)
 model_gateway_service = ModelGatewayService(
     model_gateway_store,
     secret_broker=secret_broker,
     entitlements=entitlement_service,
     input_pipeline_resolver=input_pipeline_definition_service.pipeline_for,
+    provider_capacity=provider_capacity_service,
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
 model_gateway_service.register_adapter(AnthropicModelProviderAdapter())
@@ -701,6 +722,7 @@ agent_routing_service = AgentRoutingService(
     model_gateway=model_gateway_service,
     configuration=configuration_service,
     role_defaults=agent_routing_definition_service,
+    provider_capacity=provider_capacity_service,
 )
 app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service
@@ -1094,6 +1116,11 @@ agent_runtime_registry.register(
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
+provider_capacity_service.register_probe(
+    "openai",
+    "codex",
+    app.state.codex_agent_runtime_adapter.capacity_snapshot,
+)
 agent_runtime_telemetry_service.subscribe(app.state.codex_agent_runtime_adapter)
 if not any(
     provider.id == "openai"
@@ -1179,6 +1206,45 @@ turn_execution_service = install_turn_execution_service(
     routing_service=agent_routing_service,
     session_managers=assignment_session_managers,
     runtime_adapter_factory=_assignment_runtime_adapter,
+    provider_capacity=provider_capacity_service,
+)
+async def _resume_provider_capacity_wait(wait):
+    if wait.thread_id:
+        turn_execution_service.schedule_queue_drain(wait.thread_id)
+        return
+
+    if wait.work_item_ref:
+        state = core._load_work_item_states().get(wait.work_item_ref)
+        if state is not None and state.project_id:
+            owner = core._coerce_owner(state.current_owner or state.next_owner)
+            binding = (
+                core._binding_for_agent(
+                    owner,
+                    state.project_id,
+                    preferred_conversation_id=core.HANDOFF_COORDINATION_CHANNEL,
+                )
+                if owner
+                else None
+            )
+            if binding is not None:
+                turn_execution_service.enqueue_turn(
+                    thread_id=binding.thread_id,
+                    project_id=state.project_id,
+                    message=core._work_item_dispatch_text(state),
+                    source=f"provider-capacity-resume:{wait.id}",
+                    execution_id=wait.execution_id,
+                )
+                turn_execution_service.schedule_queue_drain(binding.thread_id)
+                return
+
+    if core._autonomy_enabled():
+        core._schedule_native_recovery_cycles(
+            reason="provider-capacity-resumed"
+        )
+
+
+provider_capacity_service.register_resume_handler(
+    _resume_provider_capacity_wait
 )
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)

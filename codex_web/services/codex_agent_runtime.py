@@ -99,6 +99,14 @@ class CodexAgentRuntimeAdapter:
             await ensure_started()
         return await self.health()
 
+    async def capacity_snapshot(self) -> dict[str, Any]:
+        """Read structured Codex account quota without consuming model tokens."""
+
+        response = await self.transport.request("account/rateLimits/read", {})
+        if not isinstance(response, dict):
+            raise RuntimeError("Codex rate-limit read returned an invalid payload")
+        return response
+
     async def shutdown(self) -> None:
         stop = getattr(self.transport, "stop", None)
         if not callable(stop):
