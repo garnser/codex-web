@@ -17,6 +17,7 @@ from codex_web.authority import (
     validate_authority_role_catalog,
 )
 from codex_web.authority_seed import authority_role_catalog_seed_payload
+from codex_web.services.authority_publication import assess_authority_catalog_publication
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
@@ -497,6 +498,7 @@ def install_authority_roles(
                 kind=AUTHORITY_ROLE_CATALOG_KIND,
                 schema_version=AUTHORITY_ROLE_CATALOG_SCHEMA_VERSION,
                 validate=validate_authority_role_catalog,
+                assess_publish=assess_authority_catalog_publication,
             )
         )
     service = AuthorityRoleService(registry, resources)
