@@ -282,6 +282,7 @@ class BusinessDataSourceCreate(BaseModel):
     source_type: str = Field(min_length=1, max_length=200)
     source_instance: str = Field(min_length=1, max_length=1000)
     provider_id: str = Field(min_length=1, max_length=200)
+    extension_installation_id: str | None = Field(default=None, max_length=500)
     scope: str = Field(min_length=1, max_length=1000)
     object_type: str = Field(min_length=1, max_length=200)
     entity_type: BusinessEntityType
@@ -323,6 +324,7 @@ class BusinessDataSourceRecord(BaseModel):
     source_type: str
     source_instance: str
     provider_id: str
+    extension_installation_id: str | None = None
     scope: str
     object_type: str
     entity_type: BusinessEntityType
