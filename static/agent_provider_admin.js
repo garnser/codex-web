@@ -314,7 +314,7 @@
       apiRequest('/api/agent-runtimes'),
       apiRequest('/api/agent-sessions'),
       apiRequest('/api/identity/me').catch(() => null),
-      apiRequest('/api/provider-capacity'),
+      apiRequest('/api/provider-capacity').catch(() => ({ items: [], waits: [] })),
     ]);
     return {
       providers: providers.items || [],
