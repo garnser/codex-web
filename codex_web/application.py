@@ -10,7 +10,8 @@ from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
 from codex_web.api.agent_sessions import build_agent_sessions_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
-from codex_web.api.approval_requests import build_approval_requests_router\nfrom codex_web.api.authorization import install_api_authorization
+from codex_web.api.approval_requests import build_approval_requests_router
+from codex_web.api.authorization import install_api_authorization
 from codex_web.api.attention import build_attention_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
