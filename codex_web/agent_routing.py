@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.agent_providers import AgentProviderCapability, AgentProviderHealth
 from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.definitions import DefinitionReference
 from codex_web.model_gateway import ModelInvocationRequest, ModelRouteResult
 
 
@@ -78,6 +79,17 @@ class AgentRuntimeRouteCandidate(BaseModel):
     routing_reason: str
 
 
+class AgentRoutingConfigurationSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str
+    source: str
+    record_id: str | None = None
+    revision: int | None = None
+    scope_type: str | None = None
+    scope_id: str | None = None
+
+
 class AgentRoutingResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -86,3 +98,5 @@ class AgentRoutingResult(BaseModel):
     model_route: ModelRouteResult | None = None
     fallback_allowed: bool
     rejected_reasons: tuple[str, ...] = ()
+    configuration_sources: tuple[AgentRoutingConfigurationSource, ...] = ()
+    role_definition_ref: DefinitionReference | None = None
