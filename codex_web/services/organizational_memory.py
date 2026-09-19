@@ -355,6 +355,15 @@ class OrganizationalMemoryService:
                     "identity validation"
                 )
             self.embedding_identity_validator(identity, actor)
+            now = float(self.clock())
+            indexable = [
+                item
+                for item in indexable
+                if (
+                    item.retention_expires_at is None
+                    or now < item.retention_expires_at
+                )
+            ]
             governed_ids = tuple(
                 item.governance_record_id
                 for item in indexable
@@ -425,6 +434,12 @@ class OrganizationalMemoryService:
                     self._mark_index_dirty()
                     return
                 self.embedding_identity_validator(identity, actor)
+                if (
+                    item.retention_expires_at is not None
+                    and float(self.clock()) >= item.retention_expires_at
+                ):
+                    self.retrieval_backend.delete(item.id)
+                    return
                 context = self.governance.filter_context(
                     ContextFilterRequest(
                         record_ids=(item.governance_record_id,),
