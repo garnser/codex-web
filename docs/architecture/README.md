@@ -102,6 +102,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Canonical Incident domain](incidents.md) — deduped detection, command/handoff, Attention escalation, ActionIntent containment/recovery, Evidence-required resolution and postmortem learning.
 - [Production recovery and continuity](recovery-continuity.md) — explicit RPO/RTO, canonical-key encrypted snapshots, scheduler-backed backups, isolated restore drills, key/audit integrity checks and recovery Evidence.
 - [Capacity and resilience qualification](capacity-resilience.md) — shared tenant/global admission leases, critical reserves, workload bulkheads, load shedding, circuits, recovery-storm controls and load-test Evidence.
+- [Safe upgrades and version skew](safe-upgrades.md) — explicit release-pair compatibility, preflight/drain, resumable phased migrations, worker/Definition/extension skew checks, irreversible approvals and truthful rollback boundaries.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
