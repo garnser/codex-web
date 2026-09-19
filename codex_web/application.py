@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from codex_web.api.action_intents import build_action_intents_router
+from codex_web.api_authorization import install_api_authorization
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
@@ -1819,6 +1820,16 @@ core.executive_service = install_executive_integrated(
     executive_roles=executive_role_definition_service,
     organizational_memory=organizational_memory_service,
 )
+
+# Install once after all /api routes (including legacy replacements and
+# Executive integrations) are composed. This makes route authorization
+# declarations complete and lets the same policy drive runtime enforcement and
+# generated OpenAPI metadata.
+install_api_authorization(
+    app,
+    authority=authority_role_service,
+)
+app.state.api_authorization_service = "canonical-route-policy"
 
 
 def main() -> None:
