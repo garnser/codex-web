@@ -93,7 +93,7 @@ function requestMarkup(item) {
   const decisions = item.decisions || [];
   const approved = decisions.filter((entry) => entry.outcome === "approve").length;
   return `
-    <article class="approval-card" data-approval-id="${esc(item.id)}">
+    <article class="approval-card" data-approval-id="${esc(item.id)}" data-approval-revision="${esc(item.revision ?? 0)}">
       <div class="approval-card-head">
         <div>
           <strong>${esc(item.reason)}</strong>
@@ -155,7 +155,7 @@ function filterItems(items, filter) {
   return items.filter((item) => item.status === filter);
 }
 
-async function submitDecision(dialog, itemId, outcome) {
+async function submitDecision(dialog, itemId, revision, outcome) {
   const status = dialog.querySelector("[data-approval-status]");
   const reason = window.prompt(`${outcome === "approve" ? "Approval" : "Rejection"} reason (optional)`, "") ?? "";
   status.dataset.error = "false";
@@ -166,7 +166,7 @@ async function submitDecision(dialog, itemId, outcome) {
       body: JSON.stringify({
         outcome,
         reason: reason.trim() || null,
-        idempotency_key: `ui:${itemId}:${outcome}:${Date.now()}`,
+        idempotency_key: `ui:${itemId}:r${revision}:${outcome}`,
       }),
     });
     await load(dialog);
@@ -190,7 +190,7 @@ async function load(dialog) {
     list.querySelectorAll("[data-approval-decision]").forEach((button) => {
       button.addEventListener("click", () => {
         const card = button.closest("[data-approval-id]");
-        submitDecision(dialog, card.dataset.approvalId, button.dataset.approvalDecision);
+        submitDecision(dialog, card.dataset.approvalId, card.dataset.approvalRevision, button.dataset.approvalDecision);
       });
     });
     const pending = all.filter((item) => ["pending", "partially_approved"].includes(item.status)).length;
