@@ -35,10 +35,19 @@ from codex_web.autonomy_audit import (
     AutonomySafetySignal,
     AutonomySafetySignalCreate,
 )
+from codex_web.canonical_events import CanonicalEventType
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import AuthenticationActor
+from codex_web.scheduler import (
+    MisfirePolicy,
+    RecurrenceKind,
+    ScheduleCreate,
+    ScheduleRecurrence,
+)
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.canonical_events import CanonicalEventIngestionService
+from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
 
@@ -89,6 +98,9 @@ class AutonomyAuditIntegrityError(AutonomyAuditError):
 class AutonomyAuditService:
     """Tamper-evident audit and deterministic reliability derivation."""
 
+    INTEGRITY_TRIGGER_TYPE = "autonomy_audit.integrity_verify"
+    INTEGRITY_SCHEDULE_NAME = "autonomy-audit-integrity"
+
     def __init__(
         self,
         store: AutonomyAuditStore,
@@ -96,6 +108,8 @@ class AutonomyAuditService:
         autonomy_store: AutonomyStateStore | None = None,
         action_intents: ActionIntentService | None = None,
         evidence: ArtifactEvidenceService | None = None,
+        canonical_events: CanonicalEventIngestionService | None = None,
+        scheduler: SchedulerService | None = None,
         signer: AuditCheckpointSigner | None = None,
         exporters: tuple[AuditCheckpointExporter, ...] = (),
         clock=time.time,
@@ -104,9 +118,128 @@ class AutonomyAuditService:
         self.autonomy_store = autonomy_store
         self.action_intents = action_intents
         self.evidence = evidence
+        self.canonical_events = canonical_events
+        self.scheduler = scheduler
         self.signer = signer
         self.exporters = tuple(exporters)
         self.clock = clock
+        self._unsubscribe_schedule = (
+            canonical_events.bus.subscribe(
+                self._handle_schedule_event,
+                event_types=(CanonicalEventType.SCHEDULE,),
+                predicate=lambda event: (
+                    event.payload.get("trigger_type")
+                    == self.INTEGRITY_TRIGGER_TYPE
+                ),
+            )
+            if canonical_events is not None
+            else None
+        )
+
+    def ensure_integrity_schedule(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        interval_seconds: float = 3600.0,
+    ):
+        if self.scheduler is None:
+            return None
+        existing = next(
+            (
+                item
+                for item in self.scheduler.list()
+                if item.tenant_id == organization_id
+                and item.workspace_id == workspace_id
+                and item.trigger_type == self.INTEGRITY_TRIGGER_TYPE
+                and item.status.value == "active"
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        now = float(self.clock())
+        record = self.scheduler.create(
+            ScheduleCreate(
+                name=self.INTEGRITY_SCHEDULE_NAME,
+                tenant_id=organization_id,
+                workspace_id=workspace_id,
+                trigger_type=self.INTEGRITY_TRIGGER_TYPE,
+                payload={
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                },
+                due_at=now + interval_seconds,
+                recurrence=ScheduleRecurrence(
+                    kind=RecurrenceKind.INTERVAL,
+                    interval_seconds=interval_seconds,
+                ),
+                misfire_policy=MisfirePolicy.FIRE_ONCE,
+            ),
+            actor_id="autonomy-audit",
+        )
+        self.scheduler.notify_state_changed()
+        return record
+
+    async def _handle_schedule_event(
+        self,
+        event: CanonicalEventEnvelope,
+    ) -> None:
+        nested = event.payload.get("payload")
+        if not isinstance(nested, dict):
+            return
+        organization_id = str(
+            nested.get("organization_id") or event.tenant_id or ""
+        ).strip()
+        workspace_id = str(
+            nested.get("workspace_id") or event.workspace_id or ""
+        ).strip()
+        if not organization_id or not workspace_id:
+            return
+        result = self.verify(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        evidence_ids: tuple[str, ...] = ()
+        self.store.append(
+            AutonomyAuditPayload(
+                kind=AutonomyAuditKind.INTEGRITY_VERIFICATION,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                occurred_at=float(self.clock()),
+                outcome=result.status.value,
+                reason_code=result.reason or "periodic_integrity_verified",
+                evidence_ids=evidence_ids,
+                details={
+                    "records_checked": result.records_checked,
+                    "root_hash": result.root_hash,
+                    "checkpoint_id": result.checkpoint_id or "",
+                    "scheduled": True,
+                },
+            )
+        )
+        if result.status == AuditIntegrityStatus.FAILED:
+            signal = AutonomySafetySignal(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                kind="audit_integrity",
+                source="autonomy-audit-scheduler",
+                reason=result.reason or "audit integrity verification failed",
+                observed_at=float(self.clock()),
+            )
+            self.store.add_signal(signal)
+        else:
+            # Create a durable root boundary on every successful scheduled
+            # verification. Signing/export occurs when configured.
+            self.checkpoint(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        self._auto_suspend_if_required(
+            organization_id,
+            workspace_id,
+            actor=None,
+        )
 
     @staticmethod
     def _scope(
@@ -774,8 +907,16 @@ class AutonomyAuditService:
     def set_reliability_policy(
         self,
         policy: AutonomyReliabilityPolicy,
+        *,
+        actor: AuthenticationActor | None = None,
     ) -> AutonomyReliabilityPolicy:
-        return self.store.set_reliability_policy(policy)
+        stored = self.store.set_reliability_policy(policy)
+        if actor is not None:
+            self.ensure_integrity_schedule(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+            )
+        return stored
 
     def add_signal(
         self,
@@ -857,6 +998,52 @@ class AutonomyAuditService:
                 },
             )
         )
+
+    def publish_reliability_evidence(
+        self,
+        *,
+        actor: AuthenticationActor,
+    ):
+        if self.evidence is None:
+            raise AutonomyAuditError("artifact/evidence service is unavailable")
+        metrics = self.metrics(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        result = (
+            EvidenceResult.FAIL
+            if metrics.should_suspend
+            else EvidenceResult.PASS
+        )
+        evidence = self.evidence.create_evidence(
+            EvidenceCreate(
+                evidence_type=EvidenceType.POLICY_EVALUATION,
+                provider="codex-web",
+                source="autonomy-reliability",
+                result=result,
+                summary=(
+                    f"Autonomy reliability samples={metrics.sample_count}; "
+                    f"failure_rate={metrics.failure_rate:.4f}; "
+                    f"intervention_rate={metrics.human_intervention_rate:.4f}; "
+                    f"tokens_per_success={metrics.tokens_per_success}; "
+                    f"cost_per_success={metrics.cost_usd_per_success}; "
+                    f"integrity={metrics.integrity_status.value}"
+                ),
+                metadata={
+                    "sample_count": metrics.sample_count,
+                    "successful_outcomes": metrics.successful_outcomes,
+                    "failure_rate": metrics.failure_rate,
+                    "human_intervention_rate": metrics.human_intervention_rate,
+                    "consecutive_failures": metrics.consecutive_failures,
+                    "total_model_tokens": metrics.total_model_tokens,
+                    "total_model_cost_usd": metrics.total_model_cost_usd,
+                    "integrity_status": metrics.integrity_status.value,
+                    "should_suspend": metrics.should_suspend,
+                },
+            ),
+            actor=actor,
+        )
+        return evidence, metrics
 
     def publish_integrity_evidence(
         self,
