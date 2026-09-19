@@ -311,6 +311,38 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
                 actor=self.actor,
             )
 
+    async def test_live_runtime_capability_loss_fails_closed(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.SHELL_TOOLS,
+        )
+        self._provider("provider-a", capabilities)
+        runtime = _Runtime("provider-a", "runtime-a", capabilities)
+        self.runtimes.register(runtime, capability_revision=5)
+        service = AgentRoutingService(self.providers, self.runtimes)
+
+        first = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                required_capabilities=(AgentProviderCapability.SHELL_TOOLS,),
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(first.selected_runtime.capability_revision, 5)
+
+        runtime.capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        with self.assertRaisesRegex(
+            AgentRoutingError,
+            "runtime_capability_mismatch",
+        ):
+            await service.route(
+                AgentRoutingRequest(
+                    project_id="project-a",
+                    required_capabilities=(AgentProviderCapability.SHELL_TOOLS,),
+                ),
+                actor=self.actor,
+            )
+
     async def test_missing_persistent_capability_is_rejected(self) -> None:
         capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
         self._provider("provider-a", capabilities)
