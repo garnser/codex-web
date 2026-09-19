@@ -148,3 +148,5 @@ The target architecture is:
 - [Business context and CompanyFacts](business-context.md) — lightweight tenant-scoped business entities, stable external references, selected governed facts, deterministic source authority/conflict handling and canonical links.
 
 - [BusinessDataSource synchronization](business-data-sources.md) — provider-neutral capabilities, normalized events, bounded sync/backfill, cursor safety, tombstones, drift and read-only external authority.
+
+- [Business KPI catalogs and operating snapshots](business-kpis.md) — explicit CompanyFact formulas over canonical Metrics, exact Goal/Decision snapshot bindings, freshness/variance/trends and model-free company operating views.
