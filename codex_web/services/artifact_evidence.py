@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
+from codex_web.artifact_content import (
+    ArtifactContentError,
+    ArtifactContentIntegrityError,
+    ArtifactContentPointer,
+    ArtifactContentRange,
+    ArtifactContentScope,
+    ArtifactContentState,
+)
 from codex_web.artifact_evidence import (
     Artifact,
     ArtifactCreate,
+    ArtifactDigest,
     ArtifactEvidenceState,
     ArtifactLifecycle,
     Evidence,
@@ -26,6 +35,7 @@ from codex_web.data_governance import (
     GovernanceAction,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.services.artifact_content import ArtifactContentService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService
@@ -60,11 +70,15 @@ class ArtifactEvidenceService:
         resources: ResourceCatalogService | None = None,
         work_item_host: Any | None = None,
         governance: DataGovernanceService | None = None,
+        content: ArtifactContentService | None = None,
+        content_backend_resolver: Callable[[AuthenticationActor, str | None], str] | None = None,
     ) -> None:
         self.store = store
         self.resources = resources
         self.work_item_host = work_item_host
         self.governance = governance
+        self.content = content
+        self.content_backend_resolver = content_backend_resolver
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -238,6 +252,246 @@ class ArtifactEvidenceService:
         if work_item_ref is not None:
             items = [item for item in items if item.work_item_ref == work_item_ref]
         return sorted(items, key=lambda item: (item.verified_at, item.id), reverse=True)
+
+    @staticmethod
+    def _content_scope_for(item: Artifact | AuthenticationActor) -> ArtifactContentScope:
+        return ArtifactContentScope(
+            organization_id=item.organization_id,
+            workspace_id=item.workspace_id,
+        )
+
+    def _content_backend_id(
+        self,
+        actor: AuthenticationActor,
+        project_id: str | None,
+    ) -> str:
+        if self.content_backend_resolver is not None:
+            return self.content_backend_resolver(actor, project_id)
+        if self.content is None:
+            raise ArtifactEvidenceError("artifact content service is not configured")
+        return self.content.default_backend_id
+
+    def _require_content_service(self) -> ArtifactContentService:
+        if self.content is None:
+            raise ArtifactEvidenceError("artifact content service is not configured")
+        return self.content
+
+    def _verify_content_pointer(self, artifact: Artifact) -> None:
+        pointer = artifact.content
+        if pointer is None:
+            return
+        if pointer.state != ArtifactContentState.AVAILABLE:
+            raise ArtifactContentIntegrityError("artifact content is not available")
+        if artifact.digest is None:
+            raise ArtifactContentIntegrityError("content-backed artifact is missing canonical digest")
+        service = self._require_content_service()
+        store = service.backend(pointer.backend_id)
+        head = store.verify(
+            self._content_scope_for(artifact),
+            pointer.locator,
+            artifact.digest.value,
+        )
+        if head.size_bytes != pointer.size_bytes:
+            raise ArtifactContentIntegrityError("artifact content size metadata does not match stored content")
+
+    def _tombstone_content_pointer(
+        self,
+        artifact: Artifact,
+    ) -> ArtifactContentPointer | None:
+        pointer = artifact.content
+        if pointer is None or pointer.state == ArtifactContentState.TOMBSTONED:
+            return pointer
+        self._require_content_service().backend(pointer.backend_id).delete(
+            self._content_scope_for(artifact),
+            pointer.locator,
+        )
+        return pointer.model_copy(
+            update={"state": ArtifactContentState.TOMBSTONED, "verified_at": time.time()}
+        )
+
+    def attach_artifact_content(
+        self,
+        artifact_id: str,
+        chunks: Iterable[bytes],
+        *,
+        actor: AuthenticationActor,
+        media_type: str | None = None,
+        backend_id: str | None = None,
+        expected_sha256: str | None = None,
+        encryption_key_ref: str | None = None,
+    ) -> Artifact:
+        state = self.store.load()
+        artifact = self._artifact(state, artifact_id, actor)
+        self._require_record_mutation(artifact.producer_identity_id, actor)
+        if artifact.lifecycle != ArtifactLifecycle.ACTIVE:
+            raise ArtifactEvidenceConflictError("content can only be attached to an active artifact")
+        if artifact.content is not None:
+            raise ArtifactEvidenceConflictError(
+                "artifact content is immutable; supersede or migrate the artifact content instead"
+            )
+        service = self._require_content_service()
+        selected_backend = backend_id or self._content_backend_id(actor, artifact.project_id)
+        canonical_sha256 = artifact.digest.value if artifact.digest is not None else None
+        if (
+            expected_sha256 is not None
+            and canonical_sha256 is not None
+            and expected_sha256 != canonical_sha256
+        ):
+            raise ArtifactContentIntegrityError(
+                "requested content digest does not match canonical artifact digest"
+            )
+        result = service.put(
+            self._content_scope_for(artifact),
+            chunks,
+            backend_id=selected_backend,
+            media_type=media_type,
+            expected_sha256=canonical_sha256 or expected_sha256,
+        )
+        pointer = ArtifactContentPointer(
+            backend_id=result.backend_id,
+            locator=result.locator,
+            size_bytes=result.size_bytes,
+            media_type=result.media_type,
+            encryption_key_ref=encryption_key_ref,
+            verified_at=time.time(),
+        )
+        digest = ArtifactDigest(value=result.sha256)
+
+        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            for index, item in enumerate(current.artifacts):
+                if item.id == artifact.id:
+                    current.artifacts[index] = item.model_copy(
+                        update={"digest": digest, "content": pointer}
+                    )
+                    break
+            return current
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.artifacts if item.id == artifact.id)
+
+    def open_artifact_content(
+        self,
+        artifact_id: str,
+        *,
+        actor: AuthenticationActor,
+        byte_range: ArtifactContentRange | None = None,
+        chunk_size: int = 65536,
+        verify: bool = True,
+    ) -> tuple[ArtifactContentPointer, Iterator[bytes]]:
+        artifact = self._artifact(self.store.load(), artifact_id, actor)
+        pointer = artifact.content
+        if pointer is None:
+            raise ArtifactEvidenceError("artifact has no managed content")
+        if pointer.state != ArtifactContentState.AVAILABLE:
+            raise ArtifactContentError("artifact content is tombstoned")
+        if verify:
+            self._verify_content_pointer(artifact)
+        stream = self._require_content_service().open(
+            self._content_scope_for(artifact),
+            backend_id=pointer.backend_id,
+            locator=pointer.locator,
+            byte_range=byte_range,
+            chunk_size=chunk_size,
+        )
+        return pointer, stream
+
+    def verify_artifact_content(
+        self,
+        artifact_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> Artifact:
+        artifact = self._artifact(self.store.load(), artifact_id, actor)
+        self._verify_content_pointer(artifact)
+        if artifact.content is None:
+            return artifact
+        pointer = artifact.content.model_copy(update={"verified_at": time.time()})
+
+        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            for index, item in enumerate(current.artifacts):
+                if item.id == artifact.id:
+                    current.artifacts[index] = item.model_copy(update={"content": pointer})
+                    break
+            return current
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.artifacts if item.id == artifact.id)
+
+    def migrate_artifact_content(
+        self,
+        artifact_id: str,
+        target_backend_id: str,
+        *,
+        actor: AuthenticationActor,
+        delete_source: bool = True,
+    ) -> Artifact:
+        state = self.store.load()
+        artifact = self._artifact(state, artifact_id, actor)
+        self._require_record_mutation(artifact.producer_identity_id, actor)
+        pointer = artifact.content
+        if pointer is None or artifact.digest is None:
+            raise ArtifactEvidenceError("artifact has no managed content to migrate")
+        if pointer.state != ArtifactContentState.AVAILABLE:
+            raise ArtifactEvidenceConflictError("tombstoned artifact content cannot be migrated")
+        if pointer.backend_id == target_backend_id:
+            self._verify_content_pointer(artifact)
+            return artifact
+        service = self._require_content_service()
+        result = service.copy(
+            self._content_scope_for(artifact),
+            source_backend_id=pointer.backend_id,
+            source_locator=pointer.locator,
+            target_backend_id=target_backend_id,
+            expected_sha256=artifact.digest.value,
+            media_type=pointer.media_type,
+        )
+        target_pointer = ArtifactContentPointer(
+            backend_id=result.backend_id,
+            locator=result.locator,
+            size_bytes=result.size_bytes,
+            media_type=result.media_type,
+            encryption_key_ref=pointer.encryption_key_ref,
+            verified_at=time.time(),
+        )
+
+        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            for index, item in enumerate(current.artifacts):
+                if item.id == artifact.id:
+                    current.artifacts[index] = item.model_copy(update={"content": target_pointer})
+                    break
+            return current
+
+        updated = self.store.update(apply)
+        if delete_source:
+            service.backend(pointer.backend_id).delete(
+                self._content_scope_for(artifact),
+                pointer.locator,
+            )
+        return next(item for item in updated.artifacts if item.id == artifact.id)
+
+    def delete_artifact_content(
+        self,
+        artifact_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> Artifact:
+        state = self.store.load()
+        artifact = self._artifact(state, artifact_id, actor)
+        self._require_record_mutation(artifact.producer_identity_id, actor)
+        pointer = artifact.content
+        if pointer is None or pointer.state == ArtifactContentState.TOMBSTONED:
+            return artifact
+        tombstone = self._tombstone_content_pointer(artifact)
+
+        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            for index, item in enumerate(current.artifacts):
+                if item.id == artifact.id:
+                    current.artifacts[index] = item.model_copy(update={"content": tombstone})
+                    break
+            return current
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.artifacts if item.id == artifact.id)
 
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor) -> Artifact:
         self._validate_resources(payload.resource_ids, actor)
@@ -554,13 +808,30 @@ class ArtifactEvidenceService:
         record: GovernedDataRecord,
         action: GovernanceAction,
     ) -> str:
-        """Redact codex-web artifact/evidence metadata while preserving tombstone IDs.
+        """Apply governance to canonical metadata and managed content.
 
-        External Git/provider content is outside this handler and is never
-        claimed deleted by this receipt.
+        Managed byte content is tombstoned before the canonical mutation is
+        recorded. External Git/provider content remains outside this handler.
         """
         now = time.time()
         changed = False
+        governance_content_tombstone: ArtifactContentPointer | None = None
+        if record.object_type == "artifact":
+            current = self.store.load()
+            governed_artifact = next(
+                (
+                    artifact
+                    for artifact in current.artifacts
+                    if artifact.id == record.object_id
+                    and artifact.organization_id == record.organization_id
+                    and artifact.workspace_id == record.workspace_id
+                ),
+                None,
+            )
+            if governed_artifact is not None:
+                governance_content_tombstone = self._tombstone_content_pointer(
+                    governed_artifact
+                )
 
         def apply(state: ArtifactEvidenceState) -> ArtifactEvidenceState:
             nonlocal changed
@@ -593,6 +864,7 @@ class ArtifactEvidenceService:
                             "external_url": None,
                             "revision": None,
                             "digest": None if action == GovernanceAction.DELETE else artifact.digest,
+                            "content": governance_content_tombstone or artifact.content,
                             "metadata": {},
                             "lifecycle": ArtifactLifecycle.INVALIDATED,
                             "invalidated_at": now,
@@ -721,6 +993,18 @@ class ArtifactEvidenceService:
         current_time = time.time() if now is None else now
         expired_artifacts: list[str] = []
         expired_evidence: list[str] = []
+        retention_content_tombstones: dict[str, ArtifactContentPointer] = {}
+        snapshot = self.store.load()
+        for artifact in snapshot.artifacts:
+            if (
+                artifact.lifecycle == ArtifactLifecycle.ACTIVE
+                and artifact.retention_expires_at is not None
+                and artifact.retention_expires_at <= current_time
+                and artifact.content is not None
+            ):
+                tombstone = self._tombstone_content_pointer(artifact)
+                if tombstone is not None:
+                    retention_content_tombstones[artifact.id] = tombstone
 
         def apply(state: ArtifactEvidenceState) -> ArtifactEvidenceState:
             for index, artifact in enumerate(state.artifacts):
@@ -734,6 +1018,10 @@ class ArtifactEvidenceService:
                             "lifecycle": ArtifactLifecycle.EXPIRED,
                             "invalidated_at": current_time,
                             "invalidation_reason": "retention expired",
+                            "content": retention_content_tombstones.get(
+                                artifact.id,
+                                artifact.content,
+                            ),
                         }
                     )
                     expired_artifacts.append(artifact.id)
@@ -813,6 +1101,17 @@ class ArtifactEvidenceService:
                 ):
                     continue
                 linked = [artifacts.get(artifact_id) for artifact_id in item.artifact_ids]
+                content_integrity_ok = True
+                for artifact in linked:
+                    if artifact is None or artifact.content is None:
+                        continue
+                    try:
+                        self._verify_content_pointer(artifact)
+                    except ArtifactContentError:
+                        content_integrity_ok = False
+                        break
+                if not content_integrity_ok:
+                    continue
                 if requirement.artifact_type is not None and not any(
                     artifact is not None and artifact.artifact_type == requirement.artifact_type
                     for artifact in linked
