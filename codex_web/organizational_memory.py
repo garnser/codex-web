@@ -389,6 +389,7 @@ class KnowledgeQuery(BaseModel):
     text: str = Field(default="", max_length=20000)
     object_types: tuple[KnowledgeObjectType, ...] = ()
     project_ids: tuple[str, ...] = ()
+    include_company_scope: bool = False
     logical_keys: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     relationship_target_ids: tuple[str, ...] = ()
