@@ -10,9 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 class DefinitionRegistryManagementUiTests(unittest.TestCase):
     def test_definition_lifecycle_uses_secured_canonical_apis_and_optimistic_revision(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        javascript = (ROOT / "static" / "definition_registry_management.js").read_text(
+        management = (ROOT / "static" / "definition_registry_management.js").read_text(
             encoding="utf-8"
         )
+        approvals = (ROOT / "static" / "definition_registry_approvals.js").read_text(
+            encoding="utf-8"
+        )
+        transfer = (ROOT / "static" / "definition_registry_transfer.js").read_text(
+            encoding="utf-8"
+        )
+        javascript = "\n".join((management, approvals, transfer))
 
         self.assertIn('id="definition-lifecycle-panel"', html)
         self.assertIn('id="definition-draft-payload"', html)
@@ -31,6 +38,8 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         self.assertIn("code-owned security invariants", javascript)
         self.assertIn("definitions:admin", javascript)
         self.assertIn("definitions:global-admin", javascript)
+        self.assertIn("definition_registry_approvals.js", management)
+        self.assertIn("definition_registry_transfer.js", management)
         self.assertIn("definitions:approve", javascript)
         self.assertIn("definitions:global-approve", javascript)
         self.assertIn("/publication-assessment", javascript)
