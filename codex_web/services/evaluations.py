@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import math
 import time
-from collections.abc import Awaitable
 from typing import Protocol
 
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.definitions import (
-    DefinitionContext,
     DefinitionReference,
     DefinitionScope,
     reference_for,
@@ -459,7 +456,8 @@ class EvaluationService:
         if (
             baseline.scenario_id != candidate.scenario_id
             or baseline.scenario_version != candidate.scenario_version
-            or not self._same_scope(baseline, _RunActor(candidate))
+            or baseline.organization_id != candidate.organization_id
+            or baseline.workspace_id != candidate.workspace_id
         ):
             raise EvaluationError("baseline and candidate runs must share scenario and tenant")
 
@@ -779,10 +777,3 @@ class EvaluationService:
             suite_id=suite_id,
         )
 
-
-class _RunActor:
-    """Tiny scope adapter used only for comparison checks."""
-
-    def __init__(self, run: EvaluationRun) -> None:
-        self.organization_id = run.organization_id
-        self.workspace_id = run.workspace_id
