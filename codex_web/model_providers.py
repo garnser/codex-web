@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+import time
+from collections.abc import Mapping
 
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
@@ -11,6 +13,7 @@ from codex_web.model_gateway import (
     ModelProviderResult,
     ModelProviderUsage,
 )
+from codex_web.provider_capacity import ProviderCapacityStatus
 
 
 class ModelProviderAdapterError(RuntimeError):
@@ -19,6 +22,66 @@ class ModelProviderAdapterError(RuntimeError):
 
 class ModelProviderTransientError(ModelProviderAdapterError):
     pass
+
+
+class ModelProviderCapacityError(ModelProviderTransientError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: ProviderCapacityStatus,
+        retry_at: float | None = None,
+    ) -> None:
+        self.capacity_status = status
+        self.retry_at = retry_at
+        super().__init__(message)
+
+
+def _retry_at_from_headers(
+    headers: Mapping[str, Any] | None,
+    *,
+    now: float | None = None,
+) -> float | None:
+    if not headers:
+        return None
+    timestamp = time.time() if now is None else float(now)
+    normalized = {str(key).lower(): value for key, value in headers.items()}
+    candidates: list[float] = []
+    for key in (
+        "retry-after",
+        "x-ratelimit-reset",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+    ):
+        raw = normalized.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip().lower()
+        try:
+            number = float(text)
+            candidates.append(
+                number if number > 10_000_000 else timestamp + max(0.0, number)
+            )
+            continue
+        except ValueError:
+            pass
+        multiplier = 1.0
+        if text.endswith("ms"):
+            multiplier = 0.001
+            text = text[:-2]
+        elif text.endswith("s"):
+            text = text[:-1]
+        elif text.endswith("m"):
+            multiplier = 60.0
+            text = text[:-1]
+        elif text.endswith("h"):
+            multiplier = 3600.0
+            text = text[:-1]
+        try:
+            candidates.append(timestamp + max(0.0, float(text)) * multiplier)
+        except ValueError:
+            continue
+    return max(candidates) if candidates else None
 
 
 @runtime_checkable
@@ -42,15 +105,40 @@ class OpenAIModelProviderAdapter:
 
     @staticmethod
     def _classify(exc: Exception) -> ModelProviderAdapterError:
+        response = getattr(exc, "response", None)
         status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(response, "status_code", None)
         name = type(exc).__name__.lower()
+        message = f"{type(exc).__name__}: {exc}"
+        lowered = message.casefold()
+        if status == 429 or "ratelimit" in name:
+            quota_markers = (
+                "insufficient_quota",
+                "quota",
+                "usage limit",
+                "usage_limit",
+                "credits depleted",
+                "credit balance",
+            )
+            return ModelProviderCapacityError(
+                message,
+                status=(
+                    ProviderCapacityStatus.DEPLETED
+                    if any(marker in lowered for marker in quota_markers)
+                    else ProviderCapacityStatus.THROTTLED
+                ),
+                retry_at=_retry_at_from_headers(
+                    getattr(response, "headers", None)
+                    or getattr(exc, "headers", None)
+                ),
+            )
         if (
-            status == 429
-            or (isinstance(status, int) and status >= 500)
-            or any(token in name for token in ("ratelimit", "timeout", "connection", "unavailable"))
+            (isinstance(status, int) and status >= 500)
+            or any(token in name for token in ("timeout", "connection", "unavailable"))
         ):
-            return ModelProviderTransientError(f"{type(exc).__name__}: {exc}")
-        return ModelProviderAdapterError(f"{type(exc).__name__}: {exc}")
+            return ModelProviderTransientError(message)
+        return ModelProviderAdapterError(message)
 
     @staticmethod
     def _client(provider: ModelProviderRecord, credential: str | None):
@@ -180,9 +268,28 @@ class AnthropicModelProviderAdapter:
         self._transport = transport
 
     @staticmethod
-    def _classify_status(status_code: int, message: str) -> ModelProviderAdapterError:
+    def _classify_status(
+        status_code: int,
+        message: str,
+        *,
+        headers: Mapping[str, Any] | None = None,
+    ) -> ModelProviderAdapterError:
         detail = f"Anthropic API {status_code}: {message}"
-        if status_code in {408, 409, 429} or status_code >= 500:
+        if status_code == 429:
+            lowered = str(message).casefold()
+            return ModelProviderCapacityError(
+                detail,
+                status=(
+                    ProviderCapacityStatus.DEPLETED
+                    if any(
+                        marker in lowered
+                        for marker in ("quota", "usage limit", "credit")
+                    )
+                    else ProviderCapacityStatus.THROTTLED
+                ),
+                retry_at=_retry_at_from_headers(headers),
+            )
+        if status_code in {408, 409} or status_code >= 500:
             return ModelProviderTransientError(detail)
         return ModelProviderAdapterError(detail)
 
@@ -263,7 +370,11 @@ class AnthropicModelProviderAdapter:
                 )
             except ValueError:
                 message = response.text
-            raise self._classify_status(response.status_code, str(message or "request failed"))
+            raise self._classify_status(
+                response.status_code,
+                str(message or "request failed"),
+                headers=response.headers,
+            )
 
         try:
             body = response.json()
