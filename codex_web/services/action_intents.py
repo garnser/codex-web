@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.action_intents import (
     ActionDecisionOutcome,
+    ActionDecisionSnapshot,
     ActionInboxCreate,
     ActionInboxMessage,
     ActionIntent,
@@ -22,12 +23,22 @@ from codex_web.action_intents import (
     TERMINAL_ACTION_INTENT_STATUSES,
 )
 from codex_web.action_providers import ActionRequest, ActionResult
+from codex_web.authority import (
+    AuthorityAutonomyRisk,
+    AuthorityEvaluationRequest,
+    AuthorityLevel,
+)
 from codex_web.entitlements import (
     CAPABILITY_EXTERNAL_ACTIONS,
     METRIC_EXTERNAL_ACTION_ATTEMPTS,
     UsageEventCreate,
 )
-from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.identity import (
+    AuthenticationActor,
+    MembershipRole,
+    PrincipalKind,
+    TenantScope,
+)
 from codex_web.observability import correlated, current_correlation, new_correlation_id
 from codex_web.security import (
     SecurityDecisionOutcome,
@@ -39,8 +50,14 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.entitlements import EntitlementDeniedError, EntitlementService
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import (
+    AuthenticationError,
+    AuthorizationError,
+    IdentityService,
+    TenantIsolationError,
+)
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
 
@@ -77,6 +94,8 @@ class ActionIntentService:
         work_item_host: Any | None = None,
         security_boundary: SecurityBoundaryService | None = None,
         entitlements: EntitlementService | None = None,
+        authority: AuthorityRoleService | None = None,
+        identity: IdentityService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -84,6 +103,8 @@ class ActionIntentService:
         self.work_item_host = work_item_host
         self.security_boundary = security_boundary
         self.entitlements = entitlements
+        self.authority = authority
+        self.identity = identity
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -218,6 +239,153 @@ class ActionIntentService:
             raise ActionIntentConflictError(
                 "action intent project does not match attributed Work Item"
             )
+
+    @staticmethod
+    def _authority_risk(definition) -> AuthorityAutonomyRisk:
+        return AuthorityAutonomyRisk(definition.risk_class.value)
+
+    def _canonical_authority_snapshot(
+        self,
+        *,
+        definition,
+        request: ActionRequest,
+        actor: AuthenticationActor,
+    ) -> ActionDecisionSnapshot:
+        capabilities = tuple(
+            sorted(
+                dict.fromkeys(
+                    str(item or "").strip()
+                    for item in definition.required_authority
+                    if str(item or "").strip()
+                )
+            )
+        )
+        evaluated_at = time.time()
+        if not capabilities:
+            return ActionDecisionSnapshot(
+                decision_id=f"authority-bundle-{uuid.uuid4().hex}",
+                outcome=ActionDecisionOutcome.DENY,
+                source="canonical:role-authority",
+                reason="external action declares no required operational authority",
+                capabilities=(),
+                reasons=("ActionDefinition.required_authority is empty",),
+                evaluated_at=evaluated_at,
+            )
+        if self.authority is None:
+            return ActionDecisionSnapshot(
+                decision_id=f"authority-bundle-{uuid.uuid4().hex}",
+                outcome=ActionDecisionOutcome.DENY,
+                source="canonical:role-authority",
+                reason="canonical Role authority service is unavailable",
+                capabilities=capabilities,
+                reasons=("canonical Role authority service is unavailable",),
+                evaluated_at=evaluated_at,
+            )
+
+        level = AuthorityLevel(definition.required_authority_level)
+        decisions = [
+            self.authority.evaluate(
+                AuthorityEvaluationRequest(
+                    capability=capability,
+                    level=level,
+                    project_id=request.project_id,
+                    resource_ids=request.resource_ids,
+                    autonomous_risk=self._authority_risk(definition),
+                ),
+                actor=actor,
+            )
+            for capability in capabilities
+        ]
+        denied = [
+            (capability, decision)
+            for capability, decision in zip(capabilities, decisions)
+            if decision.outcome.value != "allow"
+        ]
+        refs = {}
+        role_ids: set[str] = set()
+        grant_ids: set[str] = set()
+        delegation_ids: set[str] = set()
+        expiries: list[float] = []
+        reasons: list[str] = []
+        for capability, decision in zip(capabilities, decisions):
+            if decision.definition_ref is not None:
+                refs[decision.definition_ref.record_id] = decision.definition_ref
+            role_ids.update(decision.matched_role_ids)
+            grant_ids.update(decision.matched_grant_ids)
+            delegation_ids.update(decision.delegation_ids)
+            if decision.expires_at is not None:
+                expiries.append(decision.expires_at)
+            reasons.extend(
+                f"{capability}: {reason}"
+                for reason in decision.reasons
+            )
+
+        outcome = (
+            ActionDecisionOutcome.DENY
+            if denied
+            else ActionDecisionOutcome.ALLOW
+        )
+        return ActionDecisionSnapshot(
+            decision_id=f"authority-bundle-{uuid.uuid4().hex}",
+            outcome=outcome,
+            source="canonical:role-authority",
+            reason=(
+                "; ".join(reasons)
+                if reasons
+                else (
+                    "canonical operational Role authority allowed all capabilities"
+                    if outcome == ActionDecisionOutcome.ALLOW
+                    else "canonical operational Role authority denied action"
+                )
+            ),
+            capabilities=capabilities,
+            definition_refs=tuple(
+                refs[key]
+                for key in sorted(refs)
+            ),
+            role_ids=tuple(sorted(role_ids)),
+            grant_ids=tuple(sorted(grant_ids)),
+            delegation_ids=tuple(sorted(delegation_ids)),
+            expires_at=min(expiries) if expiries else None,
+            reasons=tuple(reasons),
+            evaluated_at=max(
+                (item.evaluated_at for item in decisions),
+                default=evaluated_at,
+            ),
+        )
+
+    def _requester_actor(self, intent: ActionIntent) -> AuthenticationActor:
+        if self.identity is None:
+            raise AuthenticationError(
+                "canonical identity service is unavailable for authority recheck"
+            )
+        return self.identity.actor_for_identity(
+            intent.requested_by,
+            scope=TenantScope(
+                organization_id=intent.organization_id,
+                workspace_id=intent.workspace_id,
+            ),
+        )
+
+    def _persist_authority_recheck(
+        self,
+        intent_id: str,
+        decision: ActionDecisionSnapshot,
+    ) -> ActionIntent:
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent_id:
+                    state.intents[index] = item.model_copy(
+                        update={
+                            "authority_recheck": decision,
+                            "updated_at": time.time(),
+                        }
+                    )
+                    break
+            return state
+
+        updated = self.store.update(apply)
+        return next(item for item in updated.intents if item.id == intent_id)
 
     def _security_decision(
         self,
