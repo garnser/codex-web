@@ -5,7 +5,7 @@ import math
 import re
 import time
 from collections import defaultdict
-from typing import Iterable
+from typing import Callable, Iterable
 
 from codex_web.authority import (
     AuthorityAutonomyRisk,
@@ -42,6 +42,7 @@ from codex_web.organizational_memory import (
     OrganizationalMemoryState,
 )
 from codex_web.retrieval import (
+    EmbeddingModelIdentity,
     LocalVectorRetrievalBackend,
     RetrievalBackend,
     RetrievalBackendStatus,
@@ -67,6 +68,12 @@ class KnowledgeAuthorizationError(OrganizationalMemoryError):
 
 class KnowledgeValidationError(OrganizationalMemoryError):
     pass
+
+
+EmbeddingIdentityValidator = Callable[
+    [EmbeddingModelIdentity, AuthenticationActor],
+    None,
+]
 
 
 class DeterministicSemanticEncoder:
@@ -160,6 +167,7 @@ class OrganizationalMemoryService:
         *,
         encoder: DeterministicSemanticEncoder | None = None,
         retrieval_backend: RetrievalBackend | None = None,
+        embedding_identity_validator: EmbeddingIdentityValidator | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -169,6 +177,7 @@ class OrganizationalMemoryService:
         self.retrieval_backend = (
             retrieval_backend or LocalVectorRetrievalBackend()
         )
+        self.embedding_identity_validator = embedding_identity_validator
         self._retrieval_index_dirty = False
         self.clock = clock
         self.governance.register_action_handler(
@@ -339,6 +348,13 @@ class OrganizationalMemoryService:
                     "external embedding index rebuild requires an authenticated "
                     "administrator for canonical export authorization"
                 )
+            if self.embedding_identity_validator is None:
+                self._retrieval_index_dirty = True
+                raise KnowledgeValidationError(
+                    "external embedding provider requires canonical ModelGateway "
+                    "identity validation"
+                )
+            self.embedding_identity_validator(identity, actor)
             governed_ids = tuple(
                 item.governance_record_id
                 for item in indexable
@@ -405,6 +421,10 @@ class OrganizationalMemoryService:
                 if actor is None:
                     self._mark_index_dirty()
                     return
+                if self.embedding_identity_validator is None:
+                    self._mark_index_dirty()
+                    return
+                self.embedding_identity_validator(identity, actor)
                 context = self.governance.filter_context(
                     ContextFilterRequest(
                         record_ids=(item.governance_record_id,),
