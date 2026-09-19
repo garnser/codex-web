@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.artifact_content import ArtifactContentPointer
 from codex_web.data_governance import DataClassification, GovernanceAction
 
 
@@ -94,6 +95,7 @@ class Artifact(BaseModel):
     external_url: str | None = None
     revision: str | None = None
     digest: ArtifactDigest | None = None
+    content: ArtifactContentPointer | None = None
     lifecycle: ArtifactLifecycle = ArtifactLifecycle.ACTIVE
     supersedes_id: str | None = None
     superseded_by_id: str | None = None

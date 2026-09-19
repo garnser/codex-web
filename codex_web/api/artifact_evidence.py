@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from typing import Any
+import tempfile
+from typing import Any, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from codex_web.api.identity import request_actor
+from codex_web.artifact_content import (
+    ArtifactContentAccessError,
+    ArtifactContentError,
+    ArtifactContentNotFoundError,
+    ArtifactContentRange,
+)
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.artifact_evidence import (
     ArtifactCreate,
@@ -34,14 +42,15 @@ def _error(exc: Exception) -> HTTPException:
             EvidenceNotFoundError,
             VerificationNotFoundError,
             ResourceNotFoundError,
+            ArtifactContentNotFoundError,
         ),
     ):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, (AuthorizationError, TenantIsolationError)):
+    if isinstance(exc, (AuthorizationError, TenantIsolationError, ArtifactContentAccessError)):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, ArtifactEvidenceConflictError):
         return HTTPException(status_code=409, detail=str(exc))
-    if isinstance(exc, ArtifactEvidenceError):
+    if isinstance(exc, (ArtifactEvidenceError, ArtifactContentError)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -117,6 +126,198 @@ def build_artifact_evidence_router(service: ArtifactEvidenceService) -> APIRoute
             ):
                 raise _error(exc) from exc
             raise
+
+    @router.put("/api/artifacts/{artifact_id}/content")
+    async def put_artifact_content(
+        artifact_id: str,
+        request: Request,
+        backend_id: str | None = None,
+        media_type: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as body:
+                async for chunk in request.stream():
+                    if chunk:
+                        body.write(chunk)
+                body.seek(0)
+
+                def chunks() -> Iterator[bytes]:
+                    while True:
+                        chunk = body.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+
+                item = service.attach_artifact_content(
+                    artifact_id,
+                    chunks(),
+                    actor=request_actor(request),
+                    backend_id=backend_id,
+                    media_type=media_type or request.headers.get("content-type"),
+                    expected_sha256=expected_sha256,
+                )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ArtifactEvidenceError,
+                    ArtifactContentError,
+                    AuthorizationError,
+                    TenantIsolationError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/api/artifacts/{artifact_id}/content")
+    async def get_artifact_content(
+        artifact_id: str,
+        request: Request,
+        start: int | None = None,
+        end_exclusive: int | None = None,
+    ):
+        try:
+            byte_range = None
+            if start is not None or end_exclusive is not None:
+                if start is None or end_exclusive is None:
+                    raise ArtifactContentError(
+                        "both start and end_exclusive are required for a range read"
+                    )
+                byte_range = ArtifactContentRange(
+                    start=start,
+                    end_exclusive=end_exclusive,
+                )
+            pointer, stream = service.open_artifact_content(
+                artifact_id,
+                actor=request_actor(request),
+                byte_range=byte_range,
+            )
+            headers = {
+                "Accept-Ranges": "bytes",
+                "X-Content-Backend": pointer.backend_id,
+            }
+            if byte_range is None:
+                headers["Content-Length"] = str(pointer.size_bytes)
+            else:
+                length = max(
+                    0,
+                    min(byte_range.end_exclusive, pointer.size_bytes)
+                    - byte_range.start,
+                )
+                headers["Content-Length"] = str(length)
+                headers["Content-Range"] = (
+                    f"bytes {byte_range.start}-"
+                    f"{max(byte_range.start, byte_range.start + length - 1)}/"
+                    f"{pointer.size_bytes}"
+                )
+            return StreamingResponse(
+                stream,
+                media_type=pointer.media_type or "application/octet-stream",
+                headers=headers,
+                status_code=206 if byte_range is not None else 200,
+            )
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ArtifactEvidenceError,
+                    ArtifactContentError,
+                    AuthorizationError,
+                    TenantIsolationError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/api/artifacts/{artifact_id}/content/verify")
+    async def verify_artifact_content(
+        artifact_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.verify_artifact_content(
+                artifact_id,
+                actor=request_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ArtifactEvidenceError,
+                    ArtifactContentError,
+                    AuthorizationError,
+                    TenantIsolationError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/api/artifacts/{artifact_id}/content/migrate")
+    async def migrate_artifact_content(
+        artifact_id: str,
+        request: Request,
+        target_backend_id: str,
+        delete_source: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            item = service.migrate_artifact_content(
+                artifact_id,
+                target_backend_id,
+                actor=request_actor(request),
+                delete_source=delete_source,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ArtifactEvidenceError,
+                    ArtifactContentError,
+                    AuthorizationError,
+                    TenantIsolationError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.delete("/api/artifacts/{artifact_id}/content")
+    async def delete_artifact_content(
+        artifact_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.delete_artifact_content(
+                artifact_id,
+                actor=request_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    ArtifactEvidenceError,
+                    ArtifactContentError,
+                    AuthorizationError,
+                    TenantIsolationError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/api/artifact-content/backends")
+    async def artifact_content_backends(request: Request) -> dict[str, Any]:
+        request_actor(request)
+        if service.content is None:
+            return {"items": []}
+        return {
+            "items": [
+                item.model_dump(mode="json")
+                for item in service.content.health()
+            ]
+        }
 
     @router.get("/api/evidence")
     async def list_evidence(

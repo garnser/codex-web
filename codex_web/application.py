@@ -46,6 +46,7 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
 from codex_web.composition import replace_routes
+from codex_web.configuration import ConfigurationContext
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.extension_packages import LocalExtensionPackageCatalog
 from codex_web.integrations.gitlab_client import GitLabClient
@@ -59,6 +60,7 @@ from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
+    ARTIFACT_CONTENT_DIR,
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
@@ -87,6 +89,11 @@ from codex_web.services.approvals import ApprovalService
 from codex_web.services.approval_requests import ApprovalRequestService
 from codex_web.services.attention import AttentionService, install_attention_event_bridges
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.artifact_content import ArtifactContentRegistry, ArtifactContentService
+from codex_web.services.artifact_content_configuration import (
+    ARTIFACT_CONTENT_BACKEND_CONFIG,
+    install_artifact_content_configuration,
+)
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
@@ -122,6 +129,7 @@ from codex_web.services.entitlements import EntitlementService
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
@@ -234,6 +242,9 @@ configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
+artifact_content_configuration_spec = install_artifact_content_configuration(
+    configuration_service
+)
 anthropic_worker_configuration_spec = install_anthropic_worker_configuration(
     configuration_service
 )
@@ -242,6 +253,7 @@ agent_routing_configuration_specs = install_agent_routing_configuration(
 )
 app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
+app.state.artifact_content_configuration_spec = artifact_content_configuration_spec
 app.state.anthropic_worker_configuration_spec = anthropic_worker_configuration_spec
 app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
@@ -518,12 +530,33 @@ thread_bootstrap_binding_service = ThreadBootstrapBindingService(
 app.state.thread_bootstrap_binding_store = thread_bootstrap_binding_store
 app.state.thread_bootstrap_binding_service = thread_bootstrap_binding_service
 
+artifact_content_registry = ArtifactContentRegistry()
+local_artifact_content_store = LocalArtifactContentStore(ARTIFACT_CONTENT_DIR)
+artifact_content_registry.register(local_artifact_content_store)
+artifact_content_service = ArtifactContentService(
+    artifact_content_registry,
+    default_backend_id="local",
+)
+
+def _artifact_content_backend(actor, project_id):
+    effective = configuration_service.resolve(
+        ARTIFACT_CONTENT_BACKEND_CONFIG,
+        ConfigurationContext(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            project_id=project_id,
+        ),
+    )
+    return str(effective.value)
+
 artifact_evidence_store = ArtifactEvidenceStore(state_store)
 artifact_evidence_service = ArtifactEvidenceService(
     artifact_evidence_store,
     resources=resource_catalog_service,
     work_item_host=core,
     governance=data_governance_service,
+    content=artifact_content_service,
+    content_backend_resolver=_artifact_content_backend,
 )
 data_governance_service.register_action_handler(
     "artifact",
@@ -534,6 +567,9 @@ data_governance_service.register_action_handler(
     artifact_evidence_service.apply_governance_action,
 )
 app.include_router(build_artifact_evidence_router(artifact_evidence_service))
+app.state.artifact_content_registry = artifact_content_registry
+app.state.local_artifact_content_store = local_artifact_content_store
+app.state.artifact_content_service = artifact_content_service
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 

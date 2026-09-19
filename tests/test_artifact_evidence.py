@@ -5,6 +5,11 @@ import time
 import unittest
 from pathlib import Path
 
+from codex_web.artifact_content import (
+    ArtifactContentIntegrityError,
+    ArtifactContentScope,
+    ArtifactContentState,
+)
 from codex_web.artifact_evidence import (
     ArtifactCreate,
     ArtifactLifecycle,
@@ -35,12 +40,17 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.models import WorkItemState
+from codex_web.services.artifact_content import (
+    ArtifactContentRegistry,
+    ArtifactContentService,
+)
 from codex_web.services.artifact_evidence import (
     ArtifactEvidenceConflictError,
     ArtifactEvidenceService,
 )
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import IdentityService
+from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -103,10 +113,24 @@ class ArtifactEvidenceTests(unittest.TestCase):
         self.host = _WorkItemHost(self.work_item)
         self.artifact_store = ArtifactEvidenceStore(sqlite)
         self.governance = DataGovernanceService(DataGovernanceStore(sqlite))
+        self.content_registry = ArtifactContentRegistry()
+        self.local_content = LocalArtifactContentStore(
+            root / "artifact-content",
+            backend_id="local",
+        )
+        self.archive_content = LocalArtifactContentStore(
+            root / "archive-content",
+            backend_id="archive",
+        )
+        self.content_registry.register(self.local_content)
+        self.content_registry.register(self.archive_content)
+        self.content_service = ArtifactContentService(self.content_registry)
         self.service = ArtifactEvidenceService(
             self.artifact_store,
             work_item_host=self.host,
             governance=self.governance,
+            content=self.content_service,
+            content_backend_resolver=lambda _actor, _project_id: "local",
         )
         self.governance.register_action_handler(
             "artifact",
@@ -483,6 +507,166 @@ class ArtifactEvidenceTests(unittest.TestCase):
         self.assertEqual(
             verification_rows[verification.id].result,
             VerificationResult.INVALIDATED,
+        )
+
+    def test_managed_content_attaches_reads_and_migrates_without_changing_artifact_id(self) -> None:
+        payload = b"managed-report-content"
+        artifact = self._artifact(
+            artifact_type=ArtifactType.REPORT,
+            digest=sha256_digest(payload),
+        )
+
+        attached = self.service.attach_artifact_content(
+            artifact.id,
+            (payload[:6], payload[6:]),
+            actor=self.producer,
+            media_type="text/plain",
+        )
+        pointer, stream = self.service.open_artifact_content(
+            artifact.id,
+            actor=self.producer,
+        )
+
+        self.assertEqual(attached.id, artifact.id)
+        self.assertEqual(pointer.backend_id, "local")
+        self.assertEqual(b"".join(stream), payload)
+        self.assertEqual(pointer.size_bytes, len(payload))
+
+        migrated = self.service.migrate_artifact_content(
+            artifact.id,
+            "archive",
+            actor=self.producer,
+        )
+        self.assertEqual(migrated.id, artifact.id)
+        self.assertEqual(migrated.content.backend_id, "archive")
+        self.assertEqual(migrated.digest, artifact.digest)
+        old_head = self.local_content.head(
+            ArtifactContentScope(
+                organization_id=self.producer.organization_id,
+                workspace_id=self.producer.workspace_id,
+            ),
+            pointer.locator,
+        )
+        self.assertTrue(old_head.tombstoned)
+
+    def test_corrupted_managed_content_cannot_satisfy_evidence_gate(self) -> None:
+        payload = b"verified-test-output"
+        artifact = self._artifact(
+            artifact_type=ArtifactType.REPORT,
+            digest=sha256_digest(payload),
+        )
+        attached = self.service.attach_artifact_content(
+            artifact.id,
+            (payload,),
+            actor=self.producer,
+            media_type="text/plain",
+        )
+        evidence = self._evidence(artifact.id)
+        requirement = EvidenceRequirement(
+            id="content-backed-test",
+            evidence_type=EvidenceType.TEST_RESULT,
+            artifact_type=ArtifactType.REPORT,
+        )
+
+        before = self.service.evaluate(
+            self.work_item.ref,
+            (requirement,),
+            actor=self.producer,
+        )
+        self.assertTrue(before.satisfied)
+
+        path = self.local_content._resolve(
+            ArtifactContentScope(
+                organization_id=self.producer.organization_id,
+                workspace_id=self.producer.workspace_id,
+            ),
+            attached.content.locator,
+        )
+        path.write_bytes(b"corrupted")
+
+        with self.assertRaises(ArtifactContentIntegrityError):
+            self.service.verify_artifact_content(
+                artifact.id,
+                actor=self.producer,
+            )
+        after = self.service.evaluate(
+            self.work_item.ref,
+            (requirement,),
+            actor=self.producer,
+        )
+        self.assertFalse(after.satisfied)
+        self.assertEqual(after.outcomes[0].matching_evidence_ids, ())
+        self.assertEqual(evidence.lifecycle, EvidenceLifecycle.VALID)
+
+    def test_retention_expiry_tombstones_managed_content(self) -> None:
+        payload = b"retained-content"
+        expires = time.time() + 5
+        artifact = self._artifact(
+            artifact_type=ArtifactType.REPORT,
+            digest=sha256_digest(payload),
+            retention_expires_at=expires,
+        )
+        attached = self.service.attach_artifact_content(
+            artifact.id,
+            (payload,),
+            actor=self.producer,
+        )
+
+        expired = self.service.expire_retention(now=expires + 1)
+        stored = {
+            item.id: item
+            for item in self.service.list_artifacts(self.producer)
+        }[artifact.id]
+
+        self.assertIn(artifact.id, expired["artifacts"])
+        self.assertEqual(stored.lifecycle, ArtifactLifecycle.EXPIRED)
+        self.assertEqual(stored.content.state, ArtifactContentState.TOMBSTONED)
+        head = self.local_content.head(
+            ArtifactContentScope(
+                organization_id=self.producer.organization_id,
+                workspace_id=self.producer.workspace_id,
+            ),
+            attached.content.locator,
+        )
+        self.assertTrue(head.tombstoned)
+
+    def test_governance_delete_tombstones_managed_content_before_receipt(self) -> None:
+        payload = b"sensitive-content"
+        artifact = self._artifact(
+            artifact_type=ArtifactType.REPORT,
+            digest=sha256_digest(payload),
+        )
+        attached = self.service.attach_artifact_content(
+            artifact.id,
+            (payload,),
+            actor=self.producer,
+        )
+        action = self.governance.request_action(
+            GovernanceActionRequest(
+                record_id=artifact.governance_record_id,
+                action=GovernanceAction.DELETE,
+                reason="retention deletion",
+            ),
+            actor=self.producer,
+        )
+
+        completed = self.governance.execute_request(action.id, actor=self.producer)
+        stored = {
+            item.id: item
+            for item in self.service.list_artifacts(self.producer)
+        }[artifact.id]
+
+        self.assertEqual(completed.status, GovernanceRequestStatus.COMPLETED)
+        self.assertEqual(stored.content.state, ArtifactContentState.TOMBSTONED)
+        self.assertIsNone(stored.digest)
+        self.assertTrue(
+            self.local_content.head(
+                ArtifactContentScope(
+                    organization_id=self.producer.organization_id,
+                    workspace_id=self.producer.workspace_id,
+                ),
+                attached.content.locator,
+            ).tombstoned
         )
 
     def test_legacy_artifact_and_evidence_can_be_backfilled_into_governance(self) -> None:
