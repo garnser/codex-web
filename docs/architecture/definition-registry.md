@@ -18,7 +18,8 @@ Every definition revision records:
 - validated payload checksum;
 - creator/validator/publisher, timestamps, reason and approval metadata;
 - effective dates and engine compatibility bounds;
-- supersession and rollback provenance.
+- supersession and rollback provenance;
+- optional `derived_from_record_id` provenance for typed/clone-derived drafts.
 
 The checksum covers the stable definition identity, kind, definition schema version and canonical JSON payload. Loading a tampered record fails validation before it can become effective.
 
@@ -128,6 +129,58 @@ The code-owned `ExecutionRoleCatalogDefinition` schema validates role IDs, requi
 The previous Python catalog now lives only in `execution_contract_seed.py` as a bootstrap migration fixture. On an empty installation it is inserted as an ordinary revision-1 published database record. Once any record exists in the global canonical slot, bootstrap does not compete with or overwrite it.
 
 Runtime helpers in `execution_contracts.py` contain only deterministic routing/prompt interpretation logic over a resolved catalog. They do not contain `ROLE_CONTRACTS`, shared-rule constants, or another fallback catalog. An uncomposed runtime with no Definition Registry provider fails visibly.
+
+## Typed Role and execution-contract authoring
+
+The Definition Registry administration surface includes typed editors for:
+
+- `authority-role-catalog@1.0`;
+- `execution-role-catalog@1.0`.
+
+Typed authoring is not a second policy store. The editor loads one immutable
+registry revision, serializes the registered schema payload, and creates a new
+draft through `POST /api/definitions/drafts`. It never publishes or activates a
+definition directly.
+
+Derived drafts persist `derived_from_record_id`. The registry validates that
+the referenced source exists and belongs to the same definition ID, kind,
+scope, and schema version. This makes clone/edit provenance durable rather than
+UI-only metadata.
+
+The typed authority editor supports Roles, inheritance, atomic grants,
+identity/Team bindings, delegations, environment/resource/project constraints,
+financial/token/model-call ceilings, autonomous-risk ceilings, and approval
+requirements. The typed execution editor supports contract lane/description,
+expected/refused work, artifacts, handoffs, failure conditions, routing
+keywords, auto-selection, shared execution rules, and owner/default mappings.
+
+Both Role schemas expose a lifecycle value:
+
+- `active` — normal runtime behavior;
+- `deprecated` — retained for existing/direct use but discouraged from new
+  automatic execution routing;
+- `disabled` — contributes no operational authority or execution-role
+  resolution.
+
+Disabled operational authority Roles are skipped by the canonical authority
+evaluator even if stale bindings/delegations still reference them. Reactivating
+a disabled Role, or returning a deprecated Role to active, is classified as a
+sensitive authority expansion and therefore passes through the independent
+publication-approval gate.
+
+Disabled execution Roles are excluded from resolution/routing. Code-owned
+structural roles (`orchestrator`, `quinn`, and `release-manager`) cannot be
+disabled, and owner/default mappings cannot target disabled execution Roles.
+
+Lifecycle changes are ordinary immutable definition drafts followed by the
+normal validate/approval/publish lifecycle. Published history is never edited in
+place, and no scope-level definition is silently removed in a way that could
+expose a broader fallback definition.
+
+For backward compatibility, schema-1.0 records created before Role lifecycle
+existed retain their original normalized payload/checksum shape. Missing
+lifecycle is interpreted as `active`; new typed drafts persist lifecycle
+explicitly.
 
 ## Execution attribution
 
