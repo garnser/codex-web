@@ -124,24 +124,56 @@ class WorkItemOperatorService:
                     "error": error,
                 }
             )
-        # GitLab is the currently shipped adapter. Expose it even before a
-        # project is configured so the form can configure the canonical field.
-        if "gitlab" not in seen_types:
+        # Advertise built-in adapters before configuration so the canonical
+        # operator can create a binding without provider-specific shadow UI.
+        builtin_catalog = {
+            "gitlab": {
+                "source_instance": str(getattr(self.host, "GITLAB_API_BASE", "") or ""),
+                "capabilities": [
+                    "comments",
+                    "discovery",
+                    "events",
+                    "owner_write",
+                    "read",
+                    "state_write",
+                ],
+            },
+            "jira": {
+                "source_instance": "",
+                "capabilities": [
+                    "comments",
+                    "create",
+                    "discovery",
+                    "events",
+                    "owner_write",
+                    "read",
+                    "state_write",
+                ],
+            },
+            "servicenow": {
+                "source_instance": "",
+                "capabilities": [
+                    "comments",
+                    "create",
+                    "discovery",
+                    "events",
+                    "owner_write",
+                    "read",
+                    "state_write",
+                ],
+            },
+        }
+        for source_type, descriptor in builtin_catalog.items():
+            if source_type in seen_types:
+                continue
             items.append(
                 {
                     "project_id": None,
-                    "source_type": "gitlab",
-                    "source_instance": str(getattr(self.host, "GITLAB_API_BASE", "") or ""),
+                    "source_type": source_type,
+                    "source_instance": descriptor["source_instance"],
                     "scope": None,
                     "available": False,
-                    "capabilities": [
-                        "comments",
-                        "discovery",
-                        "events",
-                        "owner_write",
-                        "read",
-                        "state_write",
-                    ],
+                    "capabilities": descriptor["capabilities"],
                     "error": None,
                 }
             )
