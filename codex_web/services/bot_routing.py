@@ -5,6 +5,7 @@ import contextlib
 import time
 from typing import Any
 
+from codex_web.conversation_channels import ConversationProjectionOutcome
 from codex_web.models import BotBindingCreate, BotInboundMessage
 from codex_web.services.bot_delivery import BotDeliveryService
 
@@ -15,8 +16,53 @@ class BotRoutingService:
     def __init__(self, host: Any, delivery: BotDeliveryService) -> None:
         self.host = host
         self.delivery = delivery
+        self.conversation_channels: Any | None = None
 
     async def handle_inbound(self, message: BotInboundMessage) -> dict[str, Any]:
+        if self.conversation_channels is None:
+            return await self.route_normalized(message)
+        h = self.host
+        provider = message.provider.lower()
+        bindings = h._bindings_for_connection(
+            provider,
+            message.external_conversation_id,
+        )
+        project_id = message.project_id or (
+            bindings[0].project_id if bindings else "home"
+        )
+        scoped = message.model_copy(update={"project_id": project_id})
+        actor = h._bot_runtime_actor(project_id)
+        receipt = await self.conversation_channels.ingest_bot_message(
+            scoped,
+            actor=actor,
+            provider_instance=message.connection_id or f"{provider}:default",
+        )
+        result: dict[str, Any] = dict(receipt.routing_result)
+        result["conversationOutcome"] = receipt.outcome.value
+        result["canonicalEventId"] = receipt.canonical_event_id
+        if receipt.thread_id is not None:
+            result.setdefault("threadId", receipt.thread_id)
+        if receipt.queued_id is not None:
+            result.setdefault("queuedId", receipt.queued_id)
+        if receipt.outcome == ConversationProjectionOutcome.DUPLICATE:
+            result["duplicate"] = True
+            result.setdefault("ok", True)
+        elif receipt.outcome == ConversationProjectionOutcome.REQUIRES_RECONCILIATION:
+            result["ok"] = False
+            result["requiresReconciliation"] = True
+            result["error"] = receipt.reason
+        elif receipt.outcome in {
+            ConversationProjectionOutcome.STALE,
+            ConversationProjectionOutcome.UPDATED,
+            ConversationProjectionOutcome.DELETED,
+            ConversationProjectionOutcome.REACTION,
+            ConversationProjectionOutcome.IGNORED,
+        }:
+            result.setdefault("ok", True)
+            result["routed"] = False
+        return result
+
+    async def route_normalized(self, message: BotInboundMessage) -> dict[str, Any]:
         h = self.host
         provider = message.provider.lower()
         bindings = h._bindings_for_connection(provider, message.external_conversation_id)
