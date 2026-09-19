@@ -311,22 +311,17 @@ class TurnExecutionService:
             assignment_id = bootstrap.assignment_id if bootstrap is not None else None
         if not assignment_id:
             return None
-        manager = self.session_manager
-        if manager is None:
-            raise HTTPException(
-                status_code=503,
-                detail="assignment-bound Codex session manager is unavailable",
-            )
-        session = manager.get(assignment_id)
-        if session is None:
+        try:
+            manager, session = self._session_for_assignment(assignment_id)
+        except HTTPException as exc:
             detail = (
-                "thread bootstrap binding has no live Codex session"
+                "thread bootstrap binding has no live agent runtime session"
                 if bootstrap is not None
-                else "active thread assignment has no live Codex session"
+                else "active thread assignment has no live agent runtime session"
             )
-            raise HTTPException(status_code=503, detail=detail)
-        session.validate_current()
-        return session
+            raise HTTPException(status_code=503, detail=detail) from exc
+        assignment = session.validate_current()
+        return manager, session, assignment
 
     async def request_for_thread(
         self,
@@ -334,10 +329,36 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        session = self._assignment_session_for_thread(thread_id)
-        if session is not None:
+        resolved = self._assignment_session_for_thread(thread_id)
+        if resolved is None:
+            return await self.host.codex.request(method, params)
+        _manager, session, assignment = resolved
+        binding = assignment.runtime_binding
+        if binding is None or (
+            binding.provider_id == "openai" and binding.runtime_id == "codex"
+        ):
             return await session.request(method, params)
-        return await self.host.codex.request(method, params)
+
+        adapter = self._adapter_for_binding(binding, session)
+        native_session_id = getattr(
+            getattr(session, "runtime", None),
+            "native_session_id",
+            None,
+        )
+        if not native_session_id:
+            raise HTTPException(
+                status_code=503,
+                detail="agent runtime session has no provider-native session id",
+            )
+        if method == "thread/read":
+            return (await adapter.read_session(native_session_id)).payload
+        if method in {"thread/archive", "thread/close"}:
+            return (await adapter.close_session(native_session_id)).payload
+        if method in {"thread/unarchive", "thread/restore"}:
+            return (await adapter.restore_session(native_session_id)).payload
+        if method == "turn/interrupt":
+            return (await adapter.interrupt(native_session_id)).payload
+        return await session.request(method, params)
 
     def mark_thread_active(
         self,
@@ -414,9 +435,12 @@ class TurnExecutionService:
         succeeded: bool,
         message: dict[str, Any],
     ) -> None:
-        manager = self.session_manager
         assignment_id = active.assignment_id
-        if manager is None or not assignment_id:
+        if not assignment_id:
+            return
+        try:
+            manager, _session = self._session_for_assignment(assignment_id)
+        except HTTPException:
             return
         bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
         if bootstrap is not None and bootstrap.assignment_id == assignment_id:
@@ -1158,6 +1182,9 @@ def install_turn_execution_service(
     session_manager: AssignmentBoundAgentSessionManager | None = None,
     bootstrap_bindings: ThreadBootstrapBindingService | None = None,
     control_actor: AuthenticationActor | None = None,
+    routing_service: AgentRoutingService | None = None,
+    session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
+    runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1168,6 +1195,12 @@ def install_turn_execution_service(
             bootstrap_bindings or service.bootstrap_bindings
         )
         service.control_actor = control_actor or service.control_actor
+        service.routing_service = routing_service or service.routing_service
+        if session_managers:
+            service.session_managers.update(session_managers)
+        service.runtime_adapter_factory = (
+            runtime_adapter_factory or service.runtime_adapter_factory
+        )
     else:
         service = TurnExecutionService(
             host,
@@ -1175,6 +1208,9 @@ def install_turn_execution_service(
             session_manager=session_manager,
             bootstrap_bindings=bootstrap_bindings,
             control_actor=control_actor,
+            routing_service=routing_service,
+            session_managers=session_managers,
+            runtime_adapter_factory=runtime_adapter_factory,
         )
         app.state.turn_execution_service = service
 
