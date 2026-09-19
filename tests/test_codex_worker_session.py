@@ -17,6 +17,7 @@ from codex_web.execution_workers import (
 )
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus
 from codex_web.runtime.codex import CodexRuntime
+from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
 from codex_web.services.codex_auth_delegation import (
     CODEX_WORKER_HOME,
     CodexAuthDelegation,
@@ -192,6 +193,70 @@ class _FakeDelegationService:
             raise CodexAuthDelegationStaleError("credential expired")
 
 
+class _FakeAlternateCredentialProvider(_FakeDelegationService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.secret = "alternate-runtime-token-do-not-persist"
+
+    def use(
+        self,
+        assignment,
+        *,
+        worker_id,
+        fence,
+        actor,
+        consumer,
+    ):
+        self.use_calls += 1
+        delegation = self._delegation(assignment, worker_id, fence)
+        return consumer(
+            SimpleNamespace(
+                delegation=delegation,
+                command=("alternate-agent", "serve"),
+                environment={"ALT_AGENT_TOKEN": self.secret},
+            )
+        )
+
+
+class _FakeAlternateRuntime:
+    def __init__(self, host, *, command, cwd, popen, metrics=None) -> None:
+        self.host = host
+        self.command = tuple(command)
+        self.cwd = Path(cwd)
+        self._popen = popen
+        self.proc = None
+        self.ready = asyncio.Event()
+        self.requests = []
+        self.approval_namespace = None
+
+    async def start(self) -> None:
+        self.proc = self._popen(
+            list(self.command),
+            cwd=str(self.cwd),
+            stdin=None,
+            stdout=None,
+            stderr=None,
+            text=True,
+            bufsize=1,
+        )
+        self.ready.set()
+
+    async def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+        self.ready.clear()
+
+    async def request(self, method, params=None):
+        self.requests.append((method, params))
+        return {"runtime": "alternate", "method": method}
+
+    async def notify(self, method, params=None) -> None:
+        self.requests.append((method, params))
+
+    async def respond_to_server_request(self, request_id, result) -> None:
+        self.requests.append(("response", {"id": request_id, "result": result}))
+
+
 class _FakeCodexRuntime:
     def __init__(self, host, *, command, cwd, popen, metrics=None) -> None:
         self.host = host
@@ -333,6 +398,44 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         await session.start()
         return session
+
+    async def test_generic_process_session_launches_non_codex_runtime_under_same_assignment_boundary(self) -> None:
+        assignment = self._create_assignment()
+        provider = _FakeAlternateCredentialProvider()
+        session = AssignmentBoundAgentProcessSession(
+            self.local_worker,
+            SimpleNamespace(),
+            assignment.id,
+            runtime_factory=_FakeAlternateRuntime,
+            credential_provider=provider,
+            watchdog_interval_seconds=60,
+            clock=lambda: provider.now,
+            monotonic=lambda: provider.now,
+        )
+
+        await session.start()
+        try:
+            persisted = next(
+                item
+                for item in self.worker_service.store.load().assignments
+                if item.id == assignment.id
+            )
+            self.assertEqual(persisted.status, AssignmentStatus.RUNNING)
+            self.assertEqual(persisted.assigned_worker_id, self.worker.id)
+            self.assertEqual(session.fence, persisted.fence)
+            self.assertIsInstance(session.runtime, _FakeAlternateRuntime)
+            launch = self.backend.spawned[0]
+            self.assertEqual(launch["argv"], ("alternate-agent", "serve"))
+            self.assertEqual(
+                launch["environment"],
+                {"ALT_AGENT_TOKEN": provider.secret},
+            )
+            self.assertEqual(provider.use_calls, 1)
+            result = await session.request("session/read")
+            self.assertEqual(result["runtime"], "alternate")
+            self.assertNotIn(provider.secret, repr(session.status().public()))
+        finally:
+            await session.stop()
 
     async def test_default_session_factory_reuses_canonical_codex_runtime(self) -> None:
         assignment = self._create_assignment()
