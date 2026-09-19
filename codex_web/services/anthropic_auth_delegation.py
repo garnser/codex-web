@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping, TypeVar
 
@@ -188,11 +189,17 @@ class AnthropicAuthDelegationService:
         return reference
 
     @staticmethod
-    def command() -> tuple[str, ...]:
+    def session_id(assignment_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"codex-web:{assignment_id}"))
+
+    @classmethod
+    def command(cls, assignment_id: str) -> tuple[str, ...]:
         return (
             "claude",
             "--bare",
             "--print",
+            "--session-id",
+            cls.session_id(assignment_id),
             "--input-format",
             "stream-json",
             "--output-format",
@@ -283,7 +290,7 @@ class AnthropicAuthDelegationService:
             return consumer(
                 AnthropicDelegatedLaunch(
                     delegation=delegation,
-                    command=self.command(),
+                    command=self.command(assignment.id),
                     environment={
                         "HOME": CLAUDE_WORKER_HOME,
                         "CLAUDE_CONFIG_DIR": f"{CLAUDE_WORKER_HOME}/.claude",
