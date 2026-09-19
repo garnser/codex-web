@@ -183,6 +183,11 @@ class ExecutionWorkerService:
         missing = set(assignment.required_capabilities) - set(worker.capabilities)
         if missing:
             return False, "capability_mismatch"
+        if (
+            assignment.execution_contract_version
+            not in worker.supported_execution_contract_versions
+        ):
+            return False, "execution_contract_version_mismatch"
         if ExecutionWorkerService._active_count(state, worker.id, now) >= worker.max_concurrency:
             return False, "worker_concurrency_exhausted"
         return True, None
