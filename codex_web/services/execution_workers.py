@@ -57,10 +57,12 @@ class ExecutionWorkerService:
         *,
         identity: IdentityService | None = None,
         workspaces: ExecutionWorkspaceService | None = None,
+        maintenance_guard=None,
     ) -> None:
         self.store = store
         self.identity = identity
         self.workspaces = workspaces
+        self.maintenance_guard = maintenance_guard
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -464,6 +466,16 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         self._require_admin(actor)
+        if (
+            self.maintenance_guard is not None
+            and not self.maintenance_guard(
+                actor.organization_id,
+                actor.workspace_id,
+            )
+        ):
+            raise WorkerConflictError(
+                "execution assignments are drained during upgrade maintenance"
+            )
         if payload.execution_workspace_id is not None:
             if self.workspaces is None:
                 raise WorkerConflictError(
@@ -565,6 +577,14 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
         assignment_id: str | None = None,
     ) -> ExecutionAssignment | None:
+        if (
+            self.maintenance_guard is not None
+            and not self.maintenance_guard(
+                actor.organization_id,
+                actor.workspace_id,
+            )
+        ):
+            return None
         claimed: list[ExecutionAssignment] = []
         now = time.time()
 
