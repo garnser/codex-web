@@ -72,6 +72,70 @@ class AgentSessionService:
             workspace_id=actor.workspace_id,
         )
 
+    def find_by_native_id(
+        self,
+        provider_native_session_id: str,
+        actor: AuthenticationActor,
+        *,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
+    ) -> AgentSession | None:
+        return next(
+            (
+                item
+                for item in self.list(actor)
+                if item.provider_native_session_id == provider_native_session_id
+                and (provider_id is None or item.provider_id == provider_id)
+                and (runtime_id is None or item.runtime_id == runtime_id)
+            ),
+            None,
+        )
+
+    def adopt(
+        self,
+        *,
+        provider_id: str,
+        runtime_id: str,
+        runtime_type: str,
+        provider_native_session_id: str,
+        request: AgentRuntimeSessionRequest,
+        actor: AuthenticationActor,
+        capability_snapshot: tuple[AgentProviderCapability, ...],
+        capability_revision: int = 1,
+    ) -> AgentSession:
+        existing = self.find_by_native_id(
+            provider_native_session_id,
+            actor,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+        )
+        if existing is not None:
+            return existing
+        now = time.time()
+        return self.store.upsert(
+            AgentSession(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                provider_id=provider_id,
+                runtime_id=runtime_id,
+                runtime_type=runtime_type,
+                provider_native_session_id=provider_native_session_id,
+                project_id=request.project_id,
+                resource_ids=request.resource_ids,
+                execution_id=request.execution_id,
+                assignment_id=request.assignment_id,
+                execution_workspace_id=request.execution_workspace_id,
+                worker_id=request.worker_id,
+                model=request.model,
+                model_class=request.model_class,
+                capability_snapshot=capability_snapshot,
+                capability_revision=capability_revision,
+                status=AgentSessionStatus.READY,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
     async def create(
         self,
         *,
