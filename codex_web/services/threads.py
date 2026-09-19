@@ -305,6 +305,7 @@ class ThreadService:
             project_id=project.id,
             sandbox=effective_sandbox,
             approval_policy=effective_approval_policy,
+            approval_reviewer=params.get("approvalsReviewer"),
             workspace_cwd=workspace_cwd,
             sandbox_policy=params.get("sandboxPolicy"),
             execution_id=binding.execution_id,
