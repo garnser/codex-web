@@ -45,6 +45,7 @@ from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
 from codex_web.api.releases import build_releases_router
+from codex_web.api.upgrades import build_upgrades_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
 from codex_web.api.runtime import build_runtime_router
@@ -187,6 +188,7 @@ from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
+from codex_web.services.upgrades import UpgradeService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
@@ -253,6 +255,7 @@ from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.releases import ReleaseStore
+from codex_web.storage.upgrades import UpgradeStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
@@ -1039,6 +1042,29 @@ app.state.recovery_store = recovery_store
 app.state.recovery_service = recovery_service
 app.state.local_backup_destination = local_backup_destination
 app.include_router(build_recovery_router(recovery_service))
+
+upgrade_store = UpgradeStore(state_store)
+upgrade_service = UpgradeService(
+    upgrade_store,
+    state_store=state_store,
+    definitions=definition_registry_service,
+    workers=execution_worker_service,
+    extensions=extension_service,
+    recovery=recovery_service,
+    releases=release_service,
+    action_intents=action_intent_service,
+    approvals=approval_request_service,
+    evidence=artifact_evidence_service,
+)
+action_intent_service.maintenance_guard = (
+    upgrade_service.action_execution_allowed
+)
+execution_worker_service.maintenance_guard = (
+    upgrade_service.worker_assignment_allowed
+)
+app.state.upgrade_store = upgrade_store
+app.state.upgrade_service = upgrade_service
+app.include_router(build_upgrades_router(upgrade_service))
 
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,

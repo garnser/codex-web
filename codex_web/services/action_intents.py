@@ -99,6 +99,7 @@ class ActionIntentService:
         authority: AuthorityRoleService | None = None,
         identity: IdentityService | None = None,
         capacity: CapacityService | None = None,
+        maintenance_guard=None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -109,6 +110,7 @@ class ActionIntentService:
         self.authority = authority
         self.identity = identity
         self.capacity = capacity
+        self.maintenance_guard = maintenance_guard
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -821,6 +823,10 @@ class ActionIntentService:
                 and (item.not_before is None or item.not_before <= now)
                 and item.attempt < item.retry_policy.max_attempts
                 and (intent_id is None or item.id == intent_id)
+                and (
+                    self.maintenance_guard is None
+                    or self.maintenance_guard(item)
+                )
             ]
             candidates.sort(key=lambda item: (item.created_at, item.id))
             if not candidates:

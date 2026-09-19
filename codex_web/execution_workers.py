@@ -16,8 +16,8 @@ from codex_web.models import ApprovalPolicy, SandboxMode
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.2",
-    ("1.0", "1.1", "1.2"),
+    "1.3",
+    ("1.0", "1.1", "1.2", "1.3"),
 )
 
 
@@ -84,6 +84,7 @@ class ExecutionWorker(BaseModel):
     pool: str = Field(default="local", min_length=1)
     version: str = Field(min_length=1)
     capabilities: tuple[WorkerCapability, ...]
+    supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
     lifecycle: WorkerLifecycle = WorkerLifecycle.ACTIVE
     max_concurrency: int = Field(default=1, ge=1, le=128)
     registered_by: str = Field(min_length=1)
@@ -95,6 +96,15 @@ class ExecutionWorker(BaseModel):
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionWorker":
         self.capabilities = tuple(sorted(set(self.capabilities), key=lambda value: value.value))
+        self.supported_execution_contract_versions = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in self.supported_execution_contract_versions
+                if item.strip()
+            )
+        )
+        if not self.supported_execution_contract_versions:
+            raise ValueError("worker requires at least one supported execution contract version")
         if not self.capabilities:
             raise ValueError("worker requires at least one capability")
         return self
@@ -107,6 +117,7 @@ class ExecutionWorkerRegister(BaseModel):
     pool: str = Field(default="local", min_length=1)
     version: str = Field(min_length=1)
     capabilities: tuple[WorkerCapability, ...]
+    supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
     max_concurrency: int = Field(default=1, ge=1, le=128)
 
 

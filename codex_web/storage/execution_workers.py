@@ -48,6 +48,22 @@ EXECUTION_WORKER_MIGRATIONS.register(
 )
 
 
+def _migrate_1_2_to_1_3(payload: dict[str, Any]) -> dict[str, Any]:
+    workers = []
+    for raw in payload.get("workers", []):
+        item = dict(raw)
+        item.setdefault("supported_execution_contract_versions", ["1.0"])
+        workers.append(item)
+    return {
+        **payload,
+        "schema_version": "1.3",
+        "workers": workers,
+    }
+
+
+EXECUTION_WORKER_MIGRATIONS.register("1.2", "1.3", _migrate_1_2_to_1_3)
+
+
 class ExecutionWorkerStore:
     namespace = "execution_workers"
 

@@ -57,10 +57,12 @@ class ExecutionWorkerService:
         *,
         identity: IdentityService | None = None,
         workspaces: ExecutionWorkspaceService | None = None,
+        maintenance_guard=None,
     ) -> None:
         self.store = store
         self.identity = identity
         self.workspaces = workspaces
+        self.maintenance_guard = maintenance_guard
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -183,6 +185,11 @@ class ExecutionWorkerService:
         missing = set(assignment.required_capabilities) - set(worker.capabilities)
         if missing:
             return False, "capability_mismatch"
+        if (
+            assignment.execution_contract_version
+            not in worker.supported_execution_contract_versions
+        ):
+            return False, "execution_contract_version_mismatch"
         if ExecutionWorkerService._active_count(state, worker.id, now) >= worker.max_concurrency:
             return False, "worker_concurrency_exhausted"
         return True, None
@@ -246,6 +253,9 @@ class ExecutionWorkerService:
                 pool=payload.pool,
                 version=payload.version,
                 capabilities=payload.capabilities,
+                supported_execution_contract_versions=(
+                    payload.supported_execution_contract_versions
+                ),
                 max_concurrency=payload.max_concurrency,
                 registered_by=actor.identity_id,
             )
@@ -459,6 +469,16 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         self._require_admin(actor)
+        if (
+            self.maintenance_guard is not None
+            and not self.maintenance_guard(
+                actor.organization_id,
+                actor.workspace_id,
+            )
+        ):
+            raise WorkerConflictError(
+                "execution assignments are drained during upgrade maintenance"
+            )
         if payload.execution_workspace_id is not None:
             if self.workspaces is None:
                 raise WorkerConflictError(
@@ -560,6 +580,14 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
         assignment_id: str | None = None,
     ) -> ExecutionAssignment | None:
+        if (
+            self.maintenance_guard is not None
+            and not self.maintenance_guard(
+                actor.organization_id,
+                actor.workspace_id,
+            )
+        ):
+            return None
         claimed: list[ExecutionAssignment] = []
         now = time.time()
 
