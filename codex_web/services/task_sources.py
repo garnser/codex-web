@@ -19,6 +19,12 @@ class TaskSourceCapability(StrEnum):
     STATE_WRITE = "state_write"
     COMMENTS = "comments"
     ARTIFACT_LINKS = "artifact_links"
+    PAGED_DISCOVERY = "paged_discovery"
+    INCREMENTAL_RECONCILIATION = "incremental_reconciliation"
+    WORKFLOW_TRANSITIONS = "workflow_transitions"
+    RICH_TEXT = "rich_text"
+    PROVIDER_IDENTITIES = "provider_identities"
+    ATTACHMENTS = "attachments"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,15 +48,74 @@ class UnsupportedTaskSourceCapability(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskSourceUserReference:
+    """Provider-native user reference that is never canonical authorization truth."""
+
+    provider_id: str
+    display_name: str | None = None
+    username: str | None = None
+    email_hint: str | None = None
+
+    def __post_init__(self) -> None:
+        provider_id = str(self.provider_id or "").strip()
+        if not provider_id:
+            raise ValueError("provider user reference must include provider_id")
+        object.__setattr__(self, "provider_id", provider_id)
+        for field_name in ("display_name", "username", "email_hint"):
+            value = getattr(self, field_name)
+            normalized = str(value).strip() if value is not None else None
+            object.__setattr__(self, field_name, normalized or None)
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSourceSnapshot:
-    """Minimum provider-neutral task facts exposed to canonical reconciliation."""
+    """Provider-neutral task facts exposed to canonical reconciliation."""
 
     identity: TaskSourceIdentity
     title: str | None = None
+    body_text: str | None = None
     source_state: str | None = None
     owners: tuple[str, ...] = ()
+    owner_references: tuple[TaskSourceUserReference, ...] = ()
     labels: tuple[str, ...] = ()
+    priority: str | None = None
+    category: str | None = None
+    parent_external_id: str | None = None
     artifact_links: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSourcePage:
+    """One bounded provider-neutral discovery page."""
+
+    items: tuple[TaskSourceSnapshot, ...]
+    next_cursor: str | None = None
+    watermark: str | None = None
+    exhausted: bool = True
+
+    def __post_init__(self) -> None:
+        cursor = str(self.next_cursor).strip() if self.next_cursor is not None else None
+        watermark = str(self.watermark).strip() if self.watermark is not None else None
+        object.__setattr__(self, "next_cursor", cursor or None)
+        object.__setattr__(self, "watermark", watermark or None)
+        if not self.exhausted and self.next_cursor is None:
+            raise ValueError("non-exhausted task-source page must include next_cursor")
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSourceReconciliationCursor:
+    """Stable incremental-sync position with deterministic tie-breaking."""
+
+    watermark: str
+    tiebreaker: str | None = None
+
+    def __post_init__(self) -> None:
+        watermark = str(self.watermark or "").strip()
+        if not watermark:
+            raise ValueError("task-source reconciliation watermark must not be empty")
+        tiebreaker = str(self.tiebreaker).strip() if self.tiebreaker is not None else None
+        object.__setattr__(self, "watermark", watermark)
+        object.__setattr__(self, "tiebreaker", tiebreaker or None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,4 +251,50 @@ class TaskSourceCreateCapable(Protocol):
         scope: str,
     ) -> TaskSourceSnapshot:
         """Create one authoritative task and return normalized provider identity."""
+        ...
+
+
+@runtime_checkable
+class TaskSourcePagedDiscoveryCapable(Protocol):
+    """Optional bounded pagination contract gated by PAGED_DISCOVERY."""
+
+    async def discover_page(
+        self,
+        *,
+        scope: str,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> TaskSourcePage:
+        ...
+
+
+@runtime_checkable
+class TaskSourceIncrementalReconciliationCapable(Protocol):
+    """Optional watermark/cursor reconciliation contract."""
+
+    async def reconcile_since(
+        self,
+        *,
+        scope: str,
+        cursor: TaskSourceReconciliationCursor | None = None,
+        limit: int = 100,
+    ) -> TaskSourcePage:
+        ...
+
+
+@runtime_checkable
+class TaskSourceWorkflowCapable(Protocol):
+    """Optional provider workflow transition contract."""
+
+    async def available_transitions(
+        self,
+        identity: TaskSourceIdentity,
+    ) -> tuple[str, ...]:
+        ...
+
+    async def transition(
+        self,
+        identity: TaskSourceIdentity,
+        transition: str,
+    ) -> TaskSourceSnapshot:
         ...
