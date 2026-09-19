@@ -394,3 +394,19 @@ class BusinessDataSourceState(BaseModel):
     projection_receipts: dict[str, BusinessDataProjectionReceipt] = Field(
         default_factory=dict
     )
+
+
+class BusinessDataSyncResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_id: str
+    pages: int = Field(ge=0)
+    records_seen: int = Field(ge=0)
+    projected: int = Field(ge=0)
+    duplicates: int = Field(ge=0)
+    stale: int = Field(ge=0)
+    tombstones: int = Field(ge=0)
+    cursor_before: str | None = None
+    cursor_after: str | None = None
+    checkpoint: str | None = None
+    exhausted: bool
