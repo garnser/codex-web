@@ -217,6 +217,7 @@ class IncidentActionRequest(BaseModel):
     parameters: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     reason: str = Field(min_length=1, max_length=4000)
     recovery: bool = False
+    rollback_required: bool = False
 
 
 class IncidentEvidenceAttach(BaseModel):
