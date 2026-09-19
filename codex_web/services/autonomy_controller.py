@@ -24,6 +24,7 @@ from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.autonomy_policy import AutonomyPolicyService
+from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.storage.autonomy import AutonomyStateStore
 
 
@@ -42,10 +43,12 @@ class AutonomyController:
         *,
         action_intents: ActionIntentService | None = None,
         policy: AutonomyPolicyService | None = None,
+        audit: AutonomyAuditService | None = None,
     ) -> None:
         self.store = store
         self.action_intents = action_intents
         self.policy = policy
+        self.audit = audit
 
     def status(self) -> dict[str, Any]:
         state = self.store.load()
@@ -151,6 +154,30 @@ class AutonomyController:
             last_error=last_error,
         )
 
+    def _persist_cycle(
+        self,
+        cycle: AutonomyCycleRecord,
+        event: CanonicalEventEnvelope,
+        actor: AuthenticationActor | None,
+        *,
+        reasoning_result: AutonomyReasoningResult | None = None,
+    ) -> AutonomyCycleRecord:
+        if reasoning_result is not None:
+            cycle.model_provider_id = reasoning_result.model_provider_id
+            cycle.model_id = reasoning_result.model_id
+            cycle.model_revision = reasoning_result.model_revision
+            cycle.prompt_template_id = reasoning_result.prompt_template_id
+            cycle.model_routing_reason = reasoning_result.model_routing_reason
+            cycle.model_invocation_ids = reasoning_result.model_invocation_ids
+        self._persist_cycle(cycle, event, actor)
+        if self.audit is not None:
+            self.audit.record_cycle(
+                cycle,
+                event,
+                actor=actor,
+            )
+        return cycle
+
     def _existing(self, cycle_key: str, event_id: str) -> AutonomyCycleRecord | None:
         return next(
             (
@@ -248,7 +275,7 @@ class AutonomyController:
                 reason=f"autonomy_{control.mode.value}",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if depth > control.max_recursion_depth:
@@ -261,7 +288,7 @@ class AutonomyController:
                 reason="maximum_recursion_depth_exceeded",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             self._record_dead_letter(cycle, reason=cycle.reason)
             return cycle
 
@@ -275,7 +302,7 @@ class AutonomyController:
                 reason=observation.reason,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if event_level == AutonomyLevel.OBSERVE:
@@ -290,7 +317,7 @@ class AutonomyController:
                 policy_fingerprint=event_policy_fingerprint,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if (
@@ -306,7 +333,7 @@ class AutonomyController:
                 reason="event_type_not_enabled_for_reasoning",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if observation.reasoning_score < control.reasoning_threshold:
@@ -319,7 +346,7 @@ class AutonomyController:
                 reason="reasoning_threshold_not_met",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if self._cooldown_active(event, cycle_key=key, control=control, now=started_at):
@@ -332,7 +359,7 @@ class AutonomyController:
                 reason="reasoning_cooldown_active",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if control.dry_run or control.simulation:
@@ -349,7 +376,7 @@ class AutonomyController:
                 reason="reasoning_would_run",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             return cycle
 
         if reasoner is None:
@@ -362,7 +389,7 @@ class AutonomyController:
                 reason="reasoner_unconfigured",
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             self._record_dead_letter(cycle, reason=cycle.reason)
             return cycle
 
@@ -411,7 +438,7 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(error)[:1000] if error else None,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor)
             self._record_dead_letter(
                 cycle,
                 reason=cycle.reason,
@@ -453,7 +480,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             self._record_dead_letter(cycle, reason=cycle.reason)
             return cycle
 
@@ -473,7 +500,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         if result.actions and (self.action_intents is None or actor is None):
@@ -492,7 +519,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             self._record_dead_letter(cycle, reason=cycle.reason)
             return cycle
 
@@ -513,7 +540,7 @@ class AutonomyController:
                     budget_usage=base_usage,
                     started_at=started_at,
                 )
-                self.store.append_cycle(cycle)
+                self._persist_cycle(cycle, event, actor, reasoning_result=result)
                 self._record_dead_letter(cycle, reason=cycle.reason)
                 return cycle
             try:
@@ -542,7 +569,7 @@ class AutonomyController:
                     started_at=started_at,
                     last_error=str(exc)[:1000],
                 )
-                self.store.append_cycle(cycle)
+                self._persist_cycle(cycle, event, actor, reasoning_result=result)
                 return cycle
             cycle = self._cycle(
                 event,
@@ -559,7 +586,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         # Standalone/legacy controller usage keeps the historical ActionIntent
@@ -597,7 +624,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         decisions = []
@@ -638,7 +665,7 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(exc)[:1000],
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         decisions_tuple = tuple(decisions)
@@ -665,7 +692,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         denied_decisions = [
@@ -693,7 +720,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         approval_ids = []
@@ -739,7 +766,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         prepared_actions = []
@@ -786,7 +813,7 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(exc)[:1000],
             )
-            self.store.append_cycle(cycle)
+            self._persist_cycle(cycle, event, actor, reasoning_result=result)
             return cycle
 
         # Consume exact approved targets before exposing executable intents to
@@ -852,6 +879,6 @@ class AutonomyController:
             budget_usage=usage,
             started_at=started_at,
         )
-        self.store.append_cycle(cycle)
+        self._persist_cycle(cycle, event, actor, reasoning_result=result)
         return cycle
 
