@@ -358,6 +358,35 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health, AgentRuntimeHealth.HEALTHY)
         self.assertEqual(hub.listeners, set())
 
+    async def test_codex_capacity_snapshot_uses_structured_rate_limit_rpc(self) -> None:
+        transport = SimpleNamespace(
+            request=AsyncMock(
+                return_value={
+                    "ordinaryUsageAllowed": False,
+                    "rateLimits": {
+                        "rateLimitReachedType": "primary",
+                        "primary": {
+                            "usedPercent": 100,
+                            "resetsAt": 1_900_000_120,
+                        },
+                    },
+                }
+            )
+        )
+        adapter = CodexAgentRuntimeAdapter(transport)
+
+        snapshot = await adapter.capacity_snapshot()
+
+        self.assertFalse(snapshot["ordinaryUsageAllowed"])
+        self.assertEqual(
+            snapshot["rateLimits"]["primary"]["usedPercent"],
+            100,
+        )
+        transport.request.assert_awaited_once_with(
+            "account/rateLimits/read",
+            {},
+        )
+
     async def test_codex_capabilities_are_explicit(self) -> None:
         adapter = CodexAgentRuntimeAdapter(type("Transport", (), {})())
         self.assertIn(
