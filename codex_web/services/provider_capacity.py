@@ -209,10 +209,11 @@ class ProviderCapacityService:
                 last_success_at = payload.observed_at
             else:
                 failures = (existing.consecutive_failures if existing else 0) + 1
+            values = payload.model_dump(mode="python")
+            values["provider_id"] = provider_id
+            values["runtime_id"] = runtime_id
             record = ProviderCapacityRecord(
-                **payload.model_dump(mode="python"),
-                provider_id=provider_id,
-                runtime_id=runtime_id,
+                **values,
                 organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id,
                 consecutive_failures=failures,
@@ -336,7 +337,8 @@ class ProviderCapacityService:
         status_code = getattr(exc, "status_code", None)
         if status_code is None:
             status_code = getattr(response, "status_code", None)
-        text = str(exc).casefold()
+        detail = getattr(exc, "detail", None)
+        text = f"{exc} {detail or ''}".casefold()
         quota_markers = (
             "insufficient_quota",
             "quota exhausted",
@@ -370,7 +372,8 @@ class ProviderCapacityService:
             if is_quota
             else ProviderCapacityStatus.THROTTLED
         )
-        return status, retry_at, str(exc)[:500]
+        reason = str(detail or exc or type(exc).__name__)
+        return status, retry_at, reason[:500]
 
     def report_exception(
         self,
@@ -542,7 +545,10 @@ class ProviderCapacityService:
         if current is not None:
             if current.blocks(now):
                 return current
-            if now - current.observed_at < self.min_probe_interval_seconds:
+            if (
+                current.source != "capacity-expiry"
+                and now - current.observed_at < self.min_probe_interval_seconds
+            ):
                 return current
         result = probe()
         if inspect.isawaitable(result):
@@ -589,9 +595,10 @@ class ProviderCapacityService:
                 resumed_at=None,
             )
 
+        values = payload.model_dump(mode="python")
+        values["retry_at"] = retry_at
         wait = ProviderCapacityWait(
-            **payload.model_dump(mode="python"),
-            retry_at=retry_at,
+            **values,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             created_at=now,
