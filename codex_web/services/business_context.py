@@ -240,6 +240,7 @@ class BusinessContextService:
         payload: BusinessEntityCreate,
         *,
         actor: AuthenticationActor,
+        entity_id: str | None = None,
     ) -> BusinessEntity:
         now = float(self.clock())
         scope = self._scope(actor)
@@ -256,6 +257,7 @@ class BusinessContextService:
                     source_governance_ids.append(ref.governance_record_id)
 
         item = BusinessEntity(
+            **({"id": entity_id} if entity_id is not None else {}),
             organization_id=scope.organization_id,
             workspace_id=scope.workspace_id,
             entity_type=payload.entity_type,
@@ -270,6 +272,19 @@ class BusinessContextService:
         )
 
         def apply(current: BusinessContextState) -> BusinessContextState:
+            existing = next(
+                (
+                    row
+                    for row in current.entities
+                    if row.id == item.id
+                    and self._visible(row, scope)
+                ),
+                None,
+            )
+            if existing is not None:
+                raise BusinessContextConflictError(
+                    "business entity id already exists in workspace"
+                )
             current.entities.append(item)
             return current
 
@@ -394,6 +409,8 @@ class BusinessContextService:
             resource_ids=payload.resource_ids,
             classification=payload.classification,
             source_updated_at=payload.source_updated_at,
+            source_sequence=payload.source_sequence,
+            source_revision=payload.source_revision,
             first_seen_at=now,
             synced_at=payload.synced_at or now,
             created_by=actor.identity_id,
@@ -455,6 +472,38 @@ class BusinessContextService:
         actor: AuthenticationActor,
     ) -> ExternalRecordRef:
         return self._external(self.store.load(), ref_id, self._scope(actor))
+
+    def find_external_record(
+        self,
+        *,
+        actor: AuthenticationActor,
+        system: str,
+        provider_instance: str | None,
+        object_type: str,
+        external_id: str,
+    ) -> ExternalRecordRef | None:
+        scope = self._scope(actor)
+        target = (
+            system.casefold(),
+            (provider_instance or "").casefold(),
+            object_type.casefold(),
+            external_id,
+        )
+        return next(
+            (
+                item
+                for item in self.store.load().external_records
+                if self._visible(item, scope)
+                and (
+                    item.system.casefold(),
+                    (item.provider_instance or "").casefold(),
+                    item.object_type.casefold(),
+                    item.external_id,
+                )
+                == target
+            ),
+            None,
+        )
 
     def list_external_records(
         self,

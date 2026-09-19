@@ -129,3 +129,14 @@ Before publishing an extension:
 
 See [Extensions architecture](../architecture/extensions.md) and
 [Security/trust boundaries](../architecture/security-trust-boundaries.md).
+
+## BusinessDataSource extensions
+
+Read/sync business-system integrations should implement the
+[BusinessDataSource contract](../architecture/business-data-sources.md) rather
+than direct database writes. Declare only supported discovery/read/event/delta
+capabilities, normalize minimum-sufficient scalar fields, use SecretReferences
+for provider credentials, and keep all external mutation in
+ActionProvider/ActionIntent implementations. Register the adapter factory only
+while the extension is compatible and enabled; quarantine must make the adapter
+unavailable to synchronization.

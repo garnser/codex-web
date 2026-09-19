@@ -25,6 +25,7 @@ from codex_web.api.context import build_context_router
 from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.business_context import build_business_context_router
+from codex_web.api.business_data_sources import build_business_data_sources_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.evaluations import build_evaluations_router
@@ -60,6 +61,7 @@ from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
+from codex_web.canonical_events import CanonicalEventType
 from codex_web.composition import replace_routes
 from codex_web.configuration import ConfigurationContext
 from codex_web.executive_integration import install_executive_integrated
@@ -153,6 +155,10 @@ from codex_web.services.executive_roles import install_executive_role_definition
 from codex_web.services.executive_management import ExecutiveManagementService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.business_context import BusinessContextService
+from codex_web.services.business_data_sources import (
+    BusinessDataSourceRegistry,
+    BusinessDataSourceService,
+)
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
@@ -254,6 +260,7 @@ from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
+from codex_web.storage.business_data_sources import BusinessDataSourceStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -518,6 +525,33 @@ app.state.provider_capacity_store = provider_capacity_store
 app.state.provider_capacity_service = provider_capacity_service
 app.state.provider_capacity_event_unsubscribe = provider_capacity_event_unsubscribe
 app.include_router(build_provider_capacity_router(provider_capacity_service))
+
+business_data_source_store = BusinessDataSourceStore(state_store)
+business_data_source_registry = BusinessDataSourceRegistry()
+business_data_source_service = BusinessDataSourceService(
+    business_data_source_store,
+    business_data_source_registry,
+    business_context_service,
+    canonical_event_ingestion,
+    scheduler=scheduler_service,
+    provider_capacity=provider_capacity_service,
+)
+business_data_source_event_unsubscribe = canonical_event_bus.subscribe(
+    business_data_source_service.handle_canonical_event,
+    event_types=(
+        CanonicalEventType.BUSINESS_DATA,
+        CanonicalEventType.SCHEDULE,
+    ),
+)
+app.include_router(
+    build_business_data_sources_router(business_data_source_service)
+)
+app.state.business_data_source_store = business_data_source_store
+app.state.business_data_source_registry = business_data_source_registry
+app.state.business_data_source_service = business_data_source_service
+app.state.business_data_source_event_unsubscribe = (
+    business_data_source_event_unsubscribe
+)
 
 model_gateway_store = ModelGatewayStore(state_store)
 model_gateway_service = ModelGatewayService(

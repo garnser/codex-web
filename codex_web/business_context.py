@@ -154,6 +154,7 @@ class BusinessFieldProvenance(BaseModel):
     external_record_ref_id: str | None = Field(default=None, max_length=500)
     provider: str | None = Field(default=None, max_length=200)
     authority: FactSourceAuthority = FactSourceAuthority.OBSERVED
+    priority: int = Field(default=0, ge=0, le=1000)
     source_revision: str | None = Field(default=None, max_length=500)
     observed_at: float | None = None
 
@@ -213,7 +214,7 @@ class ExternalRecordRefCreate(BaseModel):
 
     system: str = Field(min_length=1, max_length=200)
     provider: str = Field(min_length=1, max_length=200)
-    provider_instance: str | None = Field(default=None, max_length=200)
+    provider_instance: str | None = Field(default=None, max_length=1000)
     object_type: str = Field(min_length=1, max_length=200)
     external_id: str = Field(min_length=1, max_length=1000)
     display_name: str | None = Field(default=None, max_length=500)
@@ -223,6 +224,8 @@ class ExternalRecordRefCreate(BaseModel):
     resource_ids: tuple[str, ...] = ()
     classification: DataClassification = DataClassification.INTERNAL
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = Field(default=None, max_length=500)
     synced_at: float | None = None
     retention_policy_ref: str | None = Field(default=None, max_length=500)
     retention_expires_at: float | None = None
@@ -254,17 +257,20 @@ class ExternalRecordRef(BaseModel):
     classification: DataClassification
     lifecycle: ExternalRecordLifecycle = ExternalRecordLifecycle.ACTIVE
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = None
     first_seen_at: float = Field(default_factory=time.time)
     synced_at: float = Field(default_factory=time.time)
     revoked_at: float | None = None
     governance_record_id: str | None = None
     created_by: str = Field(min_length=1)
 
-    def stable_key(self) -> tuple[str, str, str, str, str]:
+    def stable_key(self) -> tuple[str, str, str, str, str, str]:
         return (
             self.organization_id,
             self.workspace_id,
             self.system.casefold(),
+            (self.provider_instance or "").casefold(),
             self.object_type.casefold(),
             self.external_id,
         )
@@ -280,6 +286,8 @@ class ExternalRecordRefUpdate(BaseModel):
     resource_ids: tuple[str, ...] | None = None
     lifecycle: ExternalRecordLifecycle | None = None
     source_updated_at: float | None = None
+    source_sequence: int | None = Field(default=None, ge=0)
+    source_revision: str | None = Field(default=None, max_length=500)
     synced_at: float | None = None
 
 
