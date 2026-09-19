@@ -518,6 +518,17 @@ window.addEventListener('codex:open-decision', async (event) => {
   const decisionId = String(event.detail?.decisionId || '').trim();
   if (!decisionId) return;
   ensureShell();
+
+window.addEventListener('codex:open-decision', async (event) => {
+  ensureShell();
+  const decisionId = String(event.detail?.decisionId || '').trim();
+  if (!decisionId) return;
+  const dialog = document.querySelector('#decisions-dialog');
+  if (dialog && !dialog.open) dialog.showModal();
+  state.selectedDecisionId = decisionId;
+  await refreshAll();
+});
+
   const dialog = document.querySelector('#decisions-dialog');
   if (!dialog.open) dialog.showModal();
   await refreshAll();
