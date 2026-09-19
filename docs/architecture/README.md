@@ -97,6 +97,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Capability-driven agent routing](agent-routing.md) — deterministic, independent model/runtime selection, constraint-preserving fallback, runtime health and exact provider/runtime revision provenance.
 - [Provider capacity, quota failover, and resume](provider-capacity.md) — canonical throttled/depleted state, Codex quota probes, bounded model/runtime fallback, scheduler-backed waits, and automatic work resume.
 - [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
+- [Tamper-evident autonomy audit and reliability](autonomy-audit.md) — tenant-partitioned hash chains, checkpoints/signing/export, governed redaction, reliability/efficiency metrics, periodic verification and deterministic suspension.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
