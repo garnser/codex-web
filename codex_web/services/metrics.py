@@ -416,6 +416,7 @@ class MetricService:
             row
             for row in state.observations
             if row.metric_id == metric_id
+            and row.metric_revision == definition.revision
             and self._visible(row, scope)
             and row.observed_at <= end
             and (start is None or row.observed_at >= start)
