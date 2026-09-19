@@ -346,6 +346,15 @@ class BusinessContextService:
                 raise BusinessContextConflictError(
                     "business entity update contains no changes"
                 )
+            requested_lifecycle = changes.get("lifecycle")
+            if requested_lifecycle in {
+                BusinessEntityLifecycle.REDACTED,
+                BusinessEntityLifecycle.ANONYMIZED,
+                BusinessEntityLifecycle.DELETED,
+            }:
+                raise BusinessContextConflictError(
+                    "redact/anonymize/delete business entity through DataGovernance"
+                )
             changes["updated_at"] = float(self.clock())
             replacement = current.model_copy(update=changes)
             state.entities = [
@@ -516,6 +525,14 @@ class BusinessContextService:
                     dict.fromkeys(changes["resource_ids"])
                 )
             lifecycle = changes.get("lifecycle")
+            if lifecycle in {
+                ExternalRecordLifecycle.REDACTED,
+                ExternalRecordLifecycle.ANONYMIZED,
+                ExternalRecordLifecycle.DELETED,
+            }:
+                raise BusinessContextConflictError(
+                    "redact/anonymize/delete external record through DataGovernance"
+                )
             if lifecycle == ExternalRecordLifecycle.REVOKED:
                 changes["revoked_at"] = float(self.clock())
             elif lifecycle == ExternalRecordLifecycle.ACTIVE:
