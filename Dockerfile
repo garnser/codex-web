@@ -4,6 +4,7 @@ ARG BASE_IMAGE=garnser/codex-web:base
 FROM ${BASE_IMAGE} AS runtime
 
 ARG CODEX_VERSION=0.154.0
+ARG CLAUDE_CODE_VERSION=2.1.276
 ARG CODEX_UID=1000
 ARG CODEX_GID=1000
 
@@ -27,7 +28,7 @@ RUN apt-get update \
 # match the selected base image.
 RUN actual="$(codex --version)" \
     && printf '%s' "$actual" | grep -F "${CODEX_VERSION}" \
-    && groupadd --gid "${CODEX_GID}" codex \
+    && claude_actual="$(claude --version)" \\n    && printf '%s' "$claude_actual" | grep -F "${CLAUDE_CODE_VERSION}" \\n    && groupadd --gid "${CODEX_GID}" codex \
     && useradd --uid "${CODEX_UID}" --gid "${CODEX_GID}" --create-home --shell /bin/bash codex
 
 WORKDIR /app
