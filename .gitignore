@@ -21,3 +21,6 @@ CODEX-SECRETS.md
 .DS_Store
 .idea/
 .vscode/
+
+# Reproducible documentation screenshots are generated from sanitized fixtures.
+docs/assets/screenshots/generated/

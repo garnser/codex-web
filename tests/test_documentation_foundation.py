@@ -21,6 +21,8 @@ USER_DOC_ROOTS = (
     DOCS / "reference",
     DOCS / "troubleshooting",
     DOCS / "advanced-adoption",
+    DOCS / "examples",
+    DOCS / "screenshots",
 )
 
 REQUIRED_DOCS = (

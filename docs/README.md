@@ -13,6 +13,8 @@ This is the user/operator documentation entry point. Architecture documents desc
 - [Reference](reference/README.md) — API/configuration/version documentation.
 - [Troubleshooting](troubleshooting/README.md) — common failure modes and recovery.
 - [Advanced Adoption](advanced-adoption/README.md) — maturity-based rollout from interactive use to controlled autonomy.
+- [Worked Examples](examples/README.md) — success, refusal, blocker, approval and recovery scenarios.
+- [Reproducible Screenshots](screenshots/README.md) — sanitized fixture-based UI capture and refresh workflow.
 
 ## Choose a path
 
