@@ -91,6 +91,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Canonical Role authority](role-authority.md) — operational Role definitions, atomic scoped grants, inheritance/delegation, deterministic fail-closed evaluation, and exact definition provenance.
 - [Canonical event bus](canonical-events.md) — versioned event ingress, durable idempotency, correlation, deterministic filtering, and provider normalization before autonomy.
 - [Durable scheduler](durable-scheduler.md) — persistent one-shot/recurring timers, timezone and misfire semantics, fenced leases, crash-safe idempotent firing, and zero-LLM idle behavior.
+- [Canonical ApprovalRequest](approval-requests.md) — exact target binding, deterministic quorum/separation-of-duties, scheduler-backed expiry, idempotent decisions and atomic consumption.
 - [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
