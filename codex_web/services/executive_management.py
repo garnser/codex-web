@@ -188,11 +188,91 @@ class ExecutiveManagementService:
             project_id=project_id,
         )
 
+    @staticmethod
+    def _business_entity_domains(entity_type: BusinessEntityType) -> tuple[str, ...]:
+        return {
+            BusinessEntityType.CUSTOMER: ("customer_success", "revenue"),
+            BusinessEntityType.ACCOUNT: ("customer_success", "revenue"),
+            BusinessEntityType.PRODUCT: ("product",),
+            BusinessEntityType.PRODUCT_AREA: ("product",),
+            BusinessEntityType.SUBSCRIPTION: ("revenue", "finance", "customer_success"),
+            BusinessEntityType.COMMERCIAL_AGREEMENT: ("revenue", "finance"),
+            BusinessEntityType.OPPORTUNITY: ("revenue",),
+            BusinessEntityType.CAMPAIGN: ("marketing",),
+            BusinessEntityType.SUPPORT_RELATIONSHIP: ("customer_success", "operations"),
+            BusinessEntityType.VENDOR: ("operations", "cost"),
+            BusinessEntityType.PARTNER: ("operations", "revenue"),
+            BusinessEntityType.COST_CENTER: ("finance", "cost", "operations"),
+            BusinessEntityType.OTHER: ("operations",),
+        }[entity_type]
+
+    def _derive_business_scope(
+        self,
+        payload: ExecutiveActivationCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        domains = {
+            value.strip().casefold()
+            for value in payload.business_domains
+            if value.strip()
+        }
+        kpi_ids = list(payload.business_kpi_ids)
+
+        if payload.business_entity_ids:
+            if self.business_context is None:
+                raise ExecutiveContextError(
+                    "business entity context was requested but BusinessContext is unavailable"
+                )
+            for entity_id in payload.business_entity_ids:
+                try:
+                    entity = self.business_context.get_entity(entity_id, actor=actor)
+                except Exception as exc:
+                    raise ExecutiveContextError(
+                        f"canonical BusinessEntity is unavailable: {entity_id}: {exc}"
+                    ) from exc
+                domains.update(self._business_entity_domains(entity.entity_type))
+
+        if self.business_kpis is not None:
+            for goal_id in payload.goal_ids:
+                for binding in self.business_kpis.bindings(
+                    actor=actor,
+                    target_kind=BusinessKPITargetKind.GOAL,
+                    target_id=goal_id,
+                ):
+                    kpi_ids.append(binding.kpi_id)
+            for decision_id in payload.decision_ids:
+                for binding in self.business_kpis.bindings(
+                    actor=actor,
+                    target_kind=BusinessKPITargetKind.DECISION,
+                    target_id=decision_id,
+                ):
+                    kpi_ids.append(binding.kpi_id)
+
+            for kpi_id in tuple(dict.fromkeys(kpi_ids)):
+                try:
+                    kpi = self.business_kpis.get(kpi_id, actor=actor)
+                except Exception as exc:
+                    raise ExecutiveContextError(
+                        f"canonical Business KPI is unavailable: {kpi_id}: {exc}"
+                    ) from exc
+                domains.add(kpi.domain.value)
+        elif kpi_ids:
+            raise ExecutiveContextError(
+                "business KPI context was requested but BusinessKPIService is unavailable"
+            )
+
+        return (
+            tuple(sorted(domains)),
+            tuple(dict.fromkeys(kpi_ids)),
+        )
+
     def _select(
         self,
         payload: ExecutiveActivationCreate,
         *,
         catalog: ExecutiveRoleCatalogDefinition,
+        business_domains: tuple[str, ...] = (),
     ) -> tuple[ExecutiveRoleSelection, ...]:
         active = {
             role.id: role
@@ -249,6 +329,28 @@ class ExecutiveManagementService:
             if payload.work_item_refs and ExecutiveObjectType.WORK_ITEM in role.observable_information:
                 score += 1
             if payload.evidence_ids and ExecutiveObjectType.EVIDENCE in role.observable_information:
+                score += 1
+            matched_domains = tuple(
+                sorted(
+                    set(business_domains)
+                    & {value.casefold() for value in role.business_domains}
+                )
+            )
+            if matched_domains:
+                score += 12 + (2 * len(matched_domains))
+                reasons.extend(
+                    f"business-domain:{value}"
+                    for value in matched_domains
+                )
+            if (
+                payload.business_entity_ids
+                and ExecutiveObjectType.BUSINESS_ENTITY in role.observable_information
+            ):
+                score += 1
+            if (
+                business_domains
+                and ExecutiveObjectType.BUSINESS_KPI in role.observable_information
+            ):
                 score += 1
             if score > 0:
                 scored.append((score, order, role.id, tuple(reasons)))
