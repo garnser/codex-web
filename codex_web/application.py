@@ -24,6 +24,7 @@ from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
 from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
+from codex_web.api.business_context import build_business_context_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.evaluations import build_evaluations_router
@@ -151,6 +152,7 @@ from codex_web.services.execution_role_definitions import install_execution_role
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
 from codex_web.services.data_governance import DataGovernanceService
+from codex_web.services.business_context import BusinessContextService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
@@ -251,6 +253,7 @@ from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
+from codex_web.storage.business_context import BusinessContextStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -451,6 +454,24 @@ data_governance_service = DataGovernanceService(data_governance_store)
 app.include_router(build_data_governance_router(data_governance_service))
 app.state.data_governance_store = data_governance_store
 app.state.data_governance_service = data_governance_service
+
+business_context_store = BusinessContextStore(state_store)
+business_context_service = BusinessContextService(
+    business_context_store,
+    governance=data_governance_service,
+)
+for business_object_type in (
+    "business_entity",
+    "external_record_ref",
+    "company_fact",
+):
+    data_governance_service.register_action_handler(
+        business_object_type,
+        business_context_service.governance_action_handler,
+    )
+app.include_router(build_business_context_router(business_context_service))
+app.state.business_context_store = business_context_store
+app.state.business_context_service = business_context_service
 
 entitlement_store = EntitlementStore(state_store)
 entitlement_service = EntitlementService(entitlement_store)
