@@ -72,9 +72,9 @@ class AssignmentBoundAgentProcessSession:
         assignment_id: str,
         *,
         runtime_factory: Callable[..., Any],
+        credential_provider: AssignmentRuntimeCredentialProvider,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
-        credential_provider: AssignmentRuntimeCredentialProvider,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -163,7 +163,7 @@ class AssignmentBoundAgentProcessSession:
                 or lease.fence != self.fence
             ):
                 raise AssignmentBoundAgentProcessSessionStaleError(
-                    "assignment-bound Codex lease/fence changed"
+                    "assignment-bound agent runtime lease/fence changed"
                 )
         return assignment
 
@@ -462,7 +462,7 @@ class AssignmentBoundAgentProcessSession:
         lease = assignment.lease
         if lease is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
-                "assignment-bound Codex lease disappeared"
+                "assignment-bound agent runtime lease disappeared"
             )
         if lease.expires_at - self._clock() <= self.local_worker.renew_margin_seconds:
             assignment = self.local_worker.worker_service.renew(
@@ -563,13 +563,15 @@ class AssignmentBoundAgentProcessSessionManager:
         host: Any,
         *,
         runtime_factory: Callable[..., Any],
+        credential_provider: AssignmentRuntimeCredentialProvider,
+        session_factory: Callable[..., AssignmentBoundAgentProcessSession] = AssignmentBoundAgentProcessSession,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
-        credential_provider: AssignmentRuntimeCredentialProvider | None = None,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
         self.runtime_factory = runtime_factory
+        self.session_factory = session_factory
         self.watchdog_interval_seconds = watchdog_interval_seconds
         self.egress_endpoints_resolver = egress_endpoints_resolver
         self.credential_provider = credential_provider
@@ -586,7 +588,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 raise AssignmentBoundAgentProcessSessionStaleError(
                     "existing assignment-bound agent runtime session is not reusable"
                 )
-            session = AssignmentBoundAgentProcessSession(
+            session = self.session_factory(
                 self.local_worker,
                 self.host,
                 assignment_id,
