@@ -9,7 +9,7 @@ test('orchestration inspector explains canonical cycle and dependency-backed sta
   await expect(card).toContainText('reasoning gate');
   await expect(card).toContainText('anthropic/claude-code');
   await expect(card).toContainText('openai/gpt-test');
-  await expect(card.locator('a[href="/api/action-intents/intent-a"]')).toBeVisible();
+  await expect(card.getByRole('link', { name: 'ActionIntent intent-a' })).toBeVisible();
   await expect(card.locator('a[href="/api/approval-requests/approval-a"]')).toBeVisible();
   await expect(card.locator('a[href="/api/attention/attention-a"]')).toBeVisible();
   await expect(card.locator('a[href="/api/agent-sessions/session-a"]')).toBeVisible();
