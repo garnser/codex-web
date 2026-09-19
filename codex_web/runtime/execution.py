@@ -128,7 +128,7 @@ class TurnExecutionService:
             )
         return manager
 
-    def _capacity_error(
+    async def _capacity_error(
         self,
         runtime_binding: ExecutionRuntimeBinding | None,
         exc: Exception,
@@ -145,6 +145,21 @@ class TurnExecutionService:
             if runtime_binding is not None
             else "codex"
         )
+        record = None
+        if (provider_id, runtime_id) == ("openai", "codex"):
+            try:
+                record = await self.provider_capacity.refresh_if_due(
+                    provider_id,
+                    runtime_id,
+                    actor=self.control_actor,
+                )
+            except Exception:
+                record = None
+            if (
+                record is not None
+                and record.blocks(float(self.provider_capacity.clock()))
+            ):
+                return ProviderCapacityBlockedError(record)
         record = self.provider_capacity.report_exception(
             provider_id,
             runtime_id,
@@ -782,7 +797,7 @@ class TurnExecutionService:
                     runtime_session_request,
                 )
             except Exception as exc:
-                capacity_error = self._capacity_error(runtime_binding, exc)
+                capacity_error = await self._capacity_error(runtime_binding, exc)
                 if capacity_error is not None:
                     raise capacity_error from exc
                 with contextlib.suppress(Exception):
@@ -856,7 +871,7 @@ class TurnExecutionService:
                 )
                 response = runtime_turn_result.payload
             except Exception as exc:
-                capacity_error = self._capacity_error(runtime_binding, exc)
+                capacity_error = await self._capacity_error(runtime_binding, exc)
                 if capacity_error is not None:
                     self.clear_thread_active(thread_id)
                     raise capacity_error from exc
