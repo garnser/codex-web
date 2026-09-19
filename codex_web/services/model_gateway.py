@@ -28,6 +28,7 @@ from codex_web.model_gateway import (
     ModelGatewayState,
     ModelInvocationAttempt,
     ModelGoalUsage,
+    ModelDecisionUsage,
     ModelInvocationRecord,
     ModelInvocationRequest,
     ModelInvocationResponse,
@@ -985,6 +986,33 @@ class ModelGatewayService:
                 cost_usd += float(attempt.actual_cost_usd or 0.0)
         return ModelGoalUsage(
             goal_id=goal_id,
+            calls=len(rows),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
+
+    def decision_usage(
+        self,
+        decision_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelDecisionUsage:
+        rows = [
+            item
+            for item in self.store.load().invocations
+            if item.decision_id == decision_id and self._same_scope(item, actor)
+        ]
+        input_tokens = 0
+        output_tokens = 0
+        cost_usd = 0.0
+        for row in rows:
+            for attempt in row.attempts:
+                input_tokens += int(attempt.input_tokens or 0)
+                output_tokens += int(attempt.output_tokens or 0)
+                cost_usd += float(attempt.actual_cost_usd or 0.0)
+        return ModelDecisionUsage(
+            decision_id=decision_id,
             calls=len(rows),
             input_tokens=input_tokens,
             output_tokens=output_tokens,

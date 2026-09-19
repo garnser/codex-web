@@ -15,6 +15,7 @@ class CanonicalEventType(StrEnum):
     TASK_SOURCE = "task_source.event"
     SCHEDULE = "schedule.due"
     APPROVAL = "approval.transition"
+    DECISION = "decision.transition"
     ATTENTION = "attention.transition"
 
 
