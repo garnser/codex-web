@@ -124,6 +124,15 @@ async function mockOperatorApis(page, posts) {
       sync: { last_success_at: 1789675300, consecutive_failures: 0 },
     }),
   }));
+  await page.route('**/api/secrets', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      items: [
+        { id: 'secret-jira', name: 'Jira API token', status: 'active' },
+        { id: 'secret-snow', name: 'ServiceNow credential', status: 'active' },
+      ],
+    }),
+  }));
   await page.route('**/api/work-items?project_id=*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
@@ -206,4 +215,70 @@ test('source configuration writes the canonical project task-source endpoint', a
     source_instance: 'https://gitlab.example/api/v4',
     scope: 'team/new-scope',
   });
+});
+
+
+test('source configuration sends typed Jira and ServiceNow settings without secret material', async ({ page }) => {
+  const posts = [];
+  await mockOperatorApis(page, posts);
+  const saved = [];
+  await page.route('**/api/projects/project-a/task-source', async (route) => {
+    if (route.request().method() === 'PUT') {
+      saved.push(route.request().postDataJSON());
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(projectPayload()[0]),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.locator('#work-items-button').click();
+
+  const dialog = page.locator('#work-items-dialog');
+  const type = dialog.locator('.work-source-type');
+
+  await type.selectOption('jira');
+  await dialog.locator('.work-source-instance').fill('https://jira.example');
+  await dialog.locator('.work-source-scope').fill('ENG');
+  await dialog.locator('.work-source-secret').selectOption('secret-jira');
+  await dialog.locator('.work-source-jira-username').fill('agent@example.com');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => saved.length).toBe(1);
+  await expect(dialog.locator('.work-items-status')).toHaveText('Authoritative source saved');
+  expect(saved[0]).toEqual({
+    source_type: 'jira',
+    source_instance: 'https://jira.example',
+    scope: 'ENG',
+    credential_secret_id: 'secret-jira',
+    provider_settings: { kind: 'jira', username: 'agent@example.com' },
+  });
+
+  await type.selectOption('servicenow');
+  await dialog.locator('.work-source-instance').fill('https://example.service-now.com');
+  await dialog.locator('.work-source-scope').fill('assignment_group=platform');
+  await dialog.locator('.work-source-secret').selectOption('secret-snow');
+  await dialog.locator('.work-source-servicenow-table').fill('task');
+  await dialog.locator('.work-source-servicenow-active').fill('2');
+  await dialog.locator('.work-source-servicenow-closed').fill('7');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => saved.length).toBe(2);
+  expect(saved[1]).toEqual({
+    source_type: 'servicenow',
+    source_instance: 'https://example.service-now.com',
+    scope: 'assignment_group=platform',
+    credential_secret_id: 'secret-snow',
+    provider_settings: {
+      kind: 'servicenow',
+      table: 'task',
+      canonical_state_values: {
+        implementation_active: '2',
+        closed: '7',
+      },
+    },
+  });
+
+  expect(JSON.stringify(saved)).not.toContain('token-value');
+  expect(JSON.stringify(saved)).not.toContain('password');
 });
