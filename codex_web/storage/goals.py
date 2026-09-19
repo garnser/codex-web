@@ -39,6 +39,31 @@ GOAL_MIGRATIONS.register(
 )
 
 
+GOAL_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": GOAL_CONTRACT.current,
+        "goals": [
+            {
+                **item,
+                "success_criteria": [
+                    {
+                        **criterion,
+                        "metric_id": criterion.get("metric_id"),
+                        "metric_snapshot_id": criterion.get("metric_snapshot_id"),
+                        "metric_window_seconds": criterion.get("metric_window_seconds"),
+                    }
+                    for criterion in item.get("success_criteria", [])
+                ],
+            }
+            for item in payload.get("goals", [])
+        ],
+    },
+)
+
+
 class GoalStore:
     namespace = "goals"
 
