@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -19,6 +19,7 @@ class ExecutionRoleContract(BaseModel):
     name: str = Field(min_length=1)
     lane: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    lifecycle: Literal["active", "deprecated", "disabled"] = "active"
     expected_work: tuple[str, ...]
     must_refuse: tuple[str, ...]
     required_artifacts: tuple[str, ...]
@@ -89,6 +90,26 @@ class ExecutionRoleCatalogDefinition(BaseModel):
             raise ValueError(
                 "execution role mappings reference unknown roles: "
                 + ", ".join(sorted(unknown))
+            )
+        disabled_targets = {
+            role.id
+            for role in self.roles
+            if role.lifecycle == "disabled" and role.id in targets
+        }
+        if disabled_targets:
+            raise ValueError(
+                "execution role mappings reference disabled roles: "
+                + ", ".join(sorted(disabled_targets))
+            )
+        structural_disabled = {
+            role.id
+            for role in self.roles
+            if role.id in required and role.lifecycle == "disabled"
+        }
+        if structural_disabled:
+            raise ValueError(
+                "required structural execution roles cannot be disabled: "
+                + ", ".join(sorted(structural_disabled))
             )
         if any(not value.strip() for value in self.change_classifications):
             raise ValueError("change classifications cannot contain empty values")
