@@ -1,4 +1,5 @@
 import {
+  esc,
   field,
   input,
   lifecycleSelect,
@@ -12,7 +13,7 @@ export const STRUCTURAL_EXECUTION_ROLES = new Set(['orchestrator', 'quinn', 'rel
 
 function roleHtml(role, index) {
   return '<div class="comm-entry typed-execution-role" data-role-index="' + index + '">'
-    + '<div class="section-title"><strong>' + (role.name || role.id) + '</strong>'
+    + '<div class="section-title"><strong>' + esc(role.name || role.id) + '</strong>'
     + '<div class="developer-toolbar">'
     + '<button type="button" class="ghost-button" data-typed-action="clone-role">Clone role</button>'
     + '<button type="button" class="ghost-button" data-typed-action="remove-role"'
@@ -22,7 +23,14 @@ function roleHtml(role, index) {
     + field('Role ID', input('typed-role-id', role.id))
     + field('Name', input('typed-role-name', role.name))
     + field('Lane', input('typed-role-lane', role.lane))
-    + field('Lifecycle', lifecycleSelect(role.lifecycle || 'active'))
+    + field(
+      'Lifecycle',
+      lifecycleSelect(
+        role.lifecycle || 'active',
+        'typed-role-lifecycle',
+        STRUCTURAL_EXECUTION_ROLES.has(role.id) ? ['disabled'] : [],
+      ),
+    )
     + field('Automatic selection', '<input class="typed-role-auto-select" type="checkbox"'
       + (role.auto_select !== false ? ' checked' : '') + ' />')
     + '</div>'
