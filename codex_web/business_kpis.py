@@ -139,6 +139,10 @@ class BusinessKPIDefinitionCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_currency(self) -> "BusinessKPIDefinitionCreate":
+        if self.value_type != MetricValueType.NUMBER:
+            raise ValueError(
+                "business KPI formulas currently produce numeric Metric observations"
+            )
         if self.currency is not None:
             self.currency = self.currency.upper()
         return self
