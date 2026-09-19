@@ -139,6 +139,8 @@ class OrchestrationInspectorService:
             "policy_decision": item.policy_decision.model_dump(mode="json"),
             "security_decision": item.security_decision.model_dump(mode="json"),
             "verification_required": item.verification_required,
+            "rollback_required": item.rollback_required,
+            "resource_ids": list(item.resource_ids),
             "expected_evidence": [
                 requirement.model_dump(mode="json")
                 for requirement in item.expected_evidence
