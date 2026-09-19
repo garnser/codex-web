@@ -67,6 +67,15 @@ class ThreadExecutionSettingsService:
     def all(self) -> dict[str, ThreadRunSettings]:
         return dict(self.load_settings())
 
+    def retarget(self, old_thread_id: str, new_thread_id: str) -> None:
+        all_settings = self.load_settings()
+        old_settings = all_settings.pop(old_thread_id, None)
+        if old_settings is None:
+            return
+        if new_thread_id not in all_settings:
+            all_settings[new_thread_id] = old_settings
+        self.save_settings(all_settings)
+
     def get(self, thread_id: str | None) -> ThreadRunSettings:
         if not thread_id:
             return ThreadRunSettings()
@@ -218,6 +227,7 @@ def install_thread_execution_settings_service(
     # Compatibility aliases for direct import-server consumers.
     host._remember_thread_run_settings = service.remember
     host._thread_run_settings_all = service.all
+    host._retarget_thread_settings = service.retarget
     host._thread_run_settings = service.get
     host._codex_web_internal_base_url = service.internal_base_url
     host._work_item_contract_binding = service.work_item_contract_binding
