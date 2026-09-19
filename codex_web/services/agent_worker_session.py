@@ -19,6 +19,12 @@ class AssignmentBoundAgentSessionStatus:
     last_error: str | None
     credential_expires_at: float | None
 
+    @property
+    def delegation_expires_at(self) -> float | None:
+        """Compatibility alias for the original Codex-specific status field."""
+
+        return self.credential_expires_at
+
     def public(self) -> dict[str, str | int | float | bool | None]:
         return {
             "assignment_id": self.assignment_id,
@@ -28,6 +34,7 @@ class AssignmentBoundAgentSessionStatus:
             "ready": self.ready,
             "last_error": self.last_error,
             "credential_expires_at": self.credential_expires_at,
+            "delegation_expires_at": self.credential_expires_at,
         }
 
 
