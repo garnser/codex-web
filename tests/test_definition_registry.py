@@ -18,6 +18,7 @@ from codex_web.definitions import (
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_contracts import (
     execution_role,
+    execution_roles,
     route_execution_role,
 )
 from codex_web.identity import (
@@ -399,6 +400,58 @@ class ExecutionRoleDefinitionTests(unittest.TestCase):
             "release-manager",
         )
         self.assertEqual(execution_role("james", catalog=catalog).lane, "implementation")
+
+
+    def test_execution_role_lifecycle_controls_routing_and_resolution(self) -> None:
+        seed = execution_role_catalog_seed_payload()
+        maya = next(role for role in seed["roles"] if role["id"] == "maya")
+        maya["lifecycle"] = "deprecated"
+        deprecated = ExecutionRoleCatalogDefinition.model_validate(seed)
+
+        routed = route_execution_role(
+            "Design the UX and user flow for this workflow",
+            catalog=deprecated,
+        )
+        self.assertNotEqual(routed.id, "maya")
+        explicit = route_execution_role("@maya define the workflow", catalog=deprecated)
+        self.assertEqual(explicit.id, "maya")
+        self.assertEqual(explicit.public()["lifecycle"], "deprecated")
+
+        disabled_payload = deprecated.model_dump(mode="json")
+        disabled_maya = next(
+            role for role in disabled_payload["roles"] if role["id"] == "maya"
+        )
+        disabled_maya["lifecycle"] = "disabled"
+        disabled_payload["owner_to_execution_role"].pop("maya")
+        disabled = ExecutionRoleCatalogDefinition.model_validate(disabled_payload)
+
+        self.assertIsNone(execution_role("maya", catalog=disabled))
+        self.assertNotIn(
+            "maya",
+            {role.id for role in execution_roles(catalog=disabled)},
+        )
+        self.assertNotEqual(
+            route_execution_role("@maya define the workflow", catalog=disabled).id,
+            "maya",
+        )
+
+        mapped_disabled = deprecated.model_dump(mode="json")
+        next(
+            role
+            for role in mapped_disabled["roles"]
+            if role["id"] == "maya"
+        )["lifecycle"] = "disabled"
+        with self.assertRaises(ValueError):
+            ExecutionRoleCatalogDefinition.model_validate(mapped_disabled)
+
+        structural_disabled = execution_role_catalog_seed_payload()
+        next(
+            role
+            for role in structural_disabled["roles"]
+            if role["id"] == "orchestrator"
+        )["lifecycle"] = "disabled"
+        with self.assertRaises(ValueError):
+            ExecutionRoleCatalogDefinition.model_validate(structural_disabled)
 
 
 class DefinitionRegistryApiTests(unittest.TestCase):
