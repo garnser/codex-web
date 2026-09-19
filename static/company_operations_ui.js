@@ -227,7 +227,11 @@ function renderSources() {
             <header><div><strong>${esc(s.name)}</strong><small>${esc(s.source_type)} · ${esc(s.provider_id)}</small></div>${badge(s.health)}</header>
             <dl>
               <dt>Status</dt><dd>${esc(s.status)}</dd>
-              <dt>Capabilities</dt><dd>${esc(list(s.capabilities).join(', ') || 'none')}</dd>
+              <dt>Adapter capabilities</dt><dd>${esc(list(s.capabilities).join(', ') || 'none')}</dd>
+              <dt>Extension</dt><dd>${esc(s.extension_id ? `${s.extension_id}@${s.extension_version || '?'} · ${s.extension_lifecycle || 'unknown'} · ${s.extension_health || 'health unknown'}` : (s.extension_installation_id || 'built-in / not linked'))}</dd>
+              <dt>Requested grants</dt><dd>${esc(list(s.extension_requested_capabilities).join(', ') || 'none')}</dd>
+              <dt>Active grants</dt><dd>${esc(list(s.extension_granted_capabilities).join(', ') || 'none')}</dd>
+              <dt>Config records</dt><dd>${esc(list(s.extension_configuration_record_ids).join(', ') || 'none')}</dd>
               <dt>Credential ref</dt><dd>${esc(s.credential_ref || 'not configured')}</dd>
               <dt>Cursor</dt><dd>${esc(s.cursor || '—')}</dd><dt>Checkpoint</dt><dd>${esc(s.checkpoint || '—')}</dd>
               <dt>Capacity</dt><dd>${esc(s.capacity_status || 'unknown')}${s.retry_at ? ` until ${esc(fmtTime(s.retry_at))}` : ''}</dd>
