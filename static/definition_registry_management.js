@@ -2,6 +2,7 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
+  const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
   let actor = null;
   let records = [];
   let schemas = [];
@@ -397,57 +398,19 @@
     }
   }
 
-  async function exportDefinitions() {
-    try {
-      const documentValue = await apiRequest("/api/definitions/export");
-      const host = document.getElementById("definition-transfer-document");
-      if (host) host.value = JSON.stringify(documentValue, null, 2);
-      setStatus(`Loaded ${documentValue.records?.length || 0} tenant-visible definition record(s) for export.`);
-    } catch (error) {
-      setStatus(`Definition export failed: ${error.message}`);
-    }
-  }
-
-  async function importDefinitions() {
-    const raw = document.getElementById("definition-transfer-document")?.value || "";
-    let documentValue;
-    try {
-      documentValue = JSON.parse(raw);
-    } catch (error) {
-      setStatus(`Import document is not valid JSON: ${error.message}`);
-      return;
-    }
-    const imported = Array.isArray(documentValue?.records) ? documentValue.records : [];
-    if (!imported.length) {
-      setStatus("Import document must contain at least one definition record.");
-      return;
-    }
-    const blocked = imported.filter((record) => !canManage(record.scope_type));
-    if (blocked.length) {
-      const scopes = [...new Set(blocked.map((record) => record.scope_type))].join(", ");
-      setStatus(`Current actor/assurance cannot import every requested scope (${scopes}); nothing was submitted.`);
-      return;
-    }
-    if (!window.confirm(
-      `Import ${imported.length} versioned definition record(s) as new inactive drafts? All records are revalidated server-side and none are published automatically.`,
-    )) return;
-    try {
-      const response = await apiRequest("/api/definitions/import", {
-        method: "POST",
-        body: JSON.stringify({ document: documentValue }),
-      });
-      setStatus(`Imported ${response.count} record(s) as inactive draft revisions.`);
-      document.getElementById("refresh-definitions")?.click();
-    } catch (error) {
-      setStatus(`Definition import failed: ${error.message}`);
-    }
-  }
-
   function bind() {
     document.getElementById("definition-draft-scope")?.addEventListener("change", updateDraftScopeState);
     document.getElementById("create-definition-draft")?.addEventListener("click", () => createDraft().catch(console.error));
-    document.getElementById("export-definitions")?.addEventListener("click", () => exportDefinitions().catch(console.error));
-    document.getElementById("import-definitions")?.addEventListener("click", () => importDefinitions().catch(console.error));
+    document.getElementById("export-definitions")?.addEventListener("click", () => (
+      transferUi.exportDefinitions(setStatus).catch(console.error)
+    ));
+    document.getElementById("import-definitions")?.addEventListener("click", () => (
+      transferUi.importDefinitions({
+        canManage,
+        setStatus,
+        refresh: () => document.getElementById("refresh-definitions")?.click(),
+      }).catch(console.error)
+    ));
     document.getElementById("definition-registry-list")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-definition-action]");
       if (button) mutate(button).catch(console.error);
