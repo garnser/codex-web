@@ -136,6 +136,7 @@ class AuthorityRoleDefinition(BaseModel):
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    lifecycle: Literal["active", "deprecated", "disabled"] = "active"
     inherits: tuple[str, ...] = ()
     grants: tuple[AuthorityGrant, ...] = ()
 
