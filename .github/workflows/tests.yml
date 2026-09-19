@@ -49,6 +49,61 @@ jobs:
             node --check "$script"
           done
 
+  distributed:
+    name: distributed-backends
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: codex
+          POSTGRES_PASSWORD: codex
+          POSTGRES_DB: codex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codex -d codex"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      CODEX_WEB_TEST_POSTGRES_DSN: postgresql://codex:codex@127.0.0.1:5432/codex
+      CODEX_WEB_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-distributed.txt
+
+      - name: Install locked core and distributed dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install -r requirements-distributed.txt
+
+      - name: Exercise PostgreSQL and Redis replicated semantics
+        run: python -m unittest tests.test_distributed_backends
+
   browser:
     name: chromium
     runs-on: ubuntu-latest
