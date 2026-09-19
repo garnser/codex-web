@@ -146,7 +146,7 @@ recoverable:
 - restore slower than objective -> RTO failure;
 - stale side-effect state -> paused/reconciliation state after materialization.
 
-#168 owns broader application/worker/extension version-skew and migration
+The safe-upgrade/version-skew contract owns broader application/worker/extension migration
 orchestration. Recovery records exact schema/policy metadata so those checks have
 a deterministic input instead of guessing from backup age.
 
@@ -156,6 +156,6 @@ a deterministic input instead of guessing from backup age.
 verification and recovery health/history. Human mutations require administrator
 authority + MFA; service callers require recovery:admin.
 
-Issues #121/#125 own UI presentation of backup age, last verified restore,
+The Autonomy Control Center and operator workspaces present backup age, last verified restore,
 RPO/RTO status, destination/key/audit dependencies and guarded drill/restore
-operations. #124 owns operator runbooks.
+operations. Operator runbooks document the corresponding recovery procedures.
