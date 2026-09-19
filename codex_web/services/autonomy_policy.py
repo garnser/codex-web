@@ -18,7 +18,7 @@ from codex_web.approval_requests import (
     ApprovalTarget,
 )
 from codex_web.artifact_evidence import EvidenceLifecycle, EvidenceResult, VerificationResult
-from codex_web.autonomy import AutonomyControl, AutonomyReasoningResult
+from codex_web.autonomy import AutonomyControl, AutonomyPauseScope, AutonomyReasoningResult
 from codex_web.autonomy_policy import (
     ACTION_RISK_RANK,
     AUTONOMY_LEVEL_RANK,
@@ -424,6 +424,34 @@ class AutonomyPolicyService:
             *resource_reasons,
         ]
         allowed = self._risk_allowed(effective.level, effective_risk)
+        control = self.store.load().control
+        scoped_pause = next(
+            (
+                item
+                for item in control.scoped_pauses
+                if item.active(current)
+                and (
+                    (
+                        item.scope == AutonomyPauseScope.IDENTITY
+                        and item.scope_id == actor.identity_id
+                    )
+                    or (
+                        item.scope == AutonomyPauseScope.PROJECT
+                        and item.scope_id == request.project_id
+                    )
+                    or (
+                        item.scope == AutonomyPauseScope.RESOURCE
+                        and item.scope_id in set(request.resource_ids)
+                    )
+                )
+            ),
+            None,
+        )
+        if scoped_pause is not None:
+            allowed = False
+            reasons.append(
+                f"scoped_pause:{scoped_pause.scope.value}:{scoped_pause.scope_id}"
+            )
         if not allowed:
             if break_glass is not None:
                 allowed = True

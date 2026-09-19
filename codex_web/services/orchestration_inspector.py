@@ -139,6 +139,8 @@ class OrchestrationInspectorService:
             "policy_decision": item.policy_decision.model_dump(mode="json"),
             "security_decision": item.security_decision.model_dump(mode="json"),
             "verification_required": item.verification_required,
+            "rollback_required": item.rollback_required,
+            "resource_ids": list(item.resource_ids),
             "expected_evidence": [
                 requirement.model_dump(mode="json")
                 for requirement in item.expected_evidence
@@ -620,6 +622,206 @@ class OrchestrationInspectorService:
                 "detail": {"attention_items": attention},
             },
         ]
+
+    def explain_action(
+        self,
+        intent_id: str,
+        *,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self.action_intents is None:
+            raise LookupError("ActionIntent store is unavailable")
+        state = self.action_intents.load()
+        intent = next(
+            (
+                item
+                for item in state.intents
+                if item.id == intent_id
+                and self._same_scope(
+                    item,
+                    organization_id,
+                    workspace_id,
+                )
+            ),
+            None,
+        )
+        if intent is None:
+            raise LookupError("ActionIntent not found")
+
+        refs = {
+            str(value)
+            for value in (
+                intent.id,
+                intent.execution_id,
+                intent.work_item_ref,
+                intent.goal_id,
+                intent.decision_id,
+                intent.correlation_id,
+                intent.causation_id,
+            )
+            if value
+        }
+        compact, expanded_refs = self._intent_projection(
+            (intent.id,),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        refs.update(expanded_refs)
+        approvals = self._approval_projection(
+            refs,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        attention = self._attention_projection(
+            refs,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        sessions, usage = self._runtime_projection(
+            refs,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        models = self._model_projection(
+            refs,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        evidence = self._evidence_projection(
+            refs,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+
+        all_events = [
+            item
+            for item in self.events.recent(limit=500)
+            if self._event_same_scope(
+                item,
+                organization_id,
+                workspace_id,
+            )
+        ]
+        related_events = [
+            item
+            for item in all_events
+            if refs.intersection(self._event_refs(item))
+            or (
+                item.correlation_id
+                and item.correlation_id == intent.correlation_id
+            )
+        ]
+        autonomy = self.autonomy.status()
+        cycles = [
+            item
+            for item in autonomy["recent_cycles"]
+            if (
+                intent.id in (item.get("action_intent_ids") or ())
+                or item.get("event_id")
+                in {event.event_id for event in related_events}
+            )
+            and (
+                organization_id is None
+                or item.get("organization_id") in {None, organization_id}
+            )
+            and (
+                workspace_id is None
+                or item.get("workspace_id") in {None, workspace_id}
+            )
+        ]
+
+        receipts = [
+            item.model_dump(mode="json")
+            for item in state.receipts
+            if item.intent_id == intent.id
+        ]
+        verifications = [
+            item.model_dump(mode="json")
+            for item in state.verifications
+            if item.intent_id == intent.id
+        ]
+        inbox = [
+            item.model_dump(mode="json")
+            for item in state.inbox
+            if item.intent_id == intent.id
+        ]
+
+        trigger = (
+            related_events[0].model_dump(mode="json")
+            if related_events
+            else None
+        )
+        action = compact[0] if compact else self._compact_intent(intent)
+        action["request"] = intent.request.model_dump(mode="json")
+        action["action_definition"] = intent.action_definition.model_dump(
+            mode="json"
+        )
+        action["resource_ids"] = list(intent.resource_ids)
+        action["requested_by"] = intent.requested_by
+        action["credential_ref_present"] = bool(intent.credential_ref)
+        action["receipts"] = receipts
+        action["verifications"] = verifications
+        action["inbox"] = inbox
+
+        return {
+            "intent_id": intent.id,
+            "trigger": trigger,
+            "related_events": [
+                item.model_dump(mode="json")
+                for item in related_events
+            ],
+            "goal_id": intent.goal_id,
+            "decision_id": intent.decision_id,
+            "work_item_ref": intent.work_item_ref,
+            "execution_contract": {
+                "execution_id": intent.execution_id,
+                "work_item_ref": intent.work_item_ref,
+                "action_definition": intent.action_definition.model_dump(
+                    mode="json"
+                ),
+                "expected_evidence": [
+                    item.model_dump(mode="json")
+                    for item in intent.expected_evidence
+                ],
+            },
+            "authority": {
+                "initial": intent.authority_decision.model_dump(mode="json"),
+                "recheck": (
+                    intent.authority_recheck.model_dump(mode="json")
+                    if intent.authority_recheck is not None
+                    else None
+                ),
+            },
+            "policy": intent.policy_decision.model_dump(mode="json"),
+            "security": intent.security_decision.model_dump(mode="json"),
+            "action_intent": action,
+            "provider_action": {
+                "provider_type": intent.provider_type,
+                "provider_instance": intent.provider_instance,
+                "binding_id": intent.binding_id,
+                "action_id": intent.action_id,
+                "idempotency_key": intent.idempotency_key,
+                "receipts": receipts,
+            },
+            "evidence": evidence,
+            "verification": {
+                "required": intent.verification_required,
+                "receipts": verifications,
+                "last_verification_id": intent.last_verification_id,
+            },
+            "approval_requests": approvals,
+            "attention_items": attention,
+            "agent_sessions": sessions,
+            "runtime_usage": usage,
+            "model_invocations": models,
+            "cycles": cycles,
+            "result": {
+                "status": self._value(intent.status),
+                "last_error": intent.last_error,
+                "completed_at": intent.completed_at,
+            },
+        }
 
     def snapshot(
         self,

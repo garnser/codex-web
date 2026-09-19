@@ -12,6 +12,7 @@ from codex_web.autonomy import (
     AutonomyCycleOutcome,
     AutonomyObservation,
     AutonomyReasoningResult,
+    AutonomyScopedPauseCreate,
 )
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.services.autonomy_controller import AutonomyController
@@ -405,6 +406,56 @@ class AutonomyControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["control"]["max_actions_per_cycle"], 2)
         self.assertEqual(len(status["recent_cycles"]), 1)
         self.assertEqual(status["updated_by"], "operator")
+
+
+    async def test_project_scoped_pause_skips_reasoning_and_can_be_removed(self) -> None:
+        pause = self.controller.add_scoped_pause(
+            AutonomyScopedPauseCreate(
+                scope="project",
+                scope_id="project-a",
+                reason="operator maintenance",
+            ),
+            actor_id="admin",
+        )
+        event = CanonicalEventEnvelope(
+            event_id="evt-scoped",
+            event_type="work.transition",
+            occurred_at=1.0,
+            source="test",
+            correlation_id="corr-scoped",
+            tenant_id="org-a",
+            workspace_id="ws-a",
+            payload={"project_id": "project-a", "resource_ids": ["resource-a"]},
+        )
+        calls = 0
+
+        async def reasoner(*_args):
+            nonlocal calls
+            calls += 1
+            return AutonomyReasoningResult(summary="must not run")
+
+        cycle = await self.controller.process(
+            event,
+            AutonomyObservation(
+                deterministic_resolved=False,
+                reasoning_score=1.0,
+                reason="needs reasoning",
+            ),
+            reasoner=reasoner,
+        )
+        self.assertEqual(cycle.outcome, AutonomyCycleOutcome.SKIPPED)
+        self.assertEqual(
+            cycle.reason,
+            "autonomy_scoped_pause:project:project-a",
+        )
+        self.assertEqual(calls, 0)
+        self.assertTrue(
+            any(item.id == pause.id for item in self.store.load().control.scoped_pauses)
+        )
+        self.assertTrue(
+            self.controller.remove_scoped_pause(pause.id, actor_id="admin")
+        )
+        self.assertEqual(self.store.load().control.scoped_pauses, ())
 
 
 if __name__ == "__main__":

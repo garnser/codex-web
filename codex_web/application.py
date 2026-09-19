@@ -15,6 +15,7 @@ from codex_web.api.attention import build_attention_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
 from codex_web.api.autonomy import build_autonomy_router
+from codex_web.api.autonomy_control_center import build_autonomy_control_center_router
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
@@ -111,6 +112,7 @@ from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorer
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.autonomy_control_center import AutonomyControlCenterService
 from codex_web.services.autonomy_policy import AutonomyPolicyService
 from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
@@ -1081,6 +1083,30 @@ orchestration_inspector_service = OrchestrationInspectorService(
 )
 app.state.orchestration_inspector_service = orchestration_inspector_service
 app.include_router(build_orchestration_router(orchestration_inspector_service))
+
+autonomy_control_center_service = AutonomyControlCenterService(
+    autonomy=autonomy_controller,
+    policy=autonomy_policy_service,
+    approvals=approval_request_service,
+    attention=attention_service,
+    incidents=incident_service,
+    releases=release_service,
+    recovery=recovery_service,
+    capacity=capacity_service,
+    provider_capacity=provider_capacity_service,
+    upgrades=upgrade_service,
+    workers=execution_worker_service,
+    audit=autonomy_audit_service,
+    orchestration=orchestration_inspector_service,
+    coordination=coordination_backend,
+    ownership=replicated_ownership_service,
+)
+app.state.autonomy_control_center_service = autonomy_control_center_service
+app.include_router(
+    build_autonomy_control_center_router(
+        autonomy_control_center_service
+    )
+)
 
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)

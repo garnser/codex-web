@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
-from codex_web.autonomy import AutonomyControlUpdate
+from codex_web.autonomy import AutonomyControlUpdate, AutonomyScopedPauseCreate
 from codex_web.autonomy_policy import (
     AutonomyBreakGlassActivate,
     AutonomyBreakGlassRequest,
@@ -76,6 +76,32 @@ def build_autonomy_router(
         actor = require_admin(request)
         control = service.update_control(payload, actor_id=actor.identity_id)
         return {"control": control.model_dump(mode="json")}
+
+    @router.post("/scoped-pauses")
+    async def create_scoped_pause(
+        payload: AutonomyScopedPauseCreate,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = require_admin(request)
+        pause = service.add_scoped_pause(
+            payload,
+            actor_id=actor.identity_id,
+        )
+        return {"item": pause.model_dump(mode="json")}
+
+    @router.delete("/scoped-pauses/{pause_id}")
+    async def delete_scoped_pause(
+        pause_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = require_admin(request)
+        removed = service.remove_scoped_pause(
+            pause_id,
+            actor_id=actor.identity_id,
+        )
+        if not removed:
+            raise HTTPException(status_code=404, detail="scoped pause not found")
+        return {"removed": True, "pause_id": pause_id}
 
     @router.post("/pause")
     async def pause(request: Request) -> dict[str, Any]:
