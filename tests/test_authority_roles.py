@@ -20,6 +20,7 @@ from codex_web.authority import (
     AuthorityRoleBinding,
     AuthorityRoleCatalogDefinition,
     AuthorityRoleDefinition,
+    validate_authority_role_catalog,
 )
 from codex_web.definitions import (
     DefinitionDraftCreate,
@@ -418,6 +419,18 @@ class AuthorityRoleServiceTests(unittest.TestCase):
         )
         self.assertEqual(wrong_project.outcome.value, "deny")
         self.assertIn("no matching operational Role", wrong_project.reasons[0])
+
+    def test_legacy_authority_payload_without_lifecycle_keeps_shape(self):
+        payload = self._catalog(bindings=(self._binding(),)).model_dump(mode="json")
+        for role in payload["roles"]:
+            role.pop("lifecycle", None)
+
+        normalized = validate_authority_role_catalog(payload)
+        self.assertTrue(
+            all("lifecycle" not in role for role in normalized["roles"])
+        )
+        parsed = AuthorityRoleCatalogDefinition.model_validate(normalized)
+        self.assertTrue(all(role.lifecycle == "active" for role in parsed.roles))
 
     def test_role_lifecycle_deprecated_remains_bound_but_disabled_denies(self):
         base = self._catalog(bindings=(self._binding(),))
