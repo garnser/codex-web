@@ -301,6 +301,8 @@ class DecisionService:
         payload: DecisionCreate,
         *,
         actor: AuthenticationActor,
+        originating_executive_activation_id: str | None = None,
+        originating_executive_proposal_id: str | None = None,
     ) -> Decision:
         self._validate_goal(payload.goal_id, actor=actor)
         evidence = self._resolve_evidence(payload.evidence, actor=actor)
@@ -323,6 +325,8 @@ class DecisionService:
             limits=payload.limits,
             review_at=payload.review_at,
             expires_at=payload.expires_at,
+            originating_executive_activation_id=originating_executive_activation_id,
+            originating_executive_proposal_id=originating_executive_proposal_id,
             created_at=now,
             updated_at=now,
         )
