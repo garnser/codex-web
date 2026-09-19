@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 extension/platform contract.
+Canonical extension/plugin platform contract.
 
 This document defines the canonical package manifest, installation state,
 authorization, compatibility and lifecycle boundary for third-party and

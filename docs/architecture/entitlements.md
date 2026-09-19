@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 foundation for issue #164.
+Canonical entitlements and quota foundation for issue #164.
 
 This contract answers a product/service question that is deliberately separate from authorization:
 

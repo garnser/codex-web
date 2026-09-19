@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3 foundation for issue #166.
+Canonical execution-worker trust-boundary foundation for issue #166.
 
 The control plane owns canonical identity, policy, approvals, secrets, resources,
 work state, evidence requirements and side-effect intent state. Execution

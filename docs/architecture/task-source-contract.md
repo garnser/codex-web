@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 2 architecture contract.** Canonical codex-web work-item behavior must not depend on GitLab, GitHub, Jira, Linear, or any other provider-specific task schema.
+**Canonical task-source architecture contract.** Canonical codex-web work-item behavior must not depend on GitLab, GitHub, Jira, Linear, or any other provider-specific task schema.
 
 GitHub Issues, Milestones, Projects, and linked Pull Requests are the delivery source of truth. This document defines the durable provider-neutral boundary, invariants, and migration architecture only.
 

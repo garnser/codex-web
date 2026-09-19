@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Milestone 13 business KPIs are a configuration/projection layer over the
-existing M8 Metric/KPI primitive. They do not introduce a second metric engine.
+Business KPI catalogs are a configuration/projection layer over the
+canonical Metric/KPI primitive. They do not introduce a second metric engine.
 
 Business KPI configuration answers a business question:
 
@@ -133,7 +133,7 @@ current.
 Trend compares the newest two observations from the same Metric definition
 revision. Cross-revision comparisons are intentionally excluded.
 
-Thresholds use the M8 Metric definition threshold contract. Their state is:
+Thresholds use the canonical Metric definition threshold contract. Their state is:
 
 - met;
 - not_met;
@@ -176,7 +176,7 @@ a Decision formally cites a measured value.
 
 ## Source provenance
 
-Business KPI source provenance composes the earlier M13 boundaries:
+Business KPI source provenance composes the business-context and business-data-source boundaries:
 
 BusinessDataSource
 -> ExternalRecordRef

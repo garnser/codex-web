@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Milestone 13 adds enough structured company context for Executive/business
+The business-context domain adds enough structured company context for Executive/business
 reasoning without turning codex-web into a CRM, billing platform, accounting
 system, support suite or analytics warehouse.
 
@@ -128,14 +128,14 @@ Exact provider/reference provenance must survive later reasoning and Decision
 snapshots. CompanyFacts retain ExternalRecordRef IDs and Evidence refs; entities
 can link to Goals, Decisions, Metrics, Resources and Projects.
 
-Future M13 Executive integration (#343) should pass these exact references into
+Executive integration (#343) should pass these exact references into
 Decision/Executive provenance rather than flattening them into unattributed
 prose.
 
 ## Data governance
 
 Business entities, external record references and facts register with the
-existing M3 DataGovernance service.
+existing canonical DataGovernance service.
 
 Derived facts inherit stricter source classification/retention constraints.
 Effective governance classification is reflected back into the business-domain
@@ -172,7 +172,7 @@ domains:
 - Metrics remain measured KPI definitions/observations;
 - Evidence remains structured verification/proof.
 
-M13 #342 can bind business KPI catalogs to these references without introducing
+Issue #342 can bind business KPI catalogs to these references without introducing
 a second Metric engine.
 
 ## BusinessDataSource boundary

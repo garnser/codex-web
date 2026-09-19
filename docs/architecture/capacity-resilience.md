@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 11 overload-control contract. Capacity is enforced deterministically;
+Canonical overload-control and resilience contract. Capacity is enforced deterministically;
 an overloaded codex-web must delay or shed lower-priority execution rather than
 create unbounded queues, retries, model calls or provider actions.
 
@@ -23,7 +23,7 @@ them:
 - ProviderCapacityService honors provider quota/throttle state and Retry-After;
 - autonomy reasoning/actions have scoped token/cost/action budgets.
 
-The M11 CapacityService owns shared execution admission and qualification across
+The CapacityService owns shared execution admission and qualification across
 those domains.
 
 ## Shared admission leases
@@ -127,7 +127,7 @@ unfair tenant concentration, or a claimed tested concurrency above configured
 hard capacity.
 
 Results can publish canonical POLICY_EVALUATION Evidence with source
-capacity-resilience-qualification. M11 production autonomy already exposes the
+capacity-resilience-qualification. production autonomy already exposes the
 CAPACITY qualification gate; policy can bind that gate to the exact PASS
 Evidence for the intended deployment scale.
 

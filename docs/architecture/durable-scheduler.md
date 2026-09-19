@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 7 scheduler contract (#158).** Time-triggered work is represented
+**Canonical scheduler contract (#158).** Time-triggered work is represented
 as durable canonical schedule state. The scheduler is a deterministic engine:
 it never invokes an LLM, ActionProvider, or privileged execution path directly.
 

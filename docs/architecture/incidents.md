@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 11 production-operations contract. Incidents are durable canonical
+Canonical production-operations incident contract. Incidents are durable canonical
 records; logs, alerts, model chats and dashboards may detect or discuss an
 incident but do not replace Incident state.
 
@@ -57,7 +57,7 @@ ActionIntent creation re-evaluates canonical Role authority, trust/security,
 credential and provider capability. Incident severity does not bypass those
 checks. A denied ActionIntent blocks the incident operation.
 
-Emergency approval changes are not implemented inside Incident. M11 break-glass
+Emergency approval changes are not implemented inside Incident. canonical break-glass
 remains the only pre-authorized, quorum/MFA/audit-bound mechanism for temporarily
 raising autonomy/approval behavior.
 
@@ -98,7 +98,7 @@ boundary instead of leaving it in chat or free-form logs.
 Incident transitions emit canonical incident.status events where the event
 service is configured. The Incident timeline is authoritative domain history;
 canonical events provide cross-domain activation/correlation. Related
-ActionIntents, Evidence, Attention and M11 autonomy audit remain independently
+ActionIntents, Evidence, Attention and canonical autonomy audit remain independently
 authoritative for their own domains.
 
 ## API and UI
