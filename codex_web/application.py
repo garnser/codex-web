@@ -26,6 +26,7 @@ from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.business_context import build_business_context_router
 from codex_web.api.business_data_sources import build_business_data_sources_router
+from codex_web.api.business_kpis import build_business_kpis_router
 from codex_web.api.decisions import build_decisions_router
 from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.evaluations import build_evaluations_router
@@ -159,6 +160,7 @@ from codex_web.services.business_data_sources import (
     BusinessDataSourceRegistry,
     BusinessDataSourceService,
 )
+from codex_web.services.business_kpis import BusinessKPIService
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
@@ -261,6 +263,7 @@ from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
 from codex_web.storage.business_data_sources import BusinessDataSourceStore
+from codex_web.storage.business_kpis import BusinessKPIStore
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -1273,6 +1276,19 @@ app.state.decision_deliberation_service = decision_deliberation_service
 goal_store = GoalStore(state_store)
 goal_service = GoalService(goal_store, project_service, work_graph_service)
 decision_service.goals = goal_service
+
+business_kpi_store = BusinessKPIStore(state_store)
+business_kpi_service = BusinessKPIService(
+    business_kpi_store,
+    metric_service,
+    business_context_service,
+    goal_service,
+    decision_service,
+)
+app.state.business_kpi_store = business_kpi_store
+app.state.business_kpi_service = business_kpi_service
+app.include_router(build_business_kpis_router(business_kpi_service))
+
 decision_work_service = DecisionWorkService(
     decision_service,
     goal_service,

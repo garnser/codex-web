@@ -24,6 +24,7 @@ from codex_web.identity import (
 from codex_web.metrics import (
     MetricAggregation,
     MetricDefinitionCreate,
+    MetricDefinitionUpdate,
     MetricFreshness,
     MetricObservationCreate,
     MetricSnapshotRequest,
@@ -210,6 +211,93 @@ class MetricServiceTests(unittest.TestCase):
         )
         self.assertEqual(missing.freshness, MetricFreshness.MISSING)
         self.assertIsNone(missing.value)
+
+    def test_definition_revision_requires_new_observation_before_current_value_returns(self) -> None:
+        metric = self._definition(aggregation=MetricAggregation.LAST)
+        now = time.time()
+        old = self.service.ingest(
+            metric.id,
+            MetricObservationCreate(
+                value=70,
+                observed_at=now,
+                source="ci",
+                idempotency_key="ci:revision-1",
+            ),
+            scope=self.scope,
+            actor_id="collector",
+        )
+        self.assertEqual(old.metric_revision, 1)
+
+        updated = self.service.update_definition(
+            metric.id,
+            MetricDefinitionUpdate(
+                description="Revised metric semantics.",
+                reason="change metric definition",
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        self.assertEqual(updated.revision, 2)
+        missing = self.service.evaluate(
+            metric.id,
+            scope=self.scope,
+            at=now + 1,
+        )
+        self.assertEqual(missing.freshness, MetricFreshness.MISSING)
+        self.assertIsNone(missing.value)
+        self.assertEqual(missing.observation_ids, ())
+
+        current = self.service.ingest(
+            metric.id,
+            MetricObservationCreate(
+                value=75,
+                observed_at=now + 2,
+                source="ci",
+                idempotency_key="ci:revision-2",
+            ),
+            scope=self.scope,
+            actor_id="collector",
+        )
+        self.assertEqual(current.metric_revision, 2)
+        evaluated = self.service.evaluate(
+            metric.id,
+            scope=self.scope,
+            at=now + 3,
+        )
+        self.assertEqual(evaluated.value, 75)
+        self.assertEqual(evaluated.observation_ids, (current.id,))
+
+    def test_snapshot_can_pin_historical_as_of_freshness(self) -> None:
+        metric = self._definition(
+            aggregation=MetricAggregation.LAST,
+            freshness_seconds=30,
+        )
+        observation = self.service.ingest(
+            metric.id,
+            MetricObservationCreate(
+                value=88,
+                observed_at=100.0,
+                source="ci",
+                idempotency_key="ci:historical",
+            ),
+            scope=self.scope,
+            actor_id="collector",
+        )
+        snapshot = self.service.capture_snapshot(
+            metric.id,
+            MetricSnapshotRequest(
+                window_start=90.0,
+                window_end=100.0,
+                evaluated_at=100.0,
+            ),
+            scope=self.scope,
+            actor_id="decision-service",
+        )
+        self.assertEqual(snapshot.freshness, MetricFreshness.FRESH)
+        self.assertEqual(snapshot.observation_ids, (observation.id,))
+        self.assertEqual(snapshot.window_start, 90.0)
+        self.assertEqual(snapshot.window_end, 100.0)
+        self.assertEqual(snapshot.captured_at, 100.0)
 
     def test_snapshot_is_immutable_and_tenant_scoped(self) -> None:
         metric = self._definition(aggregation=MetricAggregation.LAST)

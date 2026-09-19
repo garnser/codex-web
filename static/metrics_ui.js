@@ -233,3 +233,16 @@ function renderDetail() {
 }
 
 ensureShell();
+
+window.addEventListener('codex-open-metric', async (event) => {
+  const metricId = event?.detail?.metricId || '';
+  const dialog = document.querySelector('#metrics-dialog');
+  if (!dialog || !metricId) return;
+  if (!dialog.open) dialog.showModal();
+  await refreshAll();
+  if (state.metrics.some((row) => row.definition?.id === metricId)) {
+    state.selectedMetricId = metricId;
+    renderList();
+    await loadMetric(metricId);
+  }
+});

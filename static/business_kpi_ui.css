@@ -1,0 +1,23 @@
+.business-kpi-dialog{width:min(1240px,96vw);height:min(860px,92vh);padding:0;border:1px solid var(--line,#313744);border-radius:14px;background:var(--surface,#171a21);color:var(--text,#f4f6fa)}
+.business-kpi-dialog::backdrop{background:rgba(0,0,0,.58)}
+.business-kpi-shell{height:100%;display:grid;grid-template-rows:auto auto 1fr;min-height:0}
+.business-kpi-header{display:flex;justify-content:space-between;gap:16px;padding:18px 20px 12px;border-bottom:1px solid var(--line,#313744)}
+.business-kpi-header h2,.business-kpi-card h3{margin:0}.business-kpi-header p{margin:5px 0 0;color:var(--muted,#9aa4b5)}
+.business-kpi-toolbar{display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--line,#313744);flex-wrap:wrap}
+.business-kpi-status{font-size:12px;color:var(--muted,#9aa4b5)}.business-kpi-status.error,.business-kpi-warning{color:var(--danger,#ff7272)}
+.business-kpi-content{overflow:auto;padding:14px;display:grid;gap:12px;align-content:start}
+.business-kpi-overall{display:grid;grid-template-columns:auto auto 1fr;gap:20px;align-items:center;padding:12px;border:1px solid var(--line,#313744);border-radius:10px}
+.business-kpi-overall.current{border-color:#69d69d}.business-kpi-overall.blocked{border-color:#ffbe63}
+.business-kpi-overall>div{display:grid;gap:2px}.business-kpi-overall span,.business-kpi-card small,.business-kpi-card dt,.business-kpi-muted{font-size:10px;color:var(--muted,#9aa4b5)}
+.business-kpi-overall p{margin:0;color:var(--muted,#9aa4b5);font-size:11px}
+.business-kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.business-kpi-card{border:1px solid var(--line,#313744);border-radius:10px;padding:13px;background:var(--surface-2,#1d222c);display:grid;gap:10px;min-width:0}
+.business-kpi-card header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.business-kpi-readiness{display:inline-flex;padding:3px 7px;border:1px solid currentColor;border-radius:999px;font-size:9px;text-transform:uppercase}
+.business-kpi-readiness.current{color:#69d69d}.business-kpi-readiness.stale{color:#ffbe63}.business-kpi-readiness.partial{color:#c89cff}.business-kpi-readiness.missing{color:#ff7272}
+.business-kpi-value{font-size:25px;font-weight:700}
+.business-kpi-trend{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:baseline}
+.business-kpi-thresholds{display:flex;gap:7px;flex-wrap:wrap}.business-kpi-threshold{display:grid;gap:2px;padding:6px 8px;border:1px dashed var(--line,#313744);border-radius:8px}.business-kpi-threshold.met{border-color:#69d69d}.business-kpi-threshold.not_met{border-color:#ff7272}
+.business-kpi-card dl{display:grid;grid-template-columns:100px 1fr;gap:5px 10px;margin:0;font-size:11px}.business-kpi-card dd{margin:0;overflow-wrap:anywhere}.business-kpi-card a{color:inherit}
+.business-kpi-warning{margin:0;font-size:10px}.business-kpi-empty{padding:18px;color:var(--muted,#9aa4b5)}
+@media(max-width:760px){.business-kpi-dialog{width:100vw;height:100vh;max-width:none;max-height:none;border-radius:0}.business-kpi-grid{grid-template-columns:1fr}.business-kpi-overall{grid-template-columns:1fr}.business-kpi-card dl{grid-template-columns:85px 1fr}}

@@ -229,6 +229,7 @@ class MetricSnapshotRequest(BaseModel):
 
     window_start: float | None = None
     window_end: float | None = None
+    evaluated_at: float | None = None
 
     @model_validator(mode="after")
     def validate_window(self) -> "MetricSnapshotRequest":

@@ -416,6 +416,7 @@ class MetricService:
             row
             for row in state.observations
             if row.metric_id == metric_id
+            and row.metric_revision == definition.revision
             and self._visible(row, scope)
             and row.observed_at <= end
             and (start is None or row.observed_at >= start)
@@ -466,6 +467,7 @@ class MetricService:
         evaluation = self.evaluate(
             metric_id,
             scope=scope,
+            at=payload.evaluated_at,
             window_start=payload.window_start,
             window_end=payload.window_end,
         )
