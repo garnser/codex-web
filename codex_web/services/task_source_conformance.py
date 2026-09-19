@@ -12,7 +12,11 @@ from codex_web.services.task_sources import (
     TaskSourceCapability,
     TaskSourceCreateCapable,
     TaskSourceEvent,
+    TaskSourceIncrementalReconciliationCapable,
+    TaskSourcePage,
+    TaskSourcePagedDiscoveryCapable,
     TaskSourceSnapshot,
+    TaskSourceWorkflowCapable,
 )
 
 
@@ -62,6 +66,29 @@ class TaskSourceConformanceSuite:
                 "create_protocol_mismatch",
                 "Task-source adapter advertises CREATE but does not implement create().",
             )
+        optional_protocols = (
+            (
+                TaskSourceCapability.PAGED_DISCOVERY,
+                TaskSourcePagedDiscoveryCapable,
+                "paged_discovery_protocol_mismatch",
+                "Task-source adapter advertises PAGED_DISCOVERY but does not implement discover_page().",
+            ),
+            (
+                TaskSourceCapability.INCREMENTAL_RECONCILIATION,
+                TaskSourceIncrementalReconciliationCapable,
+                "incremental_reconciliation_protocol_mismatch",
+                "Task-source adapter advertises INCREMENTAL_RECONCILIATION but does not implement reconcile_since().",
+            ),
+            (
+                TaskSourceCapability.WORKFLOW_TRANSITIONS,
+                TaskSourceWorkflowCapable,
+                "workflow_protocol_mismatch",
+                "Task-source adapter advertises WORKFLOW_TRANSITIONS but does not implement workflow transition methods.",
+            ),
+        )
+        for capability, protocol, code, message in optional_protocols:
+            if source.capabilities.supports(capability) and not isinstance(source, protocol):
+                raise TaskSourceConformanceError(code, message)
         return source
 
     def validate_identity(
@@ -150,3 +177,43 @@ class TaskSourceConformanceSuite:
                 f"Adapter projected noncanonical work-item stage: {projection.stage!r}.",
             )
         return projection
+
+
+    def validate_page(
+        self,
+        source: TaskSource,
+        page: TaskSourcePage,
+    ) -> TaskSourcePage:
+        self.validate_adapter(source)
+        if not isinstance(page, TaskSourcePage):
+            raise TaskSourceConformanceError(
+                "invalid_page",
+                "Paged discovery/reconciliation output must be TaskSourcePage.",
+            )
+        for snapshot in page.items:
+            self.validate_snapshot(source, snapshot)
+        if not page.exhausted and page.next_cursor is None:
+            raise TaskSourceConformanceError(
+                "missing_page_cursor",
+                "A non-exhausted task-source page must provide next_cursor.",
+            )
+        return page
+
+    def validate_transition_names(
+        self,
+        source: TaskSource,
+        transitions: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        self.validate_adapter(source)
+        normalized = tuple(str(value or "").strip() for value in transitions)
+        if any(not value for value in normalized):
+            raise TaskSourceConformanceError(
+                "invalid_workflow_transition",
+                "Provider workflow transition names must not be empty.",
+            )
+        if len(normalized) != len(set(normalized)):
+            raise TaskSourceConformanceError(
+                "duplicate_workflow_transition",
+                "Provider workflow transition names must be unique.",
+            )
+        return normalized
