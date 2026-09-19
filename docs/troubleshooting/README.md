@@ -18,3 +18,5 @@ Common starting points:
 - incident/recovery → [Incident domain](../architecture/incidents.md);
 - failed restore → [Recovery continuity](../architecture/recovery-continuity.md);
 - incompatible upgrade → [Safe upgrades](../architecture/safe-upgrades.md).
+
+- [Operator troubleshooting matrix](operator-matrix.md) — Definitions, providers, workers/extensions, secrets/keys, leases, schedules, approvals, capacity, releases, upgrades, restores, split brain and reconciliation.

@@ -23,6 +23,7 @@ USER_DOC_ROOTS = (
     DOCS / "advanced-adoption",
     DOCS / "examples",
     DOCS / "screenshots",
+    DOCS / "extensions",
 )
 
 REQUIRED_DOCS = (
@@ -38,13 +39,20 @@ REQUIRED_DOCS = (
     "docs/how-to/README.md",
     "docs/administration/README.md",
     "docs/administration/trust-and-credentials.md",
+    "docs/administration/platform-administration.md",
+    "docs/administration/definition-registry.md",
     "docs/operations/README.md",
     "docs/operations/upgrade-and-rollback.md",
     "docs/operations/uninstall.md",
+    "docs/operations/runbooks.md",
+    "docs/operations/release-readiness.md",
     "docs/reference/README.md",
     "docs/reference/documentation-versioning.md",
+    "docs/reference/platform-contracts.md",
     "docs/troubleshooting/README.md",
+    "docs/troubleshooting/operator-matrix.md",
     "docs/advanced-adoption/README.md",
+    "docs/extensions/developer-guide.md",
 )
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
@@ -110,6 +118,84 @@ class DocumentationFoundationTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding="utf-8").casefold()
             self.assertIn("verify", text, relative)
             self.assertIn("recovery", text, relative)
+
+    def test_operator_docs_cover_critical_release_readiness_topics(self) -> None:
+        documents = {
+            "admin": ROOT / "docs/administration/platform-administration.md",
+            "definitions": ROOT / "docs/administration/definition-registry.md",
+            "runbooks": ROOT / "docs/operations/runbooks.md",
+            "troubleshooting": ROOT / "docs/troubleshooting/operator-matrix.md",
+            "reference": ROOT / "docs/reference/platform-contracts.md",
+            "extensions": ROOT / "docs/extensions/developer-guide.md",
+            "readiness": ROOT / "docs/operations/release-readiness.md",
+        }
+        text = "\n".join(
+            path.read_text(encoding="utf-8").casefold()
+            for path in documents.values()
+        )
+        for term in (
+            "definition registry",
+            "mfa",
+            "service identit",
+            "secret",
+            "encryption",
+            "execution worker",
+            "extension",
+            "approval",
+            "actionintent",
+            "release",
+            "incident",
+            "backup",
+            "restore",
+            "rpo",
+            "rto",
+            "upgrade",
+            "version skew",
+            "rollback",
+            "reconciliation",
+            "split brain",
+            "audit",
+            "evidence",
+        ):
+            self.assertIn(term, text, term)
+
+    def test_definition_admin_guide_documents_lifecycle_and_code_boundary(self) -> None:
+        text = " ".join(
+            (
+                ROOT / "docs/administration/definition-registry.md"
+            ).read_text(encoding="utf-8").casefold().split()
+        )
+        for term in (
+            "draft",
+            "validate",
+            "publish",
+            "supersede",
+            "rollback",
+            "definitions are data",
+            "engines and structural security are code",
+            "execution_contracts.py",
+            "cache",
+            "historical attribution",
+        ):
+            self.assertIn(term, text, term)
+
+    def test_runbooks_cover_critical_verified_procedures(self) -> None:
+        text = (
+            ROOT / "docs/operations/runbooks.md"
+        ).read_text(encoding="utf-8").casefold()
+        for heading in (
+            "startup and shutdown",
+            "release promotion and rollback",
+            "upgrade, migration and version skew",
+            "backup, restore and recovery drill",
+            "incident response",
+            "execution worker drain",
+            "extension upgrade",
+            "key rotation",
+            "replicated/failover mode",
+            "unknown provider outcome",
+        ):
+            self.assertIn(heading, text, heading)
 
     def test_root_readme_links_product_documentation(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
