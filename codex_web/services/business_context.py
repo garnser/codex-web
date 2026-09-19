@@ -409,6 +409,8 @@ class BusinessContextService:
             resource_ids=payload.resource_ids,
             classification=payload.classification,
             source_updated_at=payload.source_updated_at,
+            source_sequence=payload.source_sequence,
+            source_revision=payload.source_revision,
             first_seen_at=now,
             synced_at=payload.synced_at or now,
             created_by=actor.identity_id,
