@@ -133,7 +133,7 @@ async function refreshAll() {
     const [projects, catalog, secretsPayload] = await Promise.all([
       request('/api/projects'),
       request('/api/task-sources'),
-      request('/api/secrets'),
+      request('/api/secrets').catch(() => ({ items: [] })),
     ]);
     state.projects = Array.isArray(projects) ? projects : [];
     state.catalog = catalog || { items: [], sync: {} };
