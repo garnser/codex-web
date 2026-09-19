@@ -17,6 +17,8 @@ class EmbeddingModelIdentity(BaseModel):
     model_revision: str = Field(min_length=1, max_length=500)
     dimensions: int = Field(ge=8, le=65536)
     capability_revision: int = Field(default=1, ge=1)
+    local: bool = True
+    residency_tags: tuple[str, ...] = ()
 
 
 class EmbeddingBatchResult(BaseModel):
