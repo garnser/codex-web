@@ -1208,12 +1208,43 @@ turn_execution_service = install_turn_execution_service(
     runtime_adapter_factory=_assignment_runtime_adapter,
     provider_capacity=provider_capacity_service,
 )
-provider_capacity_service.register_resume_handler(
-    lambda wait: (
+async def _resume_provider_capacity_wait(wait):
+    if wait.thread_id:
         turn_execution_service.schedule_queue_drain(wait.thread_id)
-        if wait.thread_id
-        else None
-    )
+        return
+
+    if wait.work_item_ref:
+        state = core._load_work_item_states().get(wait.work_item_ref)
+        if state is not None and state.project_id:
+            owner = core._coerce_owner(state.current_owner or state.next_owner)
+            binding = (
+                core._binding_for_agent(
+                    owner,
+                    state.project_id,
+                    preferred_conversation_id=core.HANDOFF_COORDINATION_CHANNEL,
+                )
+                if owner
+                else None
+            )
+            if binding is not None:
+                turn_execution_service.enqueue_turn(
+                    thread_id=binding.thread_id,
+                    project_id=state.project_id,
+                    message=core._work_item_dispatch_text(state),
+                    source=f"provider-capacity-resume:{wait.id}",
+                    execution_id=wait.execution_id,
+                )
+                turn_execution_service.schedule_queue_drain(binding.thread_id)
+                return
+
+    if core._autonomy_enabled():
+        core._schedule_native_recovery_cycles(
+            reason="provider-capacity-resumed"
+        )
+
+
+provider_capacity_service.register_resume_handler(
+    _resume_provider_capacity_wait
 )
 work_item_timing_policy = install_work_item_timing_policy(app, core)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
