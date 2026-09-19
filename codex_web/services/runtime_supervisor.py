@@ -212,6 +212,10 @@ class RuntimeSupervisor:
         )
         self._spawn("queue-recovery", self._queue_recovery_loop())
 
+        scheduler_service = getattr(self.app.state, "scheduler_service", None)
+        if scheduler_service is not None:
+            self._spawn("scheduler", scheduler_service.run_forever())
+
         slack_provider_service = getattr(self.app.state, "slack_provider_service", None)
         if slack_provider_service is not None:
             await slack_provider_service.start()
