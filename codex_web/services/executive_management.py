@@ -334,7 +334,10 @@ class ExecutiveManagementService:
             ):
                 matched_domains = ()
             if matched_domains:
-                score += 12 + (2 * len(matched_domains))
+                if role.id == catalog.fallback_role_id:
+                    score += 3 + len(matched_domains)
+                else:
+                    score += 12 + (2 * len(matched_domains))
                 reasons.extend(
                     f"business-domain:{value}"
                     for value in matched_domains
