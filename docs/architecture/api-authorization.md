@@ -37,6 +37,8 @@ Generated OpenAPI operations include an `x-codex-authorization` extension contai
 
 Protected operations also advertise the Codex session cookie and bearer-token schemes and document `401` and `403` responses. The in-app Swagger browser therefore displays the same authorization contract used by runtime enforcement.
 
+The OpenAPI metadata is descriptive, not an authorization mechanism: browser visibility or client behavior can never grant access when the server-side policy denies it.
+
 ## Adding an API
 
 A new top-level `/api/<domain>` route must be classified in the canonical API authorization registry before the application is considered valid. Do not add an unclassified fallback or perform authorization only in browser code.
