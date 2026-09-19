@@ -58,6 +58,10 @@ class AutonomyController:
                 item.model_dump(mode="json")
                 for item in reversed(state.dead_letters[-100:])
             ],
+            "break_glass_grants": [
+                item.model_dump(mode="json")
+                for item in reversed(state.break_glass_grants[-100:])
+            ],
             "updated_at": state.updated_at,
             "updated_by": state.updated_by,
         }
