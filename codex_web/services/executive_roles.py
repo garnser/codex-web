@@ -71,6 +71,23 @@ class ExecutiveRoleDefinitionService:
             ).payload
         )
 
+    def resolve(
+        self,
+        *,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ):
+        record = self.record(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        return (
+            ExecutiveRoleCatalogDefinition.model_validate(record.payload),
+            reference_for(record),
+        )
+
     def reference(
         self,
         *,
@@ -78,13 +95,11 @@ class ExecutiveRoleDefinitionService:
         workspace_id: str | None = None,
         project_id: str | None = None,
     ):
-        return reference_for(
-            self.record(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                project_id=project_id,
-            )
-        )
+        return self.resolve(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )[1]
 
 
 def install_executive_role_definitions(
