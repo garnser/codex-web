@@ -10,6 +10,7 @@ from codex_web.agent_routing import (
     AgentRuntimeRouteCandidate,
 )
 from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.provider_capacity import ProviderCapacityStatus
 from codex_web.configuration import ConfigurationContext
 from codex_web.identity import AuthenticationActor
 from codex_web.services.agent_providers import AgentProviderService
@@ -441,7 +442,7 @@ class AgentRoutingService:
                 capacity_status=(
                     capacity_record.status
                     if capacity_record is not None
-                    else __import__("codex_web.provider_capacity", fromlist=["ProviderCapacityStatus"]).ProviderCapacityStatus.AVAILABLE
+                    else ProviderCapacityStatus.AVAILABLE
                 ),
                 capacity_retry_at=(
                     capacity_record.retry_at
