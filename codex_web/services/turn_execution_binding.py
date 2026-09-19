@@ -9,6 +9,7 @@ from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
+    ExecutionRuntimeBinding,
     NetworkPolicy,
     WorkerCapability,
     WorkerResourceLimits,
@@ -60,6 +61,7 @@ class TurnExecutionBinding:
     approval_policy: ApprovalPolicy
     secret_ref: str
     deadline_at: float | None
+    runtime_binding: ExecutionRuntimeBinding | None = None
 
     def public(self) -> dict[str, object]:
         return {
@@ -76,6 +78,11 @@ class TurnExecutionBinding:
             "approval_policy": self.approval_policy,
             "secret_ref": self.secret_ref,
             "deadline_at": self.deadline_at,
+            "runtime_binding": (
+                self.runtime_binding.model_dump(mode="json")
+                if self.runtime_binding is not None
+                else None
+            ),
         }
 
 
@@ -97,6 +104,7 @@ class TurnExecutionBindingService:
         workers: ExecutionWorkerService,
         *,
         control_actor: AuthenticationActor,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -105,6 +113,7 @@ class TurnExecutionBindingService:
         self.workspaces = workspaces
         self.workers = workers
         self.control_actor = control_actor
+        self.runtime_binding = runtime_binding
         self._clock = clock
 
     @staticmethod
@@ -242,6 +251,13 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different execution contract"
             )
+        if (
+            self.runtime_binding is not None
+            and assignment.runtime_binding != self.runtime_binding
+        ):
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different agent runtime"
+            )
         if not assignment.execution_workspace_id:
             raise TurnExecutionBindingError(
                 "existing thread assignment has no canonical execution workspace"
@@ -280,6 +296,7 @@ class TurnExecutionBindingService:
             approval_policy=assignment.approval_policy,
             secret_ref=assignment.secret_refs[0],
             deadline_at=assignment.deadline_at,
+            runtime_binding=assignment.runtime_binding,
         )
 
     def _prepare_subject(
@@ -359,6 +376,7 @@ class TurnExecutionBindingService:
                 secret_refs=(secret_ref,),
                 deadline_at=deadline_at,
                 execution_workspace_id=workspace.id,
+                runtime_binding=self.runtime_binding,
             ),
             actor=self.control_actor,
         )
@@ -377,6 +395,7 @@ class TurnExecutionBindingService:
             approval_policy=assignment.approval_policy,
             secret_ref=secret_ref,
             deadline_at=assignment.deadline_at,
+            runtime_binding=assignment.runtime_binding,
         )
 
     def prepare(
