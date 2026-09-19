@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.agent_runtime import AgentRuntimeSessionRequest
 from codex_web.identity import AuthenticationActor
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
@@ -14,6 +15,8 @@ from codex_web.models import (
     ThreadRunSettings,
 )
 
+from codex_web.services.agent_runtime import AgentSessionService
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_worker_session import (
     AssignmentBoundCodexSessionManager,
 )
@@ -38,12 +41,14 @@ class ThreadService:
         session_manager: AssignmentBoundCodexSessionManager | None = None,
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
         control_actor: AuthenticationActor | None = None,
+        agent_sessions: AgentSessionService | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
         self.session_manager = session_manager
         self.bootstrap_bindings = bootstrap_bindings
         self.control_actor = control_actor
+        self.agent_sessions = agent_sessions
 
     def _require_bootstrap_routing(self) -> tuple[
         TurnExecutionBindingService,
@@ -276,8 +281,21 @@ class ThreadService:
             workspace_cwd,
         )
 
+        runtime_request = AgentRuntimeSessionRequest(
+            project_id=project.id,
+            sandbox=effective_sandbox,
+            approval_policy=effective_approval_policy,
+            workspace_cwd=workspace_cwd,
+            execution_id=binding.execution_id,
+            assignment_id=binding.assignment_id,
+            execution_workspace_id=binding.workspace_id,
+            worker_id=status.worker_id,
+            model=model or project.model,
+        )
+        codex_adapter = CodexAgentRuntimeAdapter(session)
         try:
-            response = await session.request("thread/start", params)
+            runtime_result = await codex_adapter.create_session(runtime_request)
+            response = runtime_result.payload
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await session_manager.complete(
@@ -325,6 +343,18 @@ class ThreadService:
                 )
             raise
 
+        canonical_session = None
+        if self.agent_sessions is not None:
+            canonical_session = self.agent_sessions.adopt(
+                provider_id=codex_adapter.provider_id,
+                runtime_id=codex_adapter.runtime_id,
+                runtime_type=codex_adapter.runtime_type,
+                provider_native_session_id=thread_id,
+                request=runtime_request,
+                actor=control_actor,
+                capability_snapshot=codex_adapter.capabilities,
+            )
+
         self.host._remember_thread_run_settings(
             thread_id,
             sandbox=effective_sandbox,
@@ -343,8 +373,13 @@ class ThreadService:
                 "execution_workspace_id": bootstrap.execution_workspace_id,
                 "worker_id": status.worker_id,
                 "fence": status.fence,
+                "agent_session_id": (
+                    canonical_session.id if canonical_session is not None else None
+                ),
             }
         )
+        if canonical_session is not None and isinstance(response, dict):
+            response = {**response, "agentSessionId": canonical_session.id}
         return response
 
     async def read(
