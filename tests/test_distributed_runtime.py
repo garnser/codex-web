@@ -159,6 +159,7 @@ class SharedCanonicalStateTests(unittest.TestCase):
             q1 = QueuedTurn(
                 id="q1",
                 thread_id="thread-a",
+                created_at=100.0,
                 project_id="project-a",
                 message="first",
                 source="web",
@@ -166,6 +167,7 @@ class SharedCanonicalStateTests(unittest.TestCase):
             q2 = QueuedTurn(
                 id="q2",
                 thread_id="thread-a",
+                created_at=100.0,
                 project_id="project-a",
                 message="second",
                 source="web",
@@ -185,6 +187,7 @@ class SharedCanonicalStateTests(unittest.TestCase):
             q3 = QueuedTurn(
                 id="q3",
                 thread_id="thread-a",
+                created_at=100.0,
                 project_id="project-a",
                 message="duplicate",
                 source="bot",
@@ -192,6 +195,7 @@ class SharedCanonicalStateTests(unittest.TestCase):
             q4 = QueuedTurn(
                 id="q4",
                 thread_id="thread-a",
+                created_at=100.0,
                 project_id="project-a",
                 message="duplicate",
                 source="bot",
@@ -496,7 +500,18 @@ class _SwitchTransport:
         reason,
         retry=True,
     ):
-        del consumer_id, retry
+        del consumer_id
+        if retry and delivery.attempt < 5:
+            retried = await self.publish(
+                delivery.event,
+                attempt=delivery.attempt + 1,
+            )
+            return retried.model_copy(
+                update={
+                    "status": TransportDeliveryStatus.RETRY,
+                    "reason": reason,
+                }
+            )
         return delivery.model_copy(
             update={
                 "status": TransportDeliveryStatus.DEAD_LETTER,
