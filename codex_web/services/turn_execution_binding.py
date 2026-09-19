@@ -231,6 +231,7 @@ class TurnExecutionBindingService:
         sandbox: SandboxMode,
         approval_policy: ApprovalPolicy,
         execution_contract_version: str,
+        runtime_binding: ExecutionRuntimeBinding | None,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -252,8 +253,8 @@ class TurnExecutionBindingService:
                 "execution id is already bound to a different execution contract"
             )
         if (
-            self.runtime_binding is not None
-            and assignment.runtime_binding != self.runtime_binding
+            runtime_binding is not None
+            and assignment.runtime_binding != runtime_binding
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different agent runtime"
@@ -312,6 +313,7 @@ class TurnExecutionBindingService:
         session_seconds: int,
         max_session_seconds: int,
         limits: WorkerResourceLimits | None,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -323,6 +325,7 @@ class TurnExecutionBindingService:
             )
 
         project = self._project(project_id)
+        effective_runtime_binding = runtime_binding or self.runtime_binding
         existing = self._existing_assignment(execution_id=normalized_execution_id)
         if existing is not None:
             return self._binding_from_existing(
@@ -333,6 +336,7 @@ class TurnExecutionBindingService:
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 execution_contract_version=execution_contract_version,
+                runtime_binding=effective_runtime_binding,
             )
 
         project_resources, repository = self._project_resources(project)
@@ -376,7 +380,7 @@ class TurnExecutionBindingService:
                 secret_refs=(secret_ref,),
                 deadline_at=deadline_at,
                 execution_workspace_id=workspace.id,
-                runtime_binding=self.runtime_binding,
+                runtime_binding=effective_runtime_binding,
             ),
             actor=self.control_actor,
         )
@@ -408,6 +412,7 @@ class TurnExecutionBindingService:
         approval_policy: ApprovalPolicy,
         limits: WorkerResourceLimits | None = None,
         deadline_seconds: int = DEFAULT_TURN_DEADLINE_SECONDS,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -421,6 +426,7 @@ class TurnExecutionBindingService:
             session_seconds=deadline_seconds,
             max_session_seconds=DEFAULT_TURN_DEADLINE_SECONDS,
             limits=limits,
+            runtime_binding=runtime_binding,
         )
 
     def prepare_bootstrap(
@@ -433,6 +439,7 @@ class TurnExecutionBindingService:
         approval_policy: ApprovalPolicy,
         limits: WorkerResourceLimits | None = None,
         session_seconds: int = THREAD_BOOTSTRAP_SESSION_SECONDS,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -458,4 +465,5 @@ class TurnExecutionBindingService:
             session_seconds=session_seconds,
             max_session_seconds=THREAD_BOOTSTRAP_SESSION_SECONDS,
             limits=effective_limits,
+            runtime_binding=runtime_binding,
         )
