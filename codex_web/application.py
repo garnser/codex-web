@@ -122,6 +122,7 @@ from codex_web.services.event_transport import (
     EventTransportRuntime,
     build_event_transport,
 )
+from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
@@ -279,6 +280,13 @@ coordination_backend = StateStoreCoordinationBackend(
     state_store,
     backend_id=f"coordination:{state_store.status().get('backend', 'unknown')}",
 )
+replicated_ownership_service = ReplicatedOwnershipService(
+    coordination_backend,
+    instance_id=instance_id,
+    lease_seconds=float(
+        os.environ.get("CODEX_WEB_COORDINATION_LEASE_SECONDS", "30")
+    ),
+)
 deployment_mode = os.environ.get(
     "CODEX_WEB_DEPLOYMENT_MODE",
     "local",
@@ -324,6 +332,7 @@ app.state.state_store = state_store
 app.state.deployment_mode = deployment_mode
 app.state.instance_id = instance_id
 app.state.coordination_backend = coordination_backend
+app.state.replicated_ownership_service = replicated_ownership_service
 app.state.event_transport = event_transport
 app.state.event_transport_runtime = event_transport_runtime
 app.state.canonical_event_store = canonical_event_store
