@@ -683,6 +683,7 @@ class AutonomyPolicyService:
         usage: AutonomyCycleBudgetUsage,
         *,
         hard_action_limit: int,
+        default_limits: AutonomyBudgetLimits | None = None,
     ) -> tuple[str, ...]:
         if decisions:
             limits = decisions[0].budget
@@ -697,7 +698,9 @@ class AutonomyPolicyService:
                 max_production_changes_per_cycle=min(item.max_production_changes_per_cycle for item in values),
             )
         else:
-            limits = AutonomyBudgetLimits(max_actions_per_cycle=hard_action_limit)
+            limits = default_limits or AutonomyBudgetLimits(
+                max_actions_per_cycle=hard_action_limit
+            )
 
         violations: list[str] = []
         if usage.actions > min(hard_action_limit, limits.max_actions_per_cycle):
