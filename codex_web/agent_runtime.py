@@ -43,6 +43,9 @@ class AgentRuntimeSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
     project_id: str = Field(min_length=1)
+    sandbox: str | None = None
+    approval_policy: str | None = None
+    workspace_cwd: str | None = None
     execution_id: str | None = None
     assignment_id: str | None = None
     execution_workspace_id: str | None = None
