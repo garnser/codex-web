@@ -204,7 +204,6 @@ class BusinessEntityUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=500)
     description: str | None = Field(default=None, max_length=4000)
     lifecycle: BusinessEntityLifecycle | None = None
-    classification: DataClassification | None = None
     links: BusinessReferenceLinks | None = None
     field_provenance: tuple[BusinessFieldProvenance, ...] | None = None
 
