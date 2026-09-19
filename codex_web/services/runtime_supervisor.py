@@ -28,6 +28,19 @@ class RuntimeSupervisor:
         self.startup_tasks: set[asyncio.Task[Any]] = set()
         self.started = False
 
+    def _ownership(self):
+        return getattr(
+            self.app.state,
+            "replicated_ownership_service",
+            None,
+        )
+
+    def _owns(self, responsibility: str) -> bool:
+        ownership = self._ownership()
+        if ownership is None:
+            return True
+        return ownership.owns(responsibility)
+
     def watchdog_interval(self) -> float:
         try:
             usec = int(os.environ.get("WATCHDOG_USEC") or "0")
@@ -66,13 +79,15 @@ class RuntimeSupervisor:
         cycle: Callable[[], Awaitable[None]],
         *,
         failure_event: str,
+        responsibility: str | None = None,
     ) -> None:
         interval = float(interval_getter())
         if interval <= 0:
             return
         while True:
             try:
-                await cycle()
+                if responsibility is None or self._owns(responsibility):
+                    await cycle()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -102,6 +117,9 @@ class RuntimeSupervisor:
             return
         while True:
             try:
+                if not self._owns("support-servicedesk"):
+                    await asyncio.sleep(interval)
+                    continue
                 result = await h._run_support_servicedesk_sweep_once()
                 h._append_bot_event(
                     {
@@ -127,6 +145,9 @@ class RuntimeSupervisor:
             return
         while True:
             try:
+                if not self._owns("queue-recovery"):
+                    await asyncio.sleep(interval)
+                    continue
                 for thread_id in h._load_turn_queues():
                     if h._thread_is_active(thread_id):
                         h._release_stale_active_turn(thread_id, "queue-recovery")
@@ -137,6 +158,34 @@ class RuntimeSupervisor:
             except Exception as exc:
                 h._append_bot_event({"type": "queue_recovery_failed", "error": str(exc)})
             await asyncio.sleep(interval)
+
+    async def _singleton_service_loop(
+        self,
+        responsibility: str,
+        start: Callable[[], Awaitable[None]],
+        stop: Callable[[], Awaitable[None]],
+    ) -> None:
+        running = False
+        ownership = self._ownership()
+        interval = (
+            max(1.0, float(ownership.lease_seconds) / 3.0)
+            if ownership is not None
+            else 5.0
+        )
+        try:
+            while True:
+                owned = self._owns(responsibility)
+                if owned and not running:
+                    await start()
+                    running = True
+                elif not owned and running:
+                    await stop()
+                    running = False
+                await asyncio.sleep(interval)
+        finally:
+            if running:
+                with contextlib.suppress(Exception):
+                    await stop()
 
     def task_status(self) -> dict[str, dict[str, bool]]:
         return {
@@ -163,9 +212,19 @@ class RuntimeSupervisor:
             # Keep the HTTP UI available so it can report app-server failures.
             pass
         await h.bot_runtime.sync()
-        if h.codex.ready.is_set() and h._autonomy_enabled():
-            self._spawn_startup_task("restore-thread-names", h._restore_bot_thread_names())
-            self._spawn_startup_task("resume-active-threads", h._resume_active_threads_after_startup())
+        if (
+            h.codex.ready.is_set()
+            and h._autonomy_enabled()
+            and self._owns("startup-recovery")
+        ):
+            self._spawn_startup_task(
+                "restore-thread-names",
+                h._restore_bot_thread_names(),
+            )
+            self._spawn_startup_task(
+                "resume-active-threads",
+                h._resume_active_threads_after_startup(),
+            )
 
         h._sd_notify("READY=1\nSTATUS=codex-web started")
         self._spawn("systemd-watchdog", self._systemd_watchdog_loop())
@@ -176,6 +235,7 @@ class RuntimeSupervisor:
                 h._owner_work_watchdog_interval,
                 h._run_owner_work_watchdog_cycle,
                 failure_event="owner_work_watchdog_failed",
+                responsibility="owner-work",
             ),
         )
         self._spawn(
@@ -184,6 +244,7 @@ class RuntimeSupervisor:
                 h._release_gate_watchdog_interval,
                 h._run_release_gate_watchdog_cycle,
                 failure_event="release_gate_watchdog_failed",
+                responsibility="release-gate",
             ),
         )
         self._spawn(
@@ -192,6 +253,7 @@ class RuntimeSupervisor:
                 h._work_item_sla_watchdog_interval,
                 h._run_work_item_sla_cycle,
                 failure_event="work_item_sla_watchdog_failed",
+                responsibility="work-item-sla",
             ),
         )
         self._spawn(
@@ -200,6 +262,7 @@ class RuntimeSupervisor:
                 h._orchestrator_watchdog_interval,
                 h._run_orchestrator_watchdog_cycle,
                 failure_event="orchestrator_watchdog_failed",
+                responsibility="orchestrator",
             ),
         )
         self._spawn(
@@ -208,6 +271,7 @@ class RuntimeSupervisor:
                 h._split_brain_watchdog_interval,
                 h._run_split_brain_watchdog_cycle,
                 failure_event="split_brain_watchdog_failed",
+                responsibility="split-brain",
             ),
         )
         self._spawn("queue-recovery", self._queue_recovery_loop())
@@ -227,10 +291,22 @@ class RuntimeSupervisor:
                 event_transport_runtime.run_forever(),
             )
 
-        slack_provider_service = getattr(self.app.state, "slack_provider_service", None)
+        slack_provider_service = getattr(
+            self.app.state,
+            "slack_provider_service",
+            None,
+        )
         if slack_provider_service is not None:
-            await slack_provider_service.start()
-        h._schedule_native_recovery_cycles()
+            self._spawn(
+                "slack-provider-owner",
+                self._singleton_service_loop(
+                    "slack-provider",
+                    slack_provider_service.start,
+                    slack_provider_service.stop,
+                ),
+            )
+        if self._owns("native-recovery"):
+            h._schedule_native_recovery_cycles()
 
     async def stop(self) -> None:
         h = self.host
@@ -253,9 +329,17 @@ class RuntimeSupervisor:
             await asyncio.gather(*startup_tasks, return_exceptions=True)
         self.startup_tasks.clear()
 
-        slack_provider_service = getattr(self.app.state, "slack_provider_service", None)
+        slack_provider_service = getattr(
+            self.app.state,
+            "slack_provider_service",
+            None,
+        )
         if slack_provider_service is not None:
             await slack_provider_service.stop()
+
+        ownership = self._ownership()
+        if ownership is not None:
+            ownership.release_all()
 
         continuity_tasks = [
             *list(h.ACTIONABLE_OWNER_CONTINUITY_TASKS.values()),
