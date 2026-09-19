@@ -49,6 +49,7 @@ class ExecutionRoleContract(BaseModel):
             "name": self.name,
             "lane": self.lane,
             "description": self.description,
+            "lifecycle": self.lifecycle,
             "expectedWork": list(self.expected_work),
             "mustRefuse": list(self.must_refuse),
             "requiredArtifacts": list(self.required_artifacts),
