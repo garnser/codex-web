@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.data_governance import DataClassification
 from codex_web.definitions import DefinitionReference
 
 
@@ -43,6 +44,9 @@ class ExecutiveObjectType(StrEnum):
     ATTENTION = "attention"
     APPROVAL = "approval"
     EVENT = "event"
+    BUSINESS_ENTITY = "business_entity"
+    BUSINESS_FACT = "business_fact"
+    BUSINESS_KPI = "business_kpi"
 
 
 class ExecutiveProposalKind(StrEnum):
@@ -118,6 +122,8 @@ class ExecutiveRoleDefinition(BaseModel):
     event_subscriptions: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
     consultation_roles: tuple[str, ...] = ()
+    business_domains: tuple[str, ...] = ()
+    max_data_classification: DataClassification = DataClassification.CONFIDENTIAL
     authority: ExecutiveRoleAuthorityContract = Field(
         default_factory=ExecutiveRoleAuthorityContract
     )
@@ -132,6 +138,7 @@ class ExecutiveRoleDefinition(BaseModel):
             "event_subscriptions",
             "keywords",
             "consultation_roles",
+            "business_domains",
         ):
             values = tuple(
                 dict.fromkeys(
@@ -226,6 +233,9 @@ class ExecutiveActivationCreate(BaseModel):
     decision_ids: tuple[str, ...] = ()
     work_item_refs: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+    business_entity_ids: tuple[str, ...] = ()
+    business_kpi_ids: tuple[str, ...] = ()
+    business_domains: tuple[str, ...] = ()
     requested_role_ids: tuple[str, ...] = ()
     max_roles: int | None = Field(
         default=None,
@@ -243,6 +253,9 @@ class ExecutiveActivationCreate(BaseModel):
             "decision_ids",
             "work_item_refs",
             "evidence_ids",
+            "business_entity_ids",
+            "business_kpi_ids",
+            "business_domains",
             "requested_role_ids",
         ):
             values = tuple(
@@ -282,6 +295,10 @@ class ExecutiveCanonicalContext(BaseModel):
     work_items: tuple[dict[str, Any], ...] = ()
     work_graphs: tuple[dict[str, Any], ...] = ()
     evidence: tuple[dict[str, Any], ...] = ()
+    business_entities: tuple[dict[str, Any], ...] = ()
+    business_facts: tuple[dict[str, Any], ...] = ()
+    business_kpis: tuple[dict[str, Any], ...] = ()
+    business_context_denials: tuple[dict[str, Any], ...] = ()
     memory: tuple[dict[str, Any], ...] = ()
     memory_retrieval_ids: tuple[str, ...] = ()
 
@@ -377,6 +394,9 @@ class ExecutiveActivation(BaseModel):
     decision_ids: tuple[str, ...] = ()
     work_item_refs: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
+    business_entity_ids: tuple[str, ...] = ()
+    business_kpi_ids: tuple[str, ...] = ()
+    business_domains: tuple[str, ...] = ()
     role_catalog: DefinitionReference
     selections: tuple[ExecutiveRoleSelection, ...]
     budget: ExecutiveReasoningBudget
