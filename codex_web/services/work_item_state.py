@@ -15,21 +15,42 @@ from codex_web.models import (
     WorkItemState,
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
+from codex_web.storage.state_store import StateStore
 
 
 class WorkItemStateMachine:
     """Canonical work-item transitions, handoffs, validation, and audit state."""
 
-    def __init__(self, host: Any, _legacy_provider: Any | None = None) -> None:
+    def __init__(
+        self,
+        host: Any,
+        _legacy_provider: Any | None = None,
+        *,
+        store: StateStore | None = None,
+    ) -> None:
         # The optional second argument is retained temporarily for constructor
         # compatibility. Canonical state no longer owns provider transports.
         self.host = host
+        self.store = store
         self.transitions = WorkItemTransitionService()
 
     def _append_work_item_event(self, event: WorkItemEvent) -> None:
+        payload = event.model_dump(mode="json")
+        if self.store is not None:
+            def append_event(current: Any) -> list[dict[str, Any]]:
+                rows = list(current) if isinstance(current, list) else []
+                rows.append(payload)
+                return rows[-10000:]
+            self.store.update(
+                "work_item_events",
+                append_event,
+                default=[],
+            )
+        # Keep the historical JSONL mirror for rollback/forensics. The shared
+        # StateStore document above is authoritative in shared deployments.
         self.host.DATA_DIR.mkdir(exist_ok=True)
         with self.host.WORK_ITEM_EVENTS_FILE.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event.model_dump(), separators=(",", ":")) + "\n")
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
     def _work_item_event(
         self,
@@ -1018,11 +1039,13 @@ def install_work_item_state_machine(
     app: Any,
     host: Any,
     _legacy_provider: Any | None = None,
+    *,
+    store: StateStore | None = None,
 ) -> WorkItemStateMachine:
     existing = getattr(app.state, "work_item_state_machine", None)
     if existing is not None:
         return existing
-    machine = WorkItemStateMachine(host)
+    machine = WorkItemStateMachine(host, store=store)
     app.state.work_item_state_machine = machine
     host._append_work_item_event = machine._append_work_item_event
     host._work_item_event = machine._work_item_event
