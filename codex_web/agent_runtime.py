@@ -53,6 +53,7 @@ class AgentRuntimeSessionRequest(BaseModel):
     worker_id: str | None = None
     model: str | None = None
     model_class: str | None = None
+    developer_instructions: str | None = None
     resource_ids: tuple[str, ...] = ()
 
 
@@ -71,6 +72,10 @@ class AgentRuntimeTurnRequest(BaseModel):
     message: str = Field(min_length=1)
     model: str | None = None
     reasoning_effort: str | None = None
+    workspace_cwd: str | None = None
+    approval_policy: str | None = None
+    sandbox_policy: dict[str, Any] | None = None
+    developer_instructions: str | None = None
 
 
 class AgentRuntimeResult(BaseModel):
