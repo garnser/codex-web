@@ -115,6 +115,7 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
     "business-kpis": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "capacity": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "company-operations": ApiDomainPolicy(),
+    "compatibility": ApiDomainPolicy(),
     "configuration": ApiDomainPolicy(
         write_access=ApiAccessMode.ADMIN,
         write_assurance=AuthenticationAssurance.MFA,
@@ -127,6 +128,7 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
     ),
     "data-governance": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "decisions": ApiDomainPolicy(),
+    "diagnostics": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "definitions": ApiDomainPolicy(
         write_access=ApiAccessMode.ADMIN,
         write_assurance=AuthenticationAssurance.MFA,
