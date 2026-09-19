@@ -604,6 +604,17 @@ window.addEventListener('codex:open-goal', async (event) => {
   const goalId = String(event.detail?.goalId || '').trim();
   if (!goalId) return;
   ensureShell();
+
+window.addEventListener('codex:open-goal', async (event) => {
+  ensureShell();
+  const goalId = String(event.detail?.goalId || '').trim();
+  if (!goalId) return;
+  const dialog = document.querySelector('#goals-dialog');
+  if (dialog && !dialog.open) dialog.showModal();
+  state.selectedGoalId = goalId;
+  await refreshAll();
+});
+
   const dialog = document.querySelector('#goals-dialog');
   if (!dialog.open) dialog.showModal();
   await refreshAll();
