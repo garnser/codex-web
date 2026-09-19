@@ -29,6 +29,7 @@ from codex_web.executive import (
     ExecutiveService,
 )
 from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.executive_roles import ExecutiveRoleDefinitionService
 from codex_web.services.executive_knowledge import (
     ExecutiveKnowledgeStore,
     ExecutiveKnowledgeUpsert,
@@ -356,6 +357,7 @@ def install_executive_integrated(
     host: Any,
     *,
     model_gateway: ModelGatewayService | None = None,
+    executive_roles: ExecutiveRoleDefinitionService | None = None,
 ) -> MultiProviderExecutiveService:
     """Attach the Executive API router to the existing application once."""
 
@@ -367,9 +369,34 @@ def install_executive_integrated(
     router = APIRouter()
 
     @router.get("/api/executive/agents")
-    async def list_agents() -> dict[str, Any]:
-        return {
-            "agents": [
+    async def list_agents(
+        request: Request,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        if executive_roles is not None:
+            actor = request_actor(request)
+            catalog = executive_roles.catalog(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                project_id=project_id,
+            )
+            agents = [
+                {
+                    "id": role.id,
+                    "name": role.name,
+                    "title": role.title,
+                    "description": role.description,
+                    "responsibilities": list(role.responsibilities),
+                    "eventSubscriptions": list(role.event_subscriptions),
+                    "observableInformation": [
+                        item.value for item in role.observable_information
+                    ],
+                    "lifecycle": role.lifecycle.value,
+                }
+                for role in catalog.roles
+            ]
+        else:
+            agents = [
                 {
                     "id": agent.id,
                     "name": agent.name,
@@ -377,7 +404,9 @@ def install_executive_integrated(
                     "description": agent.description,
                 }
                 for agent in AGENTS.values()
-            ],
+            ]
+        return {
+            "agents": agents,
             "executionRoles": [role.public() for role in execution_roles()],
             **service.provider_status(),
         }
