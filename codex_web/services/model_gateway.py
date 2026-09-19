@@ -1078,7 +1078,11 @@ class ModelGatewayService:
         completed = time.time()
         retry_at = None
         wait_id = None
-        if capacity_failures:
+        all_capacity_failures = bool(attempts) and all(
+            item.outcome == "capacity_failure"
+            for item in attempts
+        )
+        if all_capacity_failures:
             retries = [
                 item.retry_at
                 for item in capacity_failures
@@ -1138,11 +1142,11 @@ class ModelGatewayService:
                 input_result.gated_proposals if input_result is not None else ()
             ),
             attempts=tuple(attempts),
-            status=("waiting_for_capacity" if capacity_failures else "failed"),
+            status=("waiting_for_capacity" if all_capacity_failures else "failed"),
             completed_at=completed,
         )
         self._append_invocation(record)
-        if capacity_failures:
+        if all_capacity_failures:
             raise ModelProviderCapacityUnavailableError(
                 str(final_error or "model provider capacity exhausted"),
                 retry_at=retry_at,
