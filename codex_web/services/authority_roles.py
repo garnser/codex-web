@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 
 from codex_web.authority import (
+    AUTHORITY_AUTONOMY_RISK_RANK,
+    AUTHORITY_LEVEL_RANK,
     AUTHORITY_ROLE_CATALOG_ID,
     AUTHORITY_ROLE_CATALOG_KIND,
     AUTHORITY_ROLE_CATALOG_SCHEMA_VERSION,
@@ -22,6 +24,8 @@ from codex_web.definitions import (
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.services.definitions import (
+    DefinitionCompatibilityError,
+    DefinitionConflictError,
     DefinitionError,
     DefinitionKindSchema,
     DefinitionRegistryService,
@@ -230,10 +234,10 @@ class AuthorityRoleService:
         findings: list[str] = []
         if grant.capability not in {"*", request.capability}:
             return ["capability does not match"]
-        if grant.level < request.level:
+        if AUTHORITY_LEVEL_RANK[grant.level] < AUTHORITY_LEVEL_RANK[request.level]:
             findings.append(
-                f"grant level {grant.level.name.lower()} is below requested "
-                f"{request.level.name.lower()}"
+                f"grant level {grant.level.value} is below requested "
+                f"{request.level.value}"
             )
         if grant.project_ids:
             if request.project_id is None:
@@ -269,7 +273,10 @@ class AuthorityRoleService:
             and request.model_calls > grant.max_model_calls
         ):
             findings.append("model-call budget exceeds grant")
-        if request.autonomous_risk > grant.max_autonomous_risk:
+        if (
+            AUTHORITY_AUTONOMY_RISK_RANK[request.autonomous_risk]
+            > AUTHORITY_AUTONOMY_RISK_RANK[grant.max_autonomous_risk]
+        ):
             findings.append("autonomous risk exceeds grant")
 
         requirement = grant.approvals
@@ -327,7 +334,13 @@ class AuthorityRoleService:
             )
             catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
             definition_ref = reference_for(record)
-        except (DefinitionError, LookupError, ValueError) as exc:
+        except (
+            DefinitionCompatibilityError,
+            DefinitionConflictError,
+            DefinitionError,
+            LookupError,
+            ValueError,
+        ) as exc:
             return self._deny(
                 actor,
                 request,
