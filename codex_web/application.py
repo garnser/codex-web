@@ -477,6 +477,8 @@ action_intent_service = ActionIntentService(
     work_item_host=core,
     security_boundary=security_boundary_service,
     entitlements=entitlement_service,
+    authority=authority_role_service,
+    identity=identity_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
