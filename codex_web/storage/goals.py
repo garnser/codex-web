@@ -23,7 +23,7 @@ GOAL_MIGRATIONS.register(
     "1.1",
     lambda payload: {
         **payload,
-        "schema_version": GOAL_CONTRACT.current,
+        "schema_version": "1.1",
         "goals": [
             {
                 **item,
