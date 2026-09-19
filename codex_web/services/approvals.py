@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.approval_requests import (
     ApprovalDecisionOutcome,
+    ApprovalConsumeRequest,
     ApprovalDecisionSubmit,
     ApprovalRequestCreate,
     ApprovalRequestStatus,
@@ -203,6 +204,24 @@ class ApprovalService:
             )
         return ApprovalDecisionOutcome.REJECT
 
+    async def _consume_native_approval(
+        self,
+        canonical_request,
+        *,
+        actor: AuthenticationActor,
+        request_id: int | str,
+    ):
+        assert self.canonical is not None
+        return await self.canonical.consume(
+            canonical_request.id,
+            ApprovalConsumeRequest(
+                target=canonical_request.target,
+                idempotency_key=f"native-consume:{request_id}",
+                resulting_operation_reference=f"codex-rpc:{request_id}",
+            ),
+            actor=actor,
+        )
+
     async def respond_compatibility(
         self,
         request_id: int | str,
@@ -232,21 +251,28 @@ class ApprovalService:
                 default=str,
             ).encode("utf-8")
         ).hexdigest()[:24]
-        updated = await canonical.decide(
-            canonical_request.id,
-            ApprovalDecisionSubmit(
-                outcome=outcome,
-                reason="Native compatibility approval decision",
-                idempotency_key=f"native-compat:{request_id}:{digest}",
-            ),
-            actor=actor,
-        )
-        if updated.status not in {
-            ApprovalRequestStatus.APPROVED,
-            ApprovalRequestStatus.REJECTED,
-        }:
+        if canonical_request.status == ApprovalRequestStatus.APPROVED:
+            updated = canonical_request
+        else:
+            updated = await canonical.decide(
+                canonical_request.id,
+                ApprovalDecisionSubmit(
+                    outcome=outcome,
+                    reason="Native compatibility approval decision",
+                    idempotency_key=f"native-compat:{request_id}:{digest}",
+                ),
+                actor=actor,
+            )
+        if updated.status == ApprovalRequestStatus.APPROVED:
+            await self._consume_native_approval(
+                updated,
+                actor=actor,
+                request_id=request_id,
+            )
+            await self.respond(request_id, result)
             return
-        await self.respond(request_id, result)
+        if updated.status == ApprovalRequestStatus.REJECTED:
+            await self.respond(request_id, result)
 
     async def decide(
         self,
@@ -276,19 +302,28 @@ class ApprovalService:
         canonical_request = await self.register_native_request(native_request)
         assert canonical_request is not None
         outcome = self._outcome_for_native_decision(decision)
-        updated = await canonical.decide(
-            canonical_request.id,
-            ApprovalDecisionSubmit(
-                outcome=outcome,
-                reason=f"Native Codex decision: {decision}",
-                idempotency_key=(
-                    f"native-ui:{normalized_id}:{current_actor.identity_id}:{decision}"
+        if canonical_request.status == ApprovalRequestStatus.APPROVED:
+            updated = canonical_request
+        else:
+            updated = await canonical.decide(
+                canonical_request.id,
+                ApprovalDecisionSubmit(
+                    outcome=outcome,
+                    reason=f"Native Codex decision: {decision}",
+                    idempotency_key=(
+                        f"native-ui:{normalized_id}:{current_actor.identity_id}:{decision}"
+                    ),
                 ),
-            ),
-            actor=current_actor,
-        )
+                actor=current_actor,
+            )
+        if updated.status == ApprovalRequestStatus.APPROVED:
+            await self._consume_native_approval(
+                updated,
+                actor=current_actor,
+                request_id=normalized_id,
+            )
         if updated.status in {
-            ApprovalRequestStatus.APPROVED,
+            ApprovalRequestStatus.CONSUMED,
             ApprovalRequestStatus.REJECTED,
         }:
             result = self.host._approval_result(
