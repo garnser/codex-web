@@ -13,3 +13,6 @@ Deeper references:
 - [Configuration](../architecture/configuration.md)
 - [Definition Registry](../architecture/definition-registry.md)
 - [Role authority](../architecture/role-authority.md)
+
+- [Platform administration](platform-administration.md) — organizations/workspaces, identities, providers, workers, extensions, autonomy and recommended baselines.
+- [Definition Registry administration](definition-registry.md) — draft/validate/publish/supersede/rollback, impact, compatibility, cache behavior and migration from code-owned definitions.
