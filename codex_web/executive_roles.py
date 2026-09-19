@@ -39,6 +39,7 @@ class ExecutiveObjectType(StrEnum):
     WORK_GRAPH = "work_graph"
     METRIC = "metric"
     EVIDENCE = "evidence"
+    MEMORY = "memory"
     ATTENTION = "attention"
     APPROVAL = "approval"
     EVENT = "event"
@@ -281,6 +282,8 @@ class ExecutiveCanonicalContext(BaseModel):
     work_items: tuple[dict[str, Any], ...] = ()
     work_graphs: tuple[dict[str, Any], ...] = ()
     evidence: tuple[dict[str, Any], ...] = ()
+    memory: tuple[dict[str, Any], ...] = ()
+    memory_retrieval_ids: tuple[str, ...] = ()
 
 
 class ExecutiveProposalDraft(BaseModel):
