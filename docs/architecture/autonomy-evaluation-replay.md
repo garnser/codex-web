@@ -139,7 +139,7 @@ Creating scenarios and executing replay/suite runs require canonical admin/MFA
 
 ## UI impact
 
-Issue #112 should project these canonical records into the orchestration
+The orchestration inspector should project these canonical records into the orchestration
 inspector: scenario/fixture version, exact historical/candidate definitions,
 runtime/model/prompt pins, deterministic failures, regression deltas, injected
 failure and Evidence. Refreshing the inspector must remain read-only and must
