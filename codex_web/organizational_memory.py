@@ -398,6 +398,11 @@ class KnowledgeRetrievalItem(BaseModel):
     lexical_score: float
     estimated_tokens: int
     reasons: tuple[str, ...] = ()
+    retrieval_backend_id: str | None = None
+    retrieval_index_revision: str | None = None
+    embedding_provider_id: str | None = None
+    embedding_model_id: str | None = None
+    embedding_model_revision: str | None = None
 
 
 class KnowledgeDeniedCandidate(BaseModel):
@@ -424,6 +429,11 @@ class KnowledgeRetrievalRun(BaseModel):
     candidate_count: int = Field(ge=0)
     top_k: int = Field(ge=1)
     max_context_tokens: int = Field(ge=1)
+    retrieval_backend_id: str | None = None
+    retrieval_index_revision: str | None = None
+    embedding_provider_id: str | None = None
+    embedding_model_id: str | None = None
+    embedding_model_revision: str | None = None
     created_at: float = Field(default_factory=time.time)
 
 
@@ -437,6 +447,11 @@ class KnowledgeRetrievalResult(BaseModel):
     candidate_count: int
     top_k: int
     max_context_tokens: int
+    retrieval_backend_id: str | None = None
+    retrieval_index_revision: str | None = None
+    embedding_provider_id: str | None = None
+    embedding_model_id: str | None = None
+    embedding_model_revision: str | None = None
 
 
 class OrganizationalMemoryState(BaseModel):
