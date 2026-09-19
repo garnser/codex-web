@@ -111,6 +111,7 @@ from codex_web.services.agent_model_egress import (
     model_egress_endpoints_from_base_urls,
 )
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.code_hosts import CodeHostRegistry, CodeHostService
 from codex_web.services.claude_worker_session import AssignmentBoundClaudeSessionManager
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
@@ -124,6 +125,8 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.goal_decomposition_commit import (
     GoalDecompositionCommitService,
@@ -377,6 +380,18 @@ resource_catalog_service = ResourceCatalogService(resource_catalog_store)
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
+
+code_host_registry = CodeHostRegistry()
+code_host_registry.register_provider(GitLabCodeHostProvider())
+code_host_registry.register_provider(GitHubCodeHostProvider())
+code_host_service = CodeHostService(
+    code_host_registry,
+    resource_catalog_service,
+    secrets=secret_broker,
+    canonical_events=canonical_event_ingestion,
+)
+app.state.code_host_registry = code_host_registry
+app.state.code_host_service = code_host_service
 
 authority_role_service = install_authority_roles(
     definition_registry_service,
