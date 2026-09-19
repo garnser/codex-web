@@ -28,8 +28,15 @@ from codex_web.identity import (
 )
 from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.canonical_events import (
+    CanonicalEventBus,
+    CanonicalEventIngestionService,
+)
+from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
+from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -332,6 +339,110 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(latest.payload.model_tokens, 150)
         self.assertEqual(latest.payload.model_cost_usd, 0.4)
+
+
+class _MutableClock:
+    def __init__(self, value: float) -> None:
+        self.value = float(value)
+
+    def __call__(self) -> float:
+        return self.value
+
+
+class AutonomyAuditSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.clock = _MutableClock(100.0)
+        self.event_store = CanonicalEventStore(self.sqlite)
+        self.event_bus = CanonicalEventBus(self.event_store)
+        self.ingestion = CanonicalEventIngestionService(self.event_bus)
+        self.scheduler = SchedulerService(
+            SchedulerStore(self.sqlite),
+            self.ingestion,
+            clock=self.clock,
+            owner_id="audit-scheduler-test",
+        )
+        self.audit_store = AutonomyAuditStore(self.sqlite)
+        self.autonomy_store = AutonomyStateStore(self.sqlite)
+        self.actor = AuthenticationActor(
+            identity_id="admin-a",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="org-a",
+            workspace_id="ws-a",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.MFA,
+        )
+        self.service = AutonomyAuditService(
+            self.audit_store,
+            autonomy_store=self.autonomy_store,
+            canonical_events=self.ingestion,
+            scheduler=self.scheduler,
+            clock=self.clock,
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    async def test_reliability_policy_installs_periodic_integrity_check_and_checkpoint(self):
+        self.service.set_reliability_policy(
+            AutonomyReliabilityPolicy(
+                minimum_samples=1,
+                auto_suspend=False,
+            ),
+            actor=self.actor,
+        )
+        schedules = self.scheduler.list()
+        self.assertEqual(len(schedules), 1)
+        self.assertEqual(
+            schedules[0].trigger_type,
+            self.service.INTEGRITY_TRIGGER_TYPE,
+        )
+        self.assertEqual(schedules[0].tenant_id, "org-a")
+        self.assertEqual(schedules[0].workspace_id, "ws-a")
+
+        # Seed one valid audit record so the scheduled checkpoint has a root.
+        self.service.record_cycle(
+            AutonomyAuditTests.cycle("cycle-scheduled", "evt-scheduled"),
+            AutonomyAuditTests.event("evt-scheduled"),
+            actor=self.actor,
+        )
+        self.clock.value = 3700.0
+        fired = await self.scheduler.run_due()
+        self.assertEqual(fired.emitted, 1)
+
+        rows = self.service.list_records(
+            organization_id="org-a",
+            workspace_id="ws-a",
+        )
+        self.assertTrue(
+            any(
+                item.payload.kind == AutonomyAuditKind.INTEGRITY_VERIFICATION
+                for item in rows
+            )
+        )
+        checkpoints = self.service.list_checkpoints(
+            organization_id="org-a",
+            workspace_id="ws-a",
+        )
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(
+            self.service.verify(
+                organization_id="org-a",
+                workspace_id="ws-a",
+            ).status,
+            AuditIntegrityStatus.VERIFIED,
+        )
+
+        # Idempotent policy updates do not create duplicate periodic schedules.
+        self.service.set_reliability_policy(
+            AutonomyReliabilityPolicy(
+                minimum_samples=1,
+                auto_suspend=False,
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(len(self.scheduler.list()), 1)
 
 
 if __name__ == "__main__":
