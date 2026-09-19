@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 from codex_web.artifact_evidence import (
@@ -38,6 +41,41 @@ from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
+
+
+class FilesystemAuditCheckpointExporter:
+    """Create-only checkpoint export suitable for an externally protected mount.
+
+    The exporter never overwrites an existing checkpoint object. Deployments
+    requiring WORM/object-lock semantics should mount an immutable/object-lock
+    destination or provide another AuditCheckpointExporter implementation.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.directory, 0o700)
+
+    def export(self, checkpoint: AutonomyAuditCheckpoint) -> str:
+        path = self.directory / f"{checkpoint.id}.json"
+        payload = json.dumps(
+            checkpoint.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return f"file://{path}"
 
 
 class AutonomyAuditError(RuntimeError):
@@ -278,6 +316,42 @@ class AutonomyAuditService:
         ]
         rows.sort(key=lambda item: item.sequence, reverse=True)
         return tuple(rows[: max(1, min(limit, 1000))])
+
+    def list_checkpoints(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        limit: int = 100,
+    ) -> tuple[AutonomyAuditCheckpoint, ...]:
+        partition = AutonomyAuditRecord.partition_for(
+            organization_id,
+            workspace_id,
+        )
+        rows = [
+            item
+            for item in self.store.load().checkpoints
+            if item.partition_id == partition
+        ]
+        rows.sort(key=lambda item: (item.sequence, item.created_at), reverse=True)
+        return tuple(rows[: max(1, min(limit, 500))])
+
+    def list_signals(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        active_only: bool = False,
+    ) -> tuple[AutonomySafetySignal, ...]:
+        rows = [
+            item
+            for item in self.store.load().signals
+            if item.organization_id == organization_id
+            and item.workspace_id == workspace_id
+            and (not active_only or item.active)
+        ]
+        rows.sort(key=lambda item: (item.observed_at, item.id), reverse=True)
+        return tuple(rows)
 
     def get(
         self,
