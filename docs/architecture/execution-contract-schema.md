@@ -2,7 +2,7 @@
 
 ## Status
 
-**Milestone 2 architecture contract.** This document defines the machine-readable execution contract that codex-web derives from canonical work-item state before agent work is dispatched.
+**Execution-contract architecture.** This document defines the machine-readable execution contract that codex-web derives from canonical work-item state before agent work is dispatched.
 
 The contract complements the role rules in `codex_web/execution_contracts.py`; it does not create a second ownership, work-item, permission, accounting, or authority system.
 
@@ -73,7 +73,7 @@ accounting:
   usage_recording_required: true
 ```
 
-`goal_id` and `decision_id` are optional forward-compatible attribution hooks. Their presence does not create strategy or decision entities; later milestones may populate them from their canonical stores.
+`goal_id` and `decision_id` are optional attribution hooks. Their presence does not create strategy or decision entities; canonical Goal and Decision services may populate them from their own stores.
 
 ## Permission boundary
 
@@ -87,7 +87,7 @@ permissions:
   can_weaken_controls: false
 ```
 
-Milestone 5 may introduce explicit role/action authority and project overrides. That work should evolve this schema deliberately and preserve compatibility rather than making v1 imply powers that are not currently enforced.
+Role/action authority and project overrides must evolve this schema deliberately and preserve compatibility rather than making v1 imply powers that are not currently enforced.
 
 ## Dispatch behavior
 
