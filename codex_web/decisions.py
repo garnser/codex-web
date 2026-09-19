@@ -296,6 +296,10 @@ class DecisionWorkLink(BaseModel):
     item_id: str
     project_id: str
     title: str
+    description: str
+    expected_result: str | None = None
+    owner_identity_id: str | None = None
+    labels: tuple[str, ...] = ()
     correlation_id: str
     binding_id: str
     action_intent_id: str | None = None
