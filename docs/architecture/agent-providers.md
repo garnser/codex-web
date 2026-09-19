@@ -1,7 +1,5 @@
 # Canonical Agent Providers
 
-Issue: #347.
-
 AgentProvider is the provider-neutral identity and capability layer above model inference and agent execution. A provider may supply model inference, execution-agent behavior, or both. Domain/orchestration code must depend on canonical capabilities rather than Codex- or Claude-specific protocol details.
 
 ## Capability authority boundary
@@ -79,6 +77,6 @@ Unavailable/incompatible/disabled providers fail closed. Missing requested capab
 
 ## Downstream contract
 
-#349 owns AgentRuntimeAdapter and AgentSession. #351 owns model/runtime selection policy. Those layers must consume effective AgentProvider capabilities and must not route from raw declarations.
+AgentRuntimeAdapter and AgentSession own execution-session behavior, while the routing policy owns model/runtime selection. Those layers must consume effective AgentProvider capabilities and must not route from raw declarations.
 
 The provider layer intentionally does not execute actions, start sessions, reveal credentials, or authorize resource access. Those remain behind canonical runtime/worker, identity, policy, ApprovalRequest, ActionIntent, resource, secret and data-governance boundaries.
