@@ -5,7 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from codex_web.action_intents import ActionIntentStatus
+from codex_web.action_intents import ActionDecisionOutcome, ActionIntentStatus
+from codex_web.approval_requests import ApprovalRequestStatus
 from codex_web.autonomy import (
     AutonomyControl,
     AutonomyControlUpdate,
@@ -15,9 +16,14 @@ from codex_web.autonomy import (
     AutonomyObservation,
     AutonomyReasoningResult,
 )
+from codex_web.autonomy_policy import (
+    AutonomyCycleBudgetUsage,
+    AutonomyLevel,
+)
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.autonomy_policy import AutonomyPolicyService
 from codex_web.storage.autonomy import AutonomyStateStore
 
 
@@ -35,9 +41,11 @@ class AutonomyController:
         store: AutonomyStateStore,
         *,
         action_intents: ActionIntentService | None = None,
+        policy: AutonomyPolicyService | None = None,
     ) -> None:
         self.store = store
         self.action_intents = action_intents
+        self.policy = policy
 
     def status(self) -> dict[str, Any]:
         state = self.store.load()
@@ -103,6 +111,11 @@ class AutonomyController:
         reasoning_attempts: int = 0,
         action_count: int = 0,
         action_intent_ids: tuple[str, ...] = (),
+        approval_request_ids: tuple[str, ...] = (),
+        autonomy_level: AutonomyLevel | None = None,
+        policy_fingerprint: str | None = None,
+        break_glass_grant_id: str | None = None,
+        budget_usage: AutonomyCycleBudgetUsage | None = None,
         started_at: float | None = None,
         last_error: str | None = None,
     ) -> AutonomyCycleRecord:
@@ -122,6 +135,11 @@ class AutonomyController:
             reasoning_attempts=reasoning_attempts,
             action_count=action_count,
             action_intent_ids=action_intent_ids,
+            approval_request_ids=approval_request_ids,
+            autonomy_level=autonomy_level,
+            policy_fingerprint=policy_fingerprint,
+            break_glass_grant_id=break_glass_grant_id,
+            budget_usage=budget_usage or AutonomyCycleBudgetUsage(),
             outcome=outcome,
             reason=reason,
             started_at=started_at or now,
