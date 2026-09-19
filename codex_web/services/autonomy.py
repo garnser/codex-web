@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Any
 
@@ -10,9 +12,13 @@ from codex_web.action_intents import (
     ActionIntentRollbackRequest,
 )
 from codex_web.action_providers import ActionRequest
+from codex_web.autonomy import AutonomyCycleOutcome, AutonomyObservation, AutonomyReasoningResult
+from codex_web.canonical_events import CanonicalEventType
 from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
+from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.canonical_events import CanonicalEventIngestionService
 
 
 class AutonomyService:
@@ -23,10 +29,15 @@ class AutonomyService:
         host: Any,
         action_execution: ActionExecutionService | None = None,
         action_intents: ActionIntentService | None = None,
+        *,
+        controller: AutonomyController | None = None,
+        canonical_events: CanonicalEventIngestionService | None = None,
     ) -> None:
         self.host = host
         self.action_execution = action_execution
         self.action_intents = action_intents
+        self.controller = controller
+        self.canonical_events = canonical_events
 
     def _actions(self) -> ActionExecutionService:
         if self.action_execution is None:
@@ -46,6 +57,76 @@ class AutonomyService:
         if self.action_intents is None:
             raise RuntimeError("action intent service is not configured")
         return self.action_intents
+
+    async def _bounded_reasoning_dispatch(
+        self,
+        binding: Any,
+        text: str,
+        source: str,
+        *,
+        cycle_key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Route watchdog reasoning through canonical event + autonomy controls."""
+
+        if self.controller is None or self.canonical_events is None:
+            return await self.host._dispatch_event_to_binding(binding, text, source)
+
+        normalized = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        delivery = await self.canonical_events.ingest(
+            event_type=CanonicalEventType.WORK_TRANSITION,
+            source=f"autonomy-watchdog:{source}",
+            idempotency_key=f"{cycle_key}:{digest}",
+            payload=payload,
+        )
+        if not delivery.inserted:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "canonical_duplicate",
+                "canonicalEventId": delivery.event.event_id,
+            }
+
+        dispatched: dict[str, Any] = {}
+
+        async def reasoner(*_args) -> AutonomyReasoningResult:
+            dispatched.update(
+                await self.host._dispatch_event_to_binding(binding, text, source)
+            )
+            return AutonomyReasoningResult(
+                summary=f"{source} dispatched through bounded autonomy"
+            )
+
+        cycle = await self.controller.process(
+            delivery.event,
+            AutonomyObservation(
+                deterministic_resolved=False,
+                reasoning_score=1.0,
+                reason=f"{source} deterministic safeguards require agent reasoning",
+            ),
+            cycle_key=cycle_key,
+            reasoner=reasoner,
+        )
+        if cycle.outcome != AutonomyCycleOutcome.COMPLETED:
+            return {
+                "ok": False,
+                "ignored": True,
+                "reason": f"autonomy_{cycle.outcome.value}",
+                "autonomyReason": cycle.reason,
+                "autonomyCycleId": cycle.id,
+                "canonicalEventId": delivery.event.event_id,
+            }
+        return {
+            **dispatched,
+            "autonomyCycleId": cycle.id,
+            "canonicalEventId": delivery.event.event_id,
+        }
 
     async def execute_external_action(
         self,
@@ -144,7 +225,17 @@ class AutonomyService:
                     "configured handoff coordination channel, and keep working until completion or one concrete escalation."
                 )
                 h._record_watchdog_dispatch(dispatch_key)
-                result = await h._dispatch_event_to_binding(binding, text, "owner-work-watchdog")
+                result = await self._bounded_reasoning_dispatch(
+                    binding,
+                    text,
+                    "owner-work-watchdog",
+                    cycle_key=dispatch_key,
+                    payload={
+                        "project_id": project_id,
+                        "agent": owner,
+                        "missing_state_refs": missing_state_refs[:8],
+                    },
+                )
                 h._append_bot_event(
                     {
                         "type": "owner_work_watchdog_dispatched",
@@ -200,7 +291,16 @@ class AutonomyService:
                 "handoff coordination channel. Reconcile the affected work item in codex-web before ending the turn."
             )
             h._record_watchdog_dispatch(dispatch_key)
-            result = await h._dispatch_event_to_binding(binding, text, "release-gate-watchdog")
+            result = await self._bounded_reasoning_dispatch(
+                binding,
+                text,
+                "release-gate-watchdog",
+                cycle_key=dispatch_key,
+                payload={
+                    "project_id": project_id,
+                    "stale_refs": [state.ref for state in stale_release_states[:8]],
+                },
+            )
             h._append_bot_event(
                 {
                     "type": "release_gate_watchdog_dispatched",
@@ -231,10 +331,15 @@ class AutonomyService:
             if not h._watchdog_dispatch_allowed(dispatch_key):
                 continue
             h._record_watchdog_dispatch(dispatch_key)
-            result = await h._dispatch_event_to_binding(
+            result = await self._bounded_reasoning_dispatch(
                 binding,
                 h._format_orchestrator_watchdog_prompt(project_id, items),
                 "orchestrator-watchdog",
+                cycle_key=dispatch_key,
+                payload={
+                    "project_id": project_id,
+                    "item_refs": [state.ref for _, state, _ in items[:8]],
+                },
             )
             h._append_bot_event(
                 {
@@ -268,10 +373,15 @@ class AutonomyService:
             if not h._watchdog_dispatch_allowed(dispatch_key):
                 continue
             h._record_watchdog_dispatch(dispatch_key)
-            result = await h._dispatch_event_to_binding(
+            result = await self._bounded_reasoning_dispatch(
                 binding,
                 h._format_split_brain_watchdog_prompt(project_id, items),
                 "split-brain-watchdog",
+                cycle_key=dispatch_key,
+                payload={
+                    "project_id": project_id,
+                    "item_refs": [state.ref for state, _ in items[:8]],
+                },
             )
             h._append_bot_event(
                 {
@@ -339,10 +449,17 @@ class AutonomyService:
                         if h._watchdog_dispatch_allowed(dispatch_key) and not h._thread_recently_active(binding.thread_id):
                             binding = await h._replace_nonperforming_thread_if_needed(binding, "work-item-handoff")
                             h._record_watchdog_dispatch(dispatch_key)
-                            result = await h._dispatch_event_to_binding(
+                            result = await self._bounded_reasoning_dispatch(
                                 binding,
                                 h._work_item_dispatch_text(state),
                                 "work-item-sla",
+                                cycle_key=dispatch_key,
+                                payload={
+                                    "ref": ref,
+                                    "agent": recipient,
+                                    "stage": state.current_stage,
+                                    "handoff_status": "pending",
+                                },
                             )
                             h._append_bot_event(
                                 {
@@ -376,7 +493,17 @@ class AutonomyService:
             if not h._watchdog_dispatch_allowed(dispatch_key):
                 continue
             h._record_watchdog_dispatch(dispatch_key)
-            result = await h._dispatch_event_to_binding(binding, h._work_item_dispatch_text(state), "work-item-sla")
+            result = await self._bounded_reasoning_dispatch(
+                binding,
+                h._work_item_dispatch_text(state),
+                "work-item-sla",
+                cycle_key=dispatch_key,
+                payload={
+                    "ref": ref,
+                    "agent": owner,
+                    "stage": state.current_stage,
+                },
+            )
             h._append_bot_event(
                 {
                     "type": "work_item_sla_dispatched",
@@ -397,6 +524,9 @@ def install_autonomy_service(
     host: Any,
     action_execution: ActionExecutionService | None = None,
     action_intents: ActionIntentService | None = None,
+    *,
+    controller: AutonomyController | None = None,
+    canonical_events: CanonicalEventIngestionService | None = None,
 ) -> AutonomyService:
     """Install extracted autonomy cycle ownership before worker supervision."""
 
@@ -407,11 +537,17 @@ def install_autonomy_service(
             service.action_execution = action_execution
         if action_intents is not None:
             service.action_intents = action_intents
+        if controller is not None:
+            service.controller = controller
+        if canonical_events is not None:
+            service.canonical_events = canonical_events
     else:
         service = AutonomyService(
             host,
             action_execution=action_execution,
             action_intents=action_intents,
+            controller=controller,
+            canonical_events=canonical_events,
         )
         app.state.autonomy_service = service
 

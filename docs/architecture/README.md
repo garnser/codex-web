@@ -89,6 +89,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [First-class Goals](goals.md) — canonical Goal lifecycle, structured success criteria, budgets, revision history, Work Graph traceability, deterministic progress and health.
 - [Canonical Role authority](role-authority.md) — operational Role definitions, atomic scoped grants, inheritance/delegation, deterministic fail-closed evaluation, and exact definition provenance.
 - [Canonical event bus](canonical-events.md) — versioned event ingress, durable idempotency, correlation, deterministic filtering, and provider normalization before autonomy.
+- [Bounded autonomy controller](bounded-autonomy.md) — deterministic-first reasoning gates, loop budgets, kill/dry-run controls, ActionIntent-only side effects, and cycle observability.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
 - [Runtime supervision](runtime-supervision.md)

@@ -7,6 +7,7 @@ from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.artifact_evidence import build_artifact_evidence_router
 from codex_web.api.authority import build_authority_router
+from codex_web.api.autonomy import build_autonomy_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
@@ -71,6 +72,7 @@ from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -134,6 +136,7 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_items import WorkItemService
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -494,6 +497,15 @@ app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
 app.state.action_intent_service = action_intent_service
 
+autonomy_state_store = AutonomyStateStore(state_store)
+autonomy_controller = AutonomyController(
+    autonomy_state_store,
+    action_intents=action_intent_service,
+)
+app.state.autonomy_state_store = autonomy_state_store
+app.state.autonomy_controller = autonomy_controller
+app.include_router(build_autonomy_router(autonomy_controller))
+
 def _resource_ids_for_project(project_id: str) -> list[str]:
     project = project_service.get(project_id)
     return resource_catalog_service.resource_ids_for_project(project)
@@ -597,6 +609,7 @@ gitlab_service = install_gitlab_service(
     core,
     gitlab_client,
     canonical_events=canonical_event_ingestion,
+    autonomy_controller=autonomy_controller,
 )
 
 # Legacy code still needing project/runtime state consumes the extracted
@@ -648,6 +661,8 @@ autonomy_service = install_autonomy_service(
     core,
     action_execution_service,
     action_intent_service,
+    controller=autonomy_controller,
+    canonical_events=canonical_event_ingestion,
 )
 turn_queue_policy = install_turn_queue_policy(app, core)
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
