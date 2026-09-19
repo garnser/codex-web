@@ -277,5 +277,14 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("this.path", source)
 
 
+    def test_authority_policy_explorer_has_focused_budget_and_shared_api_client(self) -> None:
+        source_path = STATIC / "authority_policy_explorer.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 12_000)
+        self.assertIn("api_client.js", source)
+        self.assertIn("apiRequest", source)
+        self.assertNotIn("fetch(", source)
+
+
 if __name__ == "__main__":
     unittest.main()
