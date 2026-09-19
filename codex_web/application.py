@@ -826,6 +826,15 @@ app.include_router(build_autonomy_router(autonomy_controller))
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,
     autonomy_controller,
+    scheduler=scheduler_store,
+    evaluations=evaluation_store,
+    attention=attention_store,
+    approvals=approval_request_store,
+    action_intents=action_intent_store,
+    agent_sessions=agent_session_store,
+    runtime_usage=agent_runtime_usage_store,
+    model_gateway=model_gateway_store,
+    artifact_evidence=artifact_evidence_store,
 )
 app.state.orchestration_inspector_service = orchestration_inspector_service
 app.include_router(build_orchestration_router(orchestration_inspector_service))

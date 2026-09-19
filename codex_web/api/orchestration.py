@@ -13,7 +13,7 @@ from codex_web.services.orchestration_inspector import OrchestrationInspectorSer
 def build_orchestration_router(service: OrchestrationInspectorService) -> APIRouter:
     router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
 
-    def require_reader(request: Request) -> None:
+    def require_reader(request: Request):
         actor = request_actor(request)
         if actor.principal_kind == PrincipalKind.SERVICE:
             if not any(
@@ -31,11 +31,12 @@ def build_orchestration_router(service: OrchestrationInspectorService) -> APIRou
                         "service scope required"
                     ),
                 )
-            return
+            return actor
         try:
             IdentityService.require_admin(actor)
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return actor
 
     @router.get("/inspector")
     async def inspector(
@@ -44,11 +45,13 @@ def build_orchestration_router(service: OrchestrationInspectorService) -> APIRou
         event_type: str | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
-        require_reader(request)
+        actor = require_reader(request)
         return service.snapshot(
             limit=limit,
             event_type=event_type,
             source=source,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
         )
 
     return router
