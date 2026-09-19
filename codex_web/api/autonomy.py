@@ -2,16 +2,28 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.autonomy import AutonomyControlUpdate
+from codex_web.autonomy_policy import (
+    AutonomyBreakGlassActivate,
+    AutonomyBreakGlassRequest,
+)
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.autonomy_policy import (
+    AutonomyBreakGlassError,
+    AutonomyPolicyError,
+    AutonomyPolicyService,
+)
 from codex_web.services.identity import AuthorizationError, IdentityService
 
 
-def build_autonomy_router(service: AutonomyController) -> APIRouter:
+def build_autonomy_router(
+    service: AutonomyController,
+    policy: AutonomyPolicyService | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/autonomy", tags=["autonomy"])
 
     def require_reader(request: Request):
@@ -82,5 +94,87 @@ def build_autonomy_router(service: AutonomyController) -> APIRouter:
         actor = require_admin(request)
         control = service.kill(actor_id=actor.identity_id)
         return {"control": control.model_dump(mode="json")}
+
+    @router.get("/policy/effective")
+    async def effective_policy(
+        request: Request,
+        project_id: str | None = Query(default=None),
+        action_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        actor = require_reader(request)
+        if policy is None:
+            raise HTTPException(
+                status_code=503,
+                detail="autonomy policy service is unavailable",
+            )
+        try:
+            effective, role_ids = policy.effective(
+                actor=actor,
+                project_id=project_id,
+                action_id=action_id,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "effective": effective.model_dump(mode="json"),
+            "role_ids": list(role_ids),
+        }
+
+    @router.post("/break-glass/requests")
+    async def request_break_glass(
+        payload: AutonomyBreakGlassRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = require_admin(request)
+        if policy is None:
+            raise HTTPException(
+                status_code=503,
+                detail="autonomy policy service is unavailable",
+            )
+        try:
+            approval = await policy.request_break_glass(
+                payload,
+                actor=actor,
+            )
+        except AutonomyPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"approval_request": approval.model_dump(mode="json")}
+
+    @router.post("/break-glass/activate")
+    async def activate_break_glass(
+        payload: AutonomyBreakGlassActivate,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = require_admin(request)
+        if policy is None:
+            raise HTTPException(
+                status_code=503,
+                detail="autonomy policy service is unavailable",
+            )
+        try:
+            grant = await policy.activate_break_glass(
+                payload.approval_request_id,
+                actor=actor,
+            )
+        except AutonomyBreakGlassError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"grant": grant.model_dump(mode="json")}
+
+    @router.get("/break-glass")
+    async def active_break_glass(
+        request: Request,
+        project_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        actor = require_reader(request)
+        if policy is None:
+            return {"items": [], "count": 0}
+        rows = policy.break_glass_grants(
+            actor=actor,
+            project_id=project_id,
+        )
+        return {
+            "items": [item.model_dump(mode="json") for item in rows],
+            "count": len(rows),
+        }
 
     return router
