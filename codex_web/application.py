@@ -546,9 +546,19 @@ def _resource_ids_for_project(project_id: str) -> list[str]:
 
 core._resource_ids_for_project = _resource_ids_for_project
 runtime_service = RuntimeService(core)
+approval_compatibility_actor = identity_service.local_trusted_actor()
+codex_approval_requester = identity_service.bootstrap_service_actor(
+    identity_id="service-codex-approval-requester",
+    name="Codex approval requester",
+    scope=approval_compatibility_actor.tenant,
+    service_scopes=("approvals:request",),
+)
 approval_service = ApprovalService(
     core,
     assignment_sessions=assignment_bound_codex_session_manager,
+    canonical=approval_request_service,
+    canonical_requester=codex_approval_requester,
+    compatibility_actor=approval_compatibility_actor,
 )
 thread_service = ThreadService(
     core,
