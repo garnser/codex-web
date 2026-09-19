@@ -276,6 +276,35 @@ class DefinitionRegistryTests(unittest.TestCase):
                 DefinitionPublishRequest(actor="admin"),
             )
 
+    def test_legacy_execution_role_payload_without_lifecycle_keeps_checksum_shape(self) -> None:
+        legacy = execution_role_catalog_seed_payload()
+        for role in legacy["roles"]:
+            role.pop("lifecycle", None)
+
+        draft = self.service.create_draft(
+            DefinitionDraftCreate(
+                definition_id=EXECUTION_ROLE_CATALOG_ID,
+                kind=EXECUTION_ROLE_CATALOG_KIND,
+                definition_schema_version=EXECUTION_ROLE_CATALOG_SCHEMA_VERSION,
+                payload=legacy,
+                actor="legacy-import",
+            )
+        )
+        self.assertTrue(
+            all("lifecycle" not in role for role in draft.payload["roles"])
+        )
+        published = self.service.publish(
+            draft.record_id,
+            DefinitionPublishRequest(actor="publisher"),
+        )
+        resolved = self.service.resolve(
+            definition_id=EXECUTION_ROLE_CATALOG_ID,
+            kind=EXECUTION_ROLE_CATALOG_KIND,
+        )
+        self.assertEqual(resolved.checksum, published.checksum)
+        catalog = ExecutionRoleCatalogDefinition.model_validate(resolved.payload)
+        self.assertTrue(all(role.lifecycle == "active" for role in catalog.roles))
+
     def test_store_detects_payload_checksum_tampering(self) -> None:
         active = self.service.publish(
             self._draft().record_id,
