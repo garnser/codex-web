@@ -43,6 +43,13 @@ class CanonicalEventConflictError(RuntimeError):
 class CanonicalEventStore:
     namespace = "canonical_events"
 
+    @staticmethod
+    def _semantic_payload(event: CanonicalEventEnvelope) -> dict[str, Any]:
+        payload = event.model_dump(mode="json")
+        payload.pop("occurred_at", None)
+        payload.pop("correlation_id", None)
+        return payload
+
     def __init__(self, store: SQLiteStateStore, *, max_events: int = 5000) -> None:
         self.store = store
         self.max_events = max(1, int(max_events))
@@ -86,7 +93,7 @@ class CanonicalEventStore:
                     raise CanonicalEventConflictError(
                         "canonical event idempotency index points to missing event"
                     )
-                if existing.model_dump(mode="json") != event.model_dump(mode="json"):
+                if self._semantic_payload(existing) != self._semantic_payload(event):
                     raise CanonicalEventConflictError(
                         "idempotency key was reused for a different canonical event"
                     )
@@ -96,7 +103,7 @@ class CanonicalEventStore:
 
             existing = by_id.get(event.event_id)
             if existing is not None:
-                if existing.model_dump(mode="json") != event.model_dump(mode="json"):
+                if self._semantic_payload(existing) != self._semantic_payload(event):
                     raise CanonicalEventConflictError(
                         "canonical event id was reused with different content"
                     )
