@@ -14,6 +14,7 @@ from codex_web.definitions import (
     DefinitionPublishRequest,
     DefinitionRecord,
     DefinitionReference,
+    DefinitionRetireRequest,
     DefinitionRollbackRequest,
     DefinitionScope,
     definition_checksum,
@@ -73,6 +74,7 @@ class DefinitionKindSchema:
     schema_version: str
     validate: DefinitionValidator
     assess_publish: DefinitionPublicationAssessor | None = None
+    allow_retire: bool = True
 
 
 class DefinitionSchemaRegistry:
@@ -281,6 +283,7 @@ class DefinitionRegistryService:
                 effective_until=payload.effective_until,
                 min_engine_version=payload.min_engine_version,
                 max_engine_version=payload.max_engine_version,
+                derived_from_record_id=payload.derived_from_record_id,
             )
             created.append(record)
             return [*records, record]
@@ -532,6 +535,100 @@ class DefinitionRegistryService:
         self._notify("definition.quarantined", changed[0])
         return changed[0]
 
+    def retire(self, request: DefinitionRetireRequest) -> DefinitionRecord:
+        scope_id = self._scope_id(request.scope_type, request.scope_id)
+        retired: list[DefinitionRecord] = []
+
+        def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            candidates = [
+                record
+                for record in records
+                if record.lifecycle == DefinitionLifecycle.PUBLISHED
+                and self._same_slot(
+                    record,
+                    definition_id=request.definition_id,
+                    kind=request.kind,
+                    scope_type=request.scope_type,
+                    scope_id=scope_id,
+                )
+            ]
+            if len(candidates) != 1:
+                raise DefinitionConflictError(
+                    "definition retirement requires exactly one active revision"
+                )
+            active = candidates[0]
+            if (
+                request.expected_active_revision is not None
+                and request.expected_active_revision != active.revision
+            ):
+                raise DefinitionConflictError(
+                    "active definition revision changed before retirement"
+                )
+            schema = self.schemas.get(
+                active.kind,
+                active.definition_schema_version,
+            )
+            if not schema.allow_retire:
+                raise DefinitionConflictError(
+                    f"{active.kind} must be disabled through an explicit restrictive draft"
+                )
+            revision = max(
+                (
+                    record.revision
+                    for record in records
+                    if self._same_slot(
+                        record,
+                        definition_id=active.definition_id,
+                        kind=active.kind,
+                        scope_type=active.scope_type,
+                        scope_id=active.scope_id,
+                    )
+                ),
+                default=active.revision,
+            ) + 1
+            now = time.time()
+            current = active.model_copy(
+                update={
+                    "record_id": uuid.uuid4().hex,
+                    "revision": revision,
+                    "lifecycle": DefinitionLifecycle(request.lifecycle),
+                    "created_by": request.actor,
+                    "create_reason": request.reason,
+                    "created_at": now,
+                    "validated_by": request.actor,
+                    "validated_at": now,
+                    "published_by": None,
+                    "publish_reason": request.reason,
+                    "published_at": None,
+                    "supersedes_record_id": active.record_id,
+                    "superseded_by_record_id": None,
+                    "rollback_of_record_id": None,
+                    "derived_from_record_id": active.record_id,
+                    "publication_approvals": (),
+                    "approval_metadata": {},
+                }
+            )
+            retired.append(current)
+            result: list[DefinitionRecord] = []
+            for record in records:
+                if record.record_id == active.record_id:
+                    result.append(
+                        record.model_copy(
+                            update={
+                                "lifecycle": DefinitionLifecycle.SUPERSEDED,
+                                "superseded_by_record_id": current.record_id,
+                            }
+                        )
+                    )
+                else:
+                    result.append(record)
+            result.append(current)
+            return result
+
+        self.store.update(update)
+        self._notify("definition.retired", retired[0])
+        return retired[0]
+
     def rollback(self, request: DefinitionRollbackRequest) -> DefinitionRecord:
         scope_id = self._scope_id(request.scope_type, request.scope_id)
         target = next(
@@ -565,6 +662,7 @@ class DefinitionRegistryService:
                 effective_until=target.effective_until,
                 min_engine_version=target.min_engine_version,
                 max_engine_version=target.max_engine_version,
+                derived_from_record_id=target.record_id,
             )
         )
 
