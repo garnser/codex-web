@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.goals import (
+    GoalCompletionEvaluationRequest,
     GoalCreate,
     GoalPriority,
     GoalStatus,
@@ -161,6 +162,53 @@ def build_goals_router(service: GoalService) -> APIRouter:
                 scope=actor.tenant,
             ).model_dump(mode="json")
         }
+
+    @router.get("/{goal_id}/completion-evaluation")
+    async def current_completion_evaluation(
+        goal_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = service.completion_evaluation(goal_id, scope=actor.tenant)
+        except (GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {
+            "item": item.model_dump(mode="json") if item is not None else None,
+        }
+
+    @router.get("/{goal_id}/completion-evaluations")
+    async def completion_evaluations(
+        goal_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            rows = service.completion_evaluations(goal_id, scope=actor.tenant)
+        except (GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {
+            "items": [item.model_dump(mode="json") for item in rows],
+            "count": len(rows),
+        }
+
+    @router.post("/{goal_id}/completion-evaluations")
+    async def evaluate_completion(
+        goal_id: str,
+        payload: GoalCompletionEvaluationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            item = service.evaluate_completion(
+                goal_id,
+                payload,
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+            )
+        except (AuthorizationError, GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {"item": item.model_dump(mode="json")}
 
     @router.post("/{goal_id}/transition")
     async def transition_goal(
