@@ -366,14 +366,16 @@ class CanonicalEventStore:
     def inbox_seen(
         self,
         *,
+        event_id: str,
         backend_id: str,
-        delivery_id: str,
-        consumer_id: str,
     ) -> bool:
+        # backend_id identifies the transport consumer-group boundary. Dedupe
+        # by canonical event identity rather than broker delivery ID so replay,
+        # reclaim, or a newly published transport message cannot re-run an
+        # already completed canonical event on another replica.
         return any(
-            item.transport_backend_id == backend_id
-            and item.transport_delivery_id == delivery_id
-            and item.consumer_id == consumer_id
+            item.event_id == event_id
+            and item.transport_backend_id == backend_id
             for item in self.load().inbox
         )
 
@@ -389,9 +391,8 @@ class CanonicalEventStore:
                 (
                     item
                     for item in state.inbox
-                    if item.transport_backend_id == receipt.transport_backend_id
-                    and item.transport_delivery_id == receipt.transport_delivery_id
-                    and item.consumer_id == receipt.consumer_id
+                    if item.event_id == receipt.event_id
+                    and item.transport_backend_id == receipt.transport_backend_id
                 ),
                 None,
             )
