@@ -7,8 +7,9 @@ The safest first experience is a local, single-instance deployment with no exter
 1. [Install and start](installation.md).
 2. [Verify the first run](first-run.md).
 3. [Complete the first successful task](../tutorials/first-successful-task.md).
-4. Read [Core Concepts](../core-concepts/README.md) before enabling external providers or broader autonomy.
-5. Read [Trust and credentials](../administration/trust-and-credentials.md) before privileged actions.
+4. [Configure the first authoritative task source](../tutorials/first-task-source.md) when you are ready for external work intake.
+5. Read [Core Concepts](../core-concepts/README.md) before enabling external providers or broader autonomy.
+6. Read [Trust and credentials](../administration/trust-and-credentials.md) before privileged actions.
 
 ## Minimal safe starter configuration
 
