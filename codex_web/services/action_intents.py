@@ -1233,6 +1233,16 @@ class ActionIntentService:
                     timeout=intent.timeout_seconds,
                 )
             except asyncio.TimeoutError:
+                if self.capacity is not None:
+                    self.capacity.record_failure(
+                        organization_id=intent.organization_id,
+                        workspace_id=intent.workspace_id,
+                        component_key=component_key,
+                        reason="provider_timeout",
+                    )
+                    if capacity_lease is not None:
+                        self.capacity.release(capacity_lease.id)
+                        capacity_lease = None
                 self._append_receipt(
                     intent,
                     result=None,
@@ -1244,7 +1254,22 @@ class ActionIntentService:
                     ActionIntentStatus.UNCERTAIN,
                     error="provider execution timed out; external outcome unknown",
                 )
+            except asyncio.CancelledError:
+                if self.capacity is not None and capacity_lease is not None:
+                    self.capacity.release(capacity_lease.id)
+                    capacity_lease = None
+                raise
             except Exception as exc:
+                if self.capacity is not None:
+                    self.capacity.record_failure(
+                        organization_id=intent.organization_id,
+                        workspace_id=intent.workspace_id,
+                        component_key=component_key,
+                        reason=type(exc).__name__,
+                    )
+                    if capacity_lease is not None:
+                        self.capacity.release(capacity_lease.id)
+                        capacity_lease = None
                 self._append_receipt(
                     intent,
                     result=None,
@@ -1257,6 +1282,9 @@ class ActionIntentService:
                     error=f"provider execution raised {type(exc).__name__}; external outcome unknown",
                 )
 
+        if self.capacity is not None and capacity_lease is not None:
+            self.capacity.release(capacity_lease.id)
+            capacity_lease = None
         self._append_receipt(
             intent,
             result=result,
@@ -1264,10 +1292,23 @@ class ActionIntentService:
         )
         current = self._intent(intent.id, actor)
         if result.status == "failed":
+            if self.capacity is not None:
+                self.capacity.record_failure(
+                    organization_id=intent.organization_id,
+                    workspace_id=intent.workspace_id,
+                    component_key=component_key,
+                    reason=result.error_code or "provider_failed",
+                )
             return self._set_status(
                 intent.id,
                 ActionIntentStatus.FAILED,
                 error=result.error_message or result.error_code or "provider returned failure",
+            )
+        if self.capacity is not None:
+            self.capacity.record_success(
+                organization_id=intent.organization_id,
+                workspace_id=intent.workspace_id,
+                component_key=component_key,
             )
         if result.status == "rolled_back":
             return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
