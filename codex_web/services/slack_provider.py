@@ -13,6 +13,7 @@ from fastapi import Request
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotConnection, BotInboundMessage
 from codex_web.services.bot_routing import BotRoutingService
+from codex_web.services.conversation_channels import ConversationChannelService
 
 
 class SlackProviderService:
@@ -24,10 +25,12 @@ class SlackProviderService:
         *,
         slack_client: SlackClient,
         routing_service: BotRoutingService,
+        conversation_channels: ConversationChannelService | None = None,
     ) -> None:
         self.host = host
         self.slack = slack_client
         self.routing = routing_service
+        self.conversation_channels = conversation_channels
         self.task: asyncio.Task[None] | None = None
         self.seen: set[str] = set()
         self.bad_threads: set[tuple[str, str, str]] = set()
@@ -353,29 +356,85 @@ class SlackProviderService:
             return {"ok": True, "ignored": True}
 
         event = payload.get("event") or {}
-        if event.get("type") not in {"message", "app_mention"}:
+        if not isinstance(event, dict):
             return {"ok": True, "ignored": True}
-        if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
-            return {"ok": True, "ignored": True}
-
-        text = self.host._strip_slack_mentions(event.get("text") or "")
-        channel = event.get("channel")
-        if not text or not channel:
-            return {"ok": True, "ignored": True}
-
-        connection = self.host._bot_connection_for_conversation("slack", channel)
-        result = await self.routing.handle_inbound(
-            BotInboundMessage(
-                provider="slack",
-                external_conversation_id=channel,
-                connection_id=connection.id if connection else None,
-                external_name=channel,
-                sender_id=event.get("user"),
-                text=text,
-                external_thread_id=event.get("thread_ts") or event.get("ts"),
-                message_id=event.get("ts"),
-            )
+        channel = (
+            event.get("channel")
+            or (event.get("item") or {}).get("channel")
+            if isinstance(event.get("item"), dict)
+            else event.get("channel")
         )
+        if not channel:
+            return {"ok": True, "ignored": True}
+
+        connection = self.host._bot_connection_for_conversation(
+            "slack",
+            str(channel),
+        )
+        project_id = connection.project_id if connection else "home"
+
+        if self.conversation_channels is not None:
+            normalized_payload = dict(payload)
+            normalized_event = dict(event)
+            if normalized_event.get("text"):
+                normalized_event["text"] = self.host._strip_slack_mentions(
+                    normalized_event.get("text") or ""
+                )
+            if (
+                normalized_event.get("subtype") == "message_changed"
+                and isinstance(normalized_event.get("message"), dict)
+            ):
+                changed = dict(normalized_event["message"])
+                changed["text"] = self.host._strip_slack_mentions(
+                    changed.get("text") or ""
+                )
+                normalized_event["message"] = changed
+            normalized_payload["event"] = normalized_event
+            actor = self.host._bot_runtime_actor(project_id)
+            receipts = await self.conversation_channels.ingest_raw(
+                "slack",
+                connection.id if connection else "slack:default",
+                normalized_payload,
+                actor=actor,
+                connection_id=connection.id if connection else None,
+                project_id=project_id,
+            )
+            if not receipts:
+                return {"ok": True, "ignored": True}
+            result = self.conversation_channels.legacy_routing_result(
+                receipts[0]
+            )
+            if not result.get("routed", True) and not result.get("threadId"):
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "conversationOutcome": result.get("conversationOutcome"),
+                    "canonicalEventId": result.get("canonicalEventId"),
+                }
+        else:
+            if event.get("type") not in {"message", "app_mention"}:
+                return {"ok": True, "ignored": True}
+            if event.get("bot_id") or event.get("subtype") in {
+                "bot_message",
+                "message_deleted",
+            }:
+                return {"ok": True, "ignored": True}
+            text = self.host._strip_slack_mentions(event.get("text") or "")
+            if not text:
+                return {"ok": True, "ignored": True}
+            result = await self.routing.handle_inbound(
+                BotInboundMessage(
+                    provider="slack",
+                    external_conversation_id=str(channel),
+                    connection_id=connection.id if connection else None,
+                    external_name=str(channel),
+                    sender_id=event.get("user"),
+                    text=text,
+                    project_id=project_id,
+                    external_thread_id=event.get("thread_ts") or event.get("ts"),
+                    message_id=event.get("ts"),
+                )
+            )
         if result.get("ambiguous"):
             binding = self.host._first_binding_for_connection("slack", channel)
             connection = self.host._bot_connection(binding.connection_id) if binding and binding.connection_id else None
@@ -414,11 +473,21 @@ def install_slack_provider_service(
     existing = getattr(app.state, "slack_provider_service", None)
     if isinstance(existing, SlackProviderService) and existing.host is host:
         service = existing
+        service.conversation_channels = getattr(
+            app.state,
+            "conversation_channel_service",
+            service.conversation_channels,
+        )
     else:
         service = SlackProviderService(
             host,
             slack_client=slack_client,
             routing_service=routing_service,
+            conversation_channels=getattr(
+                app.state,
+                "conversation_channel_service",
+                None,
+            ),
         )
         app.state.slack_provider_service = service
 
