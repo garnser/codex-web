@@ -154,17 +154,11 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
     "models": ApiDomainPolicy(),
     "operations": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "orchestration": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
-    "projects": ApiDomainPolicy(
-        write_access=ApiAccessMode.ADMIN,
-        write_assurance=AuthenticationAssurance.MFA,
-    ),
+    "projects": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "provider-capacity": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "recovery": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "releases": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
-    "resources": ApiDomainPolicy(
-        write_access=ApiAccessMode.ADMIN,
-        write_assurance=AuthenticationAssurance.MFA,
-    ),
+    "resources": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "scheduler": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN),
     "secrets": ApiDomainPolicy(
         read_access=ApiAccessMode.ADMIN,
