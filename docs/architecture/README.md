@@ -136,3 +136,5 @@ The target architecture is:
 - [BusinessDataSource synchronization](business-data-sources.md) — provider-neutral capabilities, normalized events, bounded sync/backfill, cursor safety, tombstones, drift and read-only external authority.
 
 - [Business KPI catalogs and operating views](business-kpis.md) — explicit versioned CompanyFact formulas projected into canonical Metrics, role-oriented starter packs, deterministic current/trend/threshold state and exact Goal/Decision snapshot provenance.
+
+- [Governed Executive business context](executive-business-context.md) — role-specific business domains, bounded governed facts/KPIs, exact recommendation provenance, stale/conflict handling and canonical action boundaries.

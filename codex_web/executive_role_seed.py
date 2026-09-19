@@ -35,6 +35,9 @@ def executive_role_catalog_seed_payload() -> dict:
         ExecutiveObjectType.APPROVAL,
         ExecutiveObjectType.ATTENTION,
         ExecutiveObjectType.EVENT,
+        ExecutiveObjectType.BUSINESS_ENTITY,
+        ExecutiveObjectType.BUSINESS_FACT,
+        ExecutiveObjectType.BUSINESS_KPI,
     )
     return ExecutiveRoleCatalogDefinition(
         max_roles_per_activation=3,
@@ -68,6 +71,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "escalation",
                 ),
                 consultation_roles=("cto", "cpo", "coo", "cfo"),
+                business_domains=("finance", "revenue", "marketing", "product", "customer_success", "operations", "cost",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -148,6 +152,9 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
                     ExecutiveObjectType.MEMORY,
+                    ExecutiveObjectType.BUSINESS_ENTITY,
+                    ExecutiveObjectType.BUSINESS_FACT,
+                    ExecutiveObjectType.BUSINESS_KPI,
                     ExecutiveObjectType.WORK_GRAPH,
                 ),
                 event_subscriptions=("decision.transition", "attention.transition"),
@@ -164,6 +171,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "usage",
                 ),
                 consultation_roles=("cto", "customer-success", "cfo"),
+                business_domains=("product",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -205,6 +213,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "execution",
                 ),
                 consultation_roles=("cto", "cpo", "cfo"),
+                business_domains=("operations",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -232,6 +241,9 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
                     ExecutiveObjectType.MEMORY,
+                    ExecutiveObjectType.BUSINESS_ENTITY,
+                    ExecutiveObjectType.BUSINESS_FACT,
+                    ExecutiveObjectType.BUSINESS_KPI,
                     ExecutiveObjectType.APPROVAL,
                 ),
                 event_subscriptions=("decision.transition", "approval.transition"),
@@ -247,6 +259,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "pricing",
                 ),
                 consultation_roles=("chief-of-staff", "cto", "cpo"),
+                business_domains=("finance", "cost",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -368,6 +381,9 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
                     ExecutiveObjectType.MEMORY,
+                    ExecutiveObjectType.BUSINESS_ENTITY,
+                    ExecutiveObjectType.BUSINESS_FACT,
+                    ExecutiveObjectType.BUSINESS_KPI,
                 ),
                 event_subscriptions=("decision.transition",),
                 keywords=(
@@ -381,6 +397,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "expansion",
                 ),
                 consultation_roles=("cfo", "cpo", "customer-success"),
+                business_domains=("revenue",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -406,6 +423,9 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
                     ExecutiveObjectType.MEMORY,
+                    ExecutiveObjectType.BUSINESS_ENTITY,
+                    ExecutiveObjectType.BUSINESS_FACT,
+                    ExecutiveObjectType.BUSINESS_KPI,
                 ),
                 event_subscriptions=("decision.transition",),
                 keywords=(
@@ -418,6 +438,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "content",
                 ),
                 consultation_roles=("cpo", "cro", "cfo"),
+                business_domains=("marketing",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,
@@ -443,6 +464,9 @@ def executive_role_catalog_seed_payload() -> dict:
                     ExecutiveObjectType.METRIC,
                     ExecutiveObjectType.EVIDENCE,
                     ExecutiveObjectType.MEMORY,
+                    ExecutiveObjectType.BUSINESS_ENTITY,
+                    ExecutiveObjectType.BUSINESS_FACT,
+                    ExecutiveObjectType.BUSINESS_KPI,
                 ),
                 event_subscriptions=("decision.transition", "attention.transition"),
                 keywords=(
@@ -456,6 +480,7 @@ def executive_role_catalog_seed_payload() -> dict:
                     "csat",
                 ),
                 consultation_roles=("cpo", "cro", "coo"),
+                business_domains=("customer_success",),
                 authority=_authority(
                     ExecutiveProposalKind.GOAL,
                     ExecutiveProposalKind.DECISION,

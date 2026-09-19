@@ -911,6 +911,33 @@ class BusinessKPIService:
             decision_ids=decision_ids,
         )
 
+    def operating_items(
+        self,
+        kpi_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+        at: float | None = None,
+        limit: int = 30,
+    ) -> tuple[BusinessKPIOperatingItem, ...]:
+        if limit < 1 or limit > 100:
+            raise BusinessKPIValidationError(
+                "operating KPI item limit must be between 1 and 100"
+            )
+        ids = tuple(dict.fromkeys(kpi_ids))
+        if len(ids) > limit:
+            raise BusinessKPIValidationError(
+                f"requested business KPI context exceeds {limit} items"
+            )
+        timestamp = float(self.clock()) if at is None else float(at)
+        return tuple(
+            self._operating_item(
+                self.get(kpi_id, actor=actor),
+                actor=actor,
+                at=timestamp,
+            )
+            for kpi_id in ids
+        )
+
     def operating_view(
         self,
         *,
