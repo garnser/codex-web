@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.business_kpis import (
+    BUSINESS_KPI_TEMPLATES,
     BusinessKPIDefinitionCreate,
     BusinessKPIDefinitionUpdate,
     BusinessKPITargetBindingCreate,
@@ -81,6 +82,16 @@ def build_business_kpis_router(
             AuthenticationAssurance.MFA,
         )
         return actor
+
+    @router.get("/templates")
+    async def templates() -> dict[str, Any]:
+        return {
+            "items": [
+                item.model_dump(mode="json")
+                for item in BUSINESS_KPI_TEMPLATES
+            ],
+            "count": len(BUSINESS_KPI_TEMPLATES),
+        }
 
     @router.get("")
     async def list_kpis(request: Request) -> dict[str, Any]:
