@@ -25,6 +25,8 @@ from codex_web.identity import (
 )
 from codex_web.models import Project, TaskSourceConfiguration, WorkItemState
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.action_providers import (
     ActionExecutionService,
     ActionProviderRegistry,
@@ -50,6 +52,7 @@ from codex_web.services.task_source_runtime import TaskSourceRegistry
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.goals import GoalStore
@@ -142,6 +145,7 @@ class GoalDecompositionCommitTests(unittest.IsolatedAsyncioTestCase):
         sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
         identity = IdentityService(IdentityStateStore(sqlite))
         identity.bootstrap_local()
+        self.identity = identity
         self.actor = identity.local_trusted_actor()
         self.worker = AuthenticationActor(
             identity_id="goal-action-worker",
@@ -201,6 +205,13 @@ class GoalDecompositionCommitTests(unittest.IsolatedAsyncioTestCase):
         work_items.task_source_projector = _Projector(self.host)
 
         self.resources = ResourceCatalogService(ResourceCatalogStore(sqlite))
+        self.definition_registry = DefinitionRegistryService(
+            DefinitionRegistryStore(sqlite)
+        )
+        self.authority = install_authority_roles(
+            self.definition_registry,
+            self.resources,
+        )
         self.action_providers = ActionProviderRegistry(
             ActionProviderStateStore(sqlite)
         )
@@ -213,6 +224,8 @@ class GoalDecompositionCommitTests(unittest.IsolatedAsyncioTestCase):
         self.action_intents = ActionIntentService(
             ActionIntentStore(sqlite),
             self.action_execution,
+            authority=self.authority,
+            identity=self.identity,
         )
 
         self.binding_a = self._bind("project-a")
