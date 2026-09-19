@@ -442,9 +442,7 @@ def build_definitions_router(
             )
             approval = service.record_publication_approval(
                 record_id,
-                actor=actor.identity_id,
-                organization_id=actor.organization_id,
-                workspace_id=actor.workspace_id,
+                actor=actor,
                 reason=payload.reason,
             )
         except (
