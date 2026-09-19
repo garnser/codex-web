@@ -26,10 +26,7 @@ RUN apt-get update \
 # Keep user creation here so local UID/GID overrides continue to work for
 # mounted workspaces. Fail explicitly if the requested Codex version does not
 # match the selected base image.
-RUN actual="$(codex --version)" \
-    && printf '%s' "$actual" | grep -F "${CODEX_VERSION}" \
-    && claude_actual="$(claude --version)" \\n    && printf '%s' "$claude_actual" | grep -F "${CLAUDE_CODE_VERSION}" \\n    && groupadd --gid "${CODEX_GID}" codex \
-    && useradd --uid "${CODEX_UID}" --gid "${CODEX_GID}" --create-home --shell /bin/bash codex
+RUN actual="$(codex --version)" && printf '%s' "$actual" | grep -F "${CODEX_VERSION}" && claude_actual="$(claude --version)" && printf '%s' "$claude_actual" | grep -F "${CLAUDE_CODE_VERSION}" && groupadd --gid "${CODEX_GID}" codex && useradd --uid "${CODEX_UID}" --gid "${CODEX_GID}" --create-home --shell /bin/bash codex
 
 WORKDIR /app
 
