@@ -10,7 +10,7 @@ from codex_web.canonical_events import (
     CanonicalEventOutboxStatus,
 )
 from codex_web.compatibility import CanonicalEventEnvelope, ContractSpec, MigrationRegistry
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 CANONICAL_EVENT_STATE_CONTRACT = ContractSpec(
@@ -67,7 +67,7 @@ class CanonicalEventStore:
         payload.pop("correlation_id", None)
         return payload
 
-    def __init__(self, store: SQLiteStateStore, *, max_events: int = 5000) -> None:
+    def __init__(self, store: StateStore, *, max_events: int = 5000) -> None:
         self.store = store
         self.max_events = max(1, int(max_events))
 
@@ -115,7 +115,7 @@ class CanonicalEventStore:
                     raise CanonicalEventConflictError(
                         "idempotency key was reused for a different canonical event"
                     )
-                if enqueue_transport and existing.id not in state.outbox:
+                if enqueue_transport and existing.event_id not in state.outbox:
                     state.outbox[existing.event_id] = CanonicalEventOutboxRecord(
                         event_id=existing.event_id
                     )
@@ -145,13 +145,31 @@ class CanonicalEventStore:
                     event_id=event.event_id
                 )
             if len(state.events) > self.max_events:
-                state.events = state.events[-self.max_events :]
-                retained = {item.event_id for item in state.events}
-                state.idempotency = {
-                    candidate: event_id
-                    for candidate, event_id in state.idempotency.items()
-                    if event_id in retained
-                }
+                overflow = len(state.events) - self.max_events
+                removable: set[str] = set()
+                for candidate in state.events:
+                    outbox = state.outbox.get(candidate.event_id)
+                    if (
+                        outbox is None
+                        or outbox.status == CanonicalEventOutboxStatus.PUBLISHED
+                    ):
+                        removable.add(candidate.event_id)
+                        overflow -= 1
+                        if overflow <= 0:
+                            break
+                if removable:
+                    state.events = [
+                        item
+                        for item in state.events
+                        if item.event_id not in removable
+                    ]
+                    state.idempotency = {
+                        candidate: candidate_event_id
+                        for candidate, candidate_event_id in state.idempotency.items()
+                        if candidate_event_id not in removable
+                    }
+                    for event_id in removable:
+                        state.outbox.pop(event_id, None)
             result["event"] = event
             result["inserted"] = True
             return state.model_dump(mode="json")
