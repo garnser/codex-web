@@ -145,17 +145,11 @@ class ExecutiveManagementService:
         actor: AuthenticationActor,
         project_id: str | None,
     ) -> tuple[ExecutiveRoleCatalogDefinition, Any]:
-        catalog = self.roles.catalog(
+        return self.roles.resolve(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             project_id=project_id,
         )
-        reference = self.roles.reference(
-            organization_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            project_id=project_id,
-        )
-        return catalog, reference
 
     def _select(
         self,
