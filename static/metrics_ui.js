@@ -31,7 +31,7 @@ function ensureShell() {
 
   const link = document.createElement('link');
   link.rel = 'stylesheet';
-  link.href = 'static/metrics_ui.css';
+  link.href = '/static/metrics_ui.css';
   document.head.appendChild(link);
 
   const button = document.createElement('button');
