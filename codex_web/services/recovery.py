@@ -721,11 +721,19 @@ class RecoveryService:
             and verify_age <= policy.restore_verification_interval_seconds
             and latest_verify.status == RestoreVerificationStatus.PASS
         )
+        rto_satisfied = bool(
+            latest_verify is not None
+            and canonical_objective is not None
+            and latest_verify.status == RestoreVerificationStatus.PASS
+            and latest_verify.duration_seconds <= canonical_objective.rto_seconds
+        )
         blockers = []
         if not rpo_satisfied:
             blockers.append("rpo_not_satisfied")
         if not verify_fresh:
             blockers.append("restore_verification_not_fresh")
+        if not rto_satisfied:
+            blockers.append("rto_not_satisfied")
         if not self._destination(policy.destination_id).healthy():
             blockers.append("backup_destination_unhealthy")
         return RecoveryHealth(
@@ -741,6 +749,7 @@ class RecoveryService:
                 and latest_verify.status == RestoreVerificationStatus.PASS
             ),
             rpo_satisfied=rpo_satisfied,
+            rto_satisfied=rto_satisfied,
             recovery_qualified=not blockers,
             blockers=tuple(blockers),
         )
