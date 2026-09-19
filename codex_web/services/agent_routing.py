@@ -285,7 +285,13 @@ class AgentRoutingService:
                     rejected.append(f"{key}:runtime_fallback_disabled")
                     continue
 
-            runtime_capabilities = set(registration.capabilities)
+            adapter = self.runtimes.get(
+                registration.provider_id,
+                registration.runtime_id,
+            )
+            runtime_capabilities = set(registration.capabilities) & set(
+                adapter.capabilities
+            )
             if not required.issubset(runtime_capabilities):
                 rejected.append(f"{key}:runtime_capability_mismatch")
                 continue
@@ -344,10 +350,6 @@ class AgentRoutingService:
                     rejected.append(f"{key}:runtime_budget_exceeded")
                     continue
 
-            adapter = self.runtimes.get(
-                registration.provider_id,
-                registration.runtime_id,
-            )
             runtime_health = await adapter.health()
             if runtime_health == AgentRuntimeHealth.UNAVAILABLE:
                 rejected.append(f"{key}:runtime_unavailable")
@@ -376,7 +378,8 @@ class AgentRoutingService:
                 effective_capabilities=tuple(
                     capability
                     for capability in registration.capabilities
-                    if capability in set(provider.effective_capabilities)
+                    if capability in runtime_capabilities
+                    and capability in set(provider.effective_capabilities)
                 ),
                 provider_health=provider_record.health,
                 runtime_health=runtime_health,
