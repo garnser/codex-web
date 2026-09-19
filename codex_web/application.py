@@ -108,6 +108,7 @@ from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
+from codex_web.services.task_source_action_provider import TaskSourceActionProvider
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.thread_bootstrap_bindings import (
@@ -497,6 +498,9 @@ work_item_contract_service = install_work_item_contract_service(
     execution_role_definition_service,
 )
 work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
+task_source_action_provider = TaskSourceActionProvider(work_item_service)
+action_provider_registry.register(task_source_action_provider)
+app.state.task_source_action_provider = task_source_action_provider
 work_graph_store = WorkGraphStore(state_store)
 work_graph_service = WorkGraphService(
     work_graph_store,
