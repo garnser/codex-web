@@ -130,41 +130,6 @@ class GitLabService:
                 return value
         attrs = payload.get("object_attributes") or {}
         project = payload.get("project") or {}
-        if organization_id and workspace_id:
-            binding = CodeHostProviderBinding(
-                id=f"gitlab-webhook:{project_id}",
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                provider_type="gitlab",
-                provider_instance=self.host.GITLAB_API_BASE.rstrip("/"),
-                base_url=f"{self.host.GITLAB_API_BASE.rstrip('/')}/api/v4",
-                capabilities=(CodeHostCapability.WEBHOOK_NORMALIZE,),
-            )
-            fact = self.code_host.normalize_webhook(
-                binding,
-                payload,
-                event_kind=kind,
-                event_id=event_id,
-            )
-            return await self.canonical_events.ingest(
-                event_type=fact.canonical_event_type,
-                source=f"code-host:gitlab:{binding.provider_instance}",
-                idempotency_key=f"{binding.provider_instance}:{fact.event_id}",
-                payload={
-                    "project_id": project_id,
-                    "provider_event_type": fact.event_kind,
-                    "repository_external_id": fact.repository_external_id,
-                    "subject_external_id": fact.subject_external_id,
-                    "action": fact.action,
-                    "state": fact.state,
-                    "web_url": fact.web_url,
-                    "provider_payload": fact.provider_payload,
-                },
-                occurred_at=fact.occurred_at,
-                tenant_id=organization_id,
-                workspace_id=workspace_id,
-            )
-
         parts = [
             str(payload.get("object_kind") or payload.get("event_name") or "gitlab"),
             str(project.get("id") or project.get("path_with_namespace") or ""),
@@ -718,6 +683,41 @@ class GitLabService:
 
         attrs = payload.get("object_attributes") or {}
         project = payload.get("project") or {}
+        if organization_id and workspace_id:
+            binding = CodeHostProviderBinding(
+                id=f"gitlab-webhook:{project_id}",
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                provider_type="gitlab",
+                provider_instance=self.host.GITLAB_API_BASE.rstrip("/"),
+                base_url=f"{self.host.GITLAB_API_BASE.rstrip('/')}/api/v4",
+                capabilities=(CodeHostCapability.WEBHOOK_NORMALIZE,),
+            )
+            fact = self.code_host.normalize_webhook(
+                binding,
+                payload,
+                event_kind=kind,
+                event_id=event_id,
+            )
+            return await self.canonical_events.ingest(
+                event_type=fact.canonical_event_type,
+                source=f"code-host:gitlab:{binding.provider_instance}",
+                idempotency_key=f"{binding.provider_instance}:{fact.event_id}",
+                payload={
+                    "project_id": project_id,
+                    "provider_event_type": fact.event_kind,
+                    "repository_external_id": fact.repository_external_id,
+                    "subject_external_id": fact.subject_external_id,
+                    "action": fact.action,
+                    "state": fact.state,
+                    "web_url": fact.web_url,
+                    "provider_payload": fact.provider_payload,
+                },
+                occurred_at=fact.occurred_at,
+                tenant_id=organization_id,
+                workspace_id=workspace_id,
+            )
+
         minimal = {
             "project_id": project_id,
             "provider_event_type": kind,
