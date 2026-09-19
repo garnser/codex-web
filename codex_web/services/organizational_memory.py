@@ -209,15 +209,26 @@ class OrganizationalMemoryService:
                 + "; ".join(decision.reasons)
             )
 
+    @staticmethod
+    def _read_capability(
+        classification: DataClassification,
+    ) -> str:
+        if classification == DataClassification.RESTRICTED:
+            return "memory.read.restricted"
+        if classification == DataClassification.SECRET:
+            return "memory.read.secret"
+        return "memory.read"
+
     def _can_read(
         self,
         actor: AuthenticationActor,
         *,
         project_id: str | None,
+        classification: DataClassification = DataClassification.INTERNAL,
     ) -> tuple[bool, tuple[str, ...]]:
         decision = self._authority_decision(
             actor,
-            capability="memory.read",
+            capability=self._read_capability(classification),
             level=AuthorityLevel.READ,
             project_id=project_id,
         )
@@ -786,6 +797,7 @@ class OrganizationalMemoryService:
         allowed, reasons = self._can_read(
             actor,
             project_id=item.project_id,
+            classification=item.classification,
         )
         if not allowed:
             raise KnowledgeAuthorizationError(
@@ -816,7 +828,7 @@ class OrganizationalMemoryService:
         include_inactive: bool = False,
     ) -> tuple[KnowledgeRecord, ...]:
         rows: list[KnowledgeRecord] = []
-        authority_cache: dict[str | None, bool] = {}
+        authority_cache: dict[tuple[str | None, DataClassification], bool] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
         for item in self.store.list(
             organization_id=actor.organization_id,
@@ -826,12 +838,14 @@ class OrganizationalMemoryService:
                 continue
             if not include_inactive and item.lifecycle != KnowledgeLifecycle.CURRENT:
                 continue
-            if item.project_id not in authority_cache:
-                authority_cache[item.project_id] = self._can_read(
+            authority_key = (item.project_id, item.classification)
+            if authority_key not in authority_cache:
+                authority_cache[authority_key] = self._can_read(
                     actor,
                     project_id=item.project_id,
+                    classification=item.classification,
                 )[0]
-            if not authority_cache[item.project_id]:
+            if not authority_cache[authority_key]:
                 continue
             if item.required_role_ids:
                 if item.project_id not in role_cache:
@@ -934,7 +948,10 @@ class OrganizationalMemoryService:
         ]
         candidate_count = len(candidates)
         denied: list[KnowledgeDeniedCandidate] = []
-        authority_cache: dict[str | None, tuple[bool, tuple[str, ...]]] = {}
+        authority_cache: dict[
+            tuple[str | None, DataClassification],
+            tuple[bool, tuple[str, ...]],
+        ] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
         lifecycle_filtered: list[tuple[KnowledgeRecord, KnowledgeFreshness]] = []
 
@@ -957,12 +974,14 @@ class OrganizationalMemoryService:
             } and not query.include_stale:
                 continue
 
-            if item.project_id not in authority_cache:
-                authority_cache[item.project_id] = self._can_read(
+            authority_key = (item.project_id, item.classification)
+            if authority_key not in authority_cache:
+                authority_cache[authority_key] = self._can_read(
                     actor,
                     project_id=item.project_id,
+                    classification=item.classification,
                 )
-            allowed, reasons = authority_cache[item.project_id]
+            allowed, reasons = authority_cache[authority_key]
             if not allowed:
                 denied.append(
                     KnowledgeDeniedCandidate(
