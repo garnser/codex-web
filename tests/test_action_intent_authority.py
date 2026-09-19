@@ -56,6 +56,14 @@ class ActionIntentCanonicalAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.identity = IdentityService(IdentityStateStore(self.sqlite))
         self.identity.bootstrap_local()
         self.admin = self.identity.local_trusted_actor()
+        self.definition_approver = AuthenticationActor(
+            identity_id="action-authority-approver",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.APPROVER,),
+            assurance=AuthenticationAssurance.LOCAL_TRUSTED,
+        )
         self.scope = TenantScope(
             organization_id="local",
             workspace_id="default",
@@ -161,12 +169,24 @@ class ActionIntentCanonicalAuthorityTests(unittest.IsolatedAsyncioTestCase):
                 reason="authority enforcement test",
             )
         )
+        preflight = self.definition_registry.publication_preflight(
+            draft.record_id
+        )
+        approval_id = None
+        if preflight.requires_approval:
+            approval = self.definition_registry.record_publication_approval(
+                draft.record_id,
+                actor=self.definition_approver,
+                reason="approve authority enforcement test definition",
+            )
+            approval_id = approval.id
         return self.definition_registry.publish(
             draft.record_id,
             DefinitionPublishRequest(
-                actor="test",
+                actor="test-publisher",
                 reason="activate authority enforcement test",
                 expected_active_revision=active.revision,
+                publication_approval_id=approval_id,
             ),
         )
 
