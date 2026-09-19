@@ -263,9 +263,8 @@ class CanonicalEventBus:
                 )
                 continue
             if self.store.inbox_seen(
+                event_id=canonical.event_id,
                 backend_id=delivery.backend_id,
-                delivery_id=delivery.transport_message_id or delivery.id,
-                consumer_id=consumer_id,
             ):
                 await self.transport.acknowledge(
                     delivery,
@@ -273,8 +272,17 @@ class CanonicalEventBus:
                 )
                 acknowledged += 1
                 continue
-            if delivery.backend_id != "in-process":
-                dispatched += await self._dispatch_local(canonical)
+            try:
+                if delivery.backend_id != "in-process":
+                    dispatched += await self._dispatch_local(canonical)
+            except Exception as exc:
+                await self.transport.negative_acknowledge(
+                    delivery,
+                    consumer_id=consumer_id,
+                    reason=f"subscriber_failed:{type(exc).__name__}",
+                    retry=True,
+                )
+                continue
             acknowledged_delivery = await self.transport.acknowledge(
                 delivery,
                 consumer_id=consumer_id,
