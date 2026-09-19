@@ -83,11 +83,8 @@ class AgentSessionTraceService:
             "verifications": [
                 {
                     "id": verification.id,
-                    "outcome": getattr(
-                        verification.outcome,
-                        "value",
-                        verification.outcome,
-                    ),
+                    "verified": verification.verified,
+                    "evidence_satisfied": verification.evidence_satisfied,
                     "verified_at": verification.verified_at,
                 }
                 for verification in verifications
