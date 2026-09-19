@@ -4,6 +4,7 @@ import asyncio
 
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
+from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.approval_requests import build_approval_requests_router
@@ -72,6 +73,9 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
+from codex_web.services.agent_routing import AgentRoutingService
+from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
+from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
@@ -217,8 +221,12 @@ configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
+agent_routing_configuration_specs = install_agent_routing_configuration(
+    configuration_service
+)
 app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
+app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
     try:
@@ -235,11 +243,15 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+agent_routing_definition_service = install_agent_routing_definitions(
+    definition_registry_service
+)
 input_pipeline_definition_service = install_input_plugin_definitions(
     definition_registry_service
 )
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
 core._execution_role_definition_service = execution_role_definition_service
@@ -515,6 +527,16 @@ app.include_router(build_agent_providers_router(agent_provider_service))
 app.state.agent_provider_store = agent_provider_store
 app.state.agent_provider_service = agent_provider_service
 
+agent_routing_service = AgentRoutingService(
+    agent_provider_service,
+    agent_runtime_registry,
+    model_gateway=model_gateway_service,
+    configuration=configuration_service,
+    role_defaults=agent_routing_definition_service,
+)
+app.include_router(build_agent_routing_router(agent_routing_service))
+app.state.agent_routing_service = agent_routing_service
+
 codex_auth_delegation_service = CodexAuthDelegationService(secret_broker)
 app.state.codex_auth_delegation_service = codex_auth_delegation_service
 
@@ -747,7 +769,12 @@ action_intent_service.recover_stale_claims()
 # entrypoint. The installers are idempotent and preserve the compatibility
 # attributes expected by services that have not moved out of core.py yet.
 codex_runtime = install_codex_runtime(app, core)
-agent_runtime_registry.register(CodexAgentRuntimeAdapter(codex_runtime))
+agent_runtime_registry.register(
+    CodexAgentRuntimeAdapter(codex_runtime),
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write"),
+    network_profiles=("brokered-model-egress",),
+)
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(

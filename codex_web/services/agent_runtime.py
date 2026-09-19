@@ -5,6 +5,7 @@ import time
 from codex_web.agent_runtime import (
     AgentRuntimeAdapter,
     AgentRuntimeHealth,
+    AgentRuntimeRegistration,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
     AgentRuntimeUnsupportedCapability,
@@ -23,15 +24,63 @@ class AgentRuntimeError(RuntimeError):
 class AgentRuntimeRegistry:
     def __init__(self) -> None:
         self._adapters: dict[tuple[str, str], AgentRuntimeAdapter] = {}
+        self._registrations: dict[tuple[str, str], AgentRuntimeRegistration] = {}
 
-    def register(self, adapter: AgentRuntimeAdapter) -> None:
+    def register(
+        self,
+        adapter: AgentRuntimeAdapter,
+        *,
+        capability_revision: int = 1,
+        sandbox_profiles: tuple[str, ...] = (),
+        network_profiles: tuple[str, ...] = (),
+        residency_tags: tuple[str, ...] = (),
+        compliance_tags: tuple[str, ...] = (),
+        max_session_cost_usd: float | None = None,
+    ) -> None:
         key = (adapter.provider_id, adapter.runtime_id)
+        registration = AgentRuntimeRegistration(
+            provider_id=adapter.provider_id,
+            runtime_id=adapter.runtime_id,
+            runtime_type=adapter.runtime_type,
+            capabilities=tuple(dict.fromkeys(adapter.capabilities)),
+            capability_revision=capability_revision,
+            sandbox_profiles=tuple(dict.fromkeys(item for item in sandbox_profiles if item)),
+            network_profiles=tuple(dict.fromkeys(item for item in network_profiles if item)),
+            residency_tags=tuple(dict.fromkeys(item for item in residency_tags if item)),
+            compliance_tags=tuple(dict.fromkeys(item for item in compliance_tags if item)),
+            max_session_cost_usd=max_session_cost_usd,
+        )
         existing = self._adapters.get(key)
         if existing is not None and existing is not adapter:
             raise AgentRuntimeError(
                 f"agent runtime already registered: {adapter.provider_id}/{adapter.runtime_id}"
             )
+        existing_registration = self._registrations.get(key)
+        if existing_registration is not None and existing_registration != registration:
+            raise AgentRuntimeError(
+                f"agent runtime registration changed without replacement: "
+                f"{adapter.provider_id}/{adapter.runtime_id}"
+            )
         self._adapters[key] = adapter
+        self._registrations[key] = registration
+
+    def list_registrations(self) -> tuple[AgentRuntimeRegistration, ...]:
+        return tuple(
+            self._registrations[key]
+            for key in sorted(self._registrations)
+        )
+
+    def registration(
+        self,
+        provider_id: str,
+        runtime_id: str,
+    ) -> AgentRuntimeRegistration:
+        registration = self._registrations.get((provider_id, runtime_id))
+        if registration is None:
+            raise AgentRuntimeError(
+                f"agent runtime not registered: {provider_id}/{runtime_id}"
+            )
+        return registration
 
     def get(self, provider_id: str, runtime_id: str) -> AgentRuntimeAdapter:
         adapter = self._adapters.get((provider_id, runtime_id))
@@ -101,7 +150,7 @@ class AgentSessionService:
         request: AgentRuntimeSessionRequest,
         actor: AuthenticationActor,
         capability_snapshot: tuple[AgentProviderCapability, ...],
-        capability_revision: int = 1,
+        capability_revision: int | None = None,
     ) -> AgentSession:
         existing = self.find_by_native_id(
             provider_native_session_id,
@@ -112,6 +161,14 @@ class AgentSessionService:
         if existing is not None:
             return existing
         now = time.time()
+        if capability_revision is None:
+            try:
+                capability_revision = self.registry.registration(
+                    provider_id,
+                    runtime_id,
+                ).capability_revision
+            except AgentRuntimeError:
+                capability_revision = 1
         return self.store.upsert(
             AgentSession(
                 organization_id=actor.organization_id,
@@ -143,7 +200,7 @@ class AgentSessionService:
         runtime_id: str,
         request: AgentRuntimeSessionRequest,
         actor: AuthenticationActor,
-        capability_revision: int = 1,
+        capability_revision: int | None = None,
     ) -> AgentSession:
         adapter = self.registry.get(provider_id, runtime_id)
         self._require_capability(adapter, AgentProviderCapability.AGENT_EXECUTION)
@@ -153,6 +210,11 @@ class AgentSessionService:
                 "runtime create_session returned no provider-native session id"
             )
         now = time.time()
+        if capability_revision is None:
+            capability_revision = self.registry.registration(
+                provider_id,
+                runtime_id,
+            ).capability_revision
         session = AgentSession(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
