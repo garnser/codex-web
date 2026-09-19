@@ -514,4 +514,20 @@ async function mutate(path, body, message) {
   }
 }
 
+window.addEventListener('codex:open-decision', async (event) => {
+  const decisionId = String(event.detail?.decisionId || '').trim();
+  if (!decisionId) return;
+  ensureShell();
+  const dialog = document.querySelector('#decisions-dialog');
+  if (!dialog.open) dialog.showModal();
+  await refreshAll();
+  if (state.decisions.some((item) => item.id === decisionId)) {
+    state.selectedDecisionId = decisionId;
+    renderList();
+    await loadDecision(decisionId);
+  } else {
+    setStatus(`Decision not found in current tenant: ${decisionId}`, true);
+  }
+});
+
 ensureShell();
