@@ -41,6 +41,7 @@ from codex_web.api.identity import build_identity_router, install_identity_middl
 from codex_web.api.projects import build_projects_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
+from codex_web.api.releases import build_releases_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
 from codex_web.api.runtime import build_runtime_router
@@ -180,6 +181,7 @@ from codex_web.services.provider_capacity import (
 )
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.resources import ResourceCatalogService
+from codex_web.services.releases import ReleaseService
 from codex_web.services.identity import IdentityService
 from codex_web.services.runtime import RuntimeService
 from codex_web.services.scheduler import SchedulerService
@@ -241,6 +243,7 @@ from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
+from codex_web.storage.releases import ReleaseStore
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
@@ -907,6 +910,18 @@ action_intent_service = ActionIntentService(
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
 app.state.action_intent_service = action_intent_service
+
+release_store = ReleaseStore(state_store)
+release_service = ReleaseService(
+    release_store,
+    artifacts=artifact_evidence_service,
+    resources=resource_catalog_service,
+    approvals=approval_request_service,
+    action_intents=action_intent_service,
+)
+app.state.release_store = release_store
+app.state.release_service = release_service
+app.include_router(build_releases_router(release_service))
 
 agent_session_trace_service = AgentSessionTraceService(
     agent_session_service,
