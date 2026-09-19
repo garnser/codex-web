@@ -5,6 +5,7 @@ import asyncio
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
+from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
 from codex_web.api.action_providers import build_action_providers_router
 from codex_web.api.approvals import build_approvals_router
 from codex_web.api.approval_requests import build_approval_requests_router
@@ -78,6 +79,7 @@ from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
+from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.approvals import ApprovalService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -162,6 +164,7 @@ from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.agent_sessions import AgentSessionStore
+from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
 from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.attention import AttentionStore
 from codex_web.storage.autonomy import AutonomyStateStore
@@ -517,6 +520,49 @@ app.include_router(build_artifact_evidence_router(artifact_evidence_service))
 app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 
+agent_runtime_usage_store = AgentRuntimeUsageStore(state_store)
+
+def _runtime_usage_attribution(session):
+    assignment = next(
+        (
+            item
+            for item in execution_worker_store.load().assignments
+            if session.assignment_id
+            and item.id == session.assignment_id
+            and item.organization_id == session.organization_id
+            and item.workspace_id == session.workspace_id
+        ),
+        None,
+    )
+    work_item_ref = assignment.work_item_ref if assignment is not None else None
+    work_state = None
+    if work_item_ref:
+        try:
+            work_state = core._load_work_item_states().get(work_item_ref)
+        except Exception:
+            work_state = None
+    return {
+        "work_item_ref": work_item_ref,
+        "goal_id": getattr(work_state, "goal_id", None) if work_state is not None else None,
+        "decision_id": (
+            getattr(work_state, "decision_id", None)
+            if work_state is not None
+            else None
+        ),
+    }
+
+
+agent_runtime_telemetry_service = AgentRuntimeTelemetryService(
+    agent_runtime_usage_store,
+    agent_session_store,
+    agent_runtime_registry,
+    artifact_evidence=artifact_evidence_service,
+    attribution_resolver=_runtime_usage_attribution,
+)
+app.state.agent_runtime_usage_store = agent_runtime_usage_store
+app.state.agent_runtime_telemetry_service = agent_runtime_telemetry_service
+app.include_router(build_agent_runtime_usage_router(agent_runtime_telemetry_service))
+
 extension_state_store = ExtensionStateStore(state_store)
 extension_package_catalog = LocalExtensionPackageCatalog(EXTENSION_PACKAGE_DIR)
 extension_service = ExtensionService(
@@ -844,6 +890,7 @@ agent_runtime_registry.register(
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
+agent_runtime_telemetry_service.subscribe(app.state.codex_agent_runtime_adapter)
 if not any(
     provider.id == "openai"
     and provider.organization_id == identity_service.local_trusted_actor().organization_id
@@ -916,6 +963,7 @@ app.state.claude_agent_runtime_adapter = agent_runtime_registry.get(
     "anthropic",
     "claude-code",
 )
+agent_runtime_telemetry_service.subscribe(app.state.claude_agent_runtime_adapter)
 thread_execution_settings_service = install_thread_execution_settings_service(app, core)
 turn_execution_service = install_turn_execution_service(
     app,
