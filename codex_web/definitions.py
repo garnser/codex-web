@@ -40,6 +40,41 @@ class DefinitionLifecycle(StrEnum):
     QUARANTINED = "quarantined"
 
 
+class DefinitionPublicationAssessment(BaseModel):
+    """Deterministic preflight for publishing one definition revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    record_id: str
+    candidate_revision: int = Field(ge=1)
+    candidate_checksum: str = Field(min_length=64, max_length=64)
+    active_record_id: str | None = None
+    active_revision: int | None = Field(default=None, ge=1)
+    change_classes: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    requires_approval: bool = False
+    fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class DefinitionPublicationApproval(BaseModel):
+    """Immutable approval evidence bound to one publication assessment."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    id: str = Field(default_factory=lambda: f"definition-approval-{uuid.uuid4().hex}")
+    record_id: str = Field(min_length=1)
+    fingerprint: str = Field(min_length=64, max_length=64)
+    active_revision: int | None = Field(default=None, ge=1)
+    approved_by: str = Field(min_length=1)
+    approver_principal_kind: str = Field(min_length=1)
+    approver_roles: tuple[str, ...] = ()
+    approver_assurance: str = Field(min_length=1)
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    approved_at: float = Field(default_factory=time.time)
+
+
 class DefinitionRecord(BaseModel):
     """One immutable revision of a mutable operational definition."""
 
@@ -70,6 +105,7 @@ class DefinitionRecord(BaseModel):
     superseded_by_record_id: str | None = None
     rollback_of_record_id: str | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
+    publication_approvals: tuple[DefinitionPublicationApproval, ...] = ()
     min_engine_version: str | None = None
     max_engine_version: str | None = None
 
@@ -137,6 +173,7 @@ class DefinitionPublishRequest(BaseModel):
     reason: str | None = None
     expected_active_revision: int | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
+    publication_approval_id: str | None = None
 
 
 class DefinitionRollbackRequest(BaseModel):
