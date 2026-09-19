@@ -10,12 +10,19 @@
     window.__accRequests = [];
     const snapshot = {
       autonomy: {
-        control: { mode: "active", dry_run: false, simulation: false },
+        control: { mode: "active", dry_run: false, simulation: false, scoped_pauses: [] },
+        scoped_pauses: [],
         effective_policy: { level: "execute_bounded" },
         qualification: [
           { gate: "recovery", configured: true, evidence: { evidence_ids: ["evidence-recovery"], require_independent_verification: true } },
           { gate: "capacity", configured: false, evidence: null }
         ]
+      },
+      simulation: {
+        dry_run_enabled: false, simulation_enabled: false,
+        simulated_action_count: 2, executed_action_count: 1, evaluation_count: 3,
+        simulated_cycles: [{ id: "cycle-sim", outcome: "simulated", action_count: 2 }],
+        executed_cycles: [{ id: "cycle-live", outcome: "completed", action_count: 1 }]
       },
       blockers: [{ domain: "upgrade", severity: "high", object_id: "upgrade-1", reasons: ["definition_incompatible:policy.old"] }],
       approvals: { count: 1, pending: [{
@@ -80,6 +87,11 @@
       verification: { receipts: [{ id: "verify-1", verified: true }] },
       approval_requests: [{ id: "approval-1" }],
       attention_items: [{ id: "attention-1" }],
+      blast_radius: {
+        resource_count: 1, resource_ids: ["service-api"], risk_class: "high",
+        rollback_required: true, verification_required: true,
+        provider: "gitlab/prod", high_impact: true
+      },
       result: { status: "succeeded" }
     };
     window.fetch = async (url, options = {}) => {
@@ -91,6 +103,20 @@
       }
       if (parsed.pathname === "/api/autonomy/control-center/actions/intent-1/explain") {
         return new Response(JSON.stringify(explanation), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/autonomy/scoped-pauses" && method === "POST") {
+        const payload = JSON.parse(options.body || "{}");
+        snapshot.autonomy.scoped_pauses = [{
+          id: "pause-1", scope: payload.scope, scope_id: payload.scope_id,
+          reason: payload.reason, created_by: "admin", created_at: 1
+        }];
+        snapshot.autonomy.control.scoped_pauses = snapshot.autonomy.scoped_pauses;
+        return new Response(JSON.stringify({ item: snapshot.autonomy.scoped_pauses[0] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/autonomy/scoped-pauses/pause-1" && method === "DELETE") {
+        snapshot.autonomy.scoped_pauses = [];
+        snapshot.autonomy.control.scoped_pauses = [];
+        return new Response(JSON.stringify({ removed: true }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (parsed.pathname === "/api/approval-requests/approval-1/decisions" && method === "POST") {
         snapshot.approvals.pending = [];
