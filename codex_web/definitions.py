@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -154,19 +154,6 @@ class DefinitionPublishRequest(BaseModel):
     reason: str | None = None
     expected_active_revision: int | None = None
     approval_metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class DefinitionRetireRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    definition_id: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    scope_type: DefinitionScope = DefinitionScope.GLOBAL
-    scope_id: str | None = None
-    lifecycle: Literal["deprecated", "disabled"]
-    actor: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    expected_active_revision: int | None = None
 
 
 class DefinitionRollbackRequest(BaseModel):
