@@ -450,7 +450,7 @@ class LocalVectorRetrievalBackend(_LocalRetrievalBase):
                     continue
                 reasons = (
                     (
-                        f"vector:{vector:.3f}",
+                        f"semantic:{vector:.3f}",
                         f"lexical:{lexical:.3f}",
                     )
                     if request.text
