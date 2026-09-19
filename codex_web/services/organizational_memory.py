@@ -1526,7 +1526,11 @@ class OrganizationalMemoryService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             allowed_knowledge_ids=tuple(canonical_by_id),
-            project_ids=query.project_ids,
+            project_ids=(
+                ()
+                if query.include_company_scope
+                else query.project_ids
+            ),
             object_types=tuple(item.value for item in query.object_types),
             lifecycles=tuple(
                 dict.fromkeys(
