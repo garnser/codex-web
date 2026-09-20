@@ -766,7 +766,7 @@ class TurnExecutionService:
                             "immutable for the live isolated session"
                         ),
                     )
-                if assignment.execution_profile_id is None:
+                if getattr(assignment, "execution_profile_id", None) is None:
                     if (
                         effective_execution_profile_id
                         not in {None, "repository-write"}
@@ -783,7 +783,7 @@ class TurnExecutionService:
                     effective_execution_profile_id = None
                 elif (
                     effective_execution_profile_id
-                    and assignment.execution_profile_id
+                    and getattr(assignment, "execution_profile_id", None)
                     != effective_execution_profile_id
                 ):
                     raise HTTPException(
@@ -792,11 +792,11 @@ class TurnExecutionService:
                             "code": "thread_execution_profile_immutable",
                             "threadId": thread_id,
                             "requestedExecutionProfileId": effective_execution_profile_id,
-                            "effectiveExecutionProfileId": assignment.execution_profile_id,
+                            "effectiveExecutionProfileId": getattr(assignment, "execution_profile_id", None),
                         },
                     )
                 else:
-                    effective_execution_profile_id = assignment.execution_profile_id
+                    effective_execution_profile_id = getattr(assignment, "execution_profile_id", None)
                 target = getattr(assignment, "repository_target", None)
                 requested_repository = (
                     repository_resource_id or settings.repository_resource_id
