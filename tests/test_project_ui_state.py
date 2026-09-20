@@ -279,6 +279,24 @@ class ProjectUiStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bindings", payload["meta"]["sectionVersions"])
         self.assertIn("threads", payload["meta"]["sectionVersions"])
 
+    def test_binding_projection_is_thread_scoped_and_does_not_discover_channels(self) -> None:
+        service, _resources, _threads, bindings, *_rest = self._service()
+
+        payload = service.binding_state(
+            "project-a",
+            actor=_actor(),
+            thread_id="thread-0000",
+        )
+
+        self.assertEqual(payload["projectId"], "project-a")
+        self.assertEqual(payload["threadId"], "thread-0000")
+        self.assertEqual(len(payload["bindings"]["items"]), 500)
+        self.assertTrue(payload["bindings"]["truncated"])
+        self.assertLessEqual(len(payload["channels"]["items"]), 250)
+        self.assertEqual(bindings.scoped_calls, 1)
+        self.assertEqual(bindings.global_calls, 0)
+        self.assertIn("version", payload["bindings"])
+
     async def test_cross_tenant_project_lookup_fails_closed(self) -> None:
         service, *_rest = self._service()
 
