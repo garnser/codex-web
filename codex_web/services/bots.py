@@ -49,7 +49,7 @@ class BotService:
         self.routing_service = routing_service
         self.load_gitlab_routing_settings = load_gitlab_routing_settings
 
-        # Compatibility for direct service consumers while legacy_core is being
+        # Compatibility for historical direct service consumers while the runtime facade is retained.
         # removed. Keep only narrow callables; never retain the mutable host.
         self._legacy_known_channels = None
         self._legacy_load_connections = None
