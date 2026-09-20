@@ -537,7 +537,12 @@ class AssignmentBoundControlPlaneBroker:
         return self
 
     def _validate_current(self) -> ExecutionAssignment:
-        assignment = self.validator()
+        try:
+            assignment = self.validator()
+        except Exception as exc:
+            raise ControlPlaneBrokerDeniedError(
+                "assignment or worker authority is stale"
+            ) from exc
         if assignment.id != self.snapshot.id:
             raise ControlPlaneBrokerDeniedError("assignment identity changed")
         if assignment.execution_id != self.snapshot.execution_id:
