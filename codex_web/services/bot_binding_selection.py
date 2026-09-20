@@ -8,27 +8,28 @@ from codex_web.models import BotBinding
 class BotBindingSelectionService:
     """Own deterministic bot binding lookup and primary/master selection."""
 
-    def __init__(self, host: Any) -> None:
-        self.host = host
-
-    def _override(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
-        candidate = getattr(self.host, name, None)
-        return candidate if callable(candidate) else fallback
+    def __init__(
+        self,
+        load_bindings: Callable[[], list[BotBinding]],
+        *,
+        binding_report_name: Callable[[BotBinding], str],
+        binding_prefix: Callable[[BotBinding], str],
+    ) -> None:
+        self.load_bindings = load_bindings
+        self.binding_report_name = binding_report_name
+        self.binding_prefix = binding_prefix
 
     def for_connection(self, provider: str, external_conversation_id: str) -> list[BotBinding]:
         normalized_provider = provider.lower()
         return [
             binding
-            for binding in self.host._load_bot_bindings()
+            for binding in self.load_bindings()
             if binding.provider == normalized_provider
             and binding.external_conversation_id == external_conversation_id
         ]
 
     def find_unique(self, provider: str, external_conversation_id: str) -> BotBinding | None:
-        bindings = self._override("_bindings_for_connection", self.for_connection)(
-            provider,
-            external_conversation_id,
-        )
+        bindings = self.for_connection(provider, external_conversation_id)
         return bindings[0] if len(bindings) == 1 else None
 
     def first_for_connection(
@@ -38,16 +39,13 @@ class BotBindingSelectionService:
     ) -> BotBinding | None:
         if not external_conversation_id:
             return None
-        bindings = self._override("_bindings_for_connection", self.for_connection)(
-            provider,
-            external_conversation_id,
-        )
+        bindings = self.for_connection(provider, external_conversation_id)
         return bindings[0] if bindings else None
 
     def for_thread(self, thread_id: str) -> list[BotBinding]:
         return [
             binding
-            for binding in self.host._load_bot_bindings()
+            for binding in self.load_bindings()
             if binding.thread_id == thread_id
         ]
 
@@ -55,14 +53,14 @@ class BotBindingSelectionService:
         normalized_provider = provider.lower()
         return [
             binding
-            for binding in self.host._load_bot_bindings()
+            for binding in self.load_bindings()
             if binding.provider == normalized_provider and binding.project_id == project_id
         ]
 
     def master(self, project_id: str) -> BotBinding | None:
         masters = [
             binding
-            for binding in self.host._load_bot_bindings()
+            for binding in self.load_bindings()
             if binding.project_id == project_id and binding.is_master
         ]
         if not masters:
@@ -73,14 +71,14 @@ class BotBindingSelectionService:
         masters = sorted(
             [
                 binding
-                for binding in self.host._load_bot_bindings()
+                for binding in self.load_bindings()
                 if binding.project_id == project_id and binding.is_master
             ],
             key=lambda binding: binding.updated_at,
             reverse=True,
         )
         for binding in masters:
-            if (self.host._binding_report_name(binding) or "").strip().lower() in {
+            if (self.binding_report_name(binding) or "").strip().lower() in {
                 "orchestrator",
                 "codex",
             }:
@@ -93,8 +91,7 @@ class BotBindingSelectionService:
         project_id: str,
         external_conversation_id: str | None = None,
     ) -> BotBinding | None:
-        bindings_for_project = self._override("_bindings_for_project", self.for_project)
-        project_bindings = bindings_for_project(provider, project_id)
+        project_bindings = self.for_project(provider, project_id)
         masters = [binding for binding in project_bindings if binding.is_master]
         if not masters:
             return None
@@ -102,7 +99,7 @@ class BotBindingSelectionService:
             (
                 binding.thread_id
                 for binding in masters
-                if (self.host._binding_prefix(binding) or "").strip().lower()
+                if (self.binding_prefix(binding) or "").strip().lower()
                 in {"orchestrator", "codex"}
             ),
             None,
@@ -127,13 +124,20 @@ class BotBindingSelectionService:
         return None
 
 
-def install_bot_binding_selection_service(app: Any, host: Any) -> BotBindingSelectionService:
-    existing = getattr(app.state, "bot_binding_selection_service", None)
-    if isinstance(existing, BotBindingSelectionService) and existing.host is host:
-        service = existing
-    else:
-        service = BotBindingSelectionService(host)
-        app.state.bot_binding_selection_service = service
+def install_bot_binding_selection_service(
+    app: Any,
+    host: Any,
+    *,
+    load_bindings: Callable[[], list[BotBinding]] | None = None,
+    binding_report_name: Callable[[BotBinding], str] | None = None,
+    binding_prefix: Callable[[BotBinding], str] | None = None,
+) -> BotBindingSelectionService:
+    service = BotBindingSelectionService(
+        load_bindings or host._load_bot_bindings,
+        binding_report_name=binding_report_name or host._binding_report_name,
+        binding_prefix=binding_prefix or host._binding_prefix,
+    )
+    app.state.bot_binding_selection_service = service
 
     host._find_bot_binding = service.find_unique
     host._first_binding_for_connection = service.first_for_connection
