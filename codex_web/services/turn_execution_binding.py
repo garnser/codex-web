@@ -466,12 +466,24 @@ class TurnExecutionBindingService:
             )
         repository_target = self._repository_target(
             project,
-            explicit_repository_id=explicit_repository_id,
-            read_only_repository_ids=read_only_repository_ids,
-            work_item_resource_ids=work_item_resource_ids,
+            explicit_repository_id=(
+                None if effective_orchestration_only else explicit_repository_id
+            ),
+            read_only_repository_ids=(
+                () if effective_orchestration_only else read_only_repository_ids
+            ),
+            work_item_resource_ids=(
+                () if effective_orchestration_only else work_item_resource_ids
+            ),
             work_item_ref=work_item_ref,
-            thread_profile_repository_id=thread_profile_repository_id,
-            routing_repository_id=routing_repository_id,
+            thread_profile_repository_id=(
+                None
+                if effective_orchestration_only
+                else thread_profile_repository_id
+            ),
+            routing_repository_id=(
+                None if effective_orchestration_only else routing_repository_id
+            ),
             orchestration_only=effective_orchestration_only,
         )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
