@@ -37,9 +37,10 @@ class BotChannelDiscoveryService:
         self.slack = slack_client
         self.secret_broker = secret_broker
         self.cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
-        self.negative_cache: dict[tuple[str, str], float] = {}
-        self.cooldowns: dict[str, float] = {}
+        self.negative_cache: dict[tuple[str, str, str], float] = {}
+        self.cooldowns: dict[tuple[str, str], float] = {}
         self.discovery_metrics: dict[str, dict[str, Any]] = {}
+        self.refresh_tasks: dict[str, asyncio.Task[list[dict[str, str]]]] = {}
 
     @staticmethod
     def channel_label(channel_id: str, name: str | None = None) -> str:
@@ -179,36 +180,9 @@ class BotChannelDiscoveryService:
             self.bindings.load_bindings(),
         )
 
-    async def list(self, project_id: str) -> list[dict[str, str]]:
+    async def refresh(self, project_id: str) -> list[dict[str, str]]:
         self.projects.get(project_id)
         started = time.perf_counter()
-        now = time.time()
-        cached = self.cache.get(project_id)
-        if cached and now - cached[0] < self.CACHE_SECONDS:
-            result = [dict(item) for item in cached[1]]
-            self.discovery_metrics[project_id] = {
-                "cacheHit": True,
-                "credentialGroups": 0,
-                "providerCalls": 0,
-                "listCalls": 0,
-                "metadataCandidateCount": 0,
-                "unresolvedCount": sum(
-                    1
-                    for item in result
-                    if item.get("provider") == "slack"
-                    and self.channel_needs_name(item)
-                ),
-                "metadataLookupCount": 0,
-                "negativeCacheHits": 0,
-                "cooldownSkips": 0,
-                "rateLimitEvents": 0,
-                "providerFailures": 0,
-                "discoveryDurationSeconds": (
-                    time.perf_counter() - started
-                ),
-            }
-            return result
-
         connections = self.connections.load_connections()
         bindings = self.bindings.load_bindings()
         channels = {
@@ -280,7 +254,7 @@ class BotChannelDiscoveryService:
             if retry_after is None:
                 return
             metrics["rateLimitEvents"] += 1
-            self.cooldowns[group_key] = time.time() + max(
+            self.cooldowns[(project_id, group_key)] = time.time() + max(
                 retry_after,
                 self.DEFAULT_RATE_LIMIT_SECONDS,
             )
@@ -289,7 +263,7 @@ class BotChannelDiscoveryService:
             group_key: str,
             connection: BotConnection,
         ) -> None:
-            if self.cooldowns.get(group_key, 0.0) > time.time():
+            if self.cooldowns.get((project_id, group_key), 0.0) > time.time():
                 metrics["cooldownSkips"] += 1
                 return
 
@@ -344,11 +318,11 @@ class BotChannelDiscoveryService:
                 connection = groups.get(group_key)
                 if connection is None:
                     continue
-                negative_key = (group_key, channel_id)
+                negative_key = (project_id, group_key, channel_id)
                 if self.negative_cache.get(negative_key, 0.0) > time.time():
                     metrics["negativeCacheHits"] += 1
                     continue
-                if self.cooldowns.get(group_key, 0.0) > time.time():
+                if self.cooldowns.get((project_id, group_key), 0.0) > time.time():
                     metrics["cooldownSkips"] += 1
                     continue
 
@@ -432,17 +406,109 @@ class BotChannelDiscoveryService:
         }
         return result
 
+    async def list(self, project_id: str) -> list[dict[str, str]]:
+        """Return cached/known channels immediately and refresh in background."""
+
+        self.projects.get(project_id)
+        started = time.perf_counter()
+        now = time.time()
+        cached = self.cache.get(project_id)
+        if cached and now - cached[0] < self.CACHE_SECONDS:
+            result = [dict(item) for item in cached[1]]
+            metrics = dict(self.discovery_metrics.get(project_id, {}))
+            metrics.update(
+                {
+                    "cacheHit": True,
+                    "refreshScheduled": False,
+                    "refreshRunning": bool(
+                        project_id in self.refresh_tasks
+                        and not self.refresh_tasks[project_id].done()
+                    ),
+                    "requestDurationSeconds": (
+                        time.perf_counter() - started
+                    ),
+                }
+            )
+            self.discovery_metrics[project_id] = metrics
+            return result
+
+        known = self.known(project_id)
+        existing = self.refresh_tasks.get(project_id)
+        scheduled = False
+        if existing is None or existing.done():
+            task = asyncio.create_task(
+                self.refresh(project_id),
+                name=f"bot-channel-refresh:{project_id}",
+            )
+            self.refresh_tasks[project_id] = task
+            scheduled = True
+
+            def clear(completed: asyncio.Task, *, key: str = project_id) -> None:
+                if self.refresh_tasks.get(key) is completed:
+                    self.refresh_tasks.pop(key, None)
+                with contextlib.suppress(Exception):
+                    completed.result()
+
+            task.add_done_callback(clear)
+
+        result = (
+            [dict(item) for item in cached[1]]
+            if cached
+            else [dict(item) for item in known]
+        )
+        metrics = dict(self.discovery_metrics.get(project_id, {}))
+        metrics.update(
+            {
+                "cacheHit": bool(cached),
+                "refreshScheduled": scheduled,
+                "refreshRunning": True,
+                "requestDurationSeconds": (
+                    time.perf_counter() - started
+                ),
+            }
+        )
+        self.discovery_metrics[project_id] = metrics
+        return result
+
+    async def wait_for_refresh(
+        self,
+        project_id: str,
+    ) -> list[dict[str, str]]:
+        task = self.refresh_tasks.get(project_id)
+        if task is None:
+            return await self.refresh(project_id)
+        return await asyncio.shield(task)
+
     def invalidate(self, project_id: str | None = None) -> None:
         if project_id is None:
             self.cache.clear()
             self.discovery_metrics.clear()
-        else:
-            self.cache.pop(project_id, None)
-            self.discovery_metrics.pop(project_id, None)
-        # Explicit configuration invalidation must not leave stale provider
-        # failures suppressing newly valid discovery attempts.
-        self.negative_cache.clear()
-        self.cooldowns.clear()
+            self.negative_cache.clear()
+            self.cooldowns.clear()
+            for task in self.refresh_tasks.values():
+                if not task.done():
+                    task.cancel()
+            self.refresh_tasks.clear()
+            return
+
+        self.cache.pop(project_id, None)
+        self.discovery_metrics.pop(project_id, None)
+        task = self.refresh_tasks.pop(project_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+        # Configuration invalidation only clears failure suppression for the
+        # affected Project; unrelated Projects keep their provider cooldowns.
+        self.negative_cache = {
+            key: expiry
+            for key, expiry in self.negative_cache.items()
+            if key[0] != project_id
+        }
+        self.cooldowns = {
+            key: expiry
+            for key, expiry in self.cooldowns.items()
+            if key[0] != project_id
+        }
 
 
 def install_bot_channel_discovery_service(
