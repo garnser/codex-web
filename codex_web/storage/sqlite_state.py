@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
+    OperationTimingMetrics,
     parse_state_record_storage_key,
     state_record_marker,
     state_record_prefix,
@@ -25,6 +26,7 @@ class SQLiteStateStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
+        self._keyed_mutation_metrics = OperationTimingMetrics()
         self._initialize()
 
     def _secure_database_files(self) -> None:
@@ -254,23 +256,32 @@ class SQLiteStateStore:
         upserts: dict[str, Any],
         deletes: tuple[str, ...] = (),
     ) -> None:
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._ensure_record_collection_in_connection(
-                connection,
-                namespace,
-            )
-            for key in dict.fromkeys(str(item) for item in deletes):
-                connection.execute(
-                    "DELETE FROM state_documents WHERE namespace = ?",
-                    (state_record_storage_key(namespace, key),),
-                )
-            for key, payload in upserts.items():
-                self._upsert(
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._ensure_record_collection_in_connection(
                     connection,
-                    state_record_storage_key(namespace, str(key)),
-                    payload,
+                    namespace,
                 )
+                for key in dict.fromkeys(str(item) for item in deletes):
+                    connection.execute(
+                        "DELETE FROM state_documents WHERE namespace = ?",
+                        (state_record_storage_key(namespace, key),),
+                    )
+                for key, payload in upserts.items():
+                    self._upsert(
+                        connection,
+                        state_record_storage_key(namespace, str(key)),
+                        payload,
+                    )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
 
     def record_update(
         self,
@@ -280,39 +291,57 @@ class SQLiteStateStore:
         *,
         default: Any,
     ) -> Any:
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._ensure_record_collection_in_connection(
-                connection,
-                namespace,
-            )
-            storage_key = state_record_storage_key(namespace, str(key))
-            row = connection.execute(
-                "SELECT payload FROM state_documents WHERE namespace = ?",
-                (storage_key,),
-            ).fetchone()
-            current = self._decode(row, default)
-            updated = updater(current)
-            if updated is None:
-                connection.execute(
-                    "DELETE FROM state_documents WHERE namespace = ?",
-                    (storage_key,),
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._ensure_record_collection_in_connection(
+                    connection,
+                    namespace,
                 )
-            else:
-                self._upsert(connection, storage_key, updated)
+                storage_key = state_record_storage_key(namespace, str(key))
+                row = connection.execute(
+                    "SELECT payload FROM state_documents WHERE namespace = ?",
+                    (storage_key,),
+                ).fetchone()
+                current = self._decode(row, default)
+                updated = updater(current)
+                if updated is None:
+                    connection.execute(
+                        "DELETE FROM state_documents WHERE namespace = ?",
+                        (storage_key,),
+                    )
+                else:
+                    self._upsert(connection, storage_key, updated)
+            success = True
             return updated
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
 
     def record_replace(
         self,
         namespace: str,
         records: dict[str, Any],
     ) -> None:
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._replace_records_in_connection(
-                connection,
-                namespace,
-                records,
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._replace_records_in_connection(
+                    connection,
+                    namespace,
+                    records,
+                )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
             )
 
     def schema_version(self) -> int:
@@ -346,6 +375,7 @@ class SQLiteStateStore:
             "ok": integrity.lower() == "ok",
             "documents": int(document_count or 0),
             "lastDocumentUpdateAt": float(updated_row[0]) if updated_row and updated_row[0] is not None else None,
+            "keyedMutationMetrics": self._keyed_mutation_metrics.snapshot(),
         }
 
     def checkpoint(self, *, truncate: bool = False) -> dict[str, int]:
