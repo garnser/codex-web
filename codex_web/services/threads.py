@@ -36,6 +36,7 @@ from codex_web.services.thread_recovery import ThreadRecoveryService
 from codex_web.services.thread_resume import ThreadResumeService
 from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.services.turn_execution_binding import (
+    TurnExecutionBindingError,
     TurnExecutionBindingService,
 )
 
@@ -684,17 +685,28 @@ class ThreadService:
         bootstrap_id = f"bootstrap-{token}"
         execution_id = f"thread-bootstrap-{token}"
 
-        binding = binding_service.prepare_bootstrap(
-            bootstrap_id=bootstrap_id,
-            execution_id=execution_id,
-            project_id=project.id,
-            sandbox=effective_sandbox,
-            approval_policy=effective_approval_policy,
-            runtime_binding=runtime_binding,
-            explicit_repository_id=repository_resource_id,
-            read_only_repository_ids=read_only_repository_resource_ids,
-            execution_profile_id=execution_profile_id,
-        )
+        try:
+            binding = binding_service.prepare_bootstrap(
+                bootstrap_id=bootstrap_id,
+                execution_id=execution_id,
+                project_id=project.id,
+                sandbox=effective_sandbox,
+                approval_policy=effective_approval_policy,
+                runtime_binding=runtime_binding,
+                explicit_repository_id=repository_resource_id,
+                read_only_repository_ids=read_only_repository_resource_ids,
+                execution_profile_id=execution_profile_id,
+            )
+        except TurnExecutionBindingError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "execution_preflight_blocked",
+                    "message": str(exc),
+                    "blockers": [exc.public()],
+                    "retryable": False,
+                },
+            ) from exc
         session = await session_manager.start(binding.assignment_id)
         status = session.status()
         workspace_path = session.workspace_path
