@@ -5,7 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from codex_web.definitions import DefinitionReference
 from codex_web.execution_workers import WorkerCapability
 from codex_web.models import SandboxMode
 
@@ -113,21 +112,6 @@ class ExecutionProfileCatalogDefinition(BaseModel):
     @property
     def profile_map(self) -> dict[str, ExecutionProfileContract]:
         return {profile.id: profile for profile in self.profiles}
-
-
-class ExecutionProfileBinding(BaseModel):
-    """Exact execution profile revision pinned onto an assignment."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    profile_id: str
-    definition: DefinitionReference
-    workspace_mode: ExecutionWorkspaceMode
-    repository_access: ExecutionRepositoryAccess
-    required_worker_capabilities: tuple[WorkerCapability, ...]
-    allowed_sandboxes: tuple[SandboxMode, ...]
-    allowed_control_plane_operations: tuple[str, ...]
-    authority_explanation: str
 
 
 def validate_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
