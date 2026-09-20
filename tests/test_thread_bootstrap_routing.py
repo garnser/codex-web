@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings
+from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
 from codex_web.services.threads import ThreadService
 
 
@@ -99,10 +100,24 @@ class _BindingService:
 
     def prepare_bootstrap(self, **kwargs):
         self.calls.append(kwargs)
+        target = RepositoryExecutionTarget(
+            organization_id="local",
+            workspace_id="default",
+            project_id=kwargs["project_id"],
+            mutable_repository_id=kwargs.get("explicit_repository_id") or "repo-default",
+            read_only_repository_ids=kwargs.get("read_only_repository_ids") or (),
+            source=(
+                RepositoryTargetSource.EXPLICIT
+                if kwargs.get("explicit_repository_id")
+                else RepositoryTargetSource.SINGLE_REPOSITORY
+            ),
+        )
         return SimpleNamespace(
             execution_id=kwargs["execution_id"],
             assignment_id="assignment-bootstrap",
             workspace_id="execws-bootstrap",
+            repository_resource_id=target.mutable_repository_id,
+            repository_target=target,
         )
 
 
@@ -252,6 +267,29 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bound["execution_id"], planner.calls[0]["execution_id"])
         self.assertEqual(host.settings[0][0], "thread-created")
         self.assertEqual(host.events[-1]["type"], "thread_bootstrap_bound")
+
+    async def test_create_passes_and_persists_repository_target(self) -> None:
+        host, planner, _manager, _bindings, service = self._service()
+
+        await service.create(
+            project_id="p1",
+            repository_resource_id="repo-app",
+            read_only_repository_resource_ids=("repo-docs",),
+        )
+
+        call = planner.calls[0]
+        self.assertEqual(call["explicit_repository_id"], "repo-app")
+        self.assertEqual(call["read_only_repository_ids"], ("repo-docs",))
+        remembered = host.settings[0][1]
+        self.assertEqual(remembered["repository_resource_id"], "repo-app")
+        self.assertEqual(
+            remembered["read_only_repository_resource_ids"],
+            ("repo-docs",),
+        )
+        self.assertEqual(
+            host.events[-1]["repository_target"]["mutable_repository_id"],
+            "repo-app",
+        )
 
     async def test_create_records_separate_canonical_agent_session_identity(self) -> None:
         agent_sessions = _AgentSessions()
