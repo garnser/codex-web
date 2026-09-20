@@ -70,7 +70,10 @@ class BotWebhookSecurityService:
             )
         ]
         if not environment_secret and not candidates:
-            return
+            raise HTTPException(
+                status_code=503,
+                detail="Slack webhook verification is not configured",
+            )
         if not timestamp or not signature:
             raise HTTPException(
                 status_code=401,
@@ -125,7 +128,10 @@ class BotWebhookSecurityService:
             )
         ]
         if not environment_secret and not candidates:
-            return
+            raise HTTPException(
+                status_code=503,
+                detail="Telegram webhook verification is not configured",
+            )
         received = request.headers.get(
             "x-telegram-bot-api-secret-token"
         )
