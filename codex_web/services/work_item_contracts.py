@@ -154,14 +154,16 @@ class WorkItemContractService:
                 source="definition-registry",
                 reason="execution contract resolved",
                 payload={
-                    "definitions": [
-                        {
-                            "definition_id": item.definition_id,
-                            "kind": item.kind,
-                            "revision": item.revision,
-                            "record_id": item.record_id,
-                            "checksum": item.checksum,
-                        }
+                    "definition_id": definition_refs[0].definition_id,
+                    "kind": definition_refs[0].kind,
+                    "revision": definition_refs[0].revision,
+                    "record_id": definition_refs[0].record_id,
+                    "checksum": definition_refs[0].checksum,
+                    "definition_refs": [
+                        (
+                            f"{item.kind}:{item.definition_id}@r{item.revision}:"
+                            f"{item.record_id}:{item.checksum}"
+                        )
                         for item in definition_refs
                     ],
                 },
