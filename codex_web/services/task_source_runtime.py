@@ -233,7 +233,7 @@ class TaskSourceWritebackService:
         ] = {}
         self._last_applied: dict[
             tuple[str, ...],
-            tuple[str | None, str],
+            tuple[str | None, str, str | None],
         ] = {}
         self._stats: dict[str, int] = {
             "scheduled": 0,
@@ -251,8 +251,13 @@ class TaskSourceWritebackService:
     @staticmethod
     def _desired_fingerprint(
         state: WorkItemState,
-    ) -> tuple[str | None, str]:
-        return state.current_owner, state.current_stage
+    ) -> tuple[str | None, str, str | None]:
+        identity = getattr(state, "source_identity", None)
+        return (
+            state.current_owner,
+            state.current_stage,
+            getattr(identity, "revision", None),
+        )
 
     @staticmethod
     def _key(state: WorkItemState) -> tuple[str, ...] | None:
@@ -368,7 +373,11 @@ class TaskSourceWritebackService:
             else:
                 self._stats["skipped"] += 1
             if key is not None:
-                self._last_applied[key] = desired
+                self._last_applied[key] = (
+                    state.current_owner,
+                    state.current_stage,
+                    result.snapshot.identity.revision,
+                )
             return self._save_snapshot(state, result.snapshot)
 
         snapshot: TaskSourceSnapshot | None = None
@@ -397,7 +406,11 @@ class TaskSourceWritebackService:
             return state
         self._stats["applied"] += 1
         if key is not None:
-            self._last_applied[key] = desired
+            self._last_applied[key] = (
+                state.current_owner,
+                state.current_stage,
+                snapshot.identity.revision,
+            )
         return self._save_snapshot(state, snapshot)
 
     async def sync(self, state: WorkItemState) -> WorkItemState:
@@ -439,6 +452,22 @@ class TaskSourceWritebackService:
             )
         return state
 
+    @staticmethod
+    def _retry_delay(exc: Exception, retry: int) -> float:
+        response = getattr(exc, "response", None)
+        if (
+            response is not None
+            and getattr(response, "status_code", None) == 429
+        ):
+            headers = getattr(response, "headers", {}) or {}
+            try:
+                retry_after = float(headers.get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+            if retry_after > 0:
+                return min(60.0, retry_after)
+        return min(5.0, 0.25 * (2 ** (retry - 1)))
+
     async def _run_key(self, key: tuple[str, ...]) -> None:
         retry = 0
         # One event-loop turn intentionally collapses synchronous update bursts.
@@ -470,7 +499,7 @@ class TaskSourceWritebackService:
                         )
                         return
                     self._stats["retried"] += 1
-                    delay = min(5.0, 0.25 * (2 ** (retry - 1)))
+                    delay = self._retry_delay(exc, retry)
                     self._backoff_until[key] = time.time() + delay
                     await asyncio.sleep(delay)
                     continue
@@ -529,6 +558,11 @@ class TaskSourceWritebackService:
                             "owner": desired.current_owner,
                             "stage": desired.current_stage,
                             "updatedAt": desired.updated_at,
+                            "revision": (
+                                desired.source_identity.revision
+                                if desired.source_identity is not None
+                                else None
+                            ),
                         }
                         if desired is not None
                         else None
@@ -537,6 +571,7 @@ class TaskSourceWritebackService:
                         {
                             "owner": applied[0],
                             "stage": applied[1],
+                            "revision": applied[2],
                         }
                         if (
                             applied := self._last_applied.get(key)
