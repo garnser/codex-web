@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
@@ -597,6 +597,7 @@ def install_bot_delivery_service(
     app.state.bot_delivery_service = service
 
     async def _compat_send_bot_outbound(
+        _service: BotDeliveryService,
         binding: BotBinding,
         text: str,
         *,
@@ -622,7 +623,7 @@ def install_bot_delivery_service(
     # Keep outbound delivery dynamic for supported callers/tests that replace
     # the historical compatibility helpers. Production services use the
     # explicit service graph above and never discover dependencies from host.
-    host._send_bot_outbound = _compat_send_bot_outbound
+    host._send_bot_outbound = MethodType(_compat_send_bot_outbound, service)
     host._send_bot_details = service.send_details
     host._record_bot_outbound = service.record_outbound
     host._record_bot_approval_request = service.record_approval_request
