@@ -17,11 +17,12 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ModelMapRepository(Generic[T]):
-    """StateStore-primary map storage with rollback-safe legacy JSON mirroring.
+    """Keyed StateStore repository with rollback-compatible JSON snapshots.
 
-    A load/save pair keeps a context-local snapshot. save() computes only the
-    keys changed by that caller and atomically merges the delta into the latest
-    shared-store document, preventing unrelated concurrent updates from being lost.
+    Canonical mutations use per-record StateStore operations. The historical
+    JSON file is a compatibility checkpoint: bulk save() keeps the old
+    synchronous behavior, while put()/delete() deliberately avoid rewriting
+    the whole mirror on the mutation hot path.
     """
 
     def __init__(
@@ -54,58 +55,119 @@ class ModelMapRepository(Generic[T]):
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _raw(self) -> dict[str, Any]:
+    def _ensure_records(self) -> None:
+        if self.store.record_collection_exists(self.namespace):
+            return
         payload = self.store.get(self.namespace)
         if payload is None:
             payload = self._legacy_payload()
-            self.store.put(self.namespace, payload)
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        self.store.record_replace(self.namespace, payload)
+
+    def _raw(self) -> dict[str, Any]:
+        self._ensure_records()
+        return self.store.record_items(self.namespace)
+
+    def _included(self, key: str) -> bool:
+        return self.key_filter is None or self.key_filter(key)
 
     def load(self) -> dict[str, T]:
-        raw = self._raw()
+        raw = {
+            key: value
+            for key, value in self._raw().items()
+            if isinstance(key, str) and self._included(key)
+        }
         self._snapshot.set(copy.deepcopy(raw))
-        result: dict[str, T] = {}
-        for key, value in raw.items():
-            if not isinstance(key, str):
-                continue
-            if self.key_filter is not None and not self.key_filter(key):
-                continue
-            result[key] = self.model.model_validate(value)
-        return result
+        return {
+            key: self.model.model_validate(value)
+            for key, value in raw.items()
+        }
+
+    def get(self, key: str) -> T | None:
+        key = str(key)
+        if not self._included(key):
+            return None
+        self._ensure_records()
+        raw = self.store.record_get(self.namespace, key)
+        return self.model.model_validate(raw) if raw is not None else None
+
+    def put(self, key: str, value: T) -> T:
+        key = str(key)
+        if not self._included(key):
+            raise ValueError(f"key is outside repository filter: {key}")
+        self._ensure_records()
+        self.store.record_apply(
+            self.namespace,
+            upserts={key: value.model_dump(mode="json")},
+        )
+        self._snapshot.set(None)
+        return value
+
+    def delete(self, key: str) -> bool:
+        key = str(key)
+        if not self._included(key):
+            return False
+        self._ensure_records()
+        existed = self.store.record_get(self.namespace, key) is not None
+        if existed:
+            self.store.record_apply(
+                self.namespace,
+                upserts={},
+                deletes=(key,),
+            )
+        self._snapshot.set(None)
+        return existed
+
+    def flush_legacy_mirror(self) -> None:
+        self._ensure_records()
+        atomic_write_text(
+            self.legacy_path,
+            json.dumps(
+                self.store.record_items(self.namespace),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            private=self.private,
+        )
 
     def save(self, values: dict[str, T]) -> None:
         payload = {
-            key: value.model_dump()
+            key: value.model_dump(mode="json")
             for key, value in sorted(values.items())
-            if self.key_filter is None or self.key_filter(key)
+            if self._included(key)
         }
         base = self._snapshot.get()
         if base is None:
-            self.store.put(self.namespace, payload)
-            merged = payload
-        else:
-            changed = {
+            current = self.store.record_items(self.namespace)
+            upserts = {
                 key: value
                 for key, value in payload.items()
-                if key not in base or base.get(key) != value
+                if current.get(key) != value
             }
-            deleted = set(base) - set(payload)
+            deletes = tuple(
+                key
+                for key in current
+                if self._included(key) and key not in payload
+            )
+        else:
+            upserts = {
+                key: value
+                for key, value in payload.items()
+                if base.get(key) != value
+            }
+            deletes = tuple(set(base) - set(payload))
 
-            def merge(current: Any) -> dict[str, Any]:
-                latest = dict(current) if isinstance(current, dict) else {}
-                for key in deleted:
-                    latest.pop(key, None)
-                latest.update(changed)
-                return latest
-
-            merged = self.store.update(self.namespace, merge, default={})
-
-        self._snapshot.set(copy.deepcopy(merged))
-        atomic_write_text(
-            self.legacy_path,
-            json.dumps(merged, indent=2) + "\n",
-            private=self.private,
-        )
+        self._ensure_records()
+        if upserts or deletes:
+            self.store.record_apply(
+                self.namespace,
+                upserts=upserts,
+                deletes=deletes,
+            )
+        self._snapshot.set(copy.deepcopy(payload))
+        self.flush_legacy_mirror()
 
 
 class RuntimeStateRepositories:
