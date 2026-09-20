@@ -158,3 +158,9 @@ docker run --rm \
 ```
 
 The container deliberately does not mount the Docker socket, SSH keys, or arbitrary host directories. Add only the credentials and mounts required for the repositories and integrations you intend Codex to access.
+
+## Rootless Podman
+
+Rootless Podman is supported for the local Bubblewrap execution worker through the qualified overlay in `compose.podman.yaml`. Use the setup, readiness checks, security tradeoffs, and failure recovery procedure in [docs/operations/rootless-podman.md](docs/operations/rootless-podman.md).
+
+Do not substitute privileged mode when the Bubblewrap probe fails. A failed probe intentionally removes `command_execution` from the local worker and causes execution readiness to fail closed before a turn creates execution state.
