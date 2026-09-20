@@ -298,6 +298,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
         queues = h._load_turn_queues()
@@ -346,6 +347,7 @@ class TurnExecutionService:
             reasoning_effort=reasoning_effort,
             repository_resource_id=repository_resource_id,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
+            execution_profile_id=execution_profile_id,
             source=source,
             reply_target=reply_target,
             created_at=time.time(),
@@ -510,6 +512,7 @@ class TurnExecutionService:
         worker_id: str | None = None,
         fence: int | None = None,
         repository_resource_id: str | None = None,
+        execution_profile_id: str | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -544,6 +547,11 @@ class TurnExecutionService:
                 repository_resource_id
                 or settings.repository_resource_id
                 or (current.repository_resource_id if current else None)
+            ),
+            execution_profile_id=(
+                execution_profile_id
+                or settings.execution_profile_id
+                or (current.execution_profile_id if current else None)
             ),
             started_at=current.started_at if current else now,
             updated_at=now,
@@ -692,6 +700,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
         binding_service, default_session_manager = self._require_worker_routing()
@@ -702,6 +711,9 @@ class TurnExecutionService:
         )
         effective_model = model or settings.model or project.model
         effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
+        effective_execution_profile_id = (
+            execution_profile_id or settings.execution_profile_id
+        )
         effective_developer_instructions = h._effective_developer_instructions(
             thread_id,
             settings.developer_instructions,
@@ -754,6 +766,24 @@ class TurnExecutionService:
                             "immutable for the live isolated session"
                         ),
                     )
+                if (
+                    effective_execution_profile_id
+                    and assignment.execution_profile_id
+                    != effective_execution_profile_id
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "thread_execution_profile_immutable",
+                            "threadId": thread_id,
+                            "requestedExecutionProfileId": effective_execution_profile_id,
+                            "effectiveExecutionProfileId": assignment.execution_profile_id,
+                        },
+                    )
+                effective_execution_profile_id = (
+                    assignment.execution_profile_id
+                    or effective_execution_profile_id
+                )
                 target = getattr(assignment, "repository_target", None)
                 requested_repository = (
                     repository_resource_id or settings.repository_resource_id
@@ -816,6 +846,7 @@ class TurnExecutionService:
                         read_only_repository_resource_ids
                         or settings.read_only_repository_resource_ids
                     ),
+                    execution_profile_id=effective_execution_profile_id,
                 )
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
@@ -916,6 +947,7 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                execution_profile_id=effective_execution_profile_id,
             )
 
             params: dict[str, Any] = {
@@ -993,6 +1025,7 @@ class TurnExecutionService:
                 "approval_policy": effective_approval_policy,
                 "model": effective_model,
                 "reasoning_effort": effective_reasoning_effort,
+                "execution_profile_id": effective_execution_profile_id,
                 "source": source,
                 "reply_target": reply_target,
                 "execution_id": canonical_execution_id,
@@ -1024,6 +1057,7 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                execution_profile_id=effective_execution_profile_id,
             )
         h._append_bot_event(
             {
@@ -1091,6 +1125,7 @@ class TurnExecutionService:
                 execution_id=queued.execution_id,
                 repository_resource_id=queued.repository_resource_id,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                execution_profile_id=queued.execution_profile_id,
             )
             h._append_bot_event(
                 {
@@ -1280,6 +1315,7 @@ class TurnExecutionService:
                     reply_target=active.reply_target,
                     execution_id=active.execution_id,
                     repository_resource_id=active.repository_resource_id,
+                    execution_profile_id=active.execution_profile_id,
                 )
                 self.mark_thread_active(
                     thread_id,
@@ -1291,6 +1327,7 @@ class TurnExecutionService:
                     reasoning_effort=reasoning_effort,
                     source=f"restart-recovery:{active.source or 'unknown'}",
                     reply_target=active.reply_target,
+                    execution_profile_id=active.execution_profile_id,
                 )
                 h._append_bot_event(
                     {"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id}
@@ -1344,6 +1381,7 @@ class TurnExecutionService:
                         reasoning_effort=last_input.get("reasoning_effort"),
                         source=f"terminal-recovery:{last_input.get('source') or 'unknown'}",
                         reply_target=last_input.get("reply_target"),
+                        execution_profile_id=last_input.get("execution_profile_id"),
                     )
                     self.last_inputs.pop(thread_id, None)
                 else:
