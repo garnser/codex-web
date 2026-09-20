@@ -375,9 +375,9 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("const ROW_WINDOW = 60", source)
         self.assertIn("AbortController", source)
         self.assertIn("nextCursor", source)
-        self.assertIn("state.items.slice", source)
+        self.assertIn("const visible = state.items.slice(", source)
+        self.assertIn("visible.map((item)", source)
         self.assertIn("limit: String(PAGE_SIZE)", source)
-        self.assertNotIn("state.items.map((item)", source)
 
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
