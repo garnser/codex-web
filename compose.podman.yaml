@@ -3,13 +3,16 @@
 # Use with:
 #   podman compose -f compose.yaml -f compose.podman.yaml up -d
 #
-# Rootless Podman remains unprivileged on the host. seccomp=unconfined relaxes
-# the outer container syscall filter so the non-root codex user can create the
-# nested user/PID/mount/network namespaces enforced by Bubblewrap.
+# Rootless Podman remains unprivileged on the host. SYS_ADMIN is granted only
+# inside Podman's rootless user namespace; it is not host CAP_SYS_ADMIN.
+# Together with seccomp=unconfined this permits the non-root codex user to
+# create the nested mount/PID/network namespaces enforced by Bubblewrap.
 services:
   codex-web:
     environment:
       CODEX_WEB_EXECUTION_CONTAINER_PROFILE: rootless-podman-bwrap
+    cap_add:
+      - SYS_ADMIN
     security_opt:
       - seccomp=unconfined
       - label=disable
