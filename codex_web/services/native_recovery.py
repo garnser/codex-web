@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import asyncio
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from codex_web.services.keyed_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
 
 
@@ -38,7 +39,32 @@ class NativeRecoveryService:
         self.append_event = append_event
         self.last_scheduled_at = 0.0
         self.shutting_down = False
-        self.tasks: set[asyncio.Task[None]] = set()
+        try:
+            concurrency = int(
+                os.environ.get(
+                    "CODEX_WEB_NATIVE_RECOVERY_CONCURRENCY"
+                )
+                or "4"
+            )
+        except ValueError:
+            concurrency = 4
+        try:
+            timeout_seconds = float(
+                os.environ.get(
+                    "CODEX_WEB_NATIVE_RECOVERY_CYCLE_TIMEOUT_SECONDS"
+                )
+                or "120"
+            )
+        except ValueError:
+            timeout_seconds = 120.0
+        self.coordinator = KeyedTaskCoordinator(
+            name="native-recovery",
+            max_concurrency=max(1, min(concurrency, 16)),
+            timeout_seconds=max(1.0, min(timeout_seconds, 900.0)),
+            event_sink=append_event,
+        )
+        # Compatibility/inspection seam: callers historically counted tasks.
+        self.tasks = self.coordinator._tasks
 
     def set_shutting_down(self, value: bool) -> None:
         self.shutting_down = value
@@ -56,17 +82,30 @@ class NativeRecoveryService:
         self.append_event(
             {"type": "native_recovery_scheduled", "reason": reason}
         )
-        for cycle in self.cycles:
-            task = asyncio.create_task(cycle())
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
-        return True
+        submitted = False
+        for index, cycle in enumerate(self.cycles):
+            name = getattr(cycle, "__name__", cycle.__class__.__name__)
+            key = f"cycle:{index}:{name}"
+            submitted = (
+                self.coordinator.submit(
+                    key,
+                    cycle,
+                    metadata={
+                        "reason": reason,
+                        "cycle": name,
+                    },
+                )
+                or submitted
+            )
+        return submitted
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "lastScheduledAt": self.last_scheduled_at or None,
+            "shuttingDown": self.shutting_down,
+            **self.coordinator.status(),
+        }
 
     async def stop(self) -> None:
         self.shutting_down = True
-        tasks = list(self.tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self.tasks.clear()
+        await self.coordinator.stop()
