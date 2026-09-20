@@ -18,6 +18,26 @@ The UI is exposed on `127.0.0.1:8765` by default. Set `CODEX_WEB_BIND=0.0.0.0` o
 
 The image has a Docker healthcheck against `/api/livez`. `/api/healthz` remains the deeper readiness/daemon-health endpoint and can return 503 when the Codex app-server is unavailable.
 
+## Production release image
+
+Production releases are driven by the repository-level `.release-version` file. After the normal `tests` workflow succeeds for a `main` commit, `.github/workflows/publish-release.yml` checks out that exact tested SHA and publishes it only when the declared version has not already been tagged. The workflow:
+
+1. builds the final application image from the trusted `garnser/codex-web:base`;
+2. verifies the pinned Codex CLI version;
+3. smoke-tests `/api/livez`;
+4. publishes `garnser/codex-web:<version>`, `garnser/codex-web:v<version>`, `garnser/codex-web:sha-<commit>`, and `garnser/codex-web:latest`;
+5. creates the matching `v<version>` Git tag and GitHub Release from that exact commit.
+
+The workflow creates the tag only after the production image has built, passed its smoke test, and been pushed successfully. Existing release tags are never moved.
+
+For the first release:
+
+```bash
+docker pull garnser/codex-web:0.1.0
+# equivalent immutable release alias
+docker pull garnser/codex-web:v0.1.0
+```
+
 ## Runtime base image
 
 `Dockerfile.base` owns the slow, rarely changing runtime foundation:
