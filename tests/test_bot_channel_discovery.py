@@ -184,6 +184,52 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slack.info_calls, [])
         self.assertEqual(service.status("home")["unresolvedCount"], 0)
 
+    async def test_twenty_equivalent_connections_and_fifty_channels_stay_bounded(self) -> None:
+        connections = _Connections(
+            [
+                _connection(
+                    f"c{index}",
+                    channel=f"C{index % 10:02d}",
+                )
+                for index in range(20)
+            ]
+        )
+        bindings = _Bindings(
+            [
+                _binding(
+                    f"b{index}",
+                    connection_id=f"c{index % 20}",
+                    channel=f"C{index:02d}",
+                )
+                for index in range(50)
+            ]
+        )
+        slack = _Slack()
+        slack.info_results = {
+            f"C{index:02d}": {
+                "provider": "slack",
+                "id": f"C{index:02d}",
+                "name": f"name-{index}",
+                "label": f"#name-{index}",
+            }
+            for index in range(50)
+        }
+        service = BotChannelDiscoveryService(
+            connections=connections,
+            bindings=bindings,
+            projects=_Projects(),
+            slack_client=slack,
+        )
+
+        await service.list("home")
+
+        metrics = service.status("home")
+        self.assertEqual(metrics["credentialGroups"], 1)
+        self.assertEqual(metrics["listCalls"], 1)
+        self.assertLessEqual(metrics["metadataLookupCount"], 50)
+        self.assertLessEqual(metrics["providerCalls"], 51)
+        self.assertLess(len(slack.info_calls), 20 * 50)
+
     async def test_metadata_lookup_concurrency_is_bounded(self) -> None:
         connection = _connection("c1")
         bindings = _Bindings(
