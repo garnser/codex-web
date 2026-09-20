@@ -253,7 +253,7 @@ function currentRunSettings() {
   return {
     sandbox: saved.sandbox || project?.sandbox || "workspace-write",
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
-    profileId: saved.profileId || ep.defaultId(),
+    profileId:saved.profileId||ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
@@ -342,7 +342,7 @@ function persistRunSettings() {
   allSettings[project.id] = {
     sandbox: $("sandbox").value,
     approvalPolicy: $("approval-policy").value,
-    profileId: $("execution-profile")?.value || ep.defaultId(),
+    profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
@@ -1445,10 +1445,8 @@ async function newThread() {
     sandbox: settings.sandbox,
     approval_policy: settings.approvalPolicy,
   });
-  qs.set("execution_profile_id", settings.profileId);
-  if (settings.repositoryResourceId && !ep.isScratch(settings.profileId)) {
-    qs.set("repository_resource_id", settings.repositoryResourceId);
-  }
+  qs.set("execution_profile_id",settings.profileId);
+  if(settings.repositoryResourceId&&!ep.isScratch(settings.profileId))qs.set("repository_resource_id",settings.repositoryResourceId);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
@@ -1490,7 +1488,7 @@ async function sendPrompt() {
     reasoning_effort: threadOptions.reasoningEffort,
     repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
     read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
-    execution_profile_id: selectedThreadSettings.execution_profile_id || runSettings.profileId || ep.defaultId(),
+    execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
   };
   try {
     let targetThreadId = threadId;
