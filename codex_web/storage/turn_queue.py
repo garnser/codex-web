@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from contextvars import ContextVar
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +19,8 @@ class TurnQueueRepository:
     def __init__(self, store: StateStore, legacy_path: Path) -> None:
         self.store = store
         self.legacy_path = legacy_path
-        self._snapshot: ContextVar[dict[str, Any] | None] = ContextVar(
-            "codex_web_turn_queue_snapshot",
-            default=None,
-        )
+        self._snapshots: dict[int, dict[str, Any]] = {}
+        self._lock = threading.RLock()
 
     def _legacy_payload(self) -> dict[str, Any]:
         if not self.legacy_path.exists():
@@ -42,7 +40,6 @@ class TurnQueueRepository:
 
     def load(self) -> dict[str, list[QueuedTurn]]:
         raw = self._raw()
-        self._snapshot.set(copy.deepcopy(raw))
         result: dict[str, list[QueuedTurn]] = {}
         for thread_id, values in raw.items():
             if not isinstance(thread_id, str) or not isinstance(values, list):
@@ -52,6 +49,8 @@ class TurnQueueRepository:
                 for item in values
                 if isinstance(item, dict)
             ]
+        with self._lock:
+            self._snapshots[id(result)] = copy.deepcopy(raw)
         return result
 
     def save(self, values: dict[str, list[QueuedTurn]]) -> None:
@@ -59,7 +58,8 @@ class TurnQueueRepository:
             str(thread_id): [item.model_dump(mode="json") for item in items]
             for thread_id, items in sorted(values.items())
         }
-        base = self._snapshot.get()
+        with self._lock:
+            base = self._snapshots.pop(id(values), None)
         if base is None:
             self.store.put(self.namespace, payload)
             merged = payload
@@ -84,7 +84,6 @@ class TurnQueueRepository:
                 default={},
             )
 
-        self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(
             self.legacy_path,
             json.dumps(merged, indent=2, sort_keys=True) + "\n",
