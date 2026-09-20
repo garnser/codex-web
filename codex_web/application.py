@@ -600,12 +600,6 @@ input_pipeline_definition_service = install_input_plugin_definitions(
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
 app.state.execution_profile_definition_service = execution_profile_definition_service
-app.include_router(
-    build_execution_profiles_router(
-        execution_profile_definition_service,
-        project_service,
-    )
-)
 app.state.executive_role_definition_service = executive_role_definition_service
 app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
@@ -776,6 +770,12 @@ thread_index_repository = install_thread_index_repository(
 project_service = ProjectService(project_repository)
 project_runtime_service = ProjectRuntimeService(project_service)
 app.state.project_runtime_service = project_runtime_service
+app.include_router(
+    build_execution_profiles_router(
+        execution_profile_definition_service,
+        project_service,
+    )
+)
 # Compatibility names now resolve to the extracted project runtime owner.
 core._project = project_runtime_service.get
 core._project_for_cwd = project_runtime_service.find_by_cwd
