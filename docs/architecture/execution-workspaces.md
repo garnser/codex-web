@@ -42,6 +42,20 @@ Normal terminal turn events clear only the active-turn record for a bootstrap-bo
 
 If the process/session disappears, the durable binding remains evidence that the thread belongs to an isolated bootstrap execution. Requests fail explicitly rather than starting a fresh private CODEX_HOME or falling back to the control-plane Codex runtime. Safe process restart/resume of that private CODEX_HOME is intentionally outside this contract.
 
+## Repository target provenance
+
+The execution binding resolves a canonical repository target before workspace
+acquisition. The resulting assignment records the exact
+`RepositoryExecutionTarget` alongside the normal Resource IDs so audits can
+distinguish Work Item, explicit, thread-profile, routing-rule, and single-repo
+selection.
+
+The current workspace implementation still provisions the selected mutable
+repository only. Read-only sibling repository IDs may be authorized and recorded
+on the target contract, but their isolated checkout/snapshot provisioning is a
+separate multi-repository workspace capability. They are not implicitly mounted
+from the host Project root.
+
 ## Resource leases
 
 Leases are reserved transactionally in SQLite before provisioning.

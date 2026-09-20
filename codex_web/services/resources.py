@@ -13,6 +13,8 @@ from codex_web.resources import (
     ResourceCreate,
     ResourceLifecycle,
     ResourceRelationship,
+    RepositoryExecutionTarget,
+    RepositoryTargetSource,
     ResourceRelationshipType,
     ResourceType,
     ResourceUpdate,
@@ -35,6 +37,22 @@ class ResourceAmbiguousError(ResourceCatalogError):
 
 class ResourceConflictError(ResourceCatalogError):
     pass
+
+
+class RepositoryTargetSelectionError(ResourceCatalogError):
+    code = "repository_target_invalid"
+
+
+class RepositoryTargetAmbiguousError(RepositoryTargetSelectionError):
+    code = "repository_target_ambiguous"
+
+
+class RepositoryTargetUnauthorizedError(RepositoryTargetSelectionError):
+    code = "repository_target_unauthorized"
+
+
+class RepositoryTargetMissingError(RepositoryTargetSelectionError):
+    code = "repository_target_missing"
 
 
 class ResourceCatalogService:
@@ -228,6 +246,156 @@ class ResourceCatalogService:
         if result.lifecycle in {ResourceLifecycle.DISABLED, ResourceLifecycle.DELETED}:
             raise ResourceNotFoundError("resource is not active for privileged use")
         return result
+
+    def resolve_repository_target(
+        self,
+        project: Project,
+        *,
+        actor: AuthenticationActor,
+        work_item_resource_ids: Iterable[str] = (),
+        work_item_ref: str | None = None,
+        explicit_repository_id: str | None = None,
+        thread_profile_repository_id: str | None = None,
+        routing_repository_id: str | None = None,
+        read_only_repository_ids: Iterable[str] = (),
+        orchestration_only: bool = False,
+    ) -> RepositoryExecutionTarget:
+        """Resolve execution repository authority without model reasoning.
+
+        Precedence is canonical Work Item resources, explicit target, thread
+        profile binding, routing rule, then the single-repository compatibility
+        fallback. Orchestration-only is an explicit no-mutation choice.
+        """
+
+        if (
+            project.organization_id != actor.organization_id
+            or project.workspace_id != actor.workspace_id
+        ):
+            raise TenantIsolationError("cross-tenant repository target denied")
+
+        bound = self.project_resources(project, actor=actor)
+        repositories = {
+            item.id: item
+            for item in bound
+            if item.resource_type == ResourceType.REPOSITORY
+            and item.lifecycle == ResourceLifecycle.ACTIVE
+        }
+
+        def require_bound(repository_id: str, source: str) -> str:
+            normalized = str(repository_id or "").strip()
+            if not normalized:
+                raise RepositoryTargetMissingError(
+                    f"{source} repository target is empty"
+                )
+            try:
+                resource = self.get(normalized, actor)
+            except ResourceNotFoundError as exc:
+                raise RepositoryTargetUnauthorizedError(
+                    f"{source} repository target is unavailable in this tenant"
+                ) from exc
+            if resource.resource_type != ResourceType.REPOSITORY:
+                raise RepositoryTargetUnauthorizedError(
+                    f"{source} target is not a repository resource"
+                )
+            if normalized not in repositories:
+                raise RepositoryTargetUnauthorizedError(
+                    f"{source} repository is not active and bound to project"
+                )
+            return normalized
+
+        work_item_repo_ids: list[str] = []
+        for resource_id in dict.fromkeys(
+            str(value).strip() for value in work_item_resource_ids if str(value).strip()
+        ):
+            try:
+                resource = self.get(resource_id, actor)
+            except ResourceNotFoundError as exc:
+                raise RepositoryTargetUnauthorizedError(
+                    "work-item resource is unavailable in this tenant"
+                ) from exc
+            if resource.resource_type != ResourceType.REPOSITORY:
+                continue
+            if resource.id not in repositories:
+                raise RepositoryTargetUnauthorizedError(
+                    "work-item repository is not active and bound to project"
+                )
+            work_item_repo_ids.append(resource.id)
+
+        selected_id: str | None = None
+        source: RepositoryTargetSource | None = None
+        source_ref: str | None = None
+        if len(work_item_repo_ids) > 1:
+            raise RepositoryTargetAmbiguousError(
+                "work item targets multiple repositories; explicit work-item repository scope is required"
+            )
+        if len(work_item_repo_ids) == 1:
+            selected_id = work_item_repo_ids[0]
+            source = RepositoryTargetSource.WORK_ITEM
+            source_ref = work_item_ref
+        elif explicit_repository_id:
+            selected_id = require_bound(explicit_repository_id, "explicit")
+            source = RepositoryTargetSource.EXPLICIT
+            source_ref = selected_id
+        elif thread_profile_repository_id:
+            selected_id = require_bound(
+                thread_profile_repository_id,
+                "thread profile",
+            )
+            source = RepositoryTargetSource.THREAD_PROFILE
+            source_ref = selected_id
+        elif orchestration_only:
+            source = RepositoryTargetSource.ORCHESTRATION_ONLY
+            source_ref = "explicit"
+        else:
+            effective_routing = routing_repository_id
+            if not effective_routing:
+                routing_bindings = [
+                    item
+                    for item in self.store.load().project_bindings
+                    if item.project_id == project.id
+                    and item.organization_id == project.organization_id
+                    and item.workspace_id == project.workspace_id
+                    and item.purpose == "execution-default"
+                    and item.resource_id in repositories
+                ]
+                if len(routing_bindings) > 1:
+                    raise RepositoryTargetAmbiguousError(
+                        "project has multiple execution-default repository bindings"
+                    )
+                if routing_bindings:
+                    effective_routing = routing_bindings[0].resource_id
+            if effective_routing:
+                selected_id = require_bound(effective_routing, "routing")
+                source = RepositoryTargetSource.ROUTING_RULE
+                source_ref = selected_id
+            elif len(repositories) == 1:
+                selected_id = next(iter(repositories))
+                source = RepositoryTargetSource.SINGLE_REPOSITORY
+                source_ref = selected_id
+            elif not repositories:
+                raise RepositoryTargetMissingError(
+                    "project has no active canonical repository resource"
+                )
+            else:
+                raise RepositoryTargetAmbiguousError(
+                    "project has multiple active repositories and no deterministic execution target"
+                )
+
+        read_only: list[str] = []
+        for repository_id in read_only_repository_ids:
+            normalized = require_bound(repository_id, "read-only context")
+            if normalized != selected_id and normalized not in read_only:
+                read_only.append(normalized)
+
+        return RepositoryExecutionTarget(
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            mutable_repository_id=selected_id,
+            read_only_repository_ids=tuple(read_only),
+            source=source,
+            source_ref=source_ref,
+        )
 
     def add_relationship(
         self,

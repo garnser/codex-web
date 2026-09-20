@@ -281,6 +281,16 @@ class FrontendBoundaryTests(unittest.TestCase):
             css,
         )
 
+    def test_repository_target_controls_are_exposed_for_thread_bootstrap(self) -> None:
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="repository-target"', html)
+        self.assertIn('id="repository-read-context"', html)
+        self.assertIn("repository_resource_id", app)
+        self.assertIn("read_only_repository_resource_id", app)
+        self.assertIn("/resources", app)
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)

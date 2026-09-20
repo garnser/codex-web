@@ -1086,6 +1086,16 @@
             </div>
           </details>
           <button id="theme-toggle" class="icon-button theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode" aria-pressed="false">◐</button>
+          <label class="repository-target-control" title="Repository scope for the next thread in this project">
+            <span>Repository</span>
+            <select id="repository-target">
+              <option value="">Auto</option>
+            </select>
+          </label>
+          <label class="repository-target-control" title="Optional read-only repository context for the next thread">
+            <span>Read context</span>
+            <select id="repository-read-context" multiple></select>
+          </label>
           <select id="sandbox" aria-describedby="sandbox-danger-warning">
             <option value="workspace-write">Workspace write</option>
             <option value="read-only">Read only</option>

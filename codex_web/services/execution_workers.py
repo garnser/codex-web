@@ -479,6 +479,19 @@ class ExecutionWorkerService:
             raise WorkerConflictError(
                 "execution assignments are drained during upgrade maintenance"
             )
+        if payload.repository_target is not None:
+            target = payload.repository_target
+            if (
+                target.organization_id != actor.organization_id
+                or target.workspace_id != actor.workspace_id
+            ):
+                raise WorkerConflictError(
+                    "repository target tenant does not match assignment actor"
+                )
+            if payload.project_id is not None and target.project_id != payload.project_id:
+                raise WorkerConflictError(
+                    "repository target project does not match assignment"
+                )
         if payload.execution_workspace_id is not None:
             if self.workspaces is None:
                 raise WorkerConflictError(
@@ -550,6 +563,16 @@ class ExecutionWorkerService:
                     "subject_kind": assignment.subject.kind.value,
                     "subject_ref": assignment.subject.ref,
                     "work_item_ref": assignment.work_item_ref,
+                    "repository_target_source": (
+                        assignment.repository_target.source.value
+                        if assignment.repository_target is not None
+                        else None
+                    ),
+                    "mutable_repository_id": (
+                        assignment.repository_target.mutable_repository_id
+                        if assignment.repository_target is not None
+                        else None
+                    ),
                 },
             )
             created.append(assignment)

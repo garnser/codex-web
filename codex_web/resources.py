@@ -40,6 +40,50 @@ class ResourceRisk(StrEnum):
     CRITICAL = "critical"
 
 
+class RepositoryTargetSource(StrEnum):
+    WORK_ITEM = "work_item"
+    EXPLICIT = "explicit"
+    THREAD_PROFILE = "thread_profile"
+    ROUTING_RULE = "routing_rule"
+    SINGLE_REPOSITORY = "single_repository"
+    ORCHESTRATION_ONLY = "orchestration_only"
+
+
+class RepositoryExecutionTarget(BaseModel):
+    """Canonical repository authority selected for one execution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    mutable_repository_id: str | None = None
+    read_only_repository_ids: tuple[str, ...] = ()
+    source: RepositoryTargetSource
+    source_ref: str | None = None
+
+    @model_validator(mode="after")
+    def normalize(self) -> "RepositoryExecutionTarget":
+        read_only = tuple(
+            dict.fromkeys(
+                value.strip()
+                for value in self.read_only_repository_ids
+                if value and value.strip()
+            )
+        )
+        if self.mutable_repository_id:
+            mutable = self.mutable_repository_id.strip()
+            object.__setattr__(self, "mutable_repository_id", mutable)
+            read_only = tuple(value for value in read_only if value != mutable)
+        object.__setattr__(self, "read_only_repository_ids", read_only)
+        if self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
+            if self.mutable_repository_id is not None:
+                raise ValueError("orchestration-only target cannot be mutable")
+        elif self.mutable_repository_id is None:
+            raise ValueError("repository execution target requires mutable repository")
+        return self
+
+
 class ResourceRelationshipType(StrEnum):
     CONTAINS = "contains"
     DEPENDS_ON = "depends_on"

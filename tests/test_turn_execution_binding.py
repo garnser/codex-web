@@ -16,6 +16,7 @@ from codex_web.execution_workspaces import LeaseMode
 from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.models import Project
 from codex_web.resources import (
+    RepositoryTargetSource,
     ResourceCreate,
     ResourceLifecycle,
     ResourceType,
@@ -220,7 +221,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
             set(assignment.required_capabilities),
             {WorkerCapability.GIT, WorkerCapability.COMMAND_EXECUTION},
         )
-        self.assertEqual(set(binding.resource_ids), {self.repository.id, self.service_resource.id})
+        self.assertEqual(set(binding.resource_ids), {self.repository.id})
         self.assertEqual(assignment.resource_ids, workspace.resource_ids)
         self.assertEqual(binding.repository_resource_id, self.repository.id)
         self.assertEqual(assignment.base_revision, workspace.base_revision)
@@ -367,12 +368,109 @@ class TurnExecutionBindingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             TurnExecutionBindingError,
-            "multiple active canonical repository resources",
+            "repository_target_ambiguous",
         ):
             self._prepare()
 
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_explicit_repository_target_is_persisted(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Repository 2"),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        explicit = self.service.prepare(
+            thread_id="thread-explicit",
+            execution_id="exec-explicit",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            explicit_repository_id=second.id,
+        )
+        explicit_assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == explicit.assignment_id
+        )
+        self.assertEqual(explicit.repository_resource_id, second.id)
+        self.assertEqual(explicit.resource_ids, (second.id,))
+        self.assertEqual(
+            explicit.repository_target.source,
+            RepositoryTargetSource.EXPLICIT,
+        )
+        self.assertEqual(
+            explicit_assignment.repository_target,
+            explicit.repository_target,
+        )
+
+    def test_work_item_repository_target_precedes_explicit_target(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Repository 2"),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        work_item = self.service.prepare(
+            thread_id="thread-work-item",
+            execution_id="exec-work-item",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            work_item_resource_ids=(self.repository.id,),
+            work_item_ref="group/app#42",
+            explicit_repository_id=second.id,
+        )
+        self.assertEqual(work_item.repository_resource_id, self.repository.id)
+        self.assertEqual(work_item.resource_ids, (self.repository.id,))
+        self.assertEqual(
+            work_item.repository_target.source,
+            RepositoryTargetSource.WORK_ITEM,
+        )
+        self.assertEqual(
+            work_item.repository_target.source_ref,
+            "group/app#42",
+        )
+
+    def test_read_only_context_is_recorded_without_changing_mutable_repository(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Docs"),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-context",
+            execution_id="exec-context",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            explicit_repository_id=self.repository.id,
+            read_only_repository_ids=(second.id,),
+        )
+
+        self.assertEqual(binding.repository_resource_id, self.repository.id)
+        self.assertEqual(
+            binding.repository_target.read_only_repository_ids,
+            (second.id,),
+        )
 
     def test_deprecated_only_repository_is_not_eligible(self) -> None:
         self._publish_secret()

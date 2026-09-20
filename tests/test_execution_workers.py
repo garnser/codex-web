@@ -187,7 +187,7 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.3")
+        self.assertEqual(state.schema_version, "1.4")
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")

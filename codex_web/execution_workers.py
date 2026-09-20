@@ -12,12 +12,13 @@ from codex_web.execution_subjects import (
     normalize_execution_subject,
 )
 from codex_web.models import ApprovalPolicy, SandboxMode
+from codex_web.resources import RepositoryExecutionTarget
 
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.3",
-    ("1.0", "1.1", "1.2", "1.3"),
+    "1.4",
+    ("1.0", "1.1", "1.2", "1.3", "1.4"),
 )
 
 
@@ -150,6 +151,7 @@ class ExecutionAssignmentCreate(BaseModel):
     expected_evidence_types: tuple[str, ...] = ()
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
+    repository_target: RepositoryExecutionTarget | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -168,6 +170,20 @@ class ExecutionAssignmentCreate(BaseModel):
             raise ValueError("assignment requires at least one worker capability")
         if self.network.enabled and WorkerCapability.NETWORK not in self.required_capabilities:
             raise ValueError("network-enabled assignment requires network capability")
+        if self.repository_target is not None:
+            mutable_repository_id = self.repository_target.mutable_repository_id
+            if (
+                mutable_repository_id is not None
+                and mutable_repository_id not in self.resource_ids
+            ):
+                raise ValueError(
+                    "mutable repository target must be included in assignment resources"
+                )
+            if (
+                self.project_id is not None
+                and self.repository_target.project_id != self.project_id
+            ):
+                raise ValueError("repository target project does not match assignment")
         return self
 
 
@@ -206,6 +222,7 @@ class ExecutionAssignment(BaseModel):
     expected_evidence_types: tuple[str, ...] = ()
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
+    repository_target: RepositoryExecutionTarget | None = None
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None

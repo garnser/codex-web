@@ -232,6 +232,14 @@ class TurnService:
         effective_reasoning_effort = (
             payload.reasoning_effort or remembered.reasoning_effort
         )
+        effective_repository_resource_id = (
+            payload.repository_resource_id
+            or remembered.repository_resource_id
+        )
+        effective_read_only_repository_ids = (
+            payload.read_only_repository_resource_ids
+            or remembered.read_only_repository_resource_ids
+        )
         self.settings.remember(
             thread_id,
             sandbox=effective_sandbox,
@@ -239,6 +247,8 @@ class TurnService:
             model=effective_model,
             reasoning_effort=effective_reasoning_effort,
             developer_instructions=remembered.developer_instructions,
+            repository_resource_id=effective_repository_resource_id,
+            read_only_repository_resource_ids=effective_read_only_repository_ids,
         )
         execution_id = f"thread-turn-{uuid.uuid4().hex}"
 
@@ -256,6 +266,8 @@ class TurnService:
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
                 execution_id=execution_id,
+                repository_resource_id=effective_repository_resource_id,
+                read_only_repository_resource_ids=effective_read_only_repository_ids,
             )
             queue_depth = self.queue_policy.depth(thread_id)
             event_payload: dict[str, Any] = {
@@ -314,6 +326,8 @@ class TurnService:
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
                 execution_id=execution_id,
+                repository_resource_id=effective_repository_resource_id,
+                read_only_repository_resource_ids=effective_read_only_repository_ids,
             )
         except Exception as exc:
             if isinstance(exc, ProviderCapacityBlockedError):
@@ -446,6 +460,8 @@ class TurnService:
             ),
             model=queued.model,
             reasoning_effort=queued.reasoning_effort,
+            repository_resource_id=queued.repository_resource_id,
+            read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
             source=f"steer:{queued.source}",
             reply_target=queued.reply_target,
             execution_id=queued.execution_id,

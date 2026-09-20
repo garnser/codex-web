@@ -43,6 +43,8 @@ class ThreadExecutionSettingsService:
         model: str | None = None,
         reasoning_effort: str | None = None,
         developer_instructions: str | None = None,
+        repository_resource_id: str | None = None,
+        read_only_repository_resource_ids: tuple[str, ...] | None = None,
     ) -> ThreadRunSettings:
         all_settings = self.load_settings()
         current = all_settings.get(thread_id, ThreadRunSettings())
@@ -58,6 +60,16 @@ class ThreadExecutionSettingsService:
             current.developer_instructions = self.base_developer_instructions(
                 thread_id,
                 developer_instructions,
+            )
+        if repository_resource_id is not None:
+            current.repository_resource_id = repository_resource_id or None
+        if read_only_repository_resource_ids is not None:
+            current.read_only_repository_resource_ids = tuple(
+                dict.fromkeys(
+                    value.strip()
+                    for value in read_only_repository_resource_ids
+                    if value and value.strip()
+                )
             )
         all_settings[thread_id] = current
         self.save_settings(all_settings)
