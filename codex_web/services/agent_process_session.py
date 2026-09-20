@@ -426,14 +426,20 @@ class AssignmentBoundAgentProcessSession:
                 )
             process = None
             broker = None
+            control_broker = None
             try:
                 self.fence = lease.fence
                 broker = await self._start_egress_broker()
                 self.egress_broker = broker
+                control_broker = await self._start_control_plane_broker(
+                    assignment
+                )
+                self.control_plane_broker = control_broker
                 process, delegation, command = self._spawn_delegated_process(
                     assignment,
                     workspace_path,
                     broker,
+                    control_broker,
                 )
                 self.delegation = delegation
                 self.workspace_path = workspace_path
@@ -468,6 +474,11 @@ class AssignmentBoundAgentProcessSession:
                         await broker.stop()
                     if self.egress_broker is broker:
                         self.egress_broker = None
+                if control_broker is not None:
+                    with contextlib.suppress(Exception):
+                        await control_broker.stop()
+                    if self.control_plane_broker is control_broker:
+                        self.control_plane_broker = None
                 raise
 
     def _validate_resource_bounds(self, assignment: ExecutionAssignment) -> None:
@@ -635,6 +646,10 @@ class AssignmentBoundAgentProcessSession:
         self.egress_broker = None
         if broker is not None:
             await broker.stop()
+        control_broker = self.control_plane_broker
+        self.control_plane_broker = None
+        if control_broker is not None:
+            await control_broker.stop()
         self._stopping = False
 
 
