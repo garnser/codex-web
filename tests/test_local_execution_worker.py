@@ -85,6 +85,7 @@ class _FakeExecutionBackend:
         poll_hook=None,
         environment=None,
         trusted_readonly_mounts=(),
+        additional_disk_bytes=0,
     ):
         self.calls.append(
             (
@@ -92,6 +93,7 @@ class _FakeExecutionBackend:
                 tuple(argv),
                 Path(workspace_path),
                 tuple(trusted_readonly_mounts),
+                additional_disk_bytes,
             )
         )
         if poll_hook is not None:
@@ -581,6 +583,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             backend.calls[0][3],
             ((readonly_path.resolve(), Path("/mnt/codex-context/repo-2")),),
         )
+        self.assertEqual(backend.calls[0][4], 0)
 
     def test_limit_breach_creates_metadata_only_failure_evidence(self) -> None:
         assignment = self._create_assignment()
