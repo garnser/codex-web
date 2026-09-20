@@ -12,6 +12,7 @@ class FakeWebSocket:
         self.gate = gate
         self.messages: list[dict[str, object]] = []
         self.message_received = asyncio.Event()
+        self.close_code: int | None = None
 
     async def accept(self) -> None:
         self.accepted = True
@@ -21,6 +22,9 @@ class FakeWebSocket:
             await self.gate.wait()
         self.messages.append(event)
         self.message_received.set()
+
+    async def close(self, *, code: int = 1000) -> None:
+        self.close_code = code
 
 
 class EventHubTests(unittest.IsolatedAsyncioTestCase):
@@ -101,6 +105,7 @@ class EventHubTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(fast.message_received.wait(), timeout=0.5)
 
         self.assertNotIn(slow, hub._clients)
+        self.assertEqual(slow.close_code, 1013)
         self.assertIn(fast, hub._clients)
         self.assertEqual(len(fast.messages), 3)
 
