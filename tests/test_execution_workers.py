@@ -279,6 +279,77 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed.assigned_worker_id, compatible.id)
 
+    def test_execution_readiness_reports_missing_capability(self) -> None:
+        self.service.ensure_local_worker(
+            service_identity_id="worker-service",
+            version="1.0.0",
+            capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.ARTIFACT_UPLOAD,
+            ),
+            supported_execution_contract_versions=("thread-turn/1.0",),
+            actor=self.admin,
+        )
+
+        readiness = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            actor=self.admin,
+        )
+
+        self.assertFalse(readiness.ready)
+        self.assertEqual(readiness.code, "worker_capability_missing")
+        self.assertIn(
+            WorkerCapability.COMMAND_EXECUTION,
+            readiness.required_capabilities,
+        )
+        self.assertNotIn(
+            WorkerCapability.COMMAND_EXECUTION,
+            readiness.available_capabilities,
+        )
+        self.assertTrue(readiness.remediation)
+
+    def test_execution_readiness_requires_supported_contract_version(self) -> None:
+        readiness = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            actor=self.admin,
+        )
+
+        self.assertFalse(readiness.ready)
+        self.assertEqual(
+            readiness.code,
+            "execution_contract_version_unsupported",
+        )
+
+        self.service.ensure_local_worker(
+            service_identity_id="worker-service",
+            version="1.0.0",
+            capabilities=self.worker.capabilities,
+            supported_execution_contract_versions=(
+                "1.0",
+                "thread-turn/1.0",
+            ),
+            actor=self.admin,
+        )
+        ready = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            actor=self.admin,
+        )
+        self.assertTrue(ready.ready)
+        self.assertEqual(ready.code, "ready")
+        self.assertEqual(len(ready.eligible_worker_ids), 1)
+
     def test_worker_can_claim_start_and_complete_with_fenced_lease(self) -> None:
         assignment = self._assignment()
         claimed = self.service.claim(
