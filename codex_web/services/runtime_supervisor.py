@@ -658,7 +658,15 @@ class RuntimeSupervisor:
         # Keyed operational writes deliberately defer large JSON compatibility
         # mirrors. A controlled shutdown is the checkpoint boundary required
         # before rollback to a JSON-reading release.
-        self.flush_compatibility_state()
+        try:
+            self.flush_compatibility_state()
+        except Exception as exc:
+            self.event_sink(
+                {
+                    "type": "compatibility_state_checkpoint_failed",
+                    "error": self.truncate_text(str(exc), 500),
+                }
+            )
         self.started = False
 
 
