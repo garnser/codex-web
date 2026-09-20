@@ -191,6 +191,7 @@ class BotChannelDiscoveryService:
                 "credentialGroups": 0,
                 "providerCalls": 0,
                 "listCalls": 0,
+                "metadataCandidateCount": 0,
                 "unresolvedCount": sum(
                     1
                     for item in result
@@ -262,11 +263,13 @@ class BotChannelDiscoveryService:
             "credentialGroups": len(groups),
             "providerCalls": 0,
             "listCalls": 0,
+            "metadataCandidateCount": 0,
             "unresolvedCount": 0,
             "metadataLookupCount": 0,
             "negativeCacheHits": 0,
             "cooldownSkips": 0,
             "rateLimitEvents": 0,
+            "providerFailures": 0,
             "discoveryDurationSeconds": 0.0,
         }
         semaphore = asyncio.Semaphore(self.MAX_METADATA_CONCURRENCY)
@@ -303,6 +306,7 @@ class BotChannelDiscoveryService:
                         list_with_token,
                     )
             except Exception as exc:
+                metrics["providerFailures"] += 1
                 apply_rate_limit(group_key, exc)
                 return
 
@@ -329,7 +333,7 @@ class BotChannelDiscoveryService:
             and channel.get("id")
             and self.channel_needs_name(channel)
         }
-        metrics["unresolvedCount"] = len(unresolved)
+        metrics["metadataCandidateCount"] = len(unresolved)
 
         async def resolve_channel(
             channel_id: str,
@@ -364,6 +368,7 @@ class BotChannelDiscoveryService:
                             info_with_token,
                         )
                 except Exception as exc:
+                    metrics["providerFailures"] += 1
                     apply_rate_limit(group_key, exc)
                     self.negative_cache[negative_key] = (
                         time.time() + self.NEGATIVE_CACHE_SECONDS
@@ -391,6 +396,13 @@ class BotChannelDiscoveryService:
                 )
                 for channel_id in sorted(unresolved)
             )
+        )
+
+        metrics["unresolvedCount"] = sum(
+            1
+            for channel in channels.values()
+            if channel.get("provider") == "slack"
+            and self.channel_needs_name(channel)
         )
 
         result = sorted(
