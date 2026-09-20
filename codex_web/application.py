@@ -1875,6 +1875,7 @@ turn_execution_service = install_turn_execution_service(
     runtime_adapter_factory=_assignment_runtime_adapter,
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
+    bindings_for_thread=bot_binding_selection_service.for_thread,
 )
 
 async def _existing_thread_runtime_request(method, params):
