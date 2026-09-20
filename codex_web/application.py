@@ -1364,6 +1364,10 @@ work_item_contract_service = install_work_item_contract_service(
     core,
     execution_role_definition_service,
 )
+# Telemetry has no dependency on bot repositories/runtime tasks, so compose it
+# before work-item services that need an explicit event sink.
+bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
+
 work_item_continuity_service = WorkItemContinuityService(
     policy=runtime_policy,
     get_state=work_item_state_machine._work_item_state,
@@ -1448,10 +1452,6 @@ gitlab_sync_health = GitLabSyncHealth(
 )
 _mirror_gitlab_sync_health(gitlab_sync_health.snapshot())
 app.state.gitlab_sync_health = gitlab_sync_health
-
-# Telemetry has no dependency on bot repositories/runtime tasks, so compose it
-# before work-item services that need an explicit event sink.
-bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
 
 work_item_service = WorkItemService(
     None,
