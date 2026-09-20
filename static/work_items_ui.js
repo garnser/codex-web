@@ -39,9 +39,9 @@ function fmtTime(value) {
 function currentProjectContext() {
   const query = new URLSearchParams(window.location.search);
   return (
-    query.get('work_item_project')
-    || document.body?.dataset.projectId
+    document.body?.dataset.projectId
     || query.get('project')
+    || query.get('work_item_project')
     || sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)
     || ''
   );
