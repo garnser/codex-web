@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -23,9 +25,26 @@ class EventHub:
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
         self._listeners: set[EventListener] = set()
         self._metrics: RuntimeMetrics | None = None
+        self._stream_id = uuid.uuid4().hex
+        self._sequence = 0
 
     def configure_observability(self, metrics: RuntimeMetrics) -> None:
         self._metrics = metrics
+
+    def stream_state(self) -> dict[str, Any]:
+        return {
+            "streamId": self._stream_id,
+            "sequence": self._sequence,
+        }
+
+    def _envelope(self, event: dict[str, Any]) -> dict[str, Any]:
+        self._sequence += 1
+        return {
+            **event,
+            "eventStreamId": self._stream_id,
+            "eventSequence": self._sequence,
+            "eventPublishedAt": time.time(),
+        }
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -78,7 +97,7 @@ class EventHub:
             self._senders.pop(websocket, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
-        event = dict(event)
+        event = self._envelope(dict(event))
         for key, value in correlation_fields().items():
             event.setdefault(key, value)
         if self._metrics:
