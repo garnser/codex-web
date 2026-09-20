@@ -359,6 +359,26 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("/api/threads", source)
         self.assertNotIn("fetch(", source)
 
+    def test_project_context_module_is_focused_and_network_free(self) -> None:
+        source_path = STATIC / "project_context.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 3_000)
+        self.assertIn("codex:project-changed", source)
+        self.assertIn("history.replaceState", source)
+        self.assertNotIn("fetch(", source)
+
+    def test_work_item_operator_enforces_bounded_incremental_rows(self) -> None:
+        source_path = STATIC / "work_items_ui.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 32_000)
+        self.assertIn("const PAGE_SIZE = 50", source)
+        self.assertIn("const ROW_WINDOW = 60", source)
+        self.assertIn("AbortController", source)
+        self.assertIn("nextCursor", source)
+        self.assertIn("state.items.slice", source)
+        self.assertIn("limit: String(PAGE_SIZE)", source)
+        self.assertNotIn("state.items.map((item)", source)
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
