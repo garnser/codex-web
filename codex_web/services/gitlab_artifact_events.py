@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from codex_web.models import GitLabProjectRoutingSettings, TaskSourceIdentity, WorkItemState
+from codex_web.services.work_item_dependencies import (
+    GitLabWorkItemDependencies,
+    WorkItemRuntimeDependencies,
+)
 
 
 class GitLabArtifactEventProjector:
@@ -16,8 +20,30 @@ class GitLabArtifactEventProjector:
     correlation until artifact sources become a first-class provider contract.
     """
 
-    def __init__(self, host: Any, state_machine: Any) -> None:
-        self.host = host
+    def __init__(
+        self,
+        host: Any | None,
+        state_machine: Any,
+        *,
+        work_item_dependencies: WorkItemRuntimeDependencies | None = None,
+        gitlab_dependencies: GitLabWorkItemDependencies | None = None,
+    ) -> None:
+        if work_item_dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabArtifactEventProjector requires work-item dependencies"
+                )
+            work_item_dependencies = WorkItemRuntimeDependencies.from_host(
+                host
+            )
+        if gitlab_dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabArtifactEventProjector requires GitLab dependencies"
+                )
+            gitlab_dependencies = GitLabWorkItemDependencies.from_host(host)
+        self.work_items = work_item_dependencies
+        self.gitlab = gitlab_dependencies
         self.state_machine = state_machine
 
     @staticmethod
@@ -159,23 +185,23 @@ class GitLabArtifactEventProjector:
         kind = str(payload.get("object_kind") or payload.get("event_name") or "").strip().casefold()
         if kind not in {"merge_request", "pipeline"}:
             return None
-        ref = self.host._project_issue_ref(payload)
+        ref = self.gitlab.project_issue_ref(payload)
         if not ref:
             return None
 
         attrs = payload.get("object_attributes") or {}
         project = payload.get("project") or {}
-        labels = self.host._gitlab_label_names(payload)
-        settings = self.host._load_gitlab_routing_settings().projects.get(
+        labels = self.gitlab.label_names(payload)
+        settings = self.gitlab.load_routing_settings().projects.get(
             project_id,
             GitLabProjectRoutingSettings(),
         )
-        owners = self.host._gitlab_owner_agents(payload, settings)
+        owners = self.gitlab.owner_agents(payload, settings)
         status_label = self._status_label(labels)
         priority = self._priority(labels)
         now = time.time()
         event_timestamp = self._payload_timestamp(payload)
-        states = self.host._load_work_item_states()
+        states = self.work_items.load_states()
         state = states.get(ref)
         projected_stage = self._stage(
             state_name=str(attrs.get("state") or attrs.get("status") or ""),
@@ -195,24 +221,24 @@ class GitLabArtifactEventProjector:
                 project_path=project_path,
                 source_identity=TaskSourceIdentity(
                     source_type="gitlab",
-                    source_instance=self.host.GITLAB_API_BASE.rstrip("/"),
+                    source_instance=self.gitlab.api_base_url.rstrip("/"),
                     external_id=ref,
-                    external_url=self.host._gitlab_url(payload),
+                    external_url=self.gitlab.url(payload),
                     revision=str(attrs.get("updated_at") or "").strip() or None,
                 ),
                 title=str(attrs.get("title") or attrs.get("name") or "").strip() or None,
-                url=self.host._gitlab_url(payload),
+                url=self.gitlab.url(payload),
                 kind=kind,
                 priority=priority,
                 current_owner=projected_owner,
                 current_stage=projected_stage,
                 implementation_owner=(
                     projected_owner
-                    if projected_owner and projected_owner not in self.host.NON_IMPLEMENTATION_OWNERS
+                    if projected_owner and projected_owner not in self.work_items.non_implementation_owners
                     else None
                 ),
-                validation_owner=self.host.DEFAULT_VALIDATION_OWNER,
-                release_owner=self.host.DEFAULT_RELEASE_OWNER,
+                validation_owner=self.work_items.default_validation_owner,
+                release_owner=self.work_items.default_release_owner,
                 artifact_state="branch",
                 last_meaningful_update_at=now,
                 last_owner_activity_at=now,
@@ -220,7 +246,7 @@ class GitLabArtifactEventProjector:
                 release_gate=priority == "priority::P1",
                 status_label=projected_status_label,
                 labels=labels,
-                mr_refs=self.host._mr_refs_from_payload(payload),
+                mr_refs=self.gitlab.mr_refs_from_payload(payload),
                 created_at=now,
                 updated_at=now,
             )
@@ -300,7 +326,7 @@ class GitLabArtifactEventProjector:
             state.project_id = project_id
             state.project_path = str(project.get("path_with_namespace") or "").strip() or state.project_path
             state.title = str(attrs.get("title") or attrs.get("name") or "").strip() or state.title
-            state.url = self.host._gitlab_url(payload) or state.url
+            state.url = self.gitlab.url(payload) or state.url
             state.kind = kind or state.kind
             state.priority = priority or state.priority
             state.labels = labels
@@ -316,7 +342,7 @@ class GitLabArtifactEventProjector:
                 state.current_owner = projected_owner
             state.updated_at = now
             state.last_gitlab_event_at = event_timestamp or now
-            state.mr_refs = sorted(set(state.mr_refs + self.host._mr_refs_from_payload(payload)))
+            state.mr_refs = sorted(set(state.mr_refs + self.gitlab.mr_refs_from_payload(payload)))
             if projected_stage == "closed":
                 state = self.state_machine._normalize_closed_work_item_state(
                     state,
@@ -357,7 +383,7 @@ class GitLabArtifactEventProjector:
         if state.current_stage == "ready_for_validation" and not state.handoff:
             state.next_owner = state.current_owner
         states[ref] = state
-        self.host._save_work_item_states(states)
+        self.work_items.save_states(states)
         self.state_machine._append_work_item_event(
             self.state_machine._work_item_event(
                 ref,
