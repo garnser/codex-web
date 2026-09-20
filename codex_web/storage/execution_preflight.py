@@ -121,6 +121,128 @@ class ExecutionPreflightStore:
                 result.append(attempt)
         return result
 
+    def claim_retry(
+        self,
+        attempt_id: str,
+        *,
+        claim_id: str,
+        now: float,
+    ) -> tuple[ExecutionPreflightAttempt, bool]:
+        key = self._attempt_key(attempt_id)
+        acquired = False
+
+        def mutate(payload):
+            nonlocal acquired
+            if not isinstance(payload, dict):
+                raise KeyError(attempt_id)
+            current = ExecutionPreflightAttempt.model_validate(payload)
+            if current.status == "started":
+                return current.model_dump(mode="json")
+            if current.status == "retrying":
+                if current.retry_claim_id == claim_id:
+                    acquired = True
+                return current.model_dump(mode="json")
+            acquired = True
+            return current.model_copy(
+                update={
+                    "status": "retrying",
+                    "attempt_number": current.attempt_number + 1,
+                    "retry_claim_id": claim_id,
+                    "retry_started_at": now,
+                    "last_error": None,
+                    "updated_at": now,
+                }
+            ).model_dump(mode="json")
+
+        payload = self.store.record_update(
+            self.NAMESPACE,
+            key,
+            mutate,
+            default=None,
+        )
+        attempt = ExecutionPreflightAttempt.model_validate(payload)
+        self.store.record_apply(
+            self.NAMESPACE,
+            upserts={self._thread_key(attempt): attempt.model_dump(mode="json")},
+        )
+        return attempt, acquired
+
+    def mark_blocked(
+        self,
+        attempt_id: str,
+        *,
+        blockers,
+        now: float,
+        last_error: str | None = None,
+    ) -> ExecutionPreflightAttempt:
+        normalized = tuple(blockers)
+
+        def apply(current: ExecutionPreflightAttempt):
+            history = tuple(
+                (
+                    *current.blocker_history,
+                    {
+                        "blockers": normalized,
+                        "recorded_at": now,
+                        "attempt_number": current.attempt_number,
+                    },
+                )[-20:]
+            )
+            return current.model_copy(
+                update={
+                    "status": "blocked",
+                    "blockers": normalized,
+                    "blocker_history": history,
+                    "retry_claim_id": None,
+                    "retry_started_at": None,
+                    "last_error": last_error,
+                    "updated_at": now,
+                }
+            )
+
+        return self.update(attempt_id, apply)
+
+    def mark_started(
+        self,
+        attempt_id: str,
+        *,
+        now: float,
+    ) -> ExecutionPreflightAttempt:
+        return self.update(
+            attempt_id,
+            lambda current: current.model_copy(
+                update={
+                    "status": "started",
+                    "blockers": (),
+                    "retry_claim_id": None,
+                    "retry_started_at": None,
+                    "started_at": now,
+                    "last_error": None,
+                    "updated_at": now,
+                }
+            ),
+        )
+
+    def mark_failed(
+        self,
+        attempt_id: str,
+        *,
+        now: float,
+        error: str,
+    ) -> ExecutionPreflightAttempt:
+        return self.update(
+            attempt_id,
+            lambda current: current.model_copy(
+                update={
+                    "status": "failed",
+                    "retry_claim_id": None,
+                    "retry_started_at": None,
+                    "last_error": error,
+                    "updated_at": now,
+                }
+            ),
+        )
+
     def status(self) -> dict[str, Any]:
         return {
             "namespace": self.NAMESPACE,
