@@ -1953,7 +1953,11 @@ async def _resume_provider_capacity_wait(wait):
 provider_capacity_service.register_resume_handler(
     _resume_provider_capacity_wait
 )
-work_item_timing_policy = install_work_item_timing_policy(app, core)
+work_item_timing_policy = install_work_item_timing_policy(
+    app,
+    core,
+    coerce_owner=work_item_state_machine._coerce_owner,
+)
 work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
 work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(app, core)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
