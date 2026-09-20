@@ -581,12 +581,42 @@ class TurnExecutionBindingService:
         )
         if orchestration_only and execution_profile is not None and not profile_is_orchestration:
             raise TurnExecutionBindingError(
-                "orchestration-only request conflicts with repository execution profile"
+                "orchestration-only request conflicts with repository execution profile",
+                code="execution_profile_incompatible",
+                blocker={
+                    "code": "execution_profile_incompatible",
+                    "message": (
+                        "orchestration-only request conflicts with repository "
+                        "execution profile"
+                    ),
+                    "retryable": False,
+                    "target_type": "execution_profile",
+                    "target_id": execution_profile.id,
+                    "remediation": (
+                        "Use the orchestration-only profile or request "
+                        "repository execution."
+                    ),
+                    "remediation_route": "/settings/execution-profiles",
+                },
             )
         effective_orchestration_only = orchestration_only or profile_is_orchestration
         if effective_orchestration_only and execution_profile is None:
             raise TurnExecutionBindingError(
-                "orchestration-only execution requires a canonical execution profile"
+                "orchestration-only execution requires a canonical execution profile",
+                code="execution_profile_incompatible",
+                blocker={
+                    "code": "execution_profile_incompatible",
+                    "message": (
+                        "orchestration-only execution requires a canonical "
+                        "execution profile"
+                    ),
+                    "retryable": False,
+                    "remediation": (
+                        "Select the canonical orchestration-only execution "
+                        "profile."
+                    ),
+                    "remediation_route": "/settings/execution-profiles",
+                },
             )
         repository_target = self._repository_target(
             project,
