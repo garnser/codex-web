@@ -2152,6 +2152,7 @@ thread_service = ThreadService(
     collaboration=thread_bot_collaboration_service,
     thread_index=thread_index_repository,
     active_turn_loader=runtime_state.active_turns.load,
+    active_turn_getter=runtime_state.active_turns.get,
 )
 turn_service = TurnService(
     projects=project_runtime_service,

@@ -366,6 +366,10 @@ class IndexedThread(BaseModel):
     cwd: str | None = None
     path: str | None = None
     updatedAt: float | None = None
+    preview: str | None = None
+    model: str | None = None
+    project_id: str | None = None
+    archived: bool = False
 
 
 class BotConnection(BaseModel):

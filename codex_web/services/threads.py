@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import os
+import time
 import uuid
 from typing import Any, Callable, Mapping
 
@@ -12,6 +15,7 @@ from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
 from codex_web.models import (
+    IndexedThread,
     ThreadPrimaryChannelUpdate,
     ThreadPrimaryUpdate,
     ThreadRunSettings,
@@ -60,6 +64,8 @@ class ThreadService:
     """Thread/query operations that do not own turn queue orchestration yet."""
 
     DEFAULT_MESSAGE_LIMIT = 100
+    DEFAULT_LIST_LIMIT = 50
+    MAX_LIST_LIMIT = 100
 
     def __init__(
         self,
@@ -86,6 +92,7 @@ class ThreadService:
         collaboration: ThreadBotCollaborationService | None = None,
         thread_index: ThreadIndexRepository | None = None,
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
+        active_turn_getter: Callable[[str], Any | None] | None = None,
     ) -> None:
         self.runtime_transport = runtime_transport
         self.runtime_request_for_thread = runtime_request_for_thread
@@ -108,6 +115,7 @@ class ThreadService:
         self.collaboration = collaboration
         self.thread_index = thread_index
         self.active_turn_loader = active_turn_loader
+        self.active_turn_getter = active_turn_getter
 
     @staticmethod
     def _required(value: Any, name: str):
@@ -340,97 +348,308 @@ class ThreadService:
         thread["messageLimit"] = limit
         return response
 
+    def coerce_list_limit(self, limit: int | None) -> int:
+        if limit is None:
+            return self.DEFAULT_LIST_LIMIT
+        try:
+            value = int(limit)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="thread list limit must be an integer",
+            )
+        return max(1, min(value, self.MAX_LIST_LIMIT))
+
+    @staticmethod
+    def _encode_list_cursor(
+        *,
+        after: str,
+        project_id: str | None,
+        archived: bool,
+        search: str | None,
+        revision: float | None,
+    ) -> str:
+        payload = {
+            "after": after,
+            "projectId": project_id or "",
+            "archived": bool(archived),
+            "search": str(search or "").strip(),
+            "revision": revision,
+        }
+        raw = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_list_cursor(
+        cursor: str,
+        *,
+        project_id: str | None,
+        archived: bool,
+        search: str | None,
+    ) -> dict[str, Any]:
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            payload = json.loads(
+                base64.urlsafe_b64decode(
+                    (cursor + padding).encode()
+                )
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="invalid thread list cursor",
+            ) from exc
+        if not isinstance(payload, dict) or not payload.get("after"):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid thread list cursor",
+            )
+        expected = {
+            "projectId": project_id or "",
+            "archived": bool(archived),
+            "search": str(search or "").strip(),
+        }
+        actual = {
+            "projectId": str(payload.get("projectId") or ""),
+            "archived": bool(payload.get("archived")),
+            "search": str(payload.get("search") or "").strip(),
+        }
+        if actual != expected:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "thread list cursor does not match the "
+                    "current project/filter query"
+                ),
+            )
+        return payload
+
+    @staticmethod
+    def _compact_runtime_thread(
+        item: dict[str, Any],
+        *,
+        project_id: str | None,
+        archived: bool,
+    ) -> IndexedThread | None:
+        thread_id = str(item.get("id") or item.get("threadId") or "").strip()
+        if not thread_id:
+            return None
+        preview = str(item.get("preview") or "").strip() or None
+        name = str(item.get("name") or preview or "Untitled thread").strip()
+        updated_at = item.get("updatedAt") or item.get("updated_at") or 0
+        try:
+            normalized_updated = float(updated_at or 0)
+        except (TypeError, ValueError):
+            normalized_updated = 0.0
+        return IndexedThread(
+            id=thread_id,
+            name=name,
+            cwd=item.get("cwd"),
+            path=item.get("path"),
+            updatedAt=normalized_updated,
+            preview=(preview[:240] if preview else None),
+            model=(
+                str(item.get("model"))
+                if item.get("model") is not None
+                else None
+            ),
+            project_id=project_id,
+            archived=archived,
+        )
+
+    def _active_turn_for_list(
+        self,
+        thread_id: str,
+        fallback: dict[str, Any] | None = None,
+    ) -> Any | None:
+        if self.active_turn_getter is not None:
+            return self.active_turn_getter(thread_id)
+        return (fallback or {}).get(thread_id)
+
     async def list(
         self,
         project_id: str | None = None,
         archived: bool = False,
         search: str | None = None,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        project_path = self._projects().get(project_id).path if project_id else None
-        runtime_request = AgentRuntimeListRequest(
-            workspace_cwd=project_path,
+        page_size = self.coerce_list_limit(limit)
+        project = self._projects().get(project_id) if project_id else None
+        project_path = project.path if project is not None else None
+        cursor_payload = (
+            self._decode_list_cursor(
+                cursor,
+                project_id=project_id,
+                archived=archived,
+                search=search,
+            )
+            if cursor
+            else None
+        )
+        expected_revision = (
+            cursor_payload.get("revision")
+            if cursor_payload is not None
+            else None
+        )
+        current_revision = self._index().revision(
+            project_path=project_path,
+        )
+        if (
+            cursor_payload is not None
+            and expected_revision != current_revision
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "thread_list_cursor_stale",
+                    "message": (
+                        "thread list changed after this cursor was issued; "
+                        "restart pagination from the first page"
+                    ),
+                },
+            )
+
+        # Runtime discovery is deliberately bounded and only performed when a
+        # caller starts a new pagination snapshot. Subsequent pages are served
+        # entirely from the canonical compact index projection.
+        runtime_rows: dict[str, dict[str, Any]] = {}
+        if cursor_payload is None:
+            runtime_request = AgentRuntimeListRequest(
+                workspace_cwd=project_path,
+                archived=archived,
+                search=search,
+                limit=page_size,
+            )
+            try:
+                runtime_result = await self._codex_adapter().list_sessions(
+                    runtime_request
+                )
+                runtime_payload = runtime_result.payload
+            except Exception as exc:
+                if archived:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=str(exc),
+                    ) from exc
+                runtime_payload = {"data": []}
+
+            runtime_items = (
+                runtime_payload.get("data")
+                or runtime_payload.get("threads")
+                or []
+            )
+            indexed_updates: list[IndexedThread] = []
+            for item in runtime_items:
+                if not isinstance(item, dict):
+                    continue
+                indexed = self._compact_runtime_thread(
+                    item,
+                    project_id=project_id,
+                    archived=archived,
+                )
+                if indexed is None:
+                    continue
+                # Runtime rows are kept only for bounded summary enrichment;
+                # full turns/items never enter the list projection.
+                runtime_rows[indexed.id] = item
+                indexed_updates.append(indexed)
+            if indexed_updates:
+                self._index().upsert_many(indexed_updates)
+            current_revision = self._index().revision(
+                project_path=project_path,
+            )
+
+        after = (
+            str(cursor_payload.get("after"))
+            if cursor_payload is not None
+            else None
+        )
+        indexed_page, next_after, scan_truncated = self._index().page(
+            project_path=project_path,
             archived=archived,
             search=search,
-            limit=100,
+            after=after,
+            limit=page_size,
         )
-        try:
-            runtime_result = await self._codex_adapter().list_sessions(runtime_request)
-            result = runtime_result.payload
-        except Exception as exc:
-            if archived:
-                raise HTTPException(status_code=504, detail=str(exc)) from exc
-            result = {"data": []}
-        if archived:
-            return result
 
-        items = result.get("data") or result.get("threads") or []
-        indexed_threads = self._index().load()
-        indexed_by_id = {indexed.id: indexed for indexed in indexed_threads}
-        active_turns = (
+        fallback_active_turns = (
             self.active_turn_loader()
-            if self.active_turn_loader is not None
+            if self.active_turn_getter is None
+            and self.active_turn_loader is not None
             else {}
         )
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            indexed = indexed_by_id.get(item.get("id"))
-            if indexed:
-                item["name"] = indexed.name
-                item["updatedAt"] = max(
-                    item.get("updatedAt") or 0,
-                    indexed.updatedAt or 0,
-                    active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0,
-                )
-        existing_ids = {item.get("id") for item in items if isinstance(item, dict)}
-        search_term = search.casefold() if search else None
-        for indexed in indexed_threads:
-            if indexed.id in existing_ids:
-                continue
-            if project_path and indexed.cwd and indexed.cwd != project_path:
-                continue
-            if search_term and search_term not in indexed.name.casefold():
-                continue
-            item: dict[str, Any] = {
+        rows: list[dict[str, Any]] = []
+        for indexed in indexed_page:
+            runtime_item = runtime_rows.get(indexed.id)
+            active = self._active_turn_for_list(
+                indexed.id,
+                fallback_active_turns,
+            )
+            runtime_status = (
+                runtime_item.get("status")
+                if isinstance(runtime_item, dict)
+                and isinstance(runtime_item.get("status"), dict)
+                else None
+            )
+            updated_at = max(
+                float(indexed.updatedAt or 0),
+                float(
+                    getattr(active, "updated_at", 0)
+                    if active is not None
+                    else 0
+                ),
+            )
+            row = {
                 "id": indexed.id,
                 "sessionId": indexed.id,
-                "preview": "",
                 "name": indexed.name,
+                "preview": indexed.preview or "",
                 "cwd": indexed.cwd,
                 "path": indexed.path,
-                "updatedAt": max(
-                    indexed.updatedAt or 0,
-                    active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0,
+                "updatedAt": updated_at,
+                "model": indexed.model,
+                "projectId": indexed.project_id or project_id,
+                "archived": bool(indexed.archived),
+                "status": (
+                    runtime_status
+                    or (
+                        {"type": "running"}
+                        if active is not None
+                        else {"type": "notLoaded"}
+                    )
                 ),
-                "status": {"type": "notLoaded"},
-                "turns": [],
+                "runtimeLoaded": runtime_item is not None,
+                "needsRefresh": runtime_item is None,
+                "staleIndex": runtime_item is None,
             }
-            with contextlib.suppress(Exception):
-                thread_response = (
-                    await self._codex_adapter(indexed.id).read_session(indexed.id)
-                ).payload
-                thread = thread_response.get("thread", thread_response) if isinstance(thread_response, dict) else {}
-                item.update(thread)
-                item["name"] = indexed.name
-                item["updatedAt"] = max(
-                    item.get("updatedAt") or 0,
-                    indexed.updatedAt or 0,
-                    active_turns.get(indexed.id).updated_at if indexed.id in active_turns else 0,
-                )
-            items.append(item)
-            existing_ids.add(indexed.id)
+            rows.append(row)
+            self._adopt_legacy_thread(row, project_id=project_id)
 
-        items.sort(key=lambda item: item.get("updatedAt") or 0, reverse=True)
-        for item in items:
-            if isinstance(item, dict):
-                self._adopt_legacy_thread(item, project_id=project_id)
-        if "data" in result:
-            result["data"] = items
-        elif "threads" in result:
-            result["threads"] = items
-        else:
-            result["data"] = items
-        return result
+        next_cursor = (
+            self._encode_list_cursor(
+                after=next_after,
+                project_id=project_id,
+                archived=archived,
+                search=search,
+                revision=current_revision,
+            )
+            if next_after
+            else None
+        )
+        return {
+            "data": rows,
+            "pageSize": page_size,
+            "nextCursor": next_cursor,
+            "hasMore": bool(next_cursor),
+            "scanTruncated": bool(scan_truncated),
+            "revision": current_revision,
+        }
 
     async def create(
         self,
@@ -687,6 +906,30 @@ class ThreadService:
             }
         if canonical_session is not None:
             response = {**response, "agentSessionId": canonical_session.id}
+        thread_payload = (
+            response.get("thread")
+            if isinstance(response.get("thread"), dict)
+            else response
+        )
+        if isinstance(thread_payload, dict):
+            indexed = self._compact_runtime_thread(
+                {
+                    **thread_payload,
+                    "updatedAt": (
+                        thread_payload.get("updatedAt")
+                        or time.time()
+                    ),
+                    "model": (
+                        thread_payload.get("model")
+                        or model
+                        or getattr(project, "model", None)
+                    ),
+                },
+                project_id=project.id,
+                archived=False,
+            )
+            if indexed is not None and self.thread_index is not None:
+                self.thread_index.upsert(indexed)
         return response
 
     async def read(
@@ -783,14 +1026,36 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        return (
+        response = (
             await self._codex_adapter(thread_id).close_session(thread_id)
         ).payload
+        indexed = self._index().get(thread_id)
+        if indexed is not None:
+            self._index().upsert(
+                indexed.model_copy(
+                    update={
+                        "archived": True,
+                        "updatedAt": time.time(),
+                    }
+                )
+            )
+        return response
 
     async def unarchive(self, thread_id: str) -> dict[str, Any]:
-        return (
+        response = (
             await self._codex_adapter(thread_id).restore_session(thread_id)
         ).payload
+        indexed = self._index().get(thread_id)
+        if indexed is not None:
+            self._index().upsert(
+                indexed.model_copy(
+                    update={
+                        "archived": False,
+                        "updatedAt": time.time(),
+                    }
+                )
+            )
+        return response
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
         return (

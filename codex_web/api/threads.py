@@ -21,8 +21,16 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         project_id: str | None = None,
         archived: bool = False,
         search: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        return await service.list(project_id, archived, search)
+        return await service.list(
+            project_id,
+            archived,
+            search,
+            limit=limit,
+            cursor=cursor,
+        )
 
     @router.post("/api/threads")
     async def create_thread(
