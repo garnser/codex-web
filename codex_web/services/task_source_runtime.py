@@ -353,9 +353,12 @@ class TaskSourceWritebackService:
         provider_writes = 0
         current = await source.read(identity)
         provider_reads += 1
+        # Delta comparison must reflect provider facts, not the desired
+        # canonical stage. Passing the desired stage as a projection hint can
+        # make a less-specific provider snapshot appear synchronized.
         projection = source.project(
             current,
-            current_stage=state.current_stage,
+            current_stage=None,
         )
         snapshot = current
 
@@ -373,7 +376,7 @@ class TaskSourceWritebackService:
             provider_writes += 1
             projection = source.project(
                 snapshot,
-                current_stage=state.current_stage,
+                current_stage=None,
             )
 
         if (
