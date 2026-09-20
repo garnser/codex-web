@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from fastapi import HTTPException
@@ -38,7 +38,12 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.authority_roles import AuthorityRoleService
-from codex_web.services.identity import IdentityService
+from codex_web.services.identity import (
+    AuthenticationError,
+    AuthorizationError,
+    IdentityService,
+    TenantIsolationError,
+)
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
@@ -50,6 +55,21 @@ class ControlPlaneBrokerError(RuntimeError):
 
 class ControlPlaneBrokerDeniedError(ControlPlaneBrokerError):
     pass
+
+
+class ControlPlaneBrokerRequestError(ControlPlaneBrokerDeniedError):
+    def __init__(self, message: str, *, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ControlPlaneBrokerAuthorityDeniedError(ControlPlaneBrokerDeniedError):
+    def __init__(self, decision) -> None:
+        super().__init__(
+            "; ".join(decision.reasons)
+            or "canonical authority denied operation"
+        )
+        self.decision = decision
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,13 +316,18 @@ class ControlPlaneBrokerService:
         return state
 
     def _actor(self, assignment: ExecutionAssignment, service_identity_id: str):
-        return self.identity.actor_for_identity(
-            service_identity_id,
-            scope=TenantScope(
-                organization_id=assignment.organization_id,
-                workspace_id=assignment.workspace_id,
-            ),
-        )
+        try:
+            return self.identity.actor_for_identity(
+                service_identity_id,
+                scope=TenantScope(
+                    organization_id=assignment.organization_id,
+                    workspace_id=assignment.workspace_id,
+                ),
+            )
+        except (AuthenticationError, AuthorizationError, TenantIsolationError) as exc:
+            raise ControlPlaneBrokerDeniedError(
+                "worker service identity is unavailable or unauthorized"
+            ) from exc
 
     def _authorize(
         self,
@@ -330,9 +355,7 @@ class ControlPlaneBrokerService:
             actor=actor,
         )
         if decision.outcome != AuthorityDecisionOutcome.ALLOW:
-            raise ControlPlaneBrokerDeniedError(
-                "; ".join(decision.reasons) or "canonical authority denied operation"
-            )
+            raise ControlPlaneBrokerAuthorityDeniedError(decision)
         return decision
 
     async def dispatch(
@@ -369,9 +392,9 @@ class ControlPlaneBrokerService:
             try:
                 decoded = json.loads(body)
             except json.JSONDecodeError as exc:
-                raise ValidationError.from_exception_data(
-                    "control-plane request",
-                    [],
+                raise ControlPlaneBrokerRequestError(
+                    "control-plane request body is invalid JSON",
+                    status_code=400,
                 ) from exc
             if not isinstance(decoded, dict):
                 raise ControlPlaneBrokerDeniedError(
@@ -539,7 +562,12 @@ class AssignmentBoundControlPlaneBroker:
         self._request_times.append(now)
 
     @staticmethod
-    def _response(status: int, payload: dict[str, Any]) -> bytes:
+    def _response(
+        status: int,
+        payload: dict[str, Any],
+        *,
+        correlation_id: str | None = None,
+    ) -> bytes:
         body = json.dumps(
             payload,
             sort_keys=True,
@@ -559,10 +587,16 @@ class AssignmentBoundControlPlaneBroker:
             500: "Internal Server Error",
             502: "Bad Gateway",
         }.get(status, "Error")
+        correlation = (
+            f"X-Correlation-ID: {correlation_id}\r\n"
+            if correlation_id
+            else ""
+        )
         return (
             f"HTTP/1.1 {status} {reason}\r\n"
             "Content-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\n"
+            f"{correlation}"
             "Connection: close\r\n\r\n"
         ).encode("ascii") + body
 
@@ -571,8 +605,14 @@ class AssignmentBoundControlPlaneBroker:
         writer: asyncio.StreamWriter,
         status: int,
         payload: dict[str, Any],
+        *,
+        correlation_id: str | None = None,
     ) -> None:
-        raw = self._response(status, payload)
+        raw = self._response(
+            status,
+            payload,
+            correlation_id=correlation_id,
+        )
         if len(raw) > self.limits.max_response_bytes:
             raw = self._response(
                 502,
@@ -582,6 +622,7 @@ class AssignmentBoundControlPlaneBroker:
                         "message": "control-plane response exceeds broker limit",
                     }
                 },
+                correlation_id=correlation_id,
             )
         writer.write(raw)
         with contextlib.suppress(Exception):
@@ -709,6 +750,7 @@ class AssignmentBoundControlPlaneBroker:
                         "operation": operation.id,
                     },
                 },
+                correlation_id=correlation_id,
             )
             return
         except HTTPException as exc:
@@ -716,6 +758,13 @@ class AssignmentBoundControlPlaneBroker:
             denial_reason = str(exc.detail)
         except ValidationError as exc:
             status = 422
+            denial_reason = str(exc)
+        except ControlPlaneBrokerAuthorityDeniedError as exc:
+            status = 403
+            authority_decision = exc.decision
+            denial_reason = str(exc)
+        except ControlPlaneBrokerRequestError as exc:
+            status = exc.status_code
             denial_reason = str(exc)
         except ControlPlaneBrokerDeniedError as exc:
             denial_reason = str(exc)
@@ -767,6 +816,7 @@ class AssignmentBoundControlPlaneBroker:
                                     "correlation_id": correlation_id,
                                 }
                             },
+                            correlation_id=correlation_id,
                         )
             if counted:
                 self._active_requests = max(0, self._active_requests - 1)
