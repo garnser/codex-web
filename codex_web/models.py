@@ -314,6 +314,61 @@ class BotReplyTarget(BaseModel):
     updated_at: float
 
 
+ExecutionPreflightStatus: TypeAlias = Literal[
+    "blocked",
+    "retrying",
+    "started",
+    "failed",
+]
+
+
+class ExecutionPreflightBlocker(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    retryable: bool = False
+    remediation: str | None = None
+    remediation_route: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+
+
+class ExecutionPreflightBlockerSnapshot(BaseModel):
+    blockers: tuple[ExecutionPreflightBlocker, ...]
+    recorded_at: float
+    attempt_number: int = Field(ge=1)
+
+
+class ExecutionPreflightAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    sandbox: SandboxMode | None = None
+    approval_policy: ApprovalPolicy | None = None
+    model: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    repository_resource_id: str | None = None
+    read_only_repository_resource_ids: tuple[str, ...] = ()
+    execution_profile_id: str | None = None
+    source: str = "web"
+    status: ExecutionPreflightStatus = "blocked"
+    blockers: tuple[ExecutionPreflightBlocker, ...] = ()
+    blocker_history: tuple[ExecutionPreflightBlockerSnapshot, ...] = ()
+    attempt_number: int = Field(default=1, ge=1)
+    retry_claim_id: str | None = None
+    retry_started_at: float | None = None
+    started_at: float | None = None
+    last_error: str | None = None
+    created_at: float
+    updated_at: float
+
+
 class ActiveThreadTurn(BaseModel):
     thread_id: str
     turn_id: str | None = None
