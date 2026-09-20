@@ -536,15 +536,13 @@ class WorkItemService:
             try:
                 await self.task_source_writeback.sync(snapshot)
             except Exception as exc:
-                append = getattr(self.host, "_append_bot_event", None)
-                if callable(append):
-                    append(
-                        {
-                            "type": "task_source_writeback_failed",
-                            "ref": getattr(snapshot, "ref", None),
-                            "error": str(exc)[:500],
-                        }
-                    )
+                self.event_sink(
+                    {
+                        "type": "task_source_writeback_failed",
+                        "ref": getattr(snapshot, "ref", None),
+                        "error": str(exc)[:500],
+                    }
+                )
 
         loop.create_task(run())
         return state
@@ -558,7 +556,7 @@ class WorkItemService:
         release_gate: bool | None,
         scope: TenantScope | None = None,
     ) -> dict[str, Any]:
-        states = list(self.host._load_work_item_states().values())
+        states = list(self.work_items.load_states().values())
         if scope is not None:
             states = [
                 state
@@ -595,12 +593,12 @@ class WorkItemService:
 
         synced = 0
         seen_refs: set[str] = set()
-        settings = self.host._load_gitlab_routing_settings()
+        settings = self.gitlab_dependencies.load_routing_settings()
         allowed_project_ids: set[str] | None = None
         if scope is not None:
             allowed_project_ids = {
                 project.id
-                for project in self.host._load_projects()
+                for project in self.work_items.load_projects()
                 if project.organization_id == scope.organization_id
                 and project.workspace_id == scope.workspace_id
             }
@@ -609,13 +607,13 @@ class WorkItemService:
                 continue
             if not project_settings.enabled:
                 continue
-            token = self.host._gitlab_token_for_project(project_id)
-            group = self.host._gitlab_group_path(project_settings)
+            token = self.gitlab_dependencies.token_for_project(project_id)
+            group = self.gitlab_dependencies.group_path(project_settings)
             if not token or not group:
                 continue
 
             source = GitLabTaskSource(
-                self.host.GITLAB_API_BASE,
+                self.gitlab_dependencies.api_base_url,
                 token,
                 client=self.gitlab,
             )
@@ -656,7 +654,7 @@ class WorkItemService:
         """Legacy issue-projection name backed by normalized TaskSource state."""
 
         source = GitLabWebhookTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.gitlab_dependencies.api_base_url,
             client=self.gitlab,
         )
         try:
@@ -701,12 +699,7 @@ class WorkItemService:
             str(label).startswith(("owner::", "status::")) for label in labels
         ):
             return state
-        sync = getattr(
-            self.host,
-            "_sync_gitlab_issue_labels_from_work_item",
-            self.schedule_task_source_writeback,
-        )
-        projected = sync(state) if callable(sync) else state
+        projected = self.schedule_task_source_writeback(state)
         if projected is not None:
             state = projected
         save = getattr(self.state_machine, "_save_work_item_state", None)
@@ -723,7 +716,7 @@ class WorkItemService:
         """Compatibility hook used by GitLabService during migration."""
 
         source = GitLabWebhookTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.gitlab_dependencies.api_base_url,
             client=self.gitlab,
         )
         event = source.normalize_event_sync(payload)
@@ -802,20 +795,16 @@ class WorkItemService:
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
+        *,
         continuity: Any,
+        structured_handoff: Any,
+        public_state: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_handoff = self._compat(
-            "_structured_handoff",
-            self.state_machine._structured_handoff,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
         state = structured_handoff(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.handoff", "ref": ref, "state": public}
         )
         continuity.schedule_structured_handoff_dispatch(
@@ -833,42 +822,38 @@ class WorkItemService:
         ref: str,
         payload: WorkItemHandoffCreate,
     ) -> dict[str, Any]:
-        return await self._handoff_with(ref, payload, self.continuity)
+        return await self._handoff_with(
+            ref,
+            payload,
+            continuity=self.continuity,
+            structured_handoff=self.state_machine._structured_handoff,
+            public_state=self.state_machine._work_item_state_public,
+            publish_event=self.publish_event,
+        )
 
     async def compatibility_handoff(
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
     ) -> dict[str, Any]:
-        return await self._handoff_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-        )
+        return await self.handoff(ref, payload)
 
     async def _acknowledge_with(
         self,
         ref: str,
         payload: WorkItemAckCreate,
+        *,
         continuity: Any,
         recovery: Any,
+        structured_ack: Any,
+        public_state: Any,
+        split_brain_findings: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_ack = self._compat(
-            "_structured_ack",
-            self.state_machine._structured_ack,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
-        split_brain_findings = self._compat(
-            "_work_item_split_brain_findings",
-            self.state_machine._work_item_split_brain_findings,
-        )
         state = structured_ack(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.ack", "ref": ref, "state": public}
         )
         continuity.schedule_actionable_owner_dispatch(
@@ -892,8 +877,14 @@ class WorkItemService:
         return await self._acknowledge_with(
             ref,
             payload,
-            self.continuity,
-            self.recovery,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_ack=self.state_machine._structured_ack,
+            public_state=self.state_machine._work_item_state_public,
+            split_brain_findings=(
+                self.state_machine._work_item_split_brain_findings
+            ),
+            publish_event=self.publish_event,
         )
 
     async def compatibility_acknowledge(
@@ -901,36 +892,24 @@ class WorkItemService:
         ref: str,
         payload: WorkItemAckCreate,
     ) -> dict[str, Any]:
-        return await self._acknowledge_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-            self.compatibility_recovery,
-        )
+        return await self.acknowledge(ref, payload)
 
     async def _progress_with(
         self,
         ref: str,
         payload: WorkItemProgressUpdate,
+        *,
         continuity: Any,
         recovery: Any,
+        structured_progress: Any,
+        public_state: Any,
+        split_brain_findings: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_progress = self._compat(
-            "_structured_progress",
-            self.state_machine._structured_progress,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
-        split_brain_findings = self._compat(
-            "_work_item_split_brain_findings",
-            self.state_machine._work_item_split_brain_findings,
-        )
         state = structured_progress(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.progress", "ref": ref, "state": public}
         )
         continuity.schedule_actionable_owner_dispatch(
@@ -954,8 +933,14 @@ class WorkItemService:
         return await self._progress_with(
             ref,
             payload,
-            self.continuity,
-            self.recovery,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_progress=self.state_machine._structured_progress,
+            public_state=self.state_machine._work_item_state_public,
+            split_brain_findings=(
+                self.state_machine._work_item_split_brain_findings
+            ),
+            publish_event=self.publish_event,
         )
 
     async def compatibility_progress(
@@ -963,9 +948,5 @@ class WorkItemService:
         ref: str,
         payload: WorkItemProgressUpdate,
     ) -> dict[str, Any]:
-        return await self._progress_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-            self.compatibility_recovery,
-        )
+        return await self.progress(ref, payload)
+
