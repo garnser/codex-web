@@ -354,14 +354,26 @@ class WorkItemService:
                 task_source_registry or task_source_writeback.registry
             )
 
-        self.task_source_registry.register(
-            "gitlab",
-            self._gitlab_source_for_state,
+        register_source = getattr(
+            self.task_source_registry,
+            "register",
+            None,
         )
-        self.task_source_registry.register_project(
-            "gitlab",
-            self._gitlab_source_for_project,
+        if callable(register_source):
+            register_source(
+                "gitlab",
+                self._gitlab_source_for_state,
+            )
+        register_project = getattr(
+            self.task_source_registry,
+            "register_project",
+            None,
         )
+        if callable(register_project):
+            register_project(
+                "gitlab",
+                self._gitlab_source_for_project,
+            )
 
         if identity_service is None and host is not None:
             app_state = getattr(getattr(host, "app", None), "state", None)
