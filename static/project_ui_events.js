@@ -1,3 +1,4 @@
+import { observeEventVisible } from "./frontend_perf.js";
 export function connectProjectUiEventStream({
   base = "",
   reconciler,
@@ -187,7 +188,8 @@ export function createProjectUiEventReconciler({
         ? { type: "queued" }
         : { type: "active" },
     });
-    if (!patched) scheduleThreadPage("bot.inbound.missing-thread");
+    if(patched)observeEventVisible(event?.eventPublishedAt);
+    else scheduleThreadPage("bot.inbound.missing-thread");
   }
 
   function handleCodexSummary(message, event) {
@@ -207,7 +209,8 @@ export function createProjectUiEventReconciler({
         || null
       );
       if (name) {
-        patchThread(threadId, { name, updatedAt });
+        const patched=patchThread(threadId,{name,updatedAt});
+        if(patched)observeEventVisible(event?.eventPublishedAt);
         return { threadId, name };
       }
       scheduleThreadPage("thread.name.missing-payload");
@@ -217,23 +220,26 @@ export function createProjectUiEventReconciler({
       message.method === "turn/started"
       || message.method === "item/started"
     ) {
-      patchThread(threadId, {
+      const patched=patchThread(threadId,{
         updatedAt,
-        status: { type: "active" },
+        status:{type:"active"},
       });
+      if(patched)observeEventVisible(event?.eventPublishedAt);
     } else if (
       message.method === "turn/completed"
       || message.method === "turn/failed"
     ) {
-      patchThread(threadId, {
+      const patched=patchThread(threadId,{
         updatedAt,
-        status: { type: "idle" },
+        status:{type:"idle"},
       });
+      if(patched)observeEventVisible(event?.eventPublishedAt);
     } else if (message.method === "thread/status/changed") {
-      patchThread(threadId, {
+      const patched=patchThread(threadId,{
         updatedAt,
-        status: params.status || { type: "notLoaded" },
+        status:params.status||{type:"notLoaded"},
       });
+      if(patched)observeEventVisible(event?.eventPublishedAt);
     }
     return { threadId };
   }
