@@ -24,13 +24,47 @@ class WorkItemContractService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None,
         base_formatter: Callable[[WorkItemState], str],
         execution_roles: ExecutionRoleDefinitionService,
+        *,
+        split_brain_findings: Callable[
+            [WorkItemState], list[str]
+        ] | None = None,
+        save_state: Callable[
+            [WorkItemState], WorkItemState
+        ] | None = None,
+        append_event: Callable[[WorkItemEvent], None] | None = None,
     ) -> None:
-        self.host = host
         self.base_formatter = base_formatter
         self.execution_roles = execution_roles
+        self.split_brain_findings = (
+            split_brain_findings
+            or (
+                getattr(host, "_work_item_split_brain_findings")
+                if host is not None
+                and hasattr(host, "_work_item_split_brain_findings")
+                else lambda _state: []
+            )
+        )
+        self.save_state = (
+            save_state
+            or (
+                getattr(host, "_save_work_item_state")
+                if host is not None
+                and hasattr(host, "_save_work_item_state")
+                else lambda state: state
+            )
+        )
+        self.append_event = (
+            append_event
+            or (
+                getattr(host, "_append_work_item_event")
+                if host is not None
+                and hasattr(host, "_append_work_item_event")
+                else lambda _event: None
+            )
+        )
 
     def _resolution(
         self,
@@ -42,16 +76,14 @@ class WorkItemContractService:
         DefinitionReference,
     ]:
         findings: list[str] = []
-        split_brain = getattr(self.host, "_work_item_split_brain_findings", None)
-        if split_brain:
-            try:
-                findings = [
-                    str(item)
-                    for item in (split_brain(state) or [])
-                    if str(item).strip()
-                ]
-            except Exception:
-                findings = []
+        try:
+            findings = [
+                str(item)
+                for item in (self.split_brain_findings(state) or [])
+                if str(item).strip()
+            ]
+        except Exception:
+            findings = []
 
         catalog = self.execution_roles.catalog(project_id=state.project_id)
         definition_ref = self.execution_roles.reference(project_id=state.project_id)
@@ -81,27 +113,23 @@ class WorkItemContractService:
         if state.execution.definition_refs == [definition_ref]:
             return
         state.execution.definition_refs = [definition_ref]
-        save = getattr(self.host, "_save_work_item_state", None)
-        if callable(save):
-            save(state)
-        append = getattr(self.host, "_append_work_item_event", None)
-        if callable(append):
-            append(
-                WorkItemEvent(
-                    ref=state.ref,
-                    event_type="execution_definition_pinned",
-                    created_at=time.time(),
-                    source="definition-registry",
-                    reason="execution contract resolved",
-                    payload={
-                        "definition_id": definition_ref.definition_id,
-                        "kind": definition_ref.kind,
-                        "revision": definition_ref.revision,
-                        "record_id": definition_ref.record_id,
-                        "checksum": definition_ref.checksum,
-                    },
-                )
+        self.save_state(state)
+        self.append_event(
+            WorkItemEvent(
+                ref=state.ref,
+                event_type="execution_definition_pinned",
+                created_at=time.time(),
+                source="definition-registry",
+                reason="execution contract resolved",
+                payload={
+                    "definition_id": definition_ref.definition_id,
+                    "kind": definition_ref.kind,
+                    "revision": definition_ref.revision,
+                    "record_id": definition_ref.record_id,
+                    "checksum": definition_ref.checksum,
+                },
             )
+        )
 
     def dispatch_text(self, state: WorkItemState) -> str:
         base = self.base_formatter(state)
@@ -135,18 +163,41 @@ class WorkItemContractService:
 
 def install_work_item_contract_service(
     app: Any,
-    host: Any,
+    host: Any | None,
     execution_roles: ExecutionRoleDefinitionService,
+    *,
+    base_formatter: Callable[[WorkItemState], str] | None = None,
+    split_brain_findings: Callable[
+        [WorkItemState], list[str]
+    ] | None = None,
+    save_state: Callable[
+        [WorkItemState], WorkItemState
+    ] | None = None,
+    append_event: Callable[[WorkItemEvent], None] | None = None,
 ) -> WorkItemContractService:
-    """Decorate the canonical work-item dispatcher once and preserve its API."""
+    """Compose execution-contract decoration from explicit dependencies."""
 
     existing = getattr(app.state, "work_item_contract_service", None)
-    if isinstance(existing, WorkItemContractService) and existing.host is host:
+    if isinstance(existing, WorkItemContractService):
         return existing
 
-    base_formatter = host._work_item_dispatch_text
-    service = WorkItemContractService(host, base_formatter, execution_roles)
+    if base_formatter is None:
+        if host is None:
+            raise TypeError(
+                "work-item contract service requires a base formatter"
+            )
+        base_formatter = host._work_item_dispatch_text
+
+    service = WorkItemContractService(
+        host,
+        base_formatter,
+        execution_roles,
+        split_brain_findings=split_brain_findings,
+        save_state=save_state,
+        append_event=append_event,
+    )
     app.state.work_item_contract_service = service
-    host._work_item_execution_contract = service.contract_for_state
-    host._work_item_dispatch_text = service.dispatch_text
+    if host is not None:
+        host._work_item_execution_contract = service.contract_for_state
+        host._work_item_dispatch_text = service.dispatch_text
     return service
