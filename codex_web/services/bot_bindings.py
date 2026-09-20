@@ -396,7 +396,7 @@ def install_bot_binding_lifecycle_service(
     )
     app.state.bot_binding_lifecycle_service = service
 
-    # Transitional aliases for consumers not yet extracted from legacy_core.
+    # Compatibility aliases for verified historical consumers.
     host._upsert_bot_binding = service.upsert
     host._remove_bot_binding = service.remove
     host._start_bot_thread = service.start
