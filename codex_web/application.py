@@ -39,6 +39,7 @@ from codex_web.api.entitlements import build_entitlements_router
 from codex_web.api.evaluations import build_evaluations_router
 from codex_web.api.executive_management import build_executive_management_router
 from codex_web.api.extensions import build_extensions_router
+from codex_web.api.execution_profiles import build_execution_profiles_router
 from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
@@ -202,6 +203,7 @@ from codex_web.services.claude_worker_session import AssignmentBoundClaudeSessio
 from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
@@ -581,6 +583,9 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+execution_profile_definition_service = install_execution_profile_definitions(
+    definition_registry_service
+)
 executive_role_definition_service = install_executive_role_definitions(
     definition_registry_service
 )
@@ -592,7 +597,11 @@ input_pipeline_definition_service = install_input_plugin_definitions(
 )
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.execution_profile_definition_service = execution_profile_definition_service
 app.state.executive_role_definition_service = executive_role_definition_service
+app.include_router(
+    build_execution_profiles_router(execution_profile_definition_service)
+)
 app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
@@ -916,6 +925,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
         ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
         ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
     },
+    execution_profiles=execution_profile_definition_service,
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
@@ -1417,6 +1427,7 @@ work_item_contract_service = install_work_item_contract_service(
     app,
     None,
     execution_role_definition_service,
+    execution_profile_definition_service,
     base_formatter=work_item_dispatch_prompt_policy.render,
     split_brain_findings=(
         work_item_state_machine._work_item_split_brain_findings
