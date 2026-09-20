@@ -70,6 +70,32 @@ class TurnQueueRepository:
             self.store.record_get(self.namespace, str(thread_id))
         )
 
+    def update(
+        self,
+        thread_id: str,
+        updater,
+    ) -> list[QueuedTurn]:
+        self._ensure_records()
+        key = str(thread_id)
+
+        def apply(raw: Any):
+            current = self._validate(raw)
+            updated = list(updater(current))
+            if not updated:
+                return None
+            return [
+                item.model_dump(mode="json")
+                for item in updated
+            ]
+
+        raw = self.store.record_update(
+            self.namespace,
+            key,
+            apply,
+            default=[],
+        )
+        return self._validate(raw)
+
     def put(self, thread_id: str, items: list[QueuedTurn]) -> None:
         self._ensure_records()
         key = str(thread_id)
@@ -112,6 +138,63 @@ class TurnQueueRepository:
             private=True,
         )
 
+    @staticmethod
+    def _merge_queue(
+        base_items: list[Any],
+        desired_items: list[Any],
+        latest_items: list[Any],
+    ) -> list[Any]:
+        base_by_id = {
+            str(item.get("id")): item
+            for item in base_items
+            if isinstance(item, dict) and item.get("id")
+        }
+        desired_by_id = {
+            str(item.get("id")): item
+            for item in desired_items
+            if isinstance(item, dict) and item.get("id")
+        }
+        changed_by_id = {
+            item_id: item
+            for item_id, item in desired_by_id.items()
+            if base_by_id.get(item_id) != item
+        }
+        deleted_ids = set(base_by_id) - set(desired_by_id)
+        result: list[Any] = []
+        seen_ids: set[str] = set()
+        for item in latest_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in deleted_ids:
+                continue
+            result.append(changed_by_id.get(item_id, item))
+            seen_ids.add(item_id)
+        for item in desired_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            if (
+                item_id
+                and item_id in changed_by_id
+                and item_id not in seen_ids
+            ):
+                result.append(changed_by_id[item_id])
+                seen_ids.add(item_id)
+
+        deduped: list[Any] = []
+        seen_semantics: set[tuple[str, str]] = set()
+        for item in result:
+            semantic = (
+                str(item.get("source") or ""),
+                str(item.get("message") or ""),
+            )
+            if semantic in seen_semantics:
+                continue
+            seen_semantics.add(semantic)
+            deduped.append(item)
+        return deduped
+
     def save(self, values: dict[str, list[QueuedTurn]]) -> None:
         payload = {
             str(thread_id): [
@@ -122,23 +205,38 @@ class TurnQueueRepository:
         }
         with self._lock:
             base = self._snapshots.pop(id(values), None)
-        current = (
-            base
-            if base is not None
-            else self.store.record_items(self.namespace)
-        )
-        upserts = {
-            key: value
-            for key, value in payload.items()
-            if current.get(key) != value
-        }
-        deletes = tuple(set(current) - set(payload))
         self._ensure_records()
-        if upserts or deletes:
-            self.store.record_apply(
+        if base is None:
+            current = self.store.record_items(self.namespace)
+            base = copy.deepcopy(current)
+
+        changed_keys = {
+            key
+            for key in set(base) | set(payload)
+            if base.get(key) != payload.get(key)
+        }
+        for key in sorted(changed_keys):
+            base_items = base.get(key)
+            desired_items = payload.get(key)
+            if not isinstance(base_items, list):
+                base_items = []
+            if not isinstance(desired_items, list):
+                desired_items = []
+
+            def merge(latest: Any, *, _base=base_items, _desired=desired_items):
+                latest_items = latest if isinstance(latest, list) else []
+                merged = self._merge_queue(
+                    _base,
+                    _desired,
+                    latest_items,
+                )
+                return merged or None
+
+            self.store.record_update(
                 self.namespace,
-                upserts=upserts,
-                deletes=deletes,
+                key,
+                merge,
+                default=[],
             )
         self.flush_legacy_mirror()
 
