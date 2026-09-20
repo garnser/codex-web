@@ -744,6 +744,25 @@ h1 {
   justify-content: flex-end;
 }
 
+.repository-target-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.repository-target-control select {
+  min-width: 120px;
+  max-width: 190px;
+}
+
+#repository-read-context {
+  height: 36px;
+  min-width: 110px;
+}
+
 .sandbox-danger-warning {
   display: none;
   max-width: 420px;
