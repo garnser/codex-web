@@ -211,6 +211,14 @@ class LocalExecutionWorkerRuntime:
             mounts.append((source, destination))
         return tuple(mounts)
 
+    def readonly_disk_bytes(self, assignment: ExecutionAssignment) -> int:
+        workspace = self._workspace(assignment)
+        return sum(
+            int(getattr(member, "disk_bytes", 0) or 0)
+            for member in getattr(workspace, "repository_members", ())
+            if member.resource_id != workspace.repository_resource_id
+        )
+
     def _claim_or_resume(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
         if assignment.status == AssignmentStatus.PENDING:
             claimed = self.worker_service.claim(
@@ -275,6 +283,7 @@ class LocalExecutionWorkerRuntime:
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
         readonly_mounts = self.readonly_mounts(assignment)
+        readonly_disk_bytes = self.readonly_disk_bytes(assignment)
         self.backend.validate_assignment(assignment)
 
         self.worker_service.heartbeat(
@@ -343,6 +352,8 @@ class LocalExecutionWorkerRuntime:
             }
             if readonly_mounts:
                 run_kwargs["trusted_readonly_mounts"] = readonly_mounts
+            if readonly_disk_bytes:
+                run_kwargs["additional_disk_bytes"] = readonly_disk_bytes
             result = self.backend.run(
                 current["assignment"],
                 **run_kwargs,
