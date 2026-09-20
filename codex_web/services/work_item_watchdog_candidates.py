@@ -59,7 +59,7 @@ class WorkItemWatchdogCandidatePolicy:
         *,
         now: float,
     ) -> tuple[str, float] | None:
-                if state.current_stage == "closed" or state.closed_at:
+        if state.current_stage == "closed" or state.closed_at:
             return None
         if self.split_brain_findings(state):
             return ("split_brain", now - state.updated_at)
