@@ -2267,6 +2267,12 @@ core._diagnostic_snapshot = runtime_diagnostics_service.snapshot
 core._preview_bot_route = bot_routing_service.preview
 core._devhealth_work_item_stats = operator_ui_service.work_item_stats
 core._recent_bot_events = bot_runtime_telemetry.recent
+core._thread_recent_activity_age_seconds = (
+    bot_runtime_telemetry.thread_recent_activity_age_seconds
+)
+core._thread_recent_event_count = (
+    bot_runtime_telemetry.thread_recent_event_count
+)
 
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
