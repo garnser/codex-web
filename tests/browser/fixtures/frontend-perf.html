@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Frontend performance budget fixture</title>
+<div id="threads"></div>
+<script type="module">
+  import { request } from "/static/api_client.js";
+  import { loadProjectUiState } from "/static/project_ui_state.js";
+  import { createProjectUiEventReconciler } from "/static/project_ui_events.js";
+  import "/static/frontend_perf.js";
+
+  window.frontendPerfFixture = {
+    request,
+    loadProjectUiState,
+    createProjectUiEventReconciler,
+    perf: window.__codexFrontendPerf,
+  };
+  window.frontendPerfReady = true;
+</script>
