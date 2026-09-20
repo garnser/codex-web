@@ -93,6 +93,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
+- [Task-source writeback coordination](task-source-writeback.md) — keyed coalescing, delta-driven provider projection, stale-completion fencing, bounded retry and writeback observability.
 - [Runtime supervision](runtime-supervision.md)
 - [Definition Registry](definition-registry.md) — versioned database-backed mutable definitions, lifecycle, compatibility, exact runtime attribution, bootstrap and recovery.
 - [Typed configuration and feature rollout](configuration.md) — deterministic scope precedence, versioned publication/rollback, feature targeting, reference values, and configuration-vs-policy/definition boundaries.
