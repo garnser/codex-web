@@ -255,6 +255,15 @@ class ThreadIndexRepository:
         )
         self._compatibility_remove(thread_id)
 
+    def revision(self, *, project_path: str | None) -> float | None:
+        self._ensure_migrated()
+        namespace = (
+            self.PROJECT_NAMESPACE
+            if project_path
+            else self.GLOBAL_NAMESPACE
+        )
+        return self.store.namespace_revision(namespace)
+
     def page(
         self,
         *,
