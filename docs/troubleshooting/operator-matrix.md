@@ -16,6 +16,8 @@ the primary diagnostic record.
 | Credential revoked | SecretReference status/binding | rotate/rebind reference | placing raw replacement token in logs/prompts |
 | Encryption key unavailable | key ID/version/backend and dependent objects | restore backend/key version or follow recovery policy | substituting a different key version |
 | Session/token revoked | identity/session/service-token state | reauthenticate/reissue least-privilege token | bypassing auth with local flags |
+| Execution preflight blocked | retained attempt, correlation ID, effective profile/repository/sandbox, typed blocker | repair canonical target/worker/credential/lease then use authorized retained Retry | retyping the task, editing retained state, or weakening the blocker |
+| Repository target ambiguous | Project Resource bindings and target provenance | bind/select one authorized mutable repository target | choosing the first path or asking a model to decide authority |
 | Execution lease expired | assignment/workspace lease and fencing | reclaim/reconcile via canonical worker APIs | reusing stale fencing token |
 | Missed schedule | due time, owner, lease, misfire policy | let bounded scheduler recovery apply | firing all overdue jobs manually |
 | Evaluation/replay failure | pinned Definition/model/runtime refs and Evidence | restore compatible inputs, rerun bounded evaluation | comparing against changed unpinned definitions |
@@ -62,3 +64,5 @@ checks to make the UI “work.”
 Never ask an operator to paste raw credentials/private keys into issue comments,
 chat, screenshots or model prompts. Diagnose by reference ID/version/status and
 backend health.
+
+For multi-repository execution diagnostics and recovery, see [Multi-repository Projects](../operations/multi-repository-projects.md).
