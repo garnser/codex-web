@@ -79,7 +79,16 @@ class NativeRecoveryService:
         self.append_event(
             {"type": "native_recovery_scheduled", "reason": reason}
         )
-        timeout = self.policy.native_recovery_cycle_timeout()
+        timeout_getter = getattr(
+            self.policy,
+            "native_recovery_cycle_timeout",
+            None,
+        )
+        timeout = (
+            float(timeout_getter())
+            if callable(timeout_getter)
+            else 300.0
+        )
         for index, cycle in enumerate(self.cycles):
             key = f"native-recovery:{index}"
             created = self.coordinator.schedule(
