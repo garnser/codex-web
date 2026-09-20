@@ -114,6 +114,24 @@ Read the [Token Efficiency Ruleset](docs/architecture/token-efficiency-rules.md)
 
 Architecture contracts live under [`docs/architecture/`](docs/architecture/README.md). User and operator guidance is available in the [product documentation](docs/README.md).
 
+## Releases
+
+The latest stable release is **[v0.1.0](https://github.com/garnser/codex-web/releases/tag/v0.1.0)**, published on **September 20, 2026**.
+
+| Release | Status | Published | Notes |
+| --- | --- | --- | --- |
+| [v0.1.0](https://github.com/garnser/codex-web/releases/tag/v0.1.0) | Stable | 2026-09-20 | First tagged public release of the current Codex Web control-plane architecture. |
+
+For a reproducible installation, deploy a tagged release rather than tracking `main`:
+
+```bash
+git clone https://github.com/garnser/codex-web.git
+cd codex-web
+git checkout v0.1.0
+```
+
+The `main` branch may contain changes that have not yet been included in a tagged release. Release notes, source archives, and future versions are published on the [GitHub Releases](https://github.com/garnser/codex-web/releases) page.
+
 ## Quick start
 
 ### Local Python environment
