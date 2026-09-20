@@ -4,7 +4,7 @@ import time
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from codex_web.compatibility import ContractSpec
 from codex_web.models import SandboxMode
@@ -103,12 +103,35 @@ class LegacyMigrationPlan(BaseModel):
         "thread history/IDs are never rewritten by this migration."
     )
 
+    @computed_field
     @property
     def requires_approval(self) -> bool:
         return any(
             item.disposition == MigrationDisposition.APPROVAL_REQUIRED
             for item in self.threads
         )
+
+    @computed_field
+    @property
+    def summary(self) -> dict[str, int]:
+        return {
+            "converted": sum(
+                item.disposition == MigrationDisposition.CONVERT
+                for item in self.threads
+            ),
+            "blocked": sum(
+                item.disposition == MigrationDisposition.BLOCKED
+                for item in self.threads
+            ),
+            "unchanged": sum(
+                item.disposition == MigrationDisposition.UNCHANGED
+                for item in self.threads
+            ),
+            "operator_action_required": sum(
+                item.disposition == MigrationDisposition.APPROVAL_REQUIRED
+                for item in self.threads
+            ),
+        }
 
 
 class LegacyMigrationExecution(BaseModel):
