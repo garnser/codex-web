@@ -6,11 +6,22 @@ let catalog = {
   definition: null,
 };
 
+export function setCatalog(value) {
+  catalog = value && typeof value === "object"
+    ? value
+    : {
+        items: [],
+        default_profile_id: "repository-write",
+        definition: null,
+      };
+  return catalog;
+}
+
 export async function load(projectId) {
   try {
-    catalog = await apiRequest(
+    setCatalog(await apiRequest(
       `/api/execution-profiles?project_id=${encodeURIComponent(projectId)}`,
-    );
+    ));
   } catch (_error) {
     catalog = {
       items: [],
