@@ -134,14 +134,17 @@ class ExecutionWorkspaceService:
             if not raw or raw.startswith("~"):
                 continue
             candidate = Path(raw)
-            if candidate.is_absolute():
-                resolved = candidate.resolve(strict=True)
-            else:
-                resolved = (project_root / candidate).resolve(strict=True)
-                if not resolved.is_relative_to(project_root):
-                    raise ExecutionWorkspaceConflictError(
-                        "relative repository source escapes canonical project root"
-                    )
+            try:
+                if candidate.is_absolute():
+                    resolved = candidate.resolve(strict=True)
+                else:
+                    resolved = (project_root / candidate).resolve(strict=True)
+                    if not resolved.is_relative_to(project_root):
+                        raise ExecutionWorkspaceConflictError(
+                            "relative repository source escapes canonical project root"
+                        )
+            except FileNotFoundError:
+                continue
             if resolved.is_dir():
                 return resolved
         if allow_project_fallback:
@@ -400,16 +403,24 @@ class ExecutionWorkspaceService:
         discard_mutable_branch: bool,
     ) -> None:
         if workspace.repository_members:
+            errors: list[str] = []
             for member in reversed(workspace.repository_members):
-                self.backend.cleanup_git(
-                    Path(member.source_path),
-                    Path(member.workspace_path),
-                    member.branch_name or "",
-                    discard_branch=bool(
-                        discard_mutable_branch
-                        and member.resource_id == workspace.repository_resource_id
-                        and member.branch_name
-                    ),
+                try:
+                    self.backend.cleanup_git(
+                        Path(member.source_path),
+                        Path(member.workspace_path),
+                        member.branch_name or "",
+                        discard_branch=bool(
+                            discard_mutable_branch
+                            and member.resource_id == workspace.repository_resource_id
+                            and member.branch_name
+                        ),
+                    )
+                except Exception as exc:
+                    errors.append(f"{member.resource_id}: {exc}")
+            if errors:
+                raise ExecutionWorkspaceBackendError(
+                    "repository member cleanup failed: " + "; ".join(errors)
                 )
             return
         if workspace.path and workspace.branch_name:
@@ -564,6 +575,11 @@ class ExecutionWorkspaceService:
                     resource_by_id[resource_id],
                     project,
                     allow_project_fallback=False,
+                )
+            normalized_sources = [str(path) for path in source_paths.values()]
+            if len(normalized_sources) != len(set(normalized_sources)):
+                raise ExecutionWorkspaceConflictError(
+                    "repository members must resolve to distinct canonical source paths"
                 )
 
         lease = ExecutionWorkspaceLease(
