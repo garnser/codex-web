@@ -1179,7 +1179,7 @@ async function refresh() {
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
   state.refreshInFlight = (async () => {
-    const [projects, projectResources, _executionProfiles, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
+    const [projects, projectResources, _ep, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
       api("/api/projects"),
       api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
       ep.load(state.projectId),
@@ -1498,11 +1498,7 @@ async function sendPrompt() {
       || runSettings.readOnlyRepositoryResourceIds
       || []
     ),
-    execution_profile_id: (
-      selectedThreadSettings.execution_profile_id
-      || runSettings.executionProfileId
-      || ep.defaultId()
-    ),
+    execution_profile_id: selectedThreadSettings.execution_profile_id || runSettings.executionProfileId || ep.defaultId(),
   };
   try {
     let targetThreadId = threadId;
@@ -2440,9 +2436,7 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").textContent = error.message;
 }));
 $("execution-profile").addEventListener("change", () => {
-  persistRunSettings();
-  ep.render(currentRunSettings().executionProfileId, escapeHtml);
-  renderRepositoryTargets();
+  persistRunSettings(); ep.render(currentRunSettings().executionProfileId, escapeHtml); renderRepositoryTargets();
 });
 $("repository-target").addEventListener("change", () => {
   persistRunSettings();
