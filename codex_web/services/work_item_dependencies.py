@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,4 +179,197 @@ def leading_owner_cue(
             return normalized
         if action.startswith(f"{normalized} "):
             return normalized
+    return None
+
+
+OWNER_QUEUE_AGENTS = (
+    "james",
+    "carl",
+    "dana",
+    "quinn",
+    "riley",
+    "nora",
+    "larry",
+    "tom",
+    "janice",
+    "maya",
+    "sally",
+)
+DEFAULT_VALIDATION_OWNER = "quinn"
+DEFAULT_RELEASE_OWNER = "release manager"
+NON_IMPLEMENTATION_OWNERS = frozenset(
+    {
+        DEFAULT_VALIDATION_OWNER,
+        DEFAULT_RELEASE_OWNER,
+        "orchestrator",
+        "carl",
+        "compliance manager",
+        "nora",
+        "maya",
+        "larry",
+    }
+)
+
+
+def default_leading_owner_cue(next_action: str | None) -> str | None:
+    return leading_owner_cue(
+        next_action,
+        owner_candidates=OWNER_QUEUE_AGENTS + (DEFAULT_RELEASE_OWNER,),
+    )
+
+
+def gitlab_group_path(
+    settings: GitLabProjectRoutingSettings,
+) -> str | None:
+    for path in settings.project_paths:
+        normalized = (path or "").strip().strip("/")
+        if normalized:
+            return normalized.split("/", 1)[0]
+    return None
+
+
+def gitlab_label_names(payload: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            labels.append(value)
+        elif isinstance(value, dict):
+            name = value.get("title") or value.get("name")
+            if name:
+                labels.append(str(name))
+
+    attrs = payload.get("object_attributes") or {}
+    changes = payload.get("changes") or {}
+    for source in (
+        payload.get("labels"),
+        attrs.get("labels"),
+        (changes.get("labels") or {}).get("current"),
+    ):
+        if isinstance(source, list):
+            for item in source:
+                add(item)
+    for key in ("labels", "label_names"):
+        source = attrs.get(key)
+        if isinstance(source, list):
+            for item in source:
+                add(item)
+    return sorted(
+        {
+            label.strip()
+            for label in labels
+            if label and label.strip()
+        }
+    )
+
+
+def gitlab_owner_agents(
+    payload: dict[str, Any],
+    settings: GitLabProjectRoutingSettings,
+) -> list[str]:
+    owners: list[str] = []
+    for label in gitlab_label_names(payload):
+        match = re.match(
+            r"owner::(.+)",
+            label.strip(),
+            re.IGNORECASE,
+        )
+        if match:
+            owners.append(match.group(1).strip().lower())
+    if owners:
+        return sorted(set(owners))
+    kind = str(
+        payload.get("object_kind")
+        or payload.get("event_name")
+        or ""
+    ).lower()
+    return settings.fallback_agents_by_kind.get(kind, [])
+
+
+def gitlab_url(payload: dict[str, Any]) -> str | None:
+    attrs = payload.get("object_attributes") or {}
+    return (
+        attrs.get("url")
+        or attrs.get("web_url")
+        or (payload.get("project") or {}).get("web_url")
+    )
+
+
+def gitlab_project_issue_ref(
+    payload: dict[str, Any],
+) -> str | None:
+    attrs = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    project_path = str(
+        project.get("path_with_namespace") or ""
+    ).strip()
+    iid = attrs.get("iid")
+    if not project_path or iid in {None, ""}:
+        return None
+    return f"{project_path}#{iid}"
+
+
+def gitlab_mr_refs_from_payload(
+    payload: dict[str, Any],
+) -> list[str]:
+    refs: list[str] = []
+    attrs = payload.get("object_attributes") or {}
+    references = attrs.get("references")
+    for candidate in (
+        attrs.get("source_branch"),
+        attrs.get("target_branch"),
+        (
+            references.get("full")
+            if isinstance(references, dict)
+            else None
+        ),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            refs.append(candidate.strip())
+    changes = payload.get("changes") or {}
+    for source in (
+        changes.get("description"),
+        changes.get("title"),
+    ):
+        if isinstance(source, dict):
+            for value in source.values():
+                if isinstance(value, str):
+                    refs.extend(
+                        re.findall(
+                            r"[A-Za-z0-9._-]+![0-9]+",
+                            value,
+                        )
+                    )
+    return sorted(set(refs))
+
+
+def gitlab_token_for_project(
+    project_id: str,
+    *,
+    project_lookup: Callable[[str], Any],
+) -> str | None:
+    env_token = (
+        os.environ.get("CODEX_WEB_GITLAB_TOKEN") or ""
+    ).strip()
+    if env_token:
+        return env_token
+    with contextlib.suppress(Exception):
+        secrets_path = (
+            Path(project_lookup(project_id).path)
+            / "CODEX-SECRETS.md"
+        )
+        section = False
+        for line in secrets_path.read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if line.startswith("### "):
+                if line.strip() == "### GitLab codexops":
+                    section = True
+                    continue
+                if section:
+                    break
+            if section and line.startswith("- Token: "):
+                token = line.split(": ", 1)[1].strip()
+                if token:
+                    return token
     return None
