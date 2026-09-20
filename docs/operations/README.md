@@ -8,6 +8,7 @@ Operational state should be read from canonical APIs and the operator UI, not re
 - Capacity/backpressure: [Capacity resilience](../architecture/capacity-resilience.md)
 - Releases: [Release promotion](../architecture/releases.md)
 - Upgrades and rollback compatibility: [Upgrade and rollback procedure](upgrade-and-rollback.md) and [Safe upgrades](../architecture/safe-upgrades.md)
+- Legacy multi-repository Project/thread conversion: [Legacy Project migration](legacy-project-migration.md)
 - Controlled autonomy/audit: [Bounded autonomy](../architecture/bounded-autonomy.md) and [Autonomy audit](../architecture/autonomy-audit.md)
 
 For local/container deployment details see [DOCKER.md](../../DOCKER.md).
