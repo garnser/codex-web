@@ -215,6 +215,7 @@ class WorkItemContinuityService:
         recipient = self.coerce_owner(handoff.to_agent)
         if not recipient:
             return
+        requested_at = handoff.requested_at
         existing = self.handoff_tasks.get(state.ref)
         if existing and not existing.done():
             existing.cancel()
@@ -224,7 +225,7 @@ class WorkItemContinuityService:
                 await self.run_handoff_continuity_check(
                     state.ref,
                     expected_recipient=recipient,
-                    expected_requested_at=handoff.requested_at,
+                    expected_requested_at=requested_at,
                     source=source,
                 )
             except asyncio.CancelledError:
