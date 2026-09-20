@@ -43,6 +43,7 @@ High-churn mapping domains may opt into the keyed-record extension of the
 - `record_get(namespace, key)`
 - `record_apply(namespace, upserts=..., deletes=...)`
 - `record_items(namespace)`
+- `record_page(namespace, key_prefix=..., after=..., limit=...)`
 - `record_replace(namespace, records)`
 
 SQLite and PostgreSQL store these records as separate physical rows under a
@@ -62,6 +63,17 @@ that keyed persistence removes. Bulk compatibility saves and explicit
 to a release that still reads the historical JSON files directly, operators
 must take a compatibility checkpoint as part of the supported upgrade/rollback
 procedure. Canonical StateStore data remains authoritative between checkpoints.
+
+Both canonical keyed mutations and compatibility checkpoints expose separate
+timing counters. State-store status reports `keyedMutationMetrics`; distributed
+runtime diagnostics report per-namespace compatibility checkpoint metrics.
+This keeps canonical write latency distinguishable from compatibility-export
+cost and failure.
+
+Bounded `record_page()` reads use the physical primary-key ordering and accept
+a key prefix plus cursor. They are the read-side primitive for provider,
+conversation, Project, or tenant scoped indexes; callers should encode those
+scope dimensions into domain keys rather than loading the full collection.
 
 ## Scaling principles
 
