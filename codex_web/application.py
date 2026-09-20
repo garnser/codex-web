@@ -408,6 +408,12 @@ project_repository = ProjectRepository(
     PROJECTS_FILE,
     store=state_store,
 )
+runtime_state = RuntimeStateRepositories(
+    state_store,
+    thread_settings_file=THREAD_SETTINGS_FILE,
+    active_turns_file=ACTIVE_TURNS_FILE,
+    work_item_states_file=WORK_ITEM_STATES_FILE,
+)
 app.state.runtime_state_repositories = runtime_state
 event_transport = build_event_transport(
     os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
@@ -2194,6 +2200,7 @@ gitlab_operational_dependencies = GitLabOperationalDependencies(
 )
 gitlab_service = install_gitlab_service(
     app,
+    None,
     gitlab_client,
     canonical_events=canonical_event_ingestion,
     autonomy_controller=autonomy_controller,
