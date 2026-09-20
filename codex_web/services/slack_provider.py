@@ -12,24 +12,43 @@ from fastapi import Request
 
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.models import BotConnection, BotInboundMessage
+from codex_web.services.bot_binding_selection import BotBindingSelectionService
+from codex_web.services.bot_connections import BotConnectionService
+from codex_web.services.bot_presentation import BotPresentationService
 from codex_web.services.bot_routing import BotRoutingService
+from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
+from codex_web.services.bot_targets import BotTargetService
+from codex_web.services.bot_webhook_security import BotWebhookSecurityService
 from codex_web.services.conversation_channels import ConversationChannelService
+from codex_web.services.secrets import SecretBroker
 
 
 class SlackProviderService:
-    """Own Slack HTTP ingress and missed-message backfill outside the legacy runtime."""
+    """Own Slack HTTP ingress and missed-message backfill."""
 
     def __init__(
         self,
-        host: Any,
         *,
         slack_client: SlackClient,
         routing_service: BotRoutingService,
+        connections: BotConnectionService,
+        bindings: BotBindingSelectionService,
+        targets: BotTargetService,
+        presentation: BotPresentationService,
+        telemetry: BotRuntimeTelemetry,
+        webhook_security: BotWebhookSecurityService,
+        secret_broker: SecretBroker | None = None,
         conversation_channels: ConversationChannelService | None = None,
     ) -> None:
-        self.host = host
         self.slack = slack_client
         self.routing = routing_service
+        self.connections = connections
+        self.bindings = bindings
+        self.targets = targets
+        self.presentation = presentation
+        self.telemetry = telemetry
+        self.webhook_security = webhook_security
+        self.secret_broker = secret_broker
         self.conversation_channels = conversation_channels
         self.task: asyncio.Task[None] | None = None
         self.seen: set[str] = set()
@@ -37,30 +56,85 @@ class SlackProviderService:
         self.cooldown_until = 0.0
         self.rate_limit_failures = 0
 
+    @staticmethod
+    def _credential_identity(
+        connection: BotConnection,
+        field: str,
+    ) -> str | None:
+        return getattr(connection, f"{field}_secret_id", None) or getattr(
+            connection,
+            field,
+            None,
+        )
+
+    async def _with_credential(
+        self,
+        connection: BotConnection,
+        field: str,
+        operation: str,
+        consumer,
+    ):
+        secret_id = getattr(connection, f"{field}_secret_id", None)
+        if secret_id and self.secret_broker is not None:
+            return await self.secret_broker.use_async(
+                secret_id,
+                actor=self.connections.runtime_actor(
+                    connection.project_id
+                ),
+                operation=operation,
+                consumer=consumer,
+                context={
+                    "connection_id": connection.id,
+                    "provider": connection.provider,
+                },
+            )
+        raw = getattr(connection, field, None)
+        if raw:
+            return await consumer(raw)
+        raise RuntimeError(f"Bot connection is missing {field}")
+
     def interval_seconds(self) -> float:
         try:
-            seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS") or "15")
+            seconds = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS"
+                )
+                or "15"
+            )
         except ValueError:
             return 15.0
         return max(5.0, seconds)
 
     def window_seconds(self) -> float:
         try:
-            seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_WINDOW_SECONDS") or "300")
+            seconds = float(
+                os.environ.get("CODEX_WEB_SLACK_BACKFILL_WINDOW_SECONDS")
+                or "300"
+            )
         except ValueError:
             return 300.0
         return max(30.0, min(seconds, 3600.0))
 
     def rate_limit_min_seconds(self) -> float:
         try:
-            seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MIN_SECONDS") or "60")
+            seconds = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MIN_SECONDS"
+                )
+                or "60"
+            )
         except ValueError:
             return 60.0
         return max(5.0, seconds)
 
     def rate_limit_max_seconds(self) -> float:
         try:
-            seconds = float(os.environ.get("CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MAX_SECONDS") or "900")
+            seconds = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_RATE_LIMIT_MAX_SECONDS"
+                )
+                or "900"
+            )
         except ValueError:
             return 900.0
         return max(self.rate_limit_min_seconds(), seconds)
@@ -82,7 +156,10 @@ class SlackProviderService:
             return
         if self.interval_seconds() <= 0:
             return
-        self.task = asyncio.create_task(self._run_loop(), name="slack-backfill")
+        self.task = asyncio.create_task(
+            self._run_loop(),
+            name="slack-backfill",
+        )
 
     async def stop(self) -> None:
         task = self.task
@@ -93,19 +170,38 @@ class SlackProviderService:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    def _is_rate_limited(self, response: dict[str, Any]) -> bool:
-        return response.get("_http_status") == 429 or response.get("error") == "ratelimited"
+    @staticmethod
+    def _is_rate_limited(response: dict[str, Any]) -> bool:
+        return (
+            response.get("_http_status") == 429
+            or response.get("error") == "ratelimited"
+        )
 
-    def _apply_rate_limit(self, response: dict[str, Any], context: dict[str, Any]) -> None:
+    def _apply_rate_limit(
+        self,
+        response: dict[str, Any],
+        context: dict[str, Any],
+    ) -> None:
         self.rate_limit_failures += 1
         minimum = self.rate_limit_min_seconds()
         maximum = self.rate_limit_max_seconds()
         retry_after = response.get("_retry_after")
-        fallback = min(maximum, minimum * (2 ** min(self.rate_limit_failures - 1, 4)))
-        delay = max(minimum, float(retry_after) if retry_after is not None else fallback)
+        fallback = min(
+            maximum,
+            minimum * (2 ** min(self.rate_limit_failures - 1, 4)),
+        )
+        delay = max(
+            minimum,
+            float(retry_after)
+            if retry_after is not None
+            else fallback,
+        )
         delay = min(maximum, delay)
-        self.cooldown_until = max(self.cooldown_until, time.time() + delay)
-        self.host._append_bot_event(
+        self.cooldown_until = max(
+            self.cooldown_until,
+            time.time() + delay,
+        )
+        self.telemetry.append(
             {
                 "type": "slack_backfill_cooldown_set",
                 "provider": "slack",
@@ -116,8 +212,13 @@ class SlackProviderService:
             }
         )
 
-    def _record_failure(self, event_type: str, response: dict[str, Any], context: dict[str, Any]) -> bool:
-        self.host._append_bot_event(
+    def _record_failure(
+        self,
+        event_type: str,
+        response: dict[str, Any],
+        context: dict[str, Any],
+    ) -> bool:
+        self.telemetry.append(
             {
                 "type": event_type,
                 "provider": "slack",
@@ -130,8 +231,11 @@ class SlackProviderService:
             return True
         return False
 
-    def _recent_inbound_message_ids(self, limit: int = 2000) -> set[str]:
-        events_file = self.host.BOTS_EVENTS_FILE
+    def _recent_inbound_message_ids(
+        self,
+        limit: int = 2000,
+    ) -> set[str]:
+        events_file = self.telemetry.events_file
         if not events_file.exists():
             return set()
         with events_file.open(errors="replace") as handle:
@@ -140,86 +244,177 @@ class SlackProviderService:
         for line in lines:
             with contextlib.suppress(Exception):
                 event = json.loads(line)
-                if event.get("provider") == "slack" and event.get("message_id"):
+                if (
+                    event.get("provider") == "slack"
+                    and event.get("message_id")
+                ):
                     message_ids.add(str(event["message_id"]))
         return message_ids
 
-    def _channels(self) -> list[tuple[BotConnection, str]]:
-        connections = {
+    def _slack_connections(self) -> dict[str, BotConnection]:
+        return {
             connection.id: connection
-            for connection in self.host._load_bot_connections()
-            if connection.provider == "slack" and connection.bot_token
+            for connection in self.connections.load_connections()
+            if connection.provider == "slack"
+            and self._credential_identity(connection, "bot_token")
         }
-        pairs: dict[tuple[str, str], tuple[BotConnection, str]] = {}
-        for binding in self.host._load_bot_bindings():
+
+    def _channels(self) -> list[tuple[BotConnection, str]]:
+        connections = self._slack_connections()
+        pairs: dict[
+            tuple[str, str],
+            tuple[BotConnection, str],
+        ] = {}
+        for binding in self.bindings.load_bindings():
             connection = connections.get(binding.connection_id or "")
             if connection and binding.external_conversation_id:
-                pairs[(connection.id, binding.external_conversation_id)] = (
+                pairs[
+                    (connection.id, binding.external_conversation_id)
+                ] = (
                     connection,
                     binding.external_conversation_id,
                 )
         for connection in connections.values():
             if connection.default_external_conversation_id:
                 pairs.setdefault(
-                    (connection.id, connection.default_external_conversation_id),
-                    (connection, connection.default_external_conversation_id),
+                    (
+                        connection.id,
+                        connection.default_external_conversation_id,
+                    ),
+                    (
+                        connection,
+                        connection.default_external_conversation_id,
+                    ),
                 )
         return list(pairs.values())
 
-    def _thread_targets(self) -> list[tuple[BotConnection, str, str]]:
-        connections = {
-            connection.id: connection
-            for connection in self.host._load_bot_connections()
-            if connection.provider == "slack" and connection.bot_token
-        }
-        bindings = {
-            (binding.provider, binding.thread_id, binding.external_conversation_id): binding
-            for binding in self.host._load_bot_bindings()
+    def _thread_targets(
+        self,
+    ) -> list[tuple[BotConnection, str, str]]:
+        connections = self._slack_connections()
+        all_bindings = self.bindings.load_bindings()
+        binding_map = {
+            (
+                binding.provider,
+                binding.thread_id,
+                binding.external_conversation_id,
+            ): binding
+            for binding in all_bindings
             if binding.provider == "slack" and binding.connection_id
         }
-        all_bindings = self.host._load_bot_bindings()
         targets: list[Any] = []
-        targets.extend(self.host._load_bot_reply_targets().values())
-        targets.extend(self.host._load_bot_delivery_targets().values())
-        targets.extend(active.reply_target for active in self.host._load_active_turns().values() if active.reply_target)
-        pairs: dict[tuple[str, str, str], tuple[BotConnection, str, str]] = {}
+        targets.extend(self.targets.load_reply_targets().values())
+        targets.extend(self.targets.load_delivery_targets().values())
+        targets.extend(
+            active.reply_target
+            for active in self.targets.load_active_turns().values()
+            if active.reply_target
+        )
+        pairs: dict[
+            tuple[str, str, str],
+            tuple[BotConnection, str, str],
+        ] = {}
         for target in targets:
-            if target.provider != "slack" or not target.external_conversation_id:
+            if (
+                target.provider != "slack"
+                or not target.external_conversation_id
+            ):
                 continue
             thread_ts = target.external_thread_id or target.message_id
             if not thread_ts:
                 continue
-            binding = bindings.get((target.provider, target.thread_id, target.external_conversation_id))
+            binding = binding_map.get(
+                (
+                    target.provider,
+                    target.thread_id,
+                    target.external_conversation_id,
+                )
+            )
             if not binding:
                 candidates = [
                     item
                     for item in all_bindings
                     if item.provider == "slack"
                     and item.thread_id == target.thread_id
-                    and item.external_conversation_id == target.external_conversation_id
+                    and item.external_conversation_id
+                    == target.external_conversation_id
                     and item.connection_id
                 ]
                 binding = candidates[0] if candidates else None
-            connection = connections.get(binding.connection_id or "") if binding else None
+            connection = (
+                connections.get(binding.connection_id or "")
+                if binding
+                else None
+            )
             if not connection:
                 continue
-            pairs[(connection.id, target.external_conversation_id, thread_ts)] = (
+            pairs[
+                (
+                    connection.id,
+                    target.external_conversation_id,
+                    thread_ts,
+                )
+            ] = (
                 connection,
                 target.external_conversation_id,
                 thread_ts,
             )
         return list(pairs.values())
 
-    async def run_backfill_cycle(self) -> None:
-        recent_message_ids = self._recent_inbound_message_ids()
-        oldest = f"{max(0.0, time.time() - self.window_seconds()):.6f}"
-        for connection, channel_id in self._channels():
-            assert connection.bot_token
-            response = await self.slack.history(
-                connection.bot_token,
+    async def _history(
+        self,
+        connection: BotConnection,
+        channel_id: str,
+        oldest: str,
+    ) -> dict[str, Any]:
+        async def operation(token: str):
+            return await self.slack.history(
+                token,
                 channel_id,
                 oldest=oldest,
                 limit=50,
+            )
+
+        return await self._with_credential(
+            connection,
+            "bot_token",
+            "slack.backfill.history",
+            operation,
+        )
+
+    async def _replies(
+        self,
+        connection: BotConnection,
+        channel_id: str,
+        thread_ts: str,
+        oldest: str,
+    ) -> dict[str, Any]:
+        async def operation(token: str):
+            return await self.slack.replies(
+                token,
+                channel_id,
+                thread_ts,
+                oldest=oldest,
+                limit=50,
+            )
+
+        return await self._with_credential(
+            connection,
+            "bot_token",
+            "slack.backfill.replies",
+            operation,
+        )
+
+    async def run_backfill_cycle(self) -> None:
+        recent_message_ids = self._recent_inbound_message_ids()
+        oldest = (
+            f"{max(0.0, time.time() - self.window_seconds()):.6f}"
+        )
+        for connection, channel_id in self._channels():
+            response = await self._history(
+                connection,
+                channel_id,
+                oldest,
             )
             if not response.get("ok"):
                 rate_limited = self._record_failure(
@@ -246,16 +441,18 @@ class SlackProviderService:
             thread_key = (connection.id, channel_id, thread_ts)
             if thread_key in self.bad_threads:
                 continue
-            assert connection.bot_token
-            response = await self.slack.replies(
-                connection.bot_token,
+            response = await self._replies(
+                connection,
                 channel_id,
                 thread_ts,
-                oldest=oldest,
-                limit=50,
+                oldest,
             )
             if not response.get("ok"):
-                if response.get("error") in {"thread_not_found", "channel_not_found", "not_in_channel"}:
+                if response.get("error") in {
+                    "thread_not_found",
+                    "channel_not_found",
+                    "not_in_channel",
+                }:
                     self.bad_threads.add(thread_key)
                 rate_limited = self._record_failure(
                     "slack_thread_backfill_failed",
@@ -292,12 +489,21 @@ class SlackProviderService:
         fallback_thread_ts: str | None = None,
     ) -> None:
         message_id = str(event.get("ts") or "").strip()
-        if not message_id or message_id in self.seen or message_id in recent_message_ids:
+        if (
+            not message_id
+            or message_id in self.seen
+            or message_id in recent_message_ids
+        ):
             return
-        if event.get("bot_id") or event.get("subtype") in {"bot_message", "message_deleted"}:
+        if event.get("bot_id") or event.get("subtype") in {
+            "bot_message",
+            "message_deleted",
+        }:
             self.seen.add(message_id)
             return
-        text = self.host._strip_slack_mentions(event.get("text") or "")
+        text = self.presentation.strip_slack_mentions(
+            event.get("text") or ""
+        )
         if not text:
             self.seen.add(message_id)
             return
@@ -307,15 +513,25 @@ class SlackProviderService:
                 provider="slack",
                 external_conversation_id=channel_id,
                 connection_id=connection.id,
-                external_name=connection.default_external_name or channel_id,
+                external_name=(
+                    connection.default_external_name or channel_id
+                ),
                 sender_id=event.get("user"),
                 text=text,
                 project_id=connection.project_id,
-                external_thread_id=event.get("thread_ts") or fallback_thread_ts or message_id,
+                external_thread_id=(
+                    event.get("thread_ts")
+                    or fallback_thread_ts
+                    or message_id
+                ),
                 message_id=message_id,
             )
         )
-        event_type = "slack_thread_backfill_dispatched" if fallback_thread_ts else "slack_backfill_dispatched"
+        event_type = (
+            "slack_thread_backfill_dispatched"
+            if fallback_thread_ts
+            else "slack_backfill_dispatched"
+        )
         payload: dict[str, Any] = {
             "type": event_type,
             "provider": "slack",
@@ -328,7 +544,7 @@ class SlackProviderService:
         }
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts
-        self.host._append_bot_event(payload)
+        self.telemetry.append(payload)
 
     async def _run_loop(self) -> None:
         interval = self.interval_seconds()
@@ -342,12 +558,20 @@ class SlackProviderService:
             try:
                 await self.run_backfill_cycle()
             except Exception as exc:
-                self.host._append_bot_event({"type": "slack_backfill_loop_failed", "error": str(exc)})
+                self.telemetry.append(
+                    {
+                        "type": "slack_backfill_loop_failed",
+                        "error": str(exc),
+                    }
+                )
             await asyncio.sleep(interval)
 
-    async def handle_webhook(self, request: Request) -> dict[str, Any]:
+    async def handle_webhook(
+        self,
+        request: Request,
+    ) -> dict[str, Any]:
         body = await request.body()
-        self.host._verify_slack_signature(request, body)
+        await self.webhook_security.verify_slack(request, body)
         payload = json.loads(body or b"{}")
 
         if payload.get("type") == "url_verification":
@@ -360,14 +584,16 @@ class SlackProviderService:
             return {"ok": True, "ignored": True}
         channel = (
             event.get("channel")
-            or (event.get("item") or {}).get("channel")
-            if isinstance(event.get("item"), dict)
-            else event.get("channel")
+            or (
+                (event.get("item") or {}).get("channel")
+                if isinstance(event.get("item"), dict)
+                else event.get("channel")
+            )
         )
         if not channel:
             return {"ok": True, "ignored": True}
 
-        connection = self.host._bot_connection_for_conversation(
+        connection = self.connections.for_conversation(
             "slack",
             str(channel),
         )
@@ -377,25 +603,31 @@ class SlackProviderService:
             normalized_payload = dict(payload)
             normalized_event = dict(event)
             if normalized_event.get("text"):
-                normalized_event["text"] = self.host._strip_slack_mentions(
-                    normalized_event.get("text") or ""
+                normalized_event["text"] = (
+                    self.presentation.strip_slack_mentions(
+                        normalized_event.get("text") or ""
+                    )
                 )
             if (
                 normalized_event.get("subtype") == "message_changed"
-                and isinstance(normalized_event.get("message"), dict)
+                and isinstance(
+                    normalized_event.get("message"),
+                    dict,
+                )
             ):
                 changed = dict(normalized_event["message"])
-                changed["text"] = self.host._strip_slack_mentions(
-                    changed.get("text") or ""
+                changed["text"] = (
+                    self.presentation.strip_slack_mentions(
+                        changed.get("text") or ""
+                    )
                 )
                 normalized_event["message"] = changed
             normalized_payload["event"] = normalized_event
-            actor = self.host._bot_runtime_actor(project_id)
             receipts = await self.conversation_channels.ingest_raw(
                 "slack",
                 connection.id if connection else "slack:default",
                 normalized_payload,
-                actor=actor,
+                actor=self.connections.runtime_actor(project_id),
                 connection_id=connection.id if connection else None,
                 project_id=project_id,
             )
@@ -404,12 +636,19 @@ class SlackProviderService:
             result = self.conversation_channels.legacy_routing_result(
                 receipts[0]
             )
-            if not result.get("routed", True) and not result.get("threadId"):
+            if (
+                not result.get("routed", True)
+                and not result.get("threadId")
+            ):
                 return {
                     "ok": True,
                     "accepted": False,
-                    "conversationOutcome": result.get("conversationOutcome"),
-                    "canonicalEventId": result.get("canonicalEventId"),
+                    "conversationOutcome": result.get(
+                        "conversationOutcome"
+                    ),
+                    "canonicalEventId": result.get(
+                        "canonicalEventId"
+                    ),
                 }
         else:
             if event.get("type") not in {"message", "app_mention"}:
@@ -419,33 +658,74 @@ class SlackProviderService:
                 "message_deleted",
             }:
                 return {"ok": True, "ignored": True}
-            text = self.host._strip_slack_mentions(event.get("text") or "")
+            text = self.presentation.strip_slack_mentions(
+                event.get("text") or ""
+            )
             if not text:
                 return {"ok": True, "ignored": True}
             result = await self.routing.handle_inbound(
                 BotInboundMessage(
                     provider="slack",
                     external_conversation_id=str(channel),
-                    connection_id=connection.id if connection else None,
+                    connection_id=(
+                        connection.id if connection else None
+                    ),
                     external_name=str(channel),
                     sender_id=event.get("user"),
                     text=text,
                     project_id=project_id,
-                    external_thread_id=event.get("thread_ts") or event.get("ts"),
+                    external_thread_id=(
+                        event.get("thread_ts") or event.get("ts")
+                    ),
                     message_id=event.get("ts"),
                 )
             )
         if result.get("ambiguous"):
-            binding = self.host._first_binding_for_connection("slack", channel)
-            connection = self.host._bot_connection(binding.connection_id) if binding and binding.connection_id else None
-            if connection and connection.bot_token:
-                await self.slack.post_message(
-                    connection.bot_token,
-                    channel,
-                    self.host._ambiguous_route_message(result["availablePrefixes"]),
-                    username=self.host._slack_reply_username(binding) if binding else None,
-                    icon_emoji=self.host._slack_reply_icon(binding) if binding else None,
-                    thread_ts=event.get("thread_ts") or event.get("ts"),
+            binding = self.bindings.first_for_connection(
+                "slack",
+                channel,
+            )
+            connection = (
+                self.connections.get(binding.connection_id)
+                if binding and binding.connection_id
+                else None
+            )
+            if (
+                connection
+                and self._credential_identity(
+                    connection,
+                    "bot_token",
+                )
+            ):
+                async def notify(token: str):
+                    return await self.slack.post_message(
+                        token,
+                        channel,
+                        self.presentation.ambiguous_route_message(
+                            result["availablePrefixes"]
+                        ),
+                        username=(
+                            self.presentation.slack_reply_username(
+                                binding
+                            )
+                            if binding
+                            else None
+                        ),
+                        icon_emoji=(
+                            self.presentation.slack_reply_icon(binding)
+                            if binding
+                            else None
+                        ),
+                        thread_ts=(
+                            event.get("thread_ts") or event.get("ts")
+                        ),
+                    )
+
+                await self._with_credential(
+                    connection,
+                    "bot_token",
+                    "slack.post_ambiguous_route",
+                    notify,
                 )
             return {
                 "ok": True,
@@ -460,7 +740,11 @@ class SlackProviderService:
                 "timedOut": True,
                 "threadId": result.get("threadId"),
             }
-        return {"ok": True, "accepted": True, "threadId": result["threadId"]}
+        return {
+            "ok": True,
+            "accepted": True,
+            "threadId": result["threadId"],
+        }
 
 
 def install_slack_provider_service(
@@ -469,9 +753,15 @@ def install_slack_provider_service(
     *,
     slack_client: SlackClient,
     routing_service: BotRoutingService,
+    connections=None,
+    bindings=None,
+    targets=None,
+    presentation=None,
+    telemetry=None,
+    webhook_security=None,
 ) -> SlackProviderService:
     existing = getattr(app.state, "slack_provider_service", None)
-    if isinstance(existing, SlackProviderService) and existing.host is host:
+    if isinstance(existing, SlackProviderService):
         service = existing
         service.conversation_channels = getattr(
             app.state,
@@ -480,9 +770,20 @@ def install_slack_provider_service(
         )
     else:
         service = SlackProviderService(
-            host,
             slack_client=slack_client,
             routing_service=routing_service,
+            connections=connections or app.state.bot_connection_service,
+            bindings=bindings or app.state.bot_binding_selection_service,
+            targets=targets or app.state.bot_target_service,
+            presentation=(
+                presentation or app.state.bot_presentation_service
+            ),
+            telemetry=telemetry or app.state.bot_runtime_telemetry,
+            webhook_security=(
+                webhook_security
+                or app.state.bot_webhook_security_service
+            ),
+            secret_broker=getattr(app.state, "secret_broker", None),
             conversation_channels=getattr(
                 app.state,
                 "conversation_channel_service",
@@ -491,11 +792,11 @@ def install_slack_provider_service(
         )
         app.state.slack_provider_service = service
 
-    # Compatibility entrypoints remain callable while their legacy definitions
-    # are removed in the follow-up pruning pass.
     host._run_slack_backfill_cycle = service.run_backfill_cycle
     host._slack_backfill_loop = service._run_loop
     host._slack_backfill_interval_seconds = service.interval_seconds
-    host._slack_backfill_cooldown_remaining_seconds = service.cooldown_remaining_seconds
+    host._slack_backfill_cooldown_remaining_seconds = (
+        service.cooldown_remaining_seconds
+    )
     host._slack_backfill_thread_targets = service._thread_targets
     return service
