@@ -17,7 +17,11 @@ from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Proje
 from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.provider_capacity import ProviderCapacityWaitCreate
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.services.agent_routing import AgentRoutingService
+from codex_web.services.agent_routing import (
+    AgentCapacityRoutingError,
+    AgentRoutingError,
+    AgentRoutingService,
+)
 from codex_web.services.provider_capacity import (
     ProviderCapacityBlockedError,
     ProviderCapacityService,
@@ -135,13 +139,47 @@ class TurnExecutionService:
     ) -> ExecutionRuntimeBinding | None:
         if self.routing_service is None or self.control_actor is None:
             return None
-        routed = await self.routing_service.route(
-            AgentRoutingRequest(
-                project_id=project_id,
-                require_persistent_session=True,
-            ),
-            actor=self.control_actor,
-        )
+        try:
+            routed = await self.routing_service.route(
+                AgentRoutingRequest(
+                    project_id=project_id,
+                    require_persistent_session=True,
+                    required_sandbox_profile=sandbox,
+                    required_network_profile="brokered-model-egress",
+                ),
+                actor=self.control_actor,
+            )
+        except AgentCapacityRoutingError:
+            raise
+        except AgentRoutingError as exc:
+            detail = str(exc)
+            lowered = detail.casefold()
+            if "sandbox_profile_mismatch" in lowered:
+                code = "sandbox_profile_unsupported"
+                remediation = "/api/agent-providers"
+            elif "network_profile_mismatch" in lowered:
+                code = "network_policy_unsupported"
+                remediation = "/api/agent-providers"
+            else:
+                code = "execution_profile_incompatible"
+                remediation = "/api/agent-providers"
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "execution_preflight_blocked",
+                    "message": detail,
+                    "blockers": [
+                        {
+                            "code": code,
+                            "message": detail,
+                            "retryable": False,
+                            "target_type": "agent_runtime",
+                            "remediation_route": remediation,
+                        }
+                    ],
+                    "retryable": False,
+                },
+            ) from exc
         return routed.selected_runtime.execution_binding()
 
     def _manager_for_binding(
