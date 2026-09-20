@@ -63,6 +63,43 @@ class OperationalStateTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in mirrored["thread-1"]], ["q1", "q2"])
             self.assertEqual(legacy.stat().st_mode & 0o777, 0o600)
 
+    def test_turn_queue_keyed_write_defers_full_json_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repositories = self._repositories(root)
+            legacy = root / "queued_turns.json"
+            legacy.write_text("{}")
+
+            repositories.turn_queues.put(
+                "thread-1",
+                [
+                    QueuedTurn(
+                        id="q1",
+                        thread_id="thread-1",
+                        project_id="home",
+                        message="first",
+                        created_at=1.0,
+                    )
+                ],
+            )
+
+            self.assertEqual(json.loads(legacy.read_text()), {})
+            self.assertEqual(
+                repositories.turn_queues.get("thread-1")[0].id,
+                "q1",
+            )
+            self.assertTrue(
+                repositories.turn_queues.store.record_collection_exists(
+                    "turn_queues"
+                )
+            )
+
+            repositories.turn_queues.flush_legacy_mirror()
+            self.assertEqual(
+                json.loads(legacy.read_text())["thread-1"][0]["id"],
+                "q1",
+            )
+
     def test_bot_credentials_are_sqlite_primary_and_private_when_mirrored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -131,6 +168,8 @@ class OperationalStateTests(unittest.TestCase):
                 repositories = install_operational_state(app, host)
 
                 self.assertIs(getattr(host._load_turn_queues, "__self__", None), repositories.turn_queues)
+                self.assertIs(getattr(host._thread_queue_record, "__self__", None), repositories.turn_queues)
+                self.assertIs(getattr(host._put_thread_queue_record, "__self__", None), repositories.turn_queues)
                 self.assertIs(getattr(host._save_bot_connections, "__self__", None), repositories.bot_connections)
                 self.assertIs(getattr(host._load_bot_reply_targets, "__self__", None), repositories.bot_reply_targets)
             finally:
