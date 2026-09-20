@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import MethodType
 from typing import Any, Callable
 
 from codex_web.models import BotBinding, BotInboundMessage, BotReplyTarget
@@ -353,6 +354,7 @@ def install_bot_target_service(
         return None
 
     def _compat_thread_target_for_outbound(
+        _service: BotTargetService,
         binding: BotBinding,
         reply_in_thread: bool | None = None,
     ) -> tuple[BotReplyTarget | None, bool]:
@@ -402,7 +404,10 @@ def install_bot_target_service(
     host._should_reply_in_external_thread = (
         service.should_reply_in_external_thread
     )
-    host._thread_target_for_outbound = _compat_thread_target_for_outbound
+    host._thread_target_for_outbound = MethodType(
+        _compat_thread_target_for_outbound,
+        service,
+    )
     host._outbound_bindings_for_thread = service.outbound_bindings_for_thread
     host._forget_bot_reply_target = service.forget_reply_target
     host._retarget_bot_targets = service.retarget
