@@ -259,6 +259,9 @@ def install_thread_execution_settings_service(
     gitlab_routing_enabled_for_project: Callable[[str], bool] | None = None,
     binding_report_name: Callable[[BotBinding], str | None] | None = None,
     binding_prefix: Callable[[BotBinding], str | None] | None = None,
+    get_setting: Callable[[str], ThreadRunSettings | None] | None = None,
+    put_setting: Callable[[str, ThreadRunSettings], Any] | None = None,
+    delete_setting: Callable[[str], bool] | None = None,
 ) -> ThreadExecutionSettingsService:
     service = ThreadExecutionSettingsService(
         load_settings=load_settings or host._load_thread_settings,
