@@ -28,16 +28,56 @@ class BotConnectionService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
-        load_connections: Callable[[], list[BotConnection]],
-        save_connections: Callable[[list[BotConnection]], None],
-        load_bindings: Callable[[], list[Any]],
-        save_bindings: Callable[[list[Any]], None],
-        projects: ProjectRuntimeService,
-        binding_prefix: Callable[[Any], str],
+        load_connections: Callable[[], list[BotConnection]] | None = None,
+        save_connections: Callable[[list[BotConnection]], None] | None = None,
+        load_bindings: Callable[[], list[Any]] | None = None,
+        save_bindings: Callable[[list[Any]], None] | None = None,
+        projects: ProjectRuntimeService | Any | None = None,
+        binding_prefix: Callable[[Any], str] | None = None,
         secret_broker: SecretBroker | None = None,
         identity_service: IdentityService | None = None,
     ) -> None:
+        if host is not None:
+            load_connections = load_connections or getattr(
+                host,
+                "_load_bot_connections",
+                None,
+            )
+            save_connections = save_connections or getattr(
+                host,
+                "_save_bot_connections",
+                None,
+            )
+            load_bindings = load_bindings or getattr(
+                host,
+                "_load_bot_bindings",
+                None,
+            )
+            save_bindings = save_bindings or getattr(
+                host,
+                "_save_bot_bindings",
+                None,
+            )
+            projects = projects or host
+            binding_prefix = binding_prefix or getattr(
+                host,
+                "_binding_prefix",
+                None,
+            )
+        if not all(
+            (
+                load_connections,
+                save_connections,
+                load_bindings,
+                save_bindings,
+                projects,
+                binding_prefix,
+            )
+        ):
+            raise TypeError("BotConnectionService requires explicit state dependencies")
+
         self.load_connections = load_connections
         self.save_connections = save_connections
         self.load_bindings = load_bindings
@@ -46,6 +86,17 @@ class BotConnectionService:
         self.binding_prefix = binding_prefix
         self.secret_broker = secret_broker
         self.identity_service = identity_service
+
+    def _project(self, project_id: str) -> Any:
+        getter = getattr(self.projects, "get", None)
+        if callable(getter):
+            project = getter(project_id)
+            if project is not None:
+                return project
+        legacy_getter = getattr(self.projects, "_project", None)
+        if callable(legacy_getter):
+            return legacy_getter(project_id)
+        raise RuntimeError(f"Project not found: {project_id}")
 
     def get(self, connection_id: str) -> BotConnection:
         for connection in self.load_connections():
@@ -93,7 +144,7 @@ class BotConnectionService:
         )
 
     def _project_scope(self, project_id: str) -> TenantScope:
-        project = self.projects.get(project_id)
+        project = self._project(project_id)
         return TenantScope(
             organization_id=getattr(project, "organization_id", "local"),
             workspace_id=getattr(project, "workspace_id", "default"),
@@ -216,7 +267,7 @@ class BotConnectionService:
                 status_code=400,
                 detail="Provider must be slack, telegram, or teams",
             )
-        project = self.projects.get(payload.project_id)
+        project = self._project(payload.project_id)
         if actor is not None:
             scope = self._project_scope(payload.project_id)
             if actor.tenant != scope:
@@ -340,7 +391,11 @@ def install_bot_connection_service(
         save_connections=save_connections or host._save_bot_connections,
         load_bindings=load_bindings or host._load_bot_bindings,
         save_bindings=save_bindings or host._save_bot_bindings,
-        projects=projects or app.state.project_runtime_service,
+        projects=(
+            projects
+            or getattr(app.state, "project_runtime_service", None)
+            or host
+        ),
         binding_prefix=binding_prefix or host._binding_prefix,
         secret_broker=secret_broker,
         identity_service=identity_service,
