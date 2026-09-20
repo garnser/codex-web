@@ -181,6 +181,21 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
+    def test_control_plane_broker_admin_has_focused_budget_and_no_secret_surface(self) -> None:
+        source_path = STATIC / "control_plane_broker_admin.js"
+        source = source_path.read_text(encoding="utf-8")
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+        self.assertLessEqual(source_path.stat().st_size, 7_000)
+        self.assertIn("api_client.js", source)
+        self.assertIn("apiRequest", source)
+        self.assertNotIn("fetch(", source)
+        self.assertIn("credential_exposed", source)
+        self.assertNotIn("lease_token", source)
+        self.assertNotIn("capability_token", source)
+        self.assertIn("brokered_control_plane", source)
+        self.assertIn("control_plane_broker_admin.js", html)
+
     def test_execution_worker_management_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "execution_worker_management.js"
         source = source_path.read_text()
