@@ -124,10 +124,14 @@ class BotChannelDiscoveryService:
             return await consumer(raw)
         raise RuntimeError(f"Bot connection is missing {field}")
 
-    def known(self, project_id: str) -> list[dict[str, str]]:
-        self.projects.get(project_id)
+    def _known_from(
+        self,
+        project_id: str,
+        connections: list[BotConnection],
+        bindings: list[Any],
+    ) -> list[dict[str, str]]:
         channels: dict[tuple[str, str], dict[str, str]] = {}
-        for connection in self.connections.load_connections():
+        for connection in connections:
             if (
                 connection.project_id != project_id
                 or not connection.default_external_conversation_id
@@ -146,7 +150,7 @@ class BotChannelDiscoveryService:
                     connection.default_external_name,
                 ),
             }
-        for binding in self.bindings.load_bindings():
+        for binding in bindings:
             if binding.project_id != project_id:
                 continue
             key = (binding.provider, binding.external_conversation_id)
@@ -167,73 +171,265 @@ class BotChannelDiscoveryService:
             key=lambda item: (item["provider"], item["label"]),
         )
 
+    def known(self, project_id: str) -> list[dict[str, str]]:
+        self.projects.get(project_id)
+        return self._known_from(
+            project_id,
+            self.connections.load_connections(),
+            self.bindings.load_bindings(),
+        )
+
     async def list(self, project_id: str) -> list[dict[str, str]]:
         self.projects.get(project_id)
+        started = time.perf_counter()
+        now = time.time()
         cached = self.cache.get(project_id)
-        if cached and time.time() - cached[0] < self.CACHE_SECONDS:
-            return cached[1]
+        if cached and now - cached[0] < self.CACHE_SECONDS:
+            result = [dict(item) for item in cached[1]]
+            self.discovery_metrics[project_id] = {
+                "cacheHit": True,
+                "credentialGroups": 0,
+                "providerCalls": 0,
+                "listCalls": 0,
+                "unresolvedCount": sum(
+                    1
+                    for item in result
+                    if item.get("provider") == "slack"
+                    and self.channel_needs_name(item)
+                ),
+                "metadataLookupCount": 0,
+                "negativeCacheHits": 0,
+                "cooldownSkips": 0,
+                "rateLimitEvents": 0,
+                "discoveryDurationSeconds": (
+                    time.perf_counter() - started
+                ),
+            }
+            return result
 
+        connections = self.connections.load_connections()
+        bindings = self.bindings.load_bindings()
         channels = {
             (item["provider"], item["id"]): item
-            for item in self.known(project_id)
+            for item in self._known_from(
+                project_id,
+                connections,
+                bindings,
+            )
         }
-        for connection in self.connections.load_connections():
+
+        groups: dict[str, BotConnection] = {}
+        connection_groups: dict[str, str] = {}
+        for connection in connections:
             if (
                 connection.project_id != project_id
                 or connection.provider != "slack"
-                or not self._credential_identity(connection, "bot_token")
             ):
                 continue
-            with contextlib.suppress(Exception):
-                async def list_with_token(token: str):
-                    return await self.slack.list_channels(token)
+            group_key = self._credential_group_key(connection)
+            if group_key is None:
+                continue
+            groups.setdefault(group_key, connection)
+            connection_groups[connection.id] = group_key
 
-                discovered = await self._with_credential(
-                    connection,
-                    "bot_token",
-                    "slack.list_channels",
-                    list_with_token,
-                )
-                for channel in discovered:
-                    channels[(channel["provider"], channel["id"])] = channel
+        channel_groups: dict[str, set[str]] = {}
+        for connection in connections:
+            if (
+                connection.project_id == project_id
+                and connection.provider == "slack"
+                and connection.default_external_conversation_id
+            ):
+                group_key = connection_groups.get(connection.id)
+                if group_key:
+                    channel_groups.setdefault(
+                        connection.default_external_conversation_id,
+                        set(),
+                    ).add(group_key)
 
-            unresolved = [
-                channel
-                for channel in channels.values()
-                if channel["provider"] == "slack"
-                and self.channel_needs_name(channel)
-            ]
-            for channel in unresolved:
-                with contextlib.suppress(Exception):
-                    async def channel_info(token: str):
-                        return await self.slack.channel_info(
-                            token,
-                            channel["id"],
-                        )
+        all_group_keys = set(groups)
+        for binding in bindings:
+            if binding.project_id != project_id or binding.provider != "slack":
+                continue
+            group_key = connection_groups.get(binding.connection_id or "")
+            target_groups = {group_key} if group_key else all_group_keys
+            channel_groups.setdefault(
+                binding.external_conversation_id,
+                set(),
+            ).update(target_groups)
 
-                    resolved = await self._with_credential(
+        metrics: dict[str, Any] = {
+            "cacheHit": False,
+            "credentialGroups": len(groups),
+            "providerCalls": 0,
+            "listCalls": 0,
+            "unresolvedCount": 0,
+            "metadataLookupCount": 0,
+            "negativeCacheHits": 0,
+            "cooldownSkips": 0,
+            "rateLimitEvents": 0,
+            "discoveryDurationSeconds": 0.0,
+        }
+        semaphore = asyncio.Semaphore(self.MAX_METADATA_CONCURRENCY)
+
+        def apply_rate_limit(group_key: str, exc: Exception) -> None:
+            retry_after = self._retry_after_seconds(exc)
+            if retry_after is None:
+                return
+            metrics["rateLimitEvents"] += 1
+            self.cooldowns[group_key] = time.time() + max(
+                retry_after,
+                self.DEFAULT_RATE_LIMIT_SECONDS,
+            )
+
+        async def discover_group(
+            group_key: str,
+            connection: BotConnection,
+        ) -> None:
+            if self.cooldowns.get(group_key, 0.0) > time.time():
+                metrics["cooldownSkips"] += 1
+                return
+
+            async def list_with_token(token: str):
+                return await self.slack.list_channels(token)
+
+            try:
+                async with semaphore:
+                    metrics["providerCalls"] += 1
+                    metrics["listCalls"] += 1
+                    discovered = await self._with_credential(
                         connection,
                         "bot_token",
-                        "slack.channel_info",
-                        channel_info,
+                        "slack.list_channels",
+                        list_with_token,
                     )
-                    if resolved:
-                        channels[(resolved["provider"], resolved["id"])] = (
-                            resolved
+            except Exception as exc:
+                apply_rate_limit(group_key, exc)
+                return
+
+            for channel in discovered:
+                channel_id = str(channel.get("id") or "").strip()
+                if not channel_id:
+                    continue
+                channels[("slack", channel_id)] = channel
+                channel_groups.setdefault(channel_id, set()).add(
+                    group_key
+                )
+
+        await asyncio.gather(
+            *(
+                discover_group(group_key, connection)
+                for group_key, connection in sorted(groups.items())
+            )
+        )
+
+        unresolved = {
+            str(channel["id"]): channel
+            for channel in channels.values()
+            if channel.get("provider") == "slack"
+            and channel.get("id")
+            and self.channel_needs_name(channel)
+        }
+        metrics["unresolvedCount"] = len(unresolved)
+
+        async def resolve_channel(
+            channel_id: str,
+            group_keys: tuple[str, ...],
+        ) -> None:
+            for group_key in group_keys:
+                connection = groups.get(group_key)
+                if connection is None:
+                    continue
+                negative_key = (group_key, channel_id)
+                if self.negative_cache.get(negative_key, 0.0) > time.time():
+                    metrics["negativeCacheHits"] += 1
+                    continue
+                if self.cooldowns.get(group_key, 0.0) > time.time():
+                    metrics["cooldownSkips"] += 1
+                    continue
+
+                async def info_with_token(token: str):
+                    return await self.slack.channel_info(
+                        token,
+                        channel_id,
+                    )
+
+                try:
+                    async with semaphore:
+                        metrics["providerCalls"] += 1
+                        metrics["metadataLookupCount"] += 1
+                        resolved = await self._with_credential(
+                            connection,
+                            "bot_token",
+                            "slack.channel_info",
+                            info_with_token,
                         )
+                except Exception as exc:
+                    apply_rate_limit(group_key, exc)
+                    self.negative_cache[negative_key] = (
+                        time.time() + self.NEGATIVE_CACHE_SECONDS
+                    )
+                    continue
+
+                if resolved:
+                    channels[("slack", channel_id)] = resolved
+                    self.negative_cache.pop(negative_key, None)
+                    return
+                self.negative_cache[negative_key] = (
+                    time.time() + self.NEGATIVE_CACHE_SECONDS
+                )
+
+        await asyncio.gather(
+            *(
+                resolve_channel(
+                    channel_id,
+                    tuple(
+                        sorted(
+                            channel_groups.get(channel_id)
+                            or all_group_keys
+                        )
+                    ),
+                )
+                for channel_id in sorted(unresolved)
+            )
+        )
 
         result = sorted(
             channels.values(),
             key=lambda item: (item["provider"], item["label"]),
         )
-        self.cache[project_id] = (time.time(), result)
+        self.cache[project_id] = (
+            time.time(),
+            [dict(item) for item in result],
+        )
+        metrics["discoveryDurationSeconds"] = (
+            time.perf_counter() - started
+        )
+        self.discovery_metrics[project_id] = metrics
+
+        expiry = time.time()
+        self.negative_cache = {
+            key: value
+            for key, value in self.negative_cache.items()
+            if value > expiry
+        }
+        self.cooldowns = {
+            key: value
+            for key, value in self.cooldowns.items()
+            if value > expiry
+        }
         return result
 
     def invalidate(self, project_id: str | None = None) -> None:
         if project_id is None:
             self.cache.clear()
+            self.discovery_metrics.clear()
         else:
             self.cache.pop(project_id, None)
+            self.discovery_metrics.pop(project_id, None)
+        # Explicit configuration invalidation must not leave stale provider
+        # failures suppressing newly valid discovery attempts.
+        self.negative_cache.clear()
+        self.cooldowns.clear()
 
 
 def install_bot_channel_discovery_service(
