@@ -2764,6 +2764,10 @@ runtime_service = RuntimeService(
     task_source_writeback_status=(
         work_item_service.task_source_writeback.status
     ),
+    native_recovery_status=native_recovery_service.status,
+    continuity_background_status=(
+        canonical_work_item_continuity_service.status
+    ),
 )
 app.state.runtime_service = runtime_service
 core.healthz = runtime_service.healthz
