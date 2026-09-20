@@ -210,6 +210,52 @@ agent-to-control-plane API access is a separate brokered capability and must
 authorize the exact operation, identity, tenant/project scope and live
 assignment/fence before use.
 
+### Brokered control-plane access
+
+An `orchestration-only` assignment may receive a separate brokered control-plane
+channel. This is not generic worker networking and it is not an HTTP proxy to
+localhost.
+
+The local implementation uses a private host-side Unix socket mounted read-only
+into the worker namespace plus a fixed loopback relay at
+`CODEX_WEB_CONTROL_PLANE_URL=http://127.0.0.1:8788`. The relay can reach only
+that Unix socket. The broker parses each request itself and dispatches only a
+small code-owned operation catalog to canonical codex-web services.
+
+Initial reachability is limited to scoped Work Item operations:
+
+- list/read;
+- progress;
+- handoff;
+- acknowledgement;
+- retry;
+- reconciliation.
+
+Reachability is distinct from authority. Every request re-resolves the current
+worker service identity and evaluates the requested capability through the
+canonical Role authority service for the assignment's tenant/workspace/project
+and target resources. A profile declaration or reachable broker path never
+grants authority by itself.
+
+Every broker request also revalidates the live assignment, worker, fence, lease
+and deadline. Revoked/disabled service identities, stale fences, changed worker
+bindings, expired assignments and canonical Role denials fail closed. No admin,
+service-token, lease-token or reusable broker credential is copied into the
+workspace, command environment, assignment state, response payload or audit
+record.
+
+The broker additionally enforces deterministic header/request/response byte
+limits, concurrency and requests-per-minute limits. Absolute-form URLs,
+unapproved methods, unapproved paths, transfer-encoded requests and arbitrary
+localhost services are denied. Correlation/causation IDs are bounded and
+recorded; the correlation ID is returned to the caller.
+
+Metadata-only audit records retain the assignment/execution/worker/fence,
+canonical service identity, operation/capability, target, authority decision and
+Definition revision, response class and denial reason. Request bodies and secret
+material are never stored in broker audit state. Operators inspect the effective
+broker scope and audit linkage through the existing execution-worker surface.
+
 ### Network policy
 
 Bubblewrap can reliably provide a private network namespace for network-disabled
