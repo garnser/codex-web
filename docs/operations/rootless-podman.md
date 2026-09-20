@@ -1,60 +1,65 @@
 # Rootless Podman execution-worker qualification
 
-Codex Web can run its local execution worker inside rootless Podman when the
-outer container permits the namespace and mount syscalls that Bubblewrap uses
-to create the inner execution sandbox.
+Rootless Podman is supported for running the Codex Web **control plane**, but
+the built-in local Bubblewrap execution worker is currently **not supported
+inside a rootless Podman container**.
 
-The supported profile is intentionally **not** `--privileged`, does not mount
-the Podman/Docker socket, and does not grant host root access.
+This is a deliberate fail-closed qualification result, not a request to run
+the container privileged.
 
-## Start with the qualified profile
+## Qualification result
 
-Build the application image normally, then use the Podman overlay:
+CI qualifies the same non-root Bubblewrap probe used by the local execution
+backend under rootless Podman.
 
-```bash
-cp .env.example .env
-mkdir -p workspace
-podman compose -f compose.yaml -f compose.podman.yaml build
-podman compose -f compose.yaml -f compose.podman.yaml run --rm codex-web codex login
-podman compose -f compose.yaml -f compose.podman.yaml up -d
-```
+Two candidate outer-container profiles were tested:
 
-The overlay sets:
+1. default/rootless container with relaxed seccomp/SELinux filtering;
+2. the same container with container-scoped `CAP_SYS_ADMIN` inside Podman's
+   rootless user namespace.
 
-- `CODEX_WEB_EXECUTION_CONTAINER_PROFILE=rootless-podman-bwrap`
-- container-scoped `CAP_SYS_ADMIN` inside Podman's rootless user namespace
-- `seccomp=unconfined`
-- `label=disable`
+Neither provides a supported nested Bubblewrap boundary on the qualified
+Ubuntu/Podman environment:
 
-The service itself still runs as the non-root `codex` user.
+- without `SYS_ADMIN`, Bubblewrap fails mounting its private `/proc` with
+  `Operation not permitted`;
+- with namespaced `SYS_ADMIN`, Bubblewrap refuses the unexpected capability
+  configuration rather than establishing the sandbox.
 
-## Why the outer seccomp profile is relaxed
+Codex Web therefore does not publish a rootless-Podman Compose profile that
+claims local command execution is safe or functional.
 
-Bubblewrap creates nested user, PID, mount, IPC, UTS, and network namespaces.
-A default rootless Podman profile can reject the mount operation used to create
-the sandbox `/proc`, commonly producing:
+## What still works
 
-```text
-bwrap: Can't mount proc on /newroot/proc: Operation not permitted
-```
+The Codex Web control plane itself may run under rootless Podman. On startup,
+the local Bubblewrap probe runs and the built-in worker advertises only the
+capabilities the probe actually established.
 
-The Podman overlay grants `CAP_SYS_ADMIN` only inside Podman's rootless user
-namespace and relaxes the outer container syscall filter so Bubblewrap can
-establish its inner isolation boundary. This does **not** grant host
-`CAP_SYS_ADMIN`, host UID 0, or privileged-container semantics. Bubblewrap
-still:
+When nested Bubblewrap cannot initialize:
 
-- binds only the canonical execution workspace and explicitly authorized
-  read-only repository context;
-- creates a private PID/network namespace;
-- uses a minimal process environment;
-- applies resource limits;
-- does not expose the host container socket or arbitrary host paths.
+- `command_execution` is absent from the worker capability set;
+- execution readiness is degraded;
+- new turns that require command execution receive a structured
+  `execution_preflight_blocked` response before an ExecutionWorkspace or
+  assignment is created;
+- health/operator endpoints explain the missing capability and remediation.
 
-If container-scoped `SYS_ADMIN` or disabling the outer seccomp profile is
-unacceptable for a deployment, run the execution worker natively on the host
-or in a dedicated VM instead. Do not enable privileged mode as an automatic
-fallback.
+There is no automatic privileged-container fallback.
+
+## Supported execution alternatives
+
+For deployments that run the control plane with rootless Podman, place the
+execution worker on a boundary where Bubblewrap can establish its namespaces:
+
+- run the local execution worker natively on a supported Linux host; or
+- run it in a dedicated VM/worker host.
+
+Do not grant the control-plane container `--privileged`, host
+`CAP_SYS_ADMIN`, a Docker/Podman socket, or broad host filesystem mounts as
+an automatic recovery mechanism.
+
+A future independently qualified worker backend may add another supported
+containerized execution profile without changing this fail-closed contract.
 
 ## Verify readiness
 
@@ -66,12 +71,12 @@ curl -fsS http://127.0.0.1:8765/api/healthz
 
 The response includes `executionReadiness` with:
 
-- `ready`
-- a stable blocker code such as `worker_capability_missing`
-- required and available worker capabilities
-- local isolation backend/probe result
-- detected container runtime/profile
-- remediation guidance
+- `ready`;
+- a stable blocker code such as `worker_capability_missing`;
+- required and available worker capabilities;
+- local isolation backend/probe result;
+- detected container runtime/profile;
+- remediation guidance.
 
 Administrators can also inspect the worker-specific view:
 
@@ -81,17 +86,16 @@ curl -fsS \
 ```
 
 A worker advertises `command_execution` only when the Bubblewrap probe has
-actually succeeded. A failed probe therefore leaves Project execution
-not-ready before a turn acquires an ExecutionWorkspace or creates an assignment.
+actually succeeded.
 
 ## Failure recovery
 
-After changing Podman/security settings:
+After moving execution to a supported host/boundary:
 
-1. restart Codex Web so the local isolation probe reruns;
+1. restart or reconcile the execution worker so its isolation probe reruns;
 2. inspect `/api/healthz` or `/api/execution-workers/readiness`;
 3. confirm `command_execution` appears in available capabilities;
 4. retry the blocked operation.
 
-Do not edit persisted worker capabilities manually. Startup reconciliation is
-the authority for the built-in local worker capability set.
+Do not edit persisted worker capabilities manually. Worker startup/probe
+reconciliation is authoritative.
