@@ -12,12 +12,30 @@ class BotDetailService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
-        load_details: Callable[[], dict[str, list[BotThreadDetail]]],
-        save_details: Callable[[dict[str, list[BotThreadDetail]]], None],
+        load_details: Callable[[], dict[str, list[BotThreadDetail]]] | None = None,
+        save_details: Callable[[dict[str, list[BotThreadDetail]]], None] | None = None,
     ) -> None:
+        if host is not None:
+            load_details = load_details or getattr(
+                host,
+                "_load_bot_details",
+                None,
+            )
+            save_details = save_details or getattr(
+                host,
+                "_save_bot_details",
+                None,
+            )
+        if load_details is None or save_details is None:
+            raise TypeError("BotDetailService requires detail state dependencies")
         self.load_details = load_details
         self.save_details = save_details
+        if host is not None:
+            host._record_bot_detail = self.record
+            host._latest_bot_detail = self.latest
+            host._retarget_bot_details = self.retarget
 
     def record(
         self,
