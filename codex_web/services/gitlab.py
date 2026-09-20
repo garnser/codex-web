@@ -245,6 +245,40 @@ class GitLabService:
             if host is not None
             else None
         )
+        self._compat_api_token = (
+            getattr(host, "_gitlab_api_token", None)
+            if host is not None
+            else None
+        )
+        self._compat_api_base_url = (
+            getattr(host, "_gitlab_api_base_url", None)
+            if host is not None
+            else None
+        )
+        self._compat_servicedesk_project = (
+            getattr(host, "_support_servicedesk_sweep_project", None)
+            if host is not None
+            else None
+        )
+        self._compat_servicedesk_lookback = (
+            getattr(
+                host,
+                "_support_servicedesk_sweep_lookback_hours",
+                None,
+            )
+            if host is not None
+            else None
+        )
+        self._compat_issue_to_servicedesk_payload = (
+            getattr(host, "_issue_to_support_servicedesk_payload", None)
+            if host is not None
+            else None
+        )
+        self._compat_dispatch_servicedesk = (
+            getattr(host, "_dispatch_support_servicedesk_ticket", None)
+            if host is not None
+            else None
+        )
 
     def event_target_agents(
         self,
@@ -1204,17 +1238,36 @@ class GitLabService:
         }
 
     async def sweep_support_servicedesk(self) -> dict[str, Any]:
-        token = self.api_token()
+        token = (
+            self._compat_api_token()
+            if callable(self._compat_api_token)
+            else self.api_token()
+        )
         if not token:
-            raise RuntimeError("GitLab token is not configured for Support ServiceDesk sweep")
+            raise RuntimeError(
+                "GitLab token is not configured for Support ServiceDesk sweep"
+            )
 
-        project = self.support_servicedesk_sweep_project()
-        api_base = f"{self.api_base_url().rstrip('/')}/api/v4"
+        project = (
+            self._compat_servicedesk_project()
+            if callable(self._compat_servicedesk_project)
+            else self.support_servicedesk_sweep_project()
+        )
+        base_url = (
+            self._compat_api_base_url()
+            if callable(self._compat_api_base_url)
+            else self.api_base_url()
+        )
+        api_base = f"{base_url.rstrip('/')}/api/v4"
         project_payload = await self.gitlab.project(api_base, project, token=token)
         project_path = str(project_payload.get("path_with_namespace") or project)
         project_id = project_payload.get("id") or project
 
-        lookback_hours = self.support_servicedesk_sweep_lookback_hours()
+        lookback_hours = (
+            self._compat_servicedesk_lookback()
+            if callable(self._compat_servicedesk_lookback)
+            else self.support_servicedesk_sweep_lookback_hours()
+        )
         created_after = None
         if lookback_hours:
             created_after = time.strftime(
@@ -1233,8 +1286,13 @@ class GitLabService:
                 "per_page": 100,
             },
         )
+        payload_builder = (
+            self._compat_issue_to_servicedesk_payload
+            if callable(self._compat_issue_to_servicedesk_payload)
+            else self.issue_to_support_servicedesk_payload
+        )
         payloads = [
-            self.issue_to_support_servicedesk_payload(
+            payload_builder(
                 issue,
                 project_path,
                 project_id,
@@ -1244,8 +1302,13 @@ class GitLabService:
 
         results: list[dict[str, Any]] = []
         settings = self.routing.load_settings()
+        dispatch_servicedesk = (
+            self._compat_dispatch_servicedesk
+            if callable(self._compat_dispatch_servicedesk)
+            else self.dispatch_support_servicedesk_ticket
+        )
         for payload in payloads:
-            result = await self.dispatch_support_servicedesk_ticket(
+            result = await dispatch_servicedesk(
                 payload,
                 source="sweep",
                 settings=settings,
@@ -1268,30 +1331,36 @@ class GitLabService:
 
 def install_gitlab_service(
     app: Any,
+    host: Any | None = None,
     gitlab: GitLabClient | None = None,
     *,
     canonical_events: CanonicalEventIngestionService | None = None,
     autonomy_controller: AutonomyController | None = None,
-    routing: GitLabRoutingDependencies,
-    work_items: GitLabWorkItemRuntimeDependencies,
-    operations: GitLabOperationalDependencies,
+    routing: GitLabRoutingDependencies | None = None,
+    work_items: GitLabWorkItemRuntimeDependencies | None = None,
+    operations: GitLabOperationalDependencies | None = None,
 ) -> GitLabService:
-    """Compose the GitLab domain from explicit runtime dependencies."""
+    """Compose GitLab explicitly while preserving the historical installer."""
 
     existing = getattr(app.state, "gitlab_service", None)
     if isinstance(existing, GitLabService):
         service = existing
-        service.routing = routing
-        service.work_items = work_items
-        service.operations = operations
+        if routing is not None:
+            service.routing = routing
+        if work_items is not None:
+            service.work_items = work_items
+        if operations is not None:
+            service.operations = operations
         if canonical_events is not None:
             service.canonical_events = canonical_events
         if autonomy_controller is not None:
             service.autonomy_controller = autonomy_controller
+        if host is not None:
+            install_gitlab_compatibility(host, service)
         return service
 
     service = GitLabService(
-        None,
+        host,
         gitlab,
         canonical_events=canonical_events,
         autonomy_controller=autonomy_controller,
@@ -1300,8 +1369,9 @@ def install_gitlab_service(
         operations=operations,
     )
     app.state.gitlab_service = service
+    if host is not None:
+        install_gitlab_compatibility(host, service)
     return service
-
 
 def install_gitlab_compatibility(
     host: Any,
