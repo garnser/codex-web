@@ -255,6 +255,7 @@ function currentRunSettings() {
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
       : [],
+    executionProfileId: saved.executionProfileId || "",
   };
 }
 
@@ -329,6 +330,8 @@ function applyRunSettings() {
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
   if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
+  if ($("execution-profile")) $("execution-profile").value = settings.executionProfileId;
+  window.executionProfileControls?.renderSummary?.();
 }
 
 function persistRunSettings() {
@@ -343,6 +346,7 @@ function persistRunSettings() {
       $("repository-read-context")?.selectedOptions || [],
       (option) => option.value,
     ),
+    executionProfileId: $("execution-profile")?.value || "",
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(allSettings));
 }
@@ -1201,6 +1205,10 @@ async function refresh() {
     }
     renderRepositoryTargets();
     applyRunSettings();
+    window.executionProfileControls?.refresh?.(
+      state.projectId,
+      currentRunSettings().executionProfileId,
+    );
     renderGitLabIntegration();
     renderAgentChannelPresence();
     const threads = state.threads?.data || state.threads?.threads || state.threads || [];
@@ -1445,6 +1453,9 @@ async function newThread() {
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
+  if (settings.executionProfileId) {
+    qs.set("execution_profile_id", settings.executionProfileId);
+  }
   const data = await api(`/api/threads?${qs}`, { method: "POST" });
   const thread = data.thread || data;
   state.threadId = thread.id;
@@ -1490,6 +1501,11 @@ async function sendPrompt() {
       selectedThreadSettings.read_only_repository_resource_ids
       || runSettings.readOnlyRepositoryResourceIds
       || []
+    ),
+    execution_profile_id: (
+      selectedThreadSettings.execution_profile_id
+      || runSettings.executionProfileId
+      || null
     ),
   };
   try {
@@ -2427,6 +2443,7 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
+$("execution-profile").addEventListener("change", persistRunSettings);
 $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
