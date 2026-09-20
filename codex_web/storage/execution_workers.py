@@ -76,6 +76,20 @@ EXECUTION_WORKER_MIGRATIONS.register(
 )
 
 
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.4",
+    "1.5",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.5",
+        "assignments": [
+            {**dict(item), "execution_profile": dict(item).get("execution_profile")}
+            for item in payload.get("assignments", [])
+        ],
+    },
+)
+
+
 class ExecutionWorkerStore:
     namespace = "execution_workers"
 
