@@ -67,6 +67,8 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
         owner: str | None = None,
         stage: str | None = None,
         release_gate: bool | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         return await service.list(
             project_id=project_id,
@@ -74,6 +76,8 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
             stage=stage,
             release_gate=release_gate,
             scope=request.state.tenant_scope,
+            limit=limit,
+            cursor=cursor,
         )
 
     @router.get("/api/task-sources")
