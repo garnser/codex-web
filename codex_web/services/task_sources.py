@@ -85,6 +85,16 @@ class TaskSourceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskSourceWriteResult:
+    """Result of one coalesced canonical projection write."""
+
+    snapshot: TaskSourceSnapshot
+    changed: bool
+    provider_reads: int = 0
+    provider_writes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSourcePage:
     """One bounded provider-neutral discovery page."""
 
@@ -237,6 +247,21 @@ class TaskSource(Protocol):
 
     async def attach_artifact(self, identity: TaskSourceIdentity, url: str) -> None:
         """Attach/link an artifact when the source declares artifact support."""
+        ...
+
+
+@runtime_checkable
+class TaskSourceProjectionWriteCapable(Protocol):
+    """Optional combined owner/state projection write contract."""
+
+    async def write_projection(
+        self,
+        identity: TaskSourceIdentity,
+        *,
+        owner: str | None,
+        state: str,
+        current_snapshot: TaskSourceSnapshot | None = None,
+    ) -> TaskSourceWriteResult:
         ...
 
 
