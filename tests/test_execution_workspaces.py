@@ -22,7 +22,7 @@ from codex_web.execution_workspaces import (
     WorkspaceQuota,
 )
 from codex_web.models import Project, WorkItemState
-from codex_web.resources import ResourceCreate, ResourceType
+from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.services.execution_workspaces import (
     ExecutionWorkspaceConflictError,
     ExecutionWorkspaceQuotaError,
@@ -58,6 +58,20 @@ class _FakeBackend:
         return GitWorkspaceProvision(
             path=path,
             branch_name=branch_name,
+            base_revision=base,
+            head_revision=base,
+        )
+
+    def provision_git_readonly(self, repository_path, workspace_id, base_revision):
+        if self.fail_provision:
+            raise RuntimeError("provision failed")
+        path = self.root / workspace_id
+        path.mkdir(parents=True, exist_ok=False)
+        base = base_revision or "readonly-base"
+        self.provisioned.append((workspace_id, "", base_revision))
+        return GitWorkspaceProvision(
+            path=path,
+            branch_name="",
             base_revision=base,
             head_revision=base,
         )
@@ -104,8 +118,19 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Repo"),
             actor=self.actor,
         )
+        self.repo2_source = root / "repo2-source"
+        self.repo2_source.mkdir()
         self.repo2 = self.resources.create(
-            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Repo 2"),
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repo 2",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(self.repo2_source),
+                    )
+                ],
+            ),
             actor=self.actor,
         )
         self.database = self.resources.create(
@@ -235,7 +260,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.2")
+        self.assertEqual(state.schema_version, "1.3")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
@@ -250,6 +275,162 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first.path, second.path)
         self.assertNotEqual(first.branch_name, second.branch_name)
         self.assertEqual(len(self.backend.provisioned), 2)
+
+    def test_multi_repository_workspace_provisions_mutable_and_read_only_members(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="multi-exec",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        lease = next(
+            item
+            for item in self.service.store.load().leases
+            if item.id == workspace.lease_id
+        )
+
+        self.assertEqual(workspace.status, ExecutionWorkspaceStatus.ACTIVE)
+        self.assertEqual(len(workspace.repository_members), 2)
+        mutable = next(
+            item
+            for item in workspace.repository_members
+            if item.resource_id == self.repo.id
+        )
+        read_only = next(
+            item
+            for item in workspace.repository_members
+            if item.resource_id == self.repo2.id
+        )
+        self.assertEqual(mutable.access_mode, LeaseMode.WRITE)
+        self.assertEqual(mutable.workspace_path, workspace.path)
+        self.assertEqual(read_only.access_mode, LeaseMode.READ)
+        self.assertEqual(read_only.source_path, str(self.repo2_source.resolve()))
+        self.assertTrue(read_only.sandbox_path.startswith("/mnt/codex-context/"))
+        self.assertEqual(lease.resource_modes[self.repo.id], LeaseMode.WRITE)
+        self.assertEqual(lease.resource_modes[self.repo2.id], LeaseMode.READ)
+        self.assertEqual(workspace.actual_disk_bytes, 256)
+        self.assertEqual(len(self.backend.provisioned), 2)
+
+    def test_read_only_member_lease_can_coexist_but_write_conflicts(self) -> None:
+        self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="multi-read-holder",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        second = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="repo2-read",
+                project_id="home",
+                resource_ids=(self.repo2.id,),
+                repository_resource_id=self.repo2.id,
+                lease_mode=LeaseMode.READ,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(second.status, ExecutionWorkspaceStatus.ACTIVE)
+
+        with self.assertRaises(ExecutionWorkspaceConflictError):
+            self.service.acquire(
+                ExecutionWorkspaceAcquire(
+                    work_item_ref=self.work_item.ref,
+                    execution_id="repo2-write",
+                    project_id="home",
+                    resource_ids=(self.repo2.id,),
+                    repository_resource_id=self.repo2.id,
+                    lease_mode=LeaseMode.WRITE,
+                    ttl_seconds=30,
+                ),
+                actor=self.actor,
+            )
+
+    def test_multi_repository_release_cleans_every_member_without_deleting_read_only_branch(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="multi-cleanup",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        self.service.release(
+            workspace.id,
+            ExecutionWorkspaceRelease(discard=True, reason="cleanup test"),
+            actor=self.actor,
+        )
+
+        self.assertEqual(len(self.backend.cleaned), 2)
+        discarded = [item for item in self.backend.cleaned if item[2]]
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(
+            discarded[0][0],
+            next(
+                item.workspace_path
+                for item in workspace.repository_members
+                if item.resource_id == self.repo.id
+            ),
+        )
+
+    def test_relative_repository_alias_cannot_escape_project_root_through_symlink(self) -> None:
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        escape = Path(self.project.path) / "escape"
+        escape.symlink_to(outside, target_is_directory=True)
+        escaped_resource = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Escaped",
+                aliases=[ResourceAlias(namespace="path", value="escape")],
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaisesRegex(
+            ExecutionWorkspaceConflictError,
+            "escapes canonical project root",
+        ):
+            self.service.acquire(
+                ExecutionWorkspaceAcquire(
+                    work_item_ref=self.work_item.ref,
+                    execution_id="escape-exec",
+                    project_id="home",
+                    resource_ids=(self.repo.id, escaped_resource.id),
+                    repository_resource_id=self.repo.id,
+                    read_only_repository_ids=(escaped_resource.id,),
+                    ttl_seconds=30,
+                ),
+                actor=self.actor,
+            )
+
+        self.assertFalse(
+            any(
+                item.execution_id == "escape-exec"
+                for item in self.service.store.load().workspaces
+            )
+        )
 
     def test_same_execution_acquisition_is_idempotent(self) -> None:
         first = self._acquire("same-exec", self.repo.id)
