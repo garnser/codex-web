@@ -406,6 +406,7 @@ from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
 from codex_web.storage.work_graph import WorkGraphStore
+from codex_web.storage.work_item_list_index import WorkItemListIndex
 from codex_web.storage.thread_index import install_thread_index_repository
 from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
@@ -481,6 +482,18 @@ runtime_state = RuntimeStateRepositories(
     work_item_states_file=WORK_ITEM_STATES_FILE,
 )
 app.state.runtime_state_repositories = runtime_state
+work_item_list_index = WorkItemListIndex(state_store)
+work_item_list_index.rebuild(runtime_state.work_item_states.load())
+app.state.work_item_list_index = work_item_list_index
+
+def _save_work_item_states(values):
+    runtime_state.work_item_states.save(values)
+    work_item_list_index.rebuild(values)
+
+def _put_work_item_state_record(state):
+    runtime_state.work_item_states.put(state.ref, state)
+    work_item_list_index.upsert(state)
+
 event_transport = build_event_transport(
     os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
     redis_url=os.environ.get("CODEX_WEB_REDIS_URL"),
@@ -1408,7 +1421,7 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     data_dir=DATA_DIR,
     events_file=WORK_ITEM_EVENTS_FILE,
     load_states=runtime_state.work_item_states.load,
-    save_states=runtime_state.work_item_states.save,
+    save_states=_save_work_item_states,
     load_projects=project_repository.load,
     resource_ids_for_project=_resource_ids_for_project,
     leading_owner_cue_in_action=default_leading_owner_cue,
@@ -1416,9 +1429,7 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     default_release_owner=DEFAULT_RELEASE_OWNER,
     non_implementation_owners=NON_IMPLEMENTATION_OWNERS,
     get_state=runtime_state.work_item_states.get,
-    save_state=(
-        lambda state: runtime_state.work_item_states.put(state.ref, state)
-    ),
+    save_state=_put_work_item_state_record,
 )
 gitlab_work_item_dependencies = GitLabWorkItemDependencies(
     api_base_url=os.environ.get(
@@ -1505,6 +1516,7 @@ work_item_service = WorkItemService(
     work_item_dependencies=work_item_dependencies,
     gitlab_dependencies=gitlab_work_item_dependencies,
     identity_service=identity_service,
+    work_item_list_index=work_item_list_index,
     secret_broker=secret_broker,
 )
 work_item_compatibility_service = install_work_item_compatibility(
@@ -1726,11 +1738,9 @@ core._get_active_turn_record = runtime_state.active_turns.get
 core._put_active_turn_record = runtime_state.active_turns.put
 core._delete_active_turn_record = runtime_state.active_turns.delete
 core._load_work_item_states = runtime_state.work_item_states.load
-core._save_work_item_states = runtime_state.work_item_states.save
+core._save_work_item_states = _save_work_item_states
 core._get_work_item_state_record = runtime_state.work_item_states.get
-core._put_work_item_state_record = (
-    lambda state: runtime_state.work_item_states.put(state.ref, state)
-)
+core._put_work_item_state_record = _put_work_item_state_record
 core._delete_work_item_state_record = runtime_state.work_item_states.delete
 
 bot_state = BotStateRepositories(
