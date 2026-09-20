@@ -22,6 +22,7 @@ podman compose -f compose.yaml -f compose.podman.yaml up -d
 The overlay sets:
 
 - `CODEX_WEB_EXECUTION_CONTAINER_PROFILE=rootless-podman-bwrap`
+- container-scoped `CAP_SYS_ADMIN` inside Podman's rootless user namespace
 - `seccomp=unconfined`
 - `label=disable`
 
@@ -37,8 +38,11 @@ the sandbox `/proc`, commonly producing:
 bwrap: Can't mount proc on /newroot/proc: Operation not permitted
 ```
 
-The Podman overlay relaxes only the outer container syscall filter so
-Bubblewrap can establish its inner isolation boundary. Bubblewrap still:
+The Podman overlay grants `CAP_SYS_ADMIN` only inside Podman's rootless user
+namespace and relaxes the outer container syscall filter so Bubblewrap can
+establish its inner isolation boundary. This does **not** grant host
+`CAP_SYS_ADMIN`, host UID 0, or privileged-container semantics. Bubblewrap
+still:
 
 - binds only the canonical execution workspace and explicitly authorized
   read-only repository context;
@@ -47,9 +51,10 @@ Bubblewrap can establish its inner isolation boundary. Bubblewrap still:
 - applies resource limits;
 - does not expose the host container socket or arbitrary host paths.
 
-If disabling the outer seccomp profile is unacceptable for a deployment,
-run the execution worker natively on the host or in a dedicated VM instead.
-Do not enable privileged mode as an automatic fallback.
+If container-scoped `SYS_ADMIN` or disabling the outer seccomp profile is
+unacceptable for a deployment, run the execution worker natively on the host
+or in a dedicated VM instead. Do not enable privileged mode as an automatic
+fallback.
 
 ## Verify readiness
 
