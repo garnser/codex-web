@@ -12,8 +12,8 @@ from codex_web.services.identity import IdentityService
 
 def _operator_actor(request: Request):
     actor = request_actor(request)
+    IdentityService.require_admin(actor)
     if actor.principal_kind != PrincipalKind.SERVICE:
-        IdentityService.require_admin(actor)
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
     return actor
 
