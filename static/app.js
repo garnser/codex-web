@@ -4,7 +4,7 @@ import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project
 import{activateProject,initialProjectId}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
-import{createExecutionPreflightUi}from"./execution_preflight_ui.js";
+import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 
 const state = {
   projects: [],
@@ -169,7 +169,7 @@ function scheduleCommunicationLogRender() {
 }
 
 const api=createLoggedApi(logEvent);
-const preflightUi=createExecutionPreflightUi({api,addMessage,loadThread,scheduleRefresh,logEvent});
+const pfUi=createPfUi({api,addMessage,loadThread,scheduleRefresh,logEvent});
 
 const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
@@ -1140,7 +1140,7 @@ function renderThread(thread) {
   turns.forEach((turn) => {
     (turn.items || []).forEach((item) => renderItem(item, turn));
   });
-  preflightUi.render(thread.id);
+  pfUi.render(thread.id);
 }
 
 function renderNewThreadShell(thread) {
@@ -1434,10 +1434,7 @@ async function loadThread(threadId) {
   const messageLimit = history?.messageLimit?.(threadId);
   if (messageLimit) readQs.set("message_limit", String(messageLimit));
   const query = readQs.toString();
-  const [data] = await Promise.all([
-    api(`/api/threads/${threadId}${query ? `?${query}` : ""}`),
-    preflightUi.load(threadId),
-  ]);
+  const [data]=await Promise.all([api(`/api/threads/${threadId}${query?`?${query}`:""}`),pfUi.load(threadId)]);
   const thread = data.thread || data;
   history?.recordThread?.(threadId, thread);
   hydrateThreadActivity(thread);
@@ -1541,9 +1538,7 @@ async function sendPrompt() {
     } else {
       clearThreadBusy(threadId);
     }
-    if (!(await preflightUi.handleError(error,threadId))) {
-      addMessage("Error",error.message,"tool",new Date());
-    }
+    if(!(await pfUi.handleError(error,threadId)))addMessage("Error",error.message,"tool",new Date());
   }
 }
 
