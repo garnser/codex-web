@@ -245,6 +245,8 @@ Key rules include:
 - require Evidence or verification for operations whose completion must be proven;
 - fail closed when required authority, credentials, policy, compatibility, or trust guarantees are unavailable.
 
+The `danger-full-access` execution option is intentionally high risk: it disables Codex\'s inner sandbox inside the assigned execution worker, but it does not bypass canonical worker identity, workspace ownership, leases/fencing, credential scoping, or the outer control-plane isolation boundary. On the built-in local worker, generic repository networking remains disabled unless a future worker backend explicitly advertises and enforces the canonical network capability.
+
 See [Core Concepts](docs/core-concepts/README.md), [Administration](docs/administration/README.md), and the [architecture index](docs/architecture/README.md) for detailed contracts.
 
 ## Repository layout
