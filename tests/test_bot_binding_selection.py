@@ -26,6 +26,14 @@ class Host:
         return binding.thread_name
 
 
+def _service(host: Host) -> BotBindingSelectionService:
+    return BotBindingSelectionService(
+        host._load_bot_bindings,
+        binding_report_name=host._binding_report_name,
+        binding_prefix=host._binding_prefix,
+    )
+
+
 def binding(
     id: str,
     *,
@@ -58,7 +66,7 @@ class BotBindingSelectionServiceTests(unittest.TestCase):
             binding("a", provider="slack", conversation="C1"),
             binding("b", provider="telegram", conversation="C1"),
         ])
-        service = BotBindingSelectionService(host)
+        service = _service(host)
 
         matches = service.for_connection("SLACK", "C1")
 
@@ -75,7 +83,7 @@ class BotBindingSelectionServiceTests(unittest.TestCase):
             binding("b", thread="t2", project="p1"),
             binding("c", provider="telegram", thread="t1", project="p2"),
         ])
-        service = BotBindingSelectionService(host)
+        service = _service(host)
 
         self.assertEqual({item.id for item in service.for_thread("t1")}, {"a", "c"})
         self.assertEqual([item.id for item in service.for_project("SLACK", "p1")], ["a", "b"])
@@ -85,7 +93,7 @@ class BotBindingSelectionServiceTests(unittest.TestCase):
             binding("orchestrator", project="p1", thread="orchestrator-thread", name="Orchestrator", master=True, updated=1),
             binding("latest", project="p1", thread="latest-thread", name="Manager", master=True, updated=5),
         ])
-        service = BotBindingSelectionService(host)
+        service = _service(host)
 
         self.assertEqual(service.master("p1").id, "latest")
         self.assertEqual(service.orchestrator("p1").id, "orchestrator")
@@ -96,7 +104,7 @@ class BotBindingSelectionServiceTests(unittest.TestCase):
             binding("same-channel", project="p1", conversation="C2", thread="t-orch", prefix="orchestrator", master=False, updated=2),
             binding("other-master", project="p1", conversation="C3", thread="t-other", prefix="manager", master=True, updated=10),
         ])
-        service = BotBindingSelectionService(host)
+        service = _service(host)
 
         self.assertEqual(service.primary_for_project("slack", "p1", "C2").id, "same-channel")
         self.assertEqual(service.primary_for_project("slack", "p1", "missing").id, "master")

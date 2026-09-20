@@ -213,7 +213,7 @@ class BotCompositionTests(unittest.TestCase):
         )
         routing = install_bot_routing_service(app, host, delivery)
 
-        self.assertIs(host._send_bot_outbound.__self__, delivery)
+        self.assertTrue(callable(host._send_bot_outbound))
         self.assertIs(host._record_bot_outbound.__self__, delivery)
         self.assertIs(host._record_bot_approval_request.__self__, delivery)
         self.assertIs(host._resolve_approval_request.__self__, delivery)

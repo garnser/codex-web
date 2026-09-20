@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 
@@ -10,6 +10,7 @@ from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import BotConnection, BotConnectionCreate
 from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.identity import IdentityService
+from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.secrets import SecretBroker
 
 
@@ -27,23 +28,84 @@ class BotConnectionService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         *,
+        load_connections: Callable[[], list[BotConnection]] | None = None,
+        save_connections: Callable[[list[BotConnection]], None] | None = None,
+        load_bindings: Callable[[], list[Any]] | None = None,
+        save_bindings: Callable[[list[Any]], None] | None = None,
+        projects: ProjectRuntimeService | Any | None = None,
+        binding_prefix: Callable[[Any], str] | None = None,
         secret_broker: SecretBroker | None = None,
         identity_service: IdentityService | None = None,
     ) -> None:
-        self.host = host
+        if host is not None:
+            load_connections = load_connections or getattr(
+                host,
+                "_load_bot_connections",
+                None,
+            )
+            save_connections = save_connections or getattr(
+                host,
+                "_save_bot_connections",
+                None,
+            )
+            load_bindings = load_bindings or getattr(
+                host,
+                "_load_bot_bindings",
+                None,
+            )
+            save_bindings = save_bindings or getattr(
+                host,
+                "_save_bot_bindings",
+                None,
+            )
+            projects = projects or host
+            binding_prefix = binding_prefix or getattr(
+                host,
+                "_binding_prefix",
+                None,
+            )
+        if not all(
+            (
+                load_connections,
+                save_connections,
+                load_bindings,
+                save_bindings,
+                projects,
+                binding_prefix,
+            )
+        ):
+            raise TypeError("BotConnectionService requires explicit state dependencies")
+
+        self.load_connections = load_connections
+        self.save_connections = save_connections
+        self.load_bindings = load_bindings
+        self.save_bindings = save_bindings
+        self.projects = projects
+        self.binding_prefix = binding_prefix
         self.secret_broker = secret_broker
         self.identity_service = identity_service
 
+    def _project(self, project_id: str) -> Any:
+        getter = getattr(self.projects, "get", None)
+        if callable(getter):
+            project = getter(project_id)
+            if project is not None:
+                return project
+        legacy_getter = getattr(self.projects, "_project", None)
+        if callable(legacy_getter):
+            return legacy_getter(project_id)
+        raise RuntimeError(f"Project not found: {project_id}")
+
     def get(self, connection_id: str) -> BotConnection:
-        for connection in self.host._load_bot_connections():
+        for connection in self.load_connections():
             if connection.id == connection_id:
                 return connection
         raise HTTPException(status_code=404, detail="Bot connection not found")
 
     def for_conversation(self, provider: str, external_conversation_id: str) -> BotConnection | None:
-        for connection in self.host._load_bot_connections():
+        for connection in self.load_connections():
             if (
                 connection.provider == provider
                 and connection.default_external_conversation_id == external_conversation_id
@@ -82,7 +144,7 @@ class BotConnectionService:
         )
 
     def _project_scope(self, project_id: str) -> TenantScope:
-        project = self.host._project(project_id)
+        project = self._project(project_id)
         return TenantScope(
             organization_id=getattr(project, "organization_id", "local"),
             workspace_id=getattr(project, "workspace_id", "default"),
@@ -205,12 +267,12 @@ class BotConnectionService:
                 status_code=400,
                 detail="Provider must be slack, telegram, or teams",
             )
-        project = self.host._project(payload.project_id)
+        project = self._project(payload.project_id)
         if actor is not None:
             scope = self._project_scope(payload.project_id)
             if actor.tenant != scope:
                 raise HTTPException(status_code=404, detail="Project not found")
-        connections = self.host._load_bot_connections()
+        connections = self.load_connections()
         for index, connection in enumerate(connections):
             if self.matches_payload(connection, payload):
                 current = connection.model_dump()
@@ -231,7 +293,7 @@ class BotConnectionService:
                 current["updated_at"] = now
                 updated = BotConnection.model_validate(current)
                 connections[index] = updated
-                self.host._save_bot_connections(connections)
+                self.save_connections(connections)
                 self.dedupe_integrations()
                 return updated
 
@@ -255,12 +317,12 @@ class BotConnectionService:
             updated_at=now,
         )
         connections.append(connection)
-        self.host._save_bot_connections(connections)
+        self.save_connections(connections)
         self.dedupe_integrations()
         return connection
 
     def dedupe_integrations(self) -> None:
-        connections = sorted(self.host._load_bot_connections(), key=lambda item: item.created_at)
+        connections = sorted(self.load_connections(), key=lambda item: item.created_at)
         canonical_by_key: dict[tuple[Any, ...], BotConnection] = {}
         connection_rewrites: dict[str, str] = {}
         kept_connections: list[BotConnection] = []
@@ -273,7 +335,7 @@ class BotConnectionService:
             canonical_by_key[key] = connection
             kept_connections.append(connection)
 
-        bindings = sorted(self.host._load_bot_bindings(), key=lambda item: item.created_at)
+        bindings = sorted(self.load_bindings(), key=lambda item: item.created_at)
         seen_binding_routes: set[tuple[str, str, str, str]] = set()
         kept_bindings = []
         for binding in bindings:
@@ -283,7 +345,7 @@ class BotConnectionService:
                 binding.provider,
                 binding.external_conversation_id,
                 binding.thread_id,
-                (self.host._binding_prefix(binding) or "").lower(),
+                (self.binding_prefix(binding) or "").lower(),
             )
             if route_key in seen_binding_routes:
                 continue
@@ -291,12 +353,12 @@ class BotConnectionService:
             kept_bindings.append(binding)
 
         if len(kept_connections) != len(connections):
-            self.host._save_bot_connections(kept_connections)
+            self.save_connections(kept_connections)
         if len(kept_bindings) != len(bindings) or connection_rewrites:
-            self.host._save_bot_bindings(kept_bindings)
+            self.save_bindings(kept_bindings)
 
     def update(self, connection_id: str, **updates: Any) -> None:
-        connections = self.host._load_bot_connections()
+        connections = self.load_connections()
         changed = False
         for index, connection in enumerate(connections):
             if connection.id != connection_id:
@@ -308,30 +370,37 @@ class BotConnectionService:
             changed = True
             break
         if changed:
-            self.host._save_bot_connections(connections)
+            self.save_connections(connections)
 
 
 def install_bot_connection_service(
     app: Any,
     host: Any,
     *,
+    projects: ProjectRuntimeService | None = None,
+    load_connections: Callable[[], list[BotConnection]] | None = None,
+    save_connections: Callable[[list[BotConnection]], None] | None = None,
+    load_bindings: Callable[[], list[Any]] | None = None,
+    save_bindings: Callable[[list[Any]], None] | None = None,
+    binding_prefix: Callable[[Any], str] | None = None,
     secret_broker: SecretBroker | None = None,
     identity_service: IdentityService | None = None,
 ) -> BotConnectionService:
-    existing = getattr(app.state, "bot_connection_service", None)
-    if isinstance(existing, BotConnectionService) and existing.host is host:
-        service = existing
-        if secret_broker is not None:
-            service.secret_broker = secret_broker
-        if identity_service is not None:
-            service.identity_service = identity_service
-    else:
-        service = BotConnectionService(
-            host,
-            secret_broker=secret_broker,
-            identity_service=identity_service,
-        )
-        app.state.bot_connection_service = service
+    service = BotConnectionService(
+        load_connections=load_connections or host._load_bot_connections,
+        save_connections=save_connections or host._save_bot_connections,
+        load_bindings=load_bindings or host._load_bot_bindings,
+        save_bindings=save_bindings or host._save_bot_bindings,
+        projects=(
+            projects
+            or getattr(app.state, "project_runtime_service", None)
+            or host
+        ),
+        binding_prefix=binding_prefix or host._binding_prefix,
+        secret_broker=secret_broker,
+        identity_service=identity_service,
+    )
+    app.state.bot_connection_service = service
 
     host._bot_connection = service.get
     host._bot_connection_for_conversation = service.for_conversation

@@ -8,7 +8,8 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
-from codex_web.models import BotBinding, BotConnection
+from codex_web.models import BotBinding, BotConnection, BotReplyTarget
+from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.state_store import StateStore
 
@@ -144,6 +145,8 @@ class BotStateRepositories:
         *,
         connections_file: Path,
         bindings_file: Path,
+        reply_targets_file: Path | None = None,
+        delivery_targets_file: Path | None = None,
     ) -> None:
         self.connections = ModelListRepository(
             store,
@@ -156,4 +159,24 @@ class BotStateRepositories:
             namespace="bot_bindings",
             legacy_path=bindings_file,
             model=BotBinding,
+        )
+        self.reply_targets = (
+            ModelMapRepository(
+                store,
+                namespace="bot_reply_targets",
+                legacy_path=reply_targets_file,
+                model=BotReplyTarget,
+            )
+            if reply_targets_file is not None
+            else None
+        )
+        self.delivery_targets = (
+            ModelMapRepository(
+                store,
+                namespace="bot_delivery_targets",
+                legacy_path=delivery_targets_file,
+                model=BotReplyTarget,
+            )
+            if delivery_targets_file is not None
+            else None
         )

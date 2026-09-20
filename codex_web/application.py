@@ -82,6 +82,8 @@ from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapabilit
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     ARTIFACT_CONTENT_DIR,
+    BOT_DELIVERY_TARGETS_FILE,
+    BOT_REPLY_TARGETS_FILE,
     BOTS_BINDINGS_FILE,
     BOTS_CONNECTIONS_FILE,
     EXECUTION_WORKSPACE_DIR,
@@ -128,7 +130,14 @@ from codex_web.services.autonomy_audit import AutonomyAuditService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
+from codex_web.services.bot_bindings import install_bot_binding_lifecycle_service
+from codex_web.services.bot_channels import install_bot_channel_discovery_service
 from codex_web.services.bot_connections import install_bot_connection_service
+from codex_web.services.bot_details import install_bot_detail_service
+from codex_web.services.bot_presentation import install_bot_presentation_service
+from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemetry
+from codex_web.services.bot_targets import install_bot_target_service
+from codex_web.services.bot_webhook_security import install_bot_webhook_security_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
@@ -1211,13 +1220,6 @@ codex_approval_requester = identity_service.bootstrap_service_actor(
     scope=approval_compatibility_actor.tenant,
     service_scopes=("approvals:request",),
 )
-approval_service = ApprovalService(
-    core,
-    assignment_sessions=(assignment_bound_codex_session_manager, assignment_bound_claude_session_manager),
-    canonical=approval_request_service,
-    canonical_requester=codex_approval_requester,
-    compatibility_actor=approval_compatibility_actor,
-)
 def _assignment_runtime_adapter(binding, session):
     key = (binding.provider_id, binding.runtime_id)
     if key == ("openai", "codex"):
@@ -1452,6 +1454,8 @@ bot_state = BotStateRepositories(
     state_store,
     connections_file=BOTS_CONNECTIONS_FILE,
     bindings_file=BOTS_BINDINGS_FILE,
+    reply_targets_file=BOT_REPLY_TARGETS_FILE,
+    delivery_targets_file=BOT_DELIVERY_TARGETS_FILE,
 )
 app.state.bot_state_repositories = bot_state
 # Transitional aliases for unextracted bot services. The authoritative mutable
@@ -1460,6 +1464,12 @@ core._load_bot_connections = bot_state.connections.load
 core._save_bot_connections = bot_state.connections.save
 core._load_bot_bindings = bot_state.bindings.load
 core._save_bot_bindings = bot_state.bindings.save
+assert bot_state.reply_targets is not None
+assert bot_state.delivery_targets is not None
+core._load_bot_reply_targets = bot_state.reply_targets.load
+core._save_bot_reply_targets = bot_state.reply_targets.save
+core._load_bot_delivery_targets = bot_state.delivery_targets.load
+core._save_bot_delivery_targets = bot_state.delivery_targets.save
 
 turn_queue_repository = TurnQueueRepository(
     state_store,
@@ -1472,6 +1482,14 @@ core._save_turn_queues = turn_queue_repository.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
+bot_presentation_service = install_bot_presentation_service(app, core)
+bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
+bot_detail_service = install_bot_detail_service(
+    app,
+    core,
+    load_details=auxiliary_state.bot_details.load,
+    save_details=auxiliary_state.bot_details.save,
+)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
 execution_worker_service.mark_stale_workers_offline(
@@ -1579,10 +1597,33 @@ agent_runtime_telemetry_service.subscribe(app.state.claude_agent_runtime_adapter
 bot_connection_service = install_bot_connection_service(
     app,
     core,
+    projects=project_runtime_service,
+    load_connections=bot_state.connections.load,
+    save_connections=bot_state.connections.save,
+    load_bindings=bot_state.bindings.load,
+    save_bindings=bot_state.bindings.save,
+    binding_prefix=bot_presentation_service.binding_prefix,
     secret_broker=secret_broker,
     identity_service=identity_service,
 )
-bot_binding_selection_service = install_bot_binding_selection_service(app, core)
+bot_binding_selection_service = install_bot_binding_selection_service(
+    app,
+    core,
+    load_bindings=bot_state.bindings.load,
+    binding_report_name=bot_presentation_service.binding_report_name,
+    binding_prefix=bot_presentation_service.binding_prefix,
+)
+
+bot_target_service = install_bot_target_service(
+    app,
+    core,
+    load_reply_targets=bot_state.reply_targets.load,
+    save_reply_targets=bot_state.reply_targets.save,
+    load_delivery_targets=bot_state.delivery_targets.load,
+    save_delivery_targets=bot_state.delivery_targets.save,
+    load_active_turns=runtime_state.active_turns.load,
+    bindings_for_project=bot_binding_selection_service.for_project,
+)
 
 thread_execution_settings_service = install_thread_execution_settings_service(
     app,
@@ -1648,6 +1689,25 @@ thread_resume_service = ThreadResumeService(
 app.state.thread_naming_service = thread_naming_service
 app.state.thread_resume_service = thread_resume_service
 
+approval_service = ApprovalService(
+    core,
+    runtime_transport=codex_runtime,
+    assignment_sessions=(
+        assignment_bound_codex_session_manager,
+        assignment_bound_claude_session_manager,
+    ),
+    canonical=approval_request_service,
+    canonical_requester=codex_approval_requester,
+    compatibility_actor=approval_compatibility_actor,
+    approval_summary=bot_presentation_service.approval_summary,
+    approval_result=ApprovalService.native_result,
+    request_id_value=ApprovalService.normalize_request_id,
+    load_approval_messages=auxiliary_state.approval_messages.load,
+    save_approval_messages=auxiliary_state.approval_messages.save,
+    load_active_turns=runtime_state.active_turns.load,
+)
+app.state.approval_service = approval_service
+
 # Historical helper names are compatibility aliases to extracted owners.
 core._set_thread_name = thread_naming_service.set_name
 core._canonical_bot_thread_names = thread_naming_service.canonical_bot_names
@@ -1671,13 +1731,27 @@ thread_recovery_service = install_thread_recovery_service(
     runtime_request=_thread_recovery_runtime_request,
 )
 
+bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
+    app,
+    core,
+    load_bindings=bot_state.bindings.load,
+    save_bindings=bot_state.bindings.save,
+    connections=bot_connection_service,
+    selection=bot_binding_selection_service,
+    targets=bot_target_service,
+    presentation=bot_presentation_service,
+    projects=project_runtime_service,
+    runtime_request=codex_runtime.request,
+    set_thread_name=thread_naming_service.set_name,
+)
+
 thread_bot_collaboration_service = ThreadBotCollaborationService(
     project_runtime_service,
     _existing_thread_runtime_request,
     load_bindings=core._load_bot_bindings,
     save_bindings=core._save_bot_bindings,
     load_connections=core._load_bot_connections,
-    upsert_binding=core._upsert_bot_binding,
+    upsert_binding=bot_binding_lifecycle_service.upsert,
 )
 app.state.thread_bot_collaboration_service = thread_bot_collaboration_service
 core._project_scoped_bindings_for_thread = (
@@ -1794,26 +1868,78 @@ autonomy_service = install_autonomy_service(
 )
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
-# Bot routing/delivery share the same async provider clients used by management
-# and long-lived runtime paths. Connection and binding selection were composed
-# above because thread collaboration consumes them directly.
+# Bot provider runtime is composed from explicit domain owners. Compatibility
+# aliases written to legacy_core are output-only and are not read by these
+# services after construction.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
+app.state.slack_client = slack_client
+app.state.telegram_client = telegram_client
 agent_channel_preference_service = install_agent_channel_preference_service(app, core)
-bot_runtime = install_bot_runtime(
+bot_webhook_security_service = install_bot_webhook_security_service(
     app,
     core,
+    connections=bot_connection_service,
+    secret_broker=secret_broker,
+)
+bot_channel_discovery_service = install_bot_channel_discovery_service(
+    app,
+    core,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    projects=project_runtime_service,
     slack_client=slack_client,
-    telegram_client=telegram_client,
-    ownership=replicated_ownership_service,
+    secret_broker=secret_broker,
 )
 bot_delivery_service = install_bot_delivery_service(
     app,
     core,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    targets=bot_target_service,
+    presentation=bot_presentation_service,
+    details=bot_detail_service,
+    telemetry=bot_runtime_telemetry,
+    collaboration=thread_bot_collaboration_service,
+    approvals=approval_service,
+    publish_event=core.hub.publish,
+    workflow_claim_findings=core._workflow_outbound_claim_findings,
+    workflow_correction=core._canonical_workflow_correction,
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
-bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
+bot_routing_service = install_bot_routing_service(
+    app,
+    core,
+    bot_delivery_service,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    binding_lifecycle=bot_binding_lifecycle_service,
+    targets=bot_target_service,
+    presentation=bot_presentation_service,
+    telemetry=bot_runtime_telemetry,
+    projects=project_runtime_service,
+    settings=thread_execution_settings_service,
+    recovery=thread_recovery_service,
+    resume=thread_resume_service,
+    queue_policy=turn_queue_policy,
+    execution=turn_execution_service,
+    publish_event=core.hub.publish,
+)
+bot_runtime = install_bot_runtime(
+    app,
+    core,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    presentation=bot_presentation_service,
+    telemetry=bot_runtime_telemetry,
+    routing=bot_routing_service,
+    delivery=bot_delivery_service,
+    publish_event=core.hub.publish,
+    slack_client=slack_client,
+    telegram_client=telegram_client,
+    ownership=replicated_ownership_service,
+)
 
 conversation_channel_store = ConversationChannelStore(state_store)
 conversation_channel_registry = ConversationChannelRegistry()
@@ -1849,15 +1975,25 @@ slack_provider_service = install_slack_provider_service(
     core,
     slack_client=slack_client,
     routing_service=bot_routing_service,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    targets=bot_target_service,
+    presentation=bot_presentation_service,
+    telemetry=bot_runtime_telemetry,
+    webhook_security=bot_webhook_security_service,
 )
 bot_service = BotService(
-    core,
-    slack_client=slack_client,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    binding_lifecycle=bot_binding_lifecycle_service,
+    channels=bot_channel_discovery_service,
+    presentation=bot_presentation_service,
+    telemetry=bot_runtime_telemetry,
+    runtime=bot_runtime,
     routing_service=bot_routing_service,
-    secret_broker=secret_broker,
+    load_gitlab_routing_settings=lambda: core._load_gitlab_routing_settings(),
 )
-app.state.slack_client = slack_client
-app.state.telegram_client = telegram_client
+app.state.bot_service = bot_service
 
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor keeps the historical
@@ -1969,9 +2105,10 @@ EXTRACTED_ROUTE_COUNTS = {
     "telegram": replace_routes(
         app,
         build_telegram_router(
-            core,
             bot_routing_service,
-            conversation_channel_service,
+            connections=bot_connection_service,
+            webhook_security=bot_webhook_security_service,
+            conversation_channels=conversation_channel_service,
         ),
         paths={"/bots/telegram/webhook"},
         key="telegram",

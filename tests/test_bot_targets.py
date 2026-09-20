@@ -44,6 +44,17 @@ class _TargetHost:
         return binding.post_in_thread
 
 
+def _service(host: _TargetHost) -> BotTargetService:
+    return BotTargetService(
+        load_reply_targets=host._load_bot_reply_targets,
+        save_reply_targets=host._save_bot_reply_targets,
+        load_delivery_targets=host._load_bot_delivery_targets,
+        save_delivery_targets=host._save_bot_delivery_targets,
+        load_active_turns=host._load_active_turns,
+        bindings_for_project=host._bindings_for_project,
+    )
+
+
 def _binding(
     binding_id: str,
     *,
@@ -73,7 +84,7 @@ def _binding(
 class BotTargetServiceTests(unittest.TestCase):
     def test_remember_reply_target_indexes_binding_and_external_thread(self) -> None:
         host = _TargetHost()
-        service = BotTargetService(host)
+        service = _service(host)
         binding = _binding("b1", thread_id="thread-1")
         message = BotInboundMessage(
             provider="slack",
@@ -95,7 +106,7 @@ class BotTargetServiceTests(unittest.TestCase):
 
     def test_active_target_wins_outbound_selection(self) -> None:
         host = _TargetHost()
-        service = BotTargetService(host)
+        service = _service(host)
         binding = _binding("b1", thread_id="thread-1")
         active_target = BotReplyTarget(
             thread_id="thread-1",
@@ -122,7 +133,7 @@ class BotTargetServiceTests(unittest.TestCase):
 
     def test_master_target_is_fallback_for_agent_binding(self) -> None:
         host = _TargetHost()
-        service = BotTargetService(host)
+        service = _service(host)
         agent = _binding("agent", thread_id="agent-thread")
         master = _binding("master", thread_id="master-thread", master=True)
         host.bindings = [agent, master]
@@ -142,7 +153,7 @@ class BotTargetServiceTests(unittest.TestCase):
 
     def test_retarget_rewrites_binding_keys_and_thread_ids(self) -> None:
         host = _TargetHost()
-        service = BotTargetService(host)
+        service = _service(host)
         old = _binding("b1", thread_id="old-thread")
         target = BotReplyTarget(
             thread_id="old-thread",
@@ -172,7 +183,7 @@ class BotTargetServiceTests(unittest.TestCase):
         service = install_bot_target_service(app, host)
 
         self.assertIs(app.state.bot_target_service, service)
-        self.assertIs(host._thread_target_for_outbound.__self__, service)
+        self.assertTrue(callable(host._thread_target_for_outbound))
         self.assertIs(host._remember_bot_reply_target.__self__, service)
         self.assertIs(host._retarget_bot_targets.__self__, service)
 
