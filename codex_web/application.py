@@ -1877,7 +1877,7 @@ async def _thread_recovery_runtime_request(method, params):
             method,
             values,
         )
-    return await core.codex.request(method, values)
+    return await codex_runtime.request(method, values)
 
 
 thread_naming_service = ThreadNamingService(
