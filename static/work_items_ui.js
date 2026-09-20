@@ -172,6 +172,20 @@ function setStatus(message, isError = false) {
   target.classList.toggle('error', Boolean(isError));
 }
 
+function workItemLoadError(error) {
+  const code = String(error?.detail?.code || '').toLowerCase();
+  const message = error?.message || 'Failed to load Work Items';
+  if (error?.status === 504) return `Backend timeout: ${message}`;
+  if (
+    code.includes('readiness')
+    || code.includes('migration')
+    || code.includes('bootstrap')
+  ) {
+    return `Project readiness blocker: ${message}`;
+  }
+  return message;
+}
+
 async function refreshAll() {
   setStatus('Loading…');
   try {
@@ -499,7 +513,7 @@ async function loadItems({ reset = false } = {}) {
   } catch (error) {
     if (error?.name === 'AbortError' || controller.signal.aborted) return;
     if (generation !== state.listGeneration) return;
-    state.pageError = error.message || 'Failed to load Work Items';
+    state.pageError = workItemLoadError(error);
     renderItemList();
     setStatus(state.pageError, true);
   } finally {
@@ -654,7 +668,7 @@ async function runItemAction(action) {
     });
     renderDetail(payload);
     setStatus(action === 'retry' ? 'Retry dispatched' : 'Reconciled with authoritative source');
-    await loadItems();
+    await loadItems({ reset: true });
   } catch (error) {
     setStatus(error.message || `${action} failed`, true);
   }
