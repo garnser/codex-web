@@ -33,6 +33,8 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         reasoning_effort: str | None = None,
         provider_id: str | None = None,
         runtime_id: str | None = None,
+        repository_resource_id: str | None = None,
+        read_only_repository_resource_id: list[str] | None = None,
     ) -> dict[str, Any]:
         return await service.create(
             project_id=project_id,
@@ -42,6 +44,10 @@ def build_threads_router(service: ThreadService) -> APIRouter:
             reasoning_effort=reasoning_effort,
             provider_id=provider_id,
             runtime_id=runtime_id,
+            repository_resource_id=repository_resource_id,
+            read_only_repository_resource_ids=tuple(
+                read_only_repository_resource_id or ()
+            ),
         )
 
     @router.get("/api/threads/{thread_id}")
