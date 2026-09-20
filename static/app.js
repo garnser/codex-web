@@ -1,19 +1,13 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
-
-const ACTIVE_PROJECT_KEY="codex-web-active-project";
-const initialProjectId=(
-  new URLSearchParams(window.location.search).get("project")
-  || sessionStorage.getItem(ACTIVE_PROJECT_KEY)
-  || "home"
-);
+import{activateProject,initialProjectId}from"./project_context.js";
 
 const state = {
   projects: [],
   projectResources: [],
   projectUiStatic: {},
-  projectId: initialProjectId,
+  projectId: initialProjectId(),
   threads: [],
   threadId: null,
   activeAgentMessage: null,
@@ -50,18 +44,6 @@ const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
 const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "janice", "larry", "maya", "nora", "quinn", "riley", "sally", "tom"];
-
-function setActiveProject(projectId) {
-  const normalized=String(projectId||"").trim();
-  if(!normalized)return;
-  state.projectId=normalized;
-  sessionStorage.setItem(ACTIVE_PROJECT_KEY,normalized);
-  if(document.body)document.body.dataset.projectId=normalized;
-  const url=new URL(window.location.href);
-  url.searchParams.set("project",normalized);
-  history.replaceState({...history.state,projectId:normalized},"",url);
-  window.dispatchEvent(new CustomEvent("codex:project-changed",{detail:{projectId:normalized}}));
-}
 
 const SLACK_ICON_MAP = {
   ":large_blue_circle:": "🔵",
@@ -639,7 +621,7 @@ function renderProjects() {
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", async () => {
-      setActiveProject(project.id);
+      activateProject(state,project.id);
       applyRunSettings();
       await refresh();
     });
@@ -2479,12 +2461,12 @@ $("save-project").addEventListener("click", async (event) => {
     project,
   ];
   delete state.projectUiStatic[project.id];
-  setActiveProject(project.id);
+  activateProject(state,project.id);
   $("project-dialog").close();
   await refresh();
 });
 
-setActiveProject(state.projectId);
+activateProject(state,state.projectId);
 applyTheme(currentTheme());
 setupSidebarControls();
 applySidebarPreference();
