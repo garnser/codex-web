@@ -2083,6 +2083,42 @@ async def _resume_provider_capacity_wait(wait):
 provider_capacity_service.register_resume_handler(
     _resume_provider_capacity_wait
 )
+
+# Bot provider runtime is composed from explicit domain owners. Compatibility
+# aliases written to legacy_core are output-only and are not read by these
+# services after construction.
+slack_client = SlackClient()
+telegram_client = TelegramClient()
+app.state.slack_client = slack_client
+app.state.telegram_client = telegram_client
+bot_webhook_security_service = install_bot_webhook_security_service(
+    app,
+    core,
+    connections=bot_connection_service,
+    secret_broker=secret_broker,
+)
+bot_channel_discovery_service = install_bot_channel_discovery_service(
+    app,
+    core,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    projects=project_runtime_service,
+    slack_client=slack_client,
+    secret_broker=secret_broker,
+)
+agent_channel_preference_service = (
+    install_agent_channel_preference_service(
+        app,
+        core,
+        load_settings=configuration_state.agent_channel_presence.load,
+        normalize_strings=normalize_string_list,
+        known_channels=bot_channel_discovery_service.known,
+        clone_binding=bot_binding_lifecycle_service.clone_to_conversation,
+        load_bindings=bot_state.bindings.load,
+        binding_prefix=bot_presentation_service.binding_prefix,
+        same_logical_binding=thread_recovery_service.same_logical_binding,
+    )
+)
 work_item_timing_policy = install_work_item_timing_policy(
     app,
     core,
@@ -2151,7 +2187,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     coerce_owner=work_item_state_machine._coerce_owner,
     owner_queue_agents=OWNER_QUEUE_AGENTS,
     handoff_coordination_channel=HANDOFF_COORDINATION_CHANNEL,
-    binding_for_agent=core._binding_for_agent,
+    binding_for_agent=agent_channel_preference_service.binding_for_agent,
     orchestrator_binding=bot_binding_selection_service.orchestrator,
     binding_prefix=bot_presentation_service.binding_prefix,
     replace_nonperforming_thread=(
@@ -2216,41 +2252,6 @@ work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
-# Bot provider runtime is composed from explicit domain owners. Compatibility
-# aliases written to legacy_core are output-only and are not read by these
-# services after construction.
-slack_client = SlackClient()
-telegram_client = TelegramClient()
-app.state.slack_client = slack_client
-app.state.telegram_client = telegram_client
-bot_webhook_security_service = install_bot_webhook_security_service(
-    app,
-    core,
-    connections=bot_connection_service,
-    secret_broker=secret_broker,
-)
-bot_channel_discovery_service = install_bot_channel_discovery_service(
-    app,
-    core,
-    connections=bot_connection_service,
-    bindings=bot_binding_selection_service,
-    projects=project_runtime_service,
-    slack_client=slack_client,
-    secret_broker=secret_broker,
-)
-agent_channel_preference_service = (
-    install_agent_channel_preference_service(
-        app,
-        core,
-        load_settings=configuration_state.agent_channel_presence.load,
-        normalize_strings=normalize_string_list,
-        known_channels=bot_channel_discovery_service.known,
-        clone_binding=bot_binding_lifecycle_service.clone_to_conversation,
-        load_bindings=bot_state.bindings.load,
-        binding_prefix=bot_presentation_service.binding_prefix,
-        same_logical_binding=thread_recovery_service.same_logical_binding,
-    )
-)
 bot_delivery_service = install_bot_delivery_service(
     app,
     core,
