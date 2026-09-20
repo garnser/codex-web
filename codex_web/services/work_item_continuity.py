@@ -302,13 +302,29 @@ class WorkItemContinuityService:
         expected_requested_at = handoff.requested_at
 
         async def run() -> None:
-            await self.dispatch_structured_handoff(
-                snapshot,
-                source=source,
-                expected_recipient=recipient,
-                expected_requested_at=expected_requested_at,
-                expected_updated_at=expected_updated_at,
-            )
+            try:
+                await self.dispatch_structured_handoff(
+                    snapshot,
+                    source=source,
+                    expected_recipient=recipient,
+                    expected_requested_at=expected_requested_at,
+                    expected_updated_at=expected_updated_at,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.append_event(
+                    {
+                        "type": "work_item_handoff_dispatch_failed",
+                        "ref": snapshot.ref,
+                        "source": source,
+                        "error": self.truncate_text(
+                            str(getattr(exc, "detail", exc)),
+                            500,
+                        ),
+                    }
+                )
+                raise
 
         self.dispatch_coordinator.submit(
             f"handoff:{state.ref}",
@@ -547,14 +563,31 @@ class WorkItemContinuityService:
         expected_updated_at = state.updated_at
 
         async def run() -> None:
-            await self.dispatch_actionable_owner(
-                snapshot,
-                source=source,
-                actor=actor,
-                expected_owner=owner,
-                expected_stage=expected_stage,
-                expected_updated_at=expected_updated_at,
-            )
+            try:
+                await self.dispatch_actionable_owner(
+                    snapshot,
+                    source=source,
+                    actor=actor,
+                    expected_owner=owner,
+                    expected_stage=expected_stage,
+                    expected_updated_at=expected_updated_at,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.append_event(
+                    {
+                        "type": "work_item_owner_progress_dispatch_failed",
+                        "ref": snapshot.ref,
+                        "source": source,
+                        "actor": actor,
+                        "error": self.truncate_text(
+                            str(getattr(exc, "detail", exc)),
+                            500,
+                        ),
+                    }
+                )
+                raise
 
         self.dispatch_coordinator.submit(
             f"owner:{state.ref}",
