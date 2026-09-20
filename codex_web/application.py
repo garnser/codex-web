@@ -200,7 +200,15 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
-from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.gitlab import (
+    install_gitlab_compatibility,
+    install_gitlab_service,
+)
+from codex_web.services.gitlab_dependencies import (
+    GitLabOperationalDependencies,
+    GitLabRoutingDependencies,
+    GitLabWorkItemRuntimeDependencies,
+)
 from codex_web.services.gitlab_sync_health import GitLabSyncHealth
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.github_code_host import GitHubCodeHostProvider
@@ -1638,14 +1646,6 @@ extension_runtime_registry = ExtensionRuntimeRegistry(
     action_provider_registry,
 )
 app.state.extension_runtime_registry = extension_runtime_registry
-gitlab_service = install_gitlab_service(
-    app,
-    core,
-    gitlab_client,
-    canonical_events=canonical_event_ingestion,
-    autonomy_controller=autonomy_controller,
-)
-
 # Legacy code still needing project/runtime state consumes the extracted
 # repositories. SQLite is primary for mutable runtime documents; repositories
 # mirror legacy JSON on every write during the migration window so rolling back
@@ -2155,6 +2155,53 @@ bot_routing_service = install_bot_routing_service(
     execution=turn_execution_service,
     publish_event=core.hub.publish,
 )
+
+gitlab_routing_dependencies = GitLabRoutingDependencies(
+    load_settings=configuration_state.gitlab_routing.load,
+    normalize_strings=normalize_string_list,
+    binding_for_agent=agent_channel_preference_service.binding_for_agent,
+    preferred_agent_conversations=agent_channel_preference_service.conversations,
+    clone_binding_to_known_channel=(
+        agent_channel_preference_service.clone_to_known_channel
+    ),
+    master_binding=bot_binding_selection_service.master,
+)
+gitlab_work_item_runtime_dependencies = (
+    GitLabWorkItemRuntimeDependencies(
+        split_brain_findings=(
+            work_item_state_machine._work_item_split_brain_findings
+        ),
+        coerce_owner=work_item_state_machine._coerce_owner,
+        project_event=work_item_service.project_gitlab_event_compat,
+        project_lookup=project_runtime_service.get,
+        load_projects=project_repository.load,
+    )
+)
+gitlab_operational_dependencies = GitLabOperationalDependencies(
+    api_base_url=gitlab_work_item_dependencies.api_base_url,
+    load_support_state=auxiliary_state.support_servicedesk.load,
+    save_support_state=auxiliary_state.support_servicedesk.save,
+    load_semantic_events=auxiliary_state.gitlab_semantic_events.load,
+    save_semantic_events=auxiliary_state.gitlab_semantic_events.save,
+    verify_webhook=core._verify_gitlab_webhook,
+    append_event=bot_runtime_telemetry.append,
+    publish_event=core.hub.publish,
+    truncate_text=lambda value, limit: str(value)[:limit],
+    dispatch_event=core._dispatch_event_to_binding,
+    format_event_prompt=core._format_gitlab_event_prompt,
+    send_event_notice=core._send_gitlab_event_notice,
+    schedule_recovery=native_recovery_service.schedule,
+)
+gitlab_service = install_gitlab_service(
+    app,
+    gitlab_client,
+    canonical_events=canonical_event_ingestion,
+    autonomy_controller=autonomy_controller,
+    routing=gitlab_routing_dependencies,
+    work_items=gitlab_work_item_runtime_dependencies,
+    operations=gitlab_operational_dependencies,
+)
+install_gitlab_compatibility(core, gitlab_service)
 bot_runtime = install_bot_runtime(
     app,
     core,
