@@ -436,7 +436,18 @@ class SQLiteStateStore:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current: dict[str, Any] = {}
+            record_backed: set[str] = set()
             for namespace in namespaces:
+                if self._record_collection_exists_in_connection(
+                    connection,
+                    namespace,
+                ):
+                    record_backed.add(namespace)
+                    current[namespace] = self._record_items_in_connection(
+                        connection,
+                        namespace,
+                    )
+                    continue
                 row = connection.execute(
                     "SELECT payload FROM state_documents WHERE namespace = ?",
                     (namespace,),
@@ -449,7 +460,18 @@ class SQLiteStateStore:
                     "update_many updater must return exactly the requested namespaces"
                 )
             for namespace in namespaces:
-                self._upsert(connection, namespace, updated[namespace])
+                if namespace in record_backed:
+                    if not isinstance(updated[namespace], dict):
+                        raise TypeError(
+                            "record-backed namespace updates must return a mapping"
+                        )
+                    self._replace_records_in_connection(
+                        connection,
+                        namespace,
+                        updated[namespace],
+                    )
+                else:
+                    self._upsert(connection, namespace, updated[namespace])
             return updated
 
     def contains(self, namespace: str) -> bool:
