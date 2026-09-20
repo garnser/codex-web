@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import os
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
 from typing import Any
 
 
@@ -574,7 +573,7 @@ class RuntimeSupervisor:
                 ),
             )
         if self._owns("native-recovery"):
-            self.native_recovery.schedule(reason="startup")
+            self.native_recovery.schedule()
 
     async def stop(self) -> None:
         self.native_recovery.set_shutting_down(True)
