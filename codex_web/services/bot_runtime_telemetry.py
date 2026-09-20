@@ -126,10 +126,24 @@ class BotRuntimeTelemetry:
         return count
 
 
-def install_bot_runtime_telemetry(app: Any, host: Any) -> BotRuntimeTelemetry:
+def install_bot_runtime_telemetry(
+    app: Any,
+    host: Any,
+    *,
+    events_file: Path | None = None,
+    status: dict[str, dict[str, Any]] | None = None,
+) -> BotRuntimeTelemetry:
+    if events_file is None:
+        events_file = getattr(host, "BOTS_EVENTS_FILE", None)
+    if events_file is None:
+        raise TypeError("bot runtime telemetry requires an events file")
     telemetry = BotRuntimeTelemetry(
-        events_file=host.BOTS_EVENTS_FILE,
-        status=getattr(host, "BOT_RUNTIME_STATUS", None),
+        events_file=events_file,
+        status=(
+            status
+            if status is not None
+            else getattr(host, "BOT_RUNTIME_STATUS", None)
+        ),
     )
     app.state.bot_runtime_telemetry = telemetry
     host.BOT_RUNTIME_STATUS = telemetry.status
