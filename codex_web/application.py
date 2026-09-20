@@ -232,6 +232,7 @@ from codex_web.services.thread_execution_settings import install_thread_executio
 from codex_web.services.thread_resume import ThreadResumeService
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
+from codex_web.services.thread_compatibility import install_thread_compatibility_facade
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
 )
@@ -1729,14 +1730,17 @@ turn_service = TurnService(
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
 
-# Preserve the small historical function surface still used by direct
-# import-server callers while the implementations live in explicit services.
+# Preserve the small historical direct-import surface through dynamic
+# compatibility proxies. Production routers continue to use thread_service and
+# turn_service above and do not depend on the legacy host.
 core._default_thread_message_limit = thread_service.default_message_limit
 core._coerce_thread_message_limit = thread_service.coerce_message_limit
 core._trim_thread_messages = thread_service.trim_messages
-core.read_thread = thread_service.read
-core.resume_thread = turn_service.resume
-core.start_turn = turn_service.start
+install_thread_compatibility_facade(
+    app,
+    core,
+    canonical_settings=thread_execution_settings_service,
+)
 
 async def _resume_provider_capacity_wait(wait):
     if wait.thread_id:
