@@ -200,6 +200,7 @@ from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import install_gitlab_service
+from codex_web.services.gitlab_sync_health import GitLabSyncHealth
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
@@ -1362,11 +1363,30 @@ core._dispatch_actionable_owner_to_responsible_thread = (
 core._run_actionable_owner_continuity_check = (
     work_item_continuity_compatibility.run_actionable_owner_continuity_check
 )
+def _mirror_gitlab_sync_health(snapshot):
+    core.GITLAB_SYNC_CONSECUTIVE_FAILURES = snapshot[
+        "consecutive_failures"
+    ]
+    core.GITLAB_SYNC_LAST_ERROR = snapshot["last_error"]
+    core.GITLAB_SYNC_LAST_ERROR_AT = snapshot["last_error_at"]
+    core.GITLAB_SYNC_LAST_SUCCESS_AT = snapshot["last_success_at"]
+
+
+gitlab_sync_health = GitLabSyncHealth(
+    on_change=_mirror_gitlab_sync_health,
+)
+_mirror_gitlab_sync_health(gitlab_sync_health.snapshot())
+app.state.gitlab_sync_health = gitlab_sync_health
+
 work_item_service = WorkItemService(
     core,
     gitlab_client,
     work_item_state_machine,
     continuity=work_item_continuity_service,
+    sync_health=gitlab_sync_health,
+    event_sink=bot_runtime_telemetry.append,
+    publish_event=core.hub.publish,
+    truncate_text=bot_presentation_service.truncate_text,
 )
 authority_policy_explorer_service = AuthorityPolicyExplorerService(
     authority_role_service,
@@ -2140,24 +2160,7 @@ runtime_health_service = RuntimeHealthService(
     ),
     load_queues=turn_queue_repository.load,
     slack_provider_health=slack_provider_service.health,
-    gitlab_sync_status=lambda: {
-        "consecutive_failures": getattr(
-            core,
-            "GITLAB_SYNC_CONSECUTIVE_FAILURES",
-            0,
-        ),
-        "last_error": getattr(core, "GITLAB_SYNC_LAST_ERROR", None),
-        "last_error_at": getattr(
-            core,
-            "GITLAB_SYNC_LAST_ERROR_AT",
-            0.0,
-        ),
-        "last_success_at": getattr(
-            core,
-            "GITLAB_SYNC_LAST_SUCCESS_AT",
-            0.0,
-        ),
-    },
+    gitlab_sync_status=gitlab_sync_health.snapshot,
 )
 app.state.static_asset_version_service = static_asset_version_service
 app.state.runtime_health_service = runtime_health_service
