@@ -21,6 +21,7 @@ def build_project_ui_state_router(
         search: str | None = None,
         thread_limit: int | None = None,
         thread_cursor: str | None = None,
+        include_static: bool = True,
     ) -> Any:
         payload = await service.state(
             project_id,
@@ -28,6 +29,7 @@ def build_project_ui_state_router(
             search=search,
             thread_limit=thread_limit,
             thread_cursor=thread_cursor,
+            include_static=include_static,
         )
         etag = service.etag(payload)
         headers = {
