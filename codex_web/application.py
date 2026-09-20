@@ -1991,7 +1991,7 @@ bot_service = BotService(
     telemetry=bot_runtime_telemetry,
     runtime=bot_runtime,
     routing_service=bot_routing_service,
-    load_gitlab_routing_settings=core._load_gitlab_routing_settings,
+    load_gitlab_routing_settings=lambda: core._load_gitlab_routing_settings(),
 )
 app.state.bot_service = bot_service
 
