@@ -202,6 +202,7 @@ class BotChannelDiscoveryService:
                 "negativeCacheHits": 0,
                 "cooldownSkips": 0,
                 "rateLimitEvents": 0,
+                "providerFailures": 0,
                 "discoveryDurationSeconds": (
                     time.perf_counter() - started
                 ),
