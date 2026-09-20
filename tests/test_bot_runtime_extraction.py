@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import unittest
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 
@@ -20,9 +21,27 @@ class _Host:
         return self.connections
 
 
+async def _publish(_event) -> None:
+    return None
+
+
+def _runtime_kwargs(host):
+    return {
+        "connections": SimpleNamespace(
+            load_connections=host._load_bot_connections,
+        ),
+        "bindings": SimpleNamespace(),
+        "presentation": SimpleNamespace(),
+        "telemetry": SimpleNamespace(status={}),
+        "routing": SimpleNamespace(),
+        "delivery": SimpleNamespace(),
+        "publish_event": _publish,
+    }
+
+
 class _ProbeRuntime(BotRuntime):
     def __init__(self, host) -> None:
-        super().__init__(host)
+        super().__init__(**_runtime_kwargs(host))
         self.started: list[str] = []
 
     async def _run_connection(self, connection: BotConnection) -> None:
@@ -71,7 +90,13 @@ class BotRuntimeExtractionTests(unittest.IsolatedAsyncioTestCase):
         slack = _FakeSlackClient()
         telegram = _FakeTelegramClient()
 
-        first = install_bot_runtime(app, host, slack_client=slack, telegram_client=telegram)
+        first = install_bot_runtime(
+            app,
+            host,
+            **_runtime_kwargs(host),
+            slack_client=slack,
+            telegram_client=telegram,
+        )
         second = install_bot_runtime(app, host)
 
         self.assertIs(first, second)
