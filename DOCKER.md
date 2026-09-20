@@ -161,6 +161,14 @@ The container deliberately does not mount the Docker socket, SSH keys, or arbitr
 
 ## Rootless Podman
 
-Rootless Podman is supported for the local Bubblewrap execution worker through the qualified overlay in `compose.podman.yaml`. Use the setup, readiness checks, security tradeoffs, and failure recovery procedure in [docs/operations/rootless-podman.md](docs/operations/rootless-podman.md).
+Rootless Podman may run the Codex Web control plane, but the built-in local
+Bubblewrap execution worker is currently **not supported inside a rootless
+Podman container**. Qualification found that nested Bubblewrap cannot establish
+its required `/proc`/namespace boundary reliably under the tested rootless
+Podman profiles.
 
-Do not substitute privileged mode when the Bubblewrap probe fails. A failed probe intentionally removes `command_execution` from the local worker and causes execution readiness to fail closed before a turn creates execution state.
+See [docs/operations/rootless-podman.md](docs/operations/rootless-podman.md)
+for the qualification evidence, readiness behavior, and supported execution
+alternatives. Do not use privileged mode or host-level privilege escalation as
+an automatic fallback.
+
