@@ -535,7 +535,7 @@ def _definition_change_notifier(event: dict[str, object]) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(core.hub.publish(event))
+    loop.create_task(event_hub.publish(event))
 
 definition_registry_store = DefinitionRegistryStore(state_store)
 definition_registry_service = DefinitionRegistryService(
@@ -1478,7 +1478,7 @@ work_item_service = WorkItemService(
     recovery=work_item_recovery_scheduler,
     sync_health=gitlab_sync_health,
     event_sink=bot_runtime_telemetry.append,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
     work_item_dependencies=work_item_dependencies,
     gitlab_dependencies=gitlab_work_item_dependencies,
@@ -2021,7 +2021,7 @@ context_service = ContextCompactionService(
     raise_if_thread_replaced=(
         thread_recovery_service.raise_if_thread_replaced
     ),
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
 )
 
 thread_service = ThreadService(
@@ -2271,7 +2271,7 @@ bot_delivery_service = install_bot_delivery_service(
     telemetry=bot_runtime_telemetry,
     collaboration=thread_bot_collaboration_service,
     approvals=approval_service,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     workflow_claim_findings=core._workflow_outbound_claim_findings,
     workflow_correction=core._canonical_workflow_correction,
     slack_client=slack_client,
@@ -2293,7 +2293,7 @@ bot_routing_service = install_bot_routing_service(
     resume=thread_resume_service,
     queue_policy=turn_queue_policy,
     execution=turn_execution_service,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
 )
 
 gitlab_routing_dependencies = GitLabRoutingDependencies(
@@ -2325,7 +2325,7 @@ gitlab_operational_dependencies = GitLabOperationalDependencies(
     save_semantic_events=auxiliary_state.gitlab_semantic_events.save,
     verify_webhook=core._verify_gitlab_webhook,
     append_event=bot_runtime_telemetry.append,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
     dispatch_event=core._dispatch_event_to_binding,
     format_event_prompt=core._format_gitlab_event_prompt,
@@ -2352,7 +2352,7 @@ bot_runtime = install_bot_runtime(
     telemetry=bot_runtime_telemetry,
     routing=bot_routing_service,
     delivery=bot_delivery_service,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     slack_client=slack_client,
     telegram_client=telegram_client,
     ownership=replicated_ownership_service,
@@ -2570,7 +2570,7 @@ operator_ui_service = OperatorUiService(
     load_turn_queues=turn_queue_repository.load,
     load_active_turns=runtime_state.active_turns.load,
     load_work_item_states=runtime_state.work_item_states.load,
-    event_hub=core.hub,
+    event_hub=event_hub,
 )
 app.state.runtime_diagnostics_service = runtime_diagnostics_service
 app.state.operator_ui_service = operator_ui_service
@@ -2636,8 +2636,8 @@ core._thread_recent_event_count = (
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
-    core.hub.unsubscribe(previous_context_service.observe)
-core.hub.subscribe(context_service.observe)
+    event_hub.unsubscribe(previous_context_service.observe)
+event_hub.subscribe(context_service.observe)
 app.state.context_compaction_service = context_service
 
 EXTRACTED_ROUTE_COUNTS = {
