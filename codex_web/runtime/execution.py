@@ -819,7 +819,11 @@ class TurnExecutionService:
                 )
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
-                canonical_repository_resource_id = binding.repository_resource_id
+                canonical_repository_resource_id = getattr(
+                    binding,
+                    "repository_resource_id",
+                    repository_resource_id or settings.repository_resource_id,
+                )
                 assignment_id = binding.assignment_id
                 workspace_id = binding.workspace_id
 
