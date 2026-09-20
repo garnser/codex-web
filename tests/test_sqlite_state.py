@@ -248,6 +248,20 @@ class SQLiteStateStoreTests(unittest.TestCase):
                 "workspace-write",
             )
 
+    def test_status_counts_keyed_collection_as_one_logical_document(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteStateStore(Path(tmp) / "codex-web.db")
+            store.record_replace(
+                "large-map",
+                {
+                    "one": {"value": 1},
+                    "two": {"value": 2},
+                    "three": {"value": 3},
+                },
+            )
+
+            self.assertEqual(store.status()["documents"], 1)
+
     def test_update_many_keeps_keyed_namespace_record_backed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = SQLiteStateStore(Path(tmp) / "codex-web.db")
