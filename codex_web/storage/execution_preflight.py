@@ -57,7 +57,9 @@ class ExecutionPreflightStore:
             self.NAMESPACE,
             upserts={
                 self._attempt_key(attempt.id): payload,
-                self._thread_key(attempt): payload,
+                self._thread_key(attempt): {
+                    "attemptId": attempt.id,
+                },
             },
         )
 
@@ -69,16 +71,30 @@ class ExecutionPreflightStore:
             ExecutionPreflightAttempt,
         ],
     ) -> ExecutionPreflightAttempt:
-        current = self.get(attempt_id)
-        if current is None:
-            raise KeyError(attempt_id)
-        updated = updater(current.model_copy(deep=True))
-        if updated.id != current.id or updated.thread_id != current.thread_id:
-            raise ValueError(
-                "execution preflight attempt identity is immutable"
-            )
-        self.put(updated)
-        return updated
+        key = self._attempt_key(attempt_id)
+
+        def update_raw(payload: Any) -> dict[str, Any]:
+            if not isinstance(payload, dict):
+                raise KeyError(attempt_id)
+            current = ExecutionPreflightAttempt.model_validate(payload)
+            updated = updater(current.model_copy(deep=True))
+            if (
+                updated.id != current.id
+                or updated.thread_id != current.thread_id
+            ):
+                raise ValueError(
+                    "execution preflight attempt identity is immutable"
+                )
+            return updated.model_dump(mode="json")
+
+        payload = self.store.record_update(
+            self.NAMESPACE,
+            key,
+            update_raw,
+            default=None,
+        )
+        return ExecutionPreflightAttempt.model_validate(payload)
+
 
     def for_thread(
         self,
@@ -93,11 +109,17 @@ class ExecutionPreflightStore:
             key_prefix=prefix,
             limit=page_size,
         )
-        return [
-            ExecutionPreflightAttempt.model_validate(payload)
-            for payload in rows.values()
-            if isinstance(payload, dict)
-        ]
+        result: list[ExecutionPreflightAttempt] = []
+        for payload in rows.values():
+            if not isinstance(payload, dict):
+                continue
+            attempt_id = str(payload.get("attemptId") or "")
+            if not attempt_id:
+                continue
+            attempt = self.get(attempt_id)
+            if attempt is not None:
+                result.append(attempt)
+        return result
 
     def status(self) -> dict[str, Any]:
         return {
