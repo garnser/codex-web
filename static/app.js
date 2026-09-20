@@ -1574,10 +1574,7 @@ async function renameThread() {
     body: JSON.stringify({ name: name.trim() }),
   });
   $("thread-title").textContent = name.trim();
-  uiEvents.patchThread(threadId, {
-    name: name.trim(),
-    updatedAt: Date.now() / 1000,
-  });
+  uiEvents.patchThread(threadId,{name:name.trim(),updatedAt:Date.now()/1000});
 }
 
 function connectEvents() {
@@ -1602,10 +1599,7 @@ function connectEvents() {
 }
 
 function handleEvent(event) {
-  if (event.type === "binding.updated") {
-    uiEvents.handleBindingEvent(event);
-    return;
-  }
+  if(event.type==="binding.updated"){uiEvents.handleBindingEvent(event);return;}
   if (event.type === "bot.thread.replaced") {
     applyThreadReplacement(event.oldThreadId, event.newThreadId).catch((error) => {
       logEvent("thread.replacement.error", { message: error.message });
@@ -1667,10 +1661,8 @@ function handleEvent(event) {
   if (event.type !== "codex.event") return;
   const message = event.message;
   const threadId = eventThreadId(message);
-  const summary = uiEvents.handleCodexSummary(message, event);
-  if (summary.name && threadId === state.threadId) {
-    $("thread-title").textContent = summary.name;
-  }
+  const summary=uiEvents.handleCodexSummary(message,event);
+  if(summary.name&&threadId===state.threadId)$("thread-title").textContent=summary.name;
   updateThreadActivityFromEvent(message);
   if (message.method === "thread/tokenUsage/updated") {
     const params = message.params || {};
