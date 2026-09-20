@@ -176,7 +176,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ExecutionWorkerStore(self.sqlite),
             workspaces=self.workspaces,
         )
-        self.workers.register(
+        self.worker = self.workers.register(
             ExecutionWorkerRegister(
                 service_identity_id="test-local-worker",
                 pool="local",
@@ -256,6 +256,44 @@ class TurnExecutionBindingTests(unittest.TestCase):
             sandbox=sandbox,
             approval_policy="on-request",
         )
+
+    def test_missing_command_execution_blocks_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        self.workers.ensure_local_worker(
+            service_identity_id="test-local-worker",
+            version="test-v1",
+            capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.ARTIFACT_UPLOAD,
+            ),
+            supported_execution_contract_versions=(
+                "1.0",
+                THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(execution_id="turn-no-command")
+
+        self.assertEqual(
+            raised.exception.code,
+            "worker_capability_missing",
+        )
+        blocker = raised.exception.public()
+        self.assertEqual(blocker["code"], "worker_capability_missing")
+        self.assertIn(
+            "command_execution",
+            blocker["required_capabilities"],
+        )
+        self.assertNotIn(
+            "command_execution",
+            blocker["available_capabilities"],
+        )
+        self.assertIn("remediation", blocker)
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
 
     def test_prepares_thread_workspace_and_assignment_from_canonical_state(self) -> None:
         self._publish_secret()
