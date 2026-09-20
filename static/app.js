@@ -1488,16 +1488,8 @@ async function sendPrompt() {
     approval_policy: runSettings.approvalPolicy,
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
-    repository_resource_id: (
-      selectedThreadSettings.repository_resource_id
-      || runSettings.repositoryResourceId
-      || null
-    ),
-    read_only_repository_resource_ids: (
-      selectedThreadSettings.read_only_repository_resource_ids
-      || runSettings.readOnlyRepositoryResourceIds
-      || []
-    ),
+    repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
     execution_profile_id: selectedThreadSettings.execution_profile_id || runSettings.executionProfileId || ep.defaultId(),
   };
   try {
