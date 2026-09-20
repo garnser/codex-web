@@ -650,10 +650,17 @@ class ThreadService:
                 "worker_id": status.worker_id,
                 "fence": status.fence,
                 "repository_target": binding.repository_target.model_dump(mode="json"),
-                "execution_profile_id": binding.execution_profile_id,
+                "execution_profile_id": getattr(
+                    binding,
+                    "execution_profile_id",
+                    None,
+                ),
                 "execution_profile_definition": (
-                    binding.execution_profile_definition.model_dump(mode="json")
-                    if binding.execution_profile_definition is not None
+                    getattr(binding, "execution_profile_definition", None).model_dump(
+                        mode="json"
+                    )
+                    if getattr(binding, "execution_profile_definition", None)
+                    is not None
                     else None
                 ),
                 "agent_session_id": (
