@@ -276,6 +276,108 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
 
+      - name: Positive rootless Podman smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = "true"
+          podman run --rm docker.io/library/debian:bookworm-slim /bin/true
+
+      - name: Build non-root Bubblewrap qualification image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/Containerfile.codex-bwrap <<'EOF'
+          FROM debian:bookworm-slim
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends bubblewrap \
+              && useradd --uid 1000 --create-home --shell /bin/sh codex \
+              && rm -rf /var/lib/apt/lists/*
+          USER codex
+          EOF
+          podman build \
+            --file /tmp/Containerfile.codex-bwrap \
+            --tag localhost/codex-bwrap-probe:test \
+            /tmp
+
+      - name: Verify unsupported nested Bubblewrap fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(
+            podman run --rm \
+              --security-opt seccomp=unconfined \
+              --security-opt label=disable \
+              localhost/codex-bwrap-probe:test \
+              bwrap \
+                --die-with-parent \
+                --new-session \
+                --unshare-user \
+                --unshare-pid \
+                --unshare-uts \
+                --unshare-ipc \
+                --unshare-net \
+                --ro-bind /usr /usr \
+                --symlink usr/bin /bin \
+                --symlink usr/lib /lib \
+                --proc /proc \
+                --dev /dev \
+                --tmpfs /tmp \
+                -- /bin/true 2>&1
+          )"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          printf '%s\n' "$output"
+          printf '%s' "$output" | grep -E             "Can't mount proc|Operation not permitted|Unexpected capabilities"
+
+      - name: Verify capability escalation is not treated as supported fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(
+            podman run --rm \
+              --cap-add SYS_ADMIN \
+              --security-opt seccomp=unconfined \
+              --security-opt label=disable \
+              localhost/codex-bwrap-probe:test \
+              bwrap \
+                --die-with-parent \
+                --new-session \
+                --unshare-user \
+                --unshare-pid \
+                --unshare-uts \
+                --unshare-ipc \
+                --unshare-net \
+                --ro-bind /usr /usr \
+                --symlink usr/bin /bin \
+                --symlink usr/lib /lib \
+                --proc /proc \
+                --dev /dev \
+                --tmpfs /tmp \
+                -- /bin/true 2>&1
+          )"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          printf '%s\n' "$output"
+          printf '%s' "$output" | grep -E             "Unexpected capabilities|Operation not permitted|Can't mount proc"
+
+    name: rootless-podman-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install rootless Podman prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+
       - name: Verify Podman runs rootless
         shell: bash
         run: |
