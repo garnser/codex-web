@@ -248,6 +248,16 @@ class ProjectUiStateService:
             bindings,
         )
 
+        project_summary = (
+            project.model_dump(mode="json")
+            if include_static
+            else None
+        )
+        execution_profiles = (
+            self.execution_profiles.public(project_id=project.id)
+            if include_static
+            else None
+        )
         section_versions = {
             "resources": self._version(resources),
             "threads": str(thread_page.get("revision") or ""),
@@ -256,25 +266,13 @@ class ProjectUiStateService:
             "channels": self._version(channels),
         }
         if include_static:
-            section_versions["project"] = self._version(
-                project.model_dump(mode="json")
-            )
+            section_versions["project"] = self._version(project_summary)
             section_versions["executionProfiles"] = self._version(
-                self.execution_profiles.public(project_id=project.id)
+                execution_profiles
             )
-
-        execution_profiles = (
-            self.execution_profiles.public(project_id=project.id)
-            if include_static
-            else None
-        )
 
         return {
-            "project": (
-                project.model_dump(mode="json")
-                if include_static
-                else None
-            ),
+            "project": project_summary,
             "resources": {
                 "items": resources,
                 "truncated": resources_truncated,
