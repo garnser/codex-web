@@ -40,18 +40,83 @@ class ContextCompactionService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
         request_for_thread: Callable[
             [str, str, dict[str, Any]],
             Awaitable[Any],
-        ],
-        pending_approvals: Callable[[], dict[Any, dict[str, Any]]],
-        approval_thread_id: Callable[[dict[str, Any]], str | None],
-        queue_depth: Callable[[str], int],
-        thread_is_active: Callable[[str], bool],
-        raise_if_thread_replaced: Callable[[str], None],
-        publish_event: Callable[[dict[str, Any]], Awaitable[Any]],
+        ] | None = None,
+        pending_approvals: Callable[
+            [], dict[Any, dict[str, Any]]
+        ] | None = None,
+        approval_thread_id: Callable[
+            [dict[str, Any]], str | None
+        ] | None = None,
+        queue_depth: Callable[[str], int] | None = None,
+        thread_is_active: Callable[[str], bool] | None = None,
+        raise_if_thread_replaced: Callable[[str], None] | None = None,
+        publish_event: Callable[
+            [dict[str, Any]], Awaitable[Any]
+        ] | None = None,
     ) -> None:
+        if host is not None:
+            async def legacy_request_for_thread(
+                thread_id: str,
+                method: str,
+                params: dict[str, Any],
+            ) -> Any:
+                transport = _ThreadRuntimeTransport(
+                    lambda _thread_id, m, p: host.codex.request(m, p),
+                    thread_id,
+                )
+                return await transport.request(method, params)
+
+            request_for_thread = (
+                request_for_thread or legacy_request_for_thread
+            )
+            pending_approvals = pending_approvals or (
+                lambda: host.codex.pending_approvals
+            )
+            approval_thread_id = approval_thread_id or getattr(
+                host,
+                "_approval_thread_id",
+                lambda request: request.get("threadId"),
+            )
+            queue_depth = queue_depth or getattr(
+                host,
+                "_thread_queue_depth",
+                lambda _thread_id: 0,
+            )
+            thread_is_active = thread_is_active or getattr(
+                host,
+                "_thread_is_active",
+                lambda _thread_id: False,
+            )
+            raise_if_thread_replaced = (
+                raise_if_thread_replaced
+                or getattr(
+                    host,
+                    "_raise_if_thread_replaced",
+                    lambda _thread_id: None,
+                )
+            )
+            publish_event = publish_event or host.hub.publish
+
+        if not all(
+            (
+                request_for_thread,
+                pending_approvals,
+                approval_thread_id,
+                queue_depth,
+                thread_is_active,
+                raise_if_thread_replaced,
+                publish_event,
+            )
+        ):
+            raise TypeError(
+                "ContextCompactionService requires explicit runtime dependencies"
+            )
+
         self.request_for_thread = request_for_thread
         self.pending_approvals = pending_approvals
         self.approval_thread_id = approval_thread_id
