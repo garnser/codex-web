@@ -704,8 +704,7 @@ class GitLabService:
         key = self.semantic_key_for_state(ref, kind="issue", labels=labels, state=state)
         if not key:
             return
-        h = self.host
-        events = h._load_gitlab_semantic_events()
+        events = self.operations.load_semantic_events()
         events[key] = time.time()
         self.operations.save_semantic_events(events)
         self.operations.append_event({"type": "gitlab_semantic_state_recorded", "reason": reason, "ref": ref})
@@ -929,31 +928,63 @@ class GitLabService:
         )
 
     async def handle_event(self, request: Request) -> dict[str, Any]:
-        h = self.host
-        h._verify_gitlab_webhook(request)
+        self.operations.verify_webhook(request)
         payload = await request.json()
-        settings = h._load_gitlab_routing_settings()
+        settings = self.routing.load_settings()
         if not settings.enabled:
-            return {"ok": True, "ignored": True, "reason": "gitlab_routing_disabled"}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "gitlab_routing_disabled",
+            }
 
-        kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
+        kind = str(
+            payload.get("object_kind")
+            or payload.get("event_name")
+            or ""
+        ).lower()
         if kind in settings.ignored_event_kinds:
-            return {"ok": True, "ignored": True, "reason": "noisy_event_kind"}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "noisy_event_kind",
+            }
 
-        event_id = h._gitlab_event_id(request, payload)
-        if not h._remember_gitlab_event(event_id):
-            return {"ok": True, "ignored": True, "reason": "duplicate", "eventId": event_id}
+        event_id = (
+            self._compat_event_id(request, payload)
+            if callable(self._compat_event_id)
+            else self.event_id(request, payload)
+        )
+        remembered = (
+            self._compat_remember_event(event_id)
+            if callable(self._compat_remember_event)
+            else self.remember_event(event_id)
+        )
+        if not remembered:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "duplicate",
+                "eventId": event_id,
+            }
 
-        if h._is_support_servicedesk_ticket_payload(payload):
-            result = await h._dispatch_support_servicedesk_ticket(
+        if self.is_support_servicedesk_ticket_payload(payload):
+            result = await self.dispatch_support_servicedesk_ticket(
                 payload,
                 source="webhook",
                 event_id=event_id,
                 settings=settings,
             )
-            return {**result, "eventId": event_id, "serviceDesk": True}
+            return {
+                **result,
+                "eventId": event_id,
+                "serviceDesk": True,
+            }
 
-        project_id, project_settings = self.project_settings_for_payload(payload, settings)
+        project_id, project_settings = self.project_settings_for_payload(
+            payload,
+            settings,
+        )
         if not project_id or not project_settings:
             self.operations.append_event(
                 {
@@ -961,10 +992,17 @@ class GitLabService:
                     "event_id": event_id,
                     "kind": kind,
                     "reason": "no_matching_project",
-                    "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+                    "project_path": (
+                        payload.get("project") or {}
+                    ).get("path_with_namespace"),
                 }
             )
-            return {"ok": True, "ignored": True, "reason": "no_matching_project", "eventId": event_id}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "no_matching_project",
+                "eventId": event_id,
+            }
         if not project_settings.enabled:
             self.operations.append_event(
                 {
@@ -973,14 +1011,29 @@ class GitLabService:
                     "kind": kind,
                     "reason": "project_routing_disabled",
                     "project_id": project_id,
-                    "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+                    "project_path": (
+                        payload.get("project") or {}
+                    ).get("path_with_namespace"),
                 }
             )
-            return {"ok": True, "ignored": True, "reason": "project_routing_disabled", "eventId": event_id}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "project_routing_disabled",
+                "eventId": event_id,
+            }
 
-        semantic_key = h._gitlab_semantic_key(payload)
-        if not h._remember_gitlab_semantic_key(semantic_key, reason="gitlab-webhook"):
-            return {"ok": True, "ignored": True, "reason": "semantic_duplicate", "eventId": event_id}
+        semantic_key = self.semantic_key(payload)
+        if not self.remember_semantic_key(
+            semantic_key,
+            reason="gitlab-webhook",
+        ):
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "semantic_duplicate",
+                "eventId": event_id,
+            }
 
         canonical_delivery = await self._ingest_canonical_event(
             payload,
@@ -988,40 +1041,72 @@ class GitLabService:
             event_id=event_id,
             kind=kind,
         )
-        if canonical_delivery is not None and not canonical_delivery.inserted:
+        if (
+            canonical_delivery is not None
+            and not canonical_delivery.inserted
+        ):
             return {
                 "ok": True,
                 "ignored": True,
                 "reason": "canonical_duplicate",
                 "eventId": event_id,
-                "canonicalEventId": canonical_delivery.event.event_id,
+                "canonicalEventId": (
+                    canonical_delivery.event.event_id
+                ),
             }
 
-        projected_state = h._upsert_work_item_state_from_gitlab_event(payload, project_id=project_id)
-        agents = h._gitlab_event_target_agents(payload, project_settings, projected_state)
+        projected_state = self.work_items.project_event(
+            payload,
+            project_id=project_id,
+        )
+        agents = self.event_target_agents(
+            payload,
+            project_settings,
+            projected_state,
+        )
         bindings: list[tuple[str | None, Any]] = []
         for agent in agents:
             bindings.extend(
                 (agent, binding)
-                for binding in h._gitlab_routing_bindings_for_agent(agent, project_id, project_settings)
+                for binding in self.routing_bindings_for_agent(
+                    agent,
+                    project_id,
+                    project_settings,
+                )
             )
         if not bindings:
-            master_bindings = h._gitlab_routing_bindings_for_master(project_id, project_settings)
+            master_bindings = self.routing_bindings_for_master(
+                project_id,
+                project_settings,
+            )
             if not master_bindings:
-                return {"ok": False, "accepted": False, "reason": "no_matching_binding", "eventId": event_id}
-            bindings.extend((None, binding) for binding in master_bindings)
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "reason": "no_matching_binding",
+                    "eventId": event_id,
+                }
+            bindings.extend(
+                (None, binding)
+                for binding in master_bindings
+            )
 
         results: list[dict[str, Any]] = []
 
-        async def dispatch_reasoning(*_args) -> AutonomyReasoningResult:
+        async def dispatch_reasoning(
+            *_args: Any,
+        ) -> AutonomyReasoningResult:
             for agent, binding in bindings:
-                prompt = h._format_gitlab_event_prompt(payload, agent)
-                result = await h._dispatch_event_to_binding(
+                prompt = self.operations.format_event_prompt(
+                    payload,
+                    agent,
+                )
+                result = await self.operations.dispatch_event(
                     binding,
                     prompt,
-                    source="gitlab",
+                    "gitlab",
                 )
-                notice = await h._send_gitlab_event_notice(
+                notice = await self.operations.send_event_notice(
                     binding,
                     payload,
                     agent,
@@ -1033,35 +1118,55 @@ class GitLabService:
                         "threadId": result.get("threadId"),
                         "queued": result.get("queued", False),
                         "ok": result.get("ok", False),
-                        "slackNoticeSent": notice.get("sent", False),
+                        "slackNoticeSent": notice.get(
+                            "sent",
+                            False,
+                        ),
                     }
                 )
             return AutonomyReasoningResult(
-                summary="GitLab event routed through bounded autonomy"
+                summary=(
+                    "GitLab event routed through bounded autonomy"
+                )
             )
 
-        autonomy_cycle = None
-        if self.autonomy_controller is not None and canonical_delivery is not None:
+        if (
+            self.autonomy_controller is not None
+            and canonical_delivery is not None
+        ):
             autonomy_cycle = await self.autonomy_controller.process(
                 canonical_delivery.event,
                 AutonomyObservation(
                     deterministic_resolved=False,
                     reasoning_score=1.0,
-                    reason="configured GitLab routing requires agent reasoning",
+                    reason=(
+                        "configured GitLab routing requires "
+                        "agent reasoning"
+                    ),
                 ),
-                cycle_key=f"gitlab-route:{project_id}:{canonical_delivery.event.event_type}",
+                cycle_key=(
+                    f"gitlab-route:{project_id}:"
+                    f"{canonical_delivery.event.event_type}"
+                ),
                 reasoner=dispatch_reasoning,
             )
-            if autonomy_cycle.outcome != AutonomyCycleOutcome.COMPLETED:
+            if (
+                autonomy_cycle.outcome
+                != AutonomyCycleOutcome.COMPLETED
+            ):
                 return {
                     "ok": True,
                     "accepted": False,
                     "ignored": True,
-                    "reason": f"autonomy_{autonomy_cycle.outcome.value}",
+                    "reason": (
+                        f"autonomy_{autonomy_cycle.outcome.value}"
+                    ),
                     "autonomyReason": autonomy_cycle.reason,
                     "autonomyCycleId": autonomy_cycle.id,
                     "eventId": event_id,
-                    "canonicalEventId": canonical_delivery.event.event_id,
+                    "canonicalEventId": (
+                        canonical_delivery.event.event_id
+                    ),
                 }
         else:
             await dispatch_reasoning()
@@ -1072,12 +1177,16 @@ class GitLabService:
                 "event_id": event_id,
                 "kind": kind,
                 "project_id": project_id,
-                "work_item_ref": projected_state.ref if projected_state else None,
+                "work_item_ref": (
+                    projected_state.ref
+                    if projected_state
+                    else None
+                ),
                 "agents": agents,
                 "targets": results,
             }
         )
-        await h.hub.publish(
+        await self.operations.publish_event(
             {
                 "type": "gitlab.event",
                 "eventId": event_id,
@@ -1086,8 +1195,13 @@ class GitLabService:
                 "targets": results,
             }
         )
-        h._schedule_native_recovery_cycles()
-        return {"ok": True, "accepted": True, "eventId": event_id, "targets": results}
+        self.operations.schedule_recovery()
+        return {
+            "ok": True,
+            "accepted": True,
+            "eventId": event_id,
+            "targets": results,
+        }
 
     async def sweep_support_servicedesk(self) -> dict[str, Any]:
         token = self.api_token()
@@ -1154,69 +1268,132 @@ class GitLabService:
 
 def install_gitlab_service(
     app: Any,
-    host: Any,
     gitlab: GitLabClient | None = None,
     *,
     canonical_events: CanonicalEventIngestionService | None = None,
     autonomy_controller: AutonomyController | None = None,
+    routing: GitLabRoutingDependencies,
+    work_items: GitLabWorkItemRuntimeDependencies,
+    operations: GitLabOperationalDependencies,
 ) -> GitLabService:
-    """Install one GitLab domain service and preserve legacy host entrypoints."""
+    """Compose the GitLab domain from explicit runtime dependencies."""
 
     existing = getattr(app.state, "gitlab_service", None)
-    if isinstance(existing, GitLabService) and existing.host is host:
+    if isinstance(existing, GitLabService):
         service = existing
+        service.routing = routing
+        service.work_items = work_items
+        service.operations = operations
         if canonical_events is not None:
             service.canonical_events = canonical_events
         if autonomy_controller is not None:
             service.autonomy_controller = autonomy_controller
-    else:
-        service = GitLabService(
-            host,
-            gitlab,
-            canonical_events=canonical_events,
-            autonomy_controller=autonomy_controller,
-        )
-        app.state.gitlab_service = service
+        return service
+
+    service = GitLabService(
+        None,
+        gitlab,
+        canonical_events=canonical_events,
+        autonomy_controller=autonomy_controller,
+        routing=routing,
+        work_items=work_items,
+        operations=operations,
+    )
+    app.state.gitlab_service = service
+    return service
+
+
+def install_gitlab_compatibility(
+    host: Any,
+    service: GitLabService,
+) -> None:
+    """Expose the historical GitLab helper surface at the legacy edge only."""
 
     bindings = {
         "_gitlab_event_target_agents": service.event_target_agents,
-        "_gitlab_routing_enabled_for_project": service.routing_enabled_for_project,
+        "_gitlab_routing_enabled_for_project": (
+            service.routing_enabled_for_project
+        ),
         "_gitlab_routing_agents": service.routing_agents,
-        "_gitlab_routing_bindings_for_agent": service.routing_bindings_for_agent,
-        "_gitlab_routing_bindings_for_master": service.routing_bindings_for_master,
+        "_gitlab_routing_bindings_for_agent": (
+            service.routing_bindings_for_agent
+        ),
+        "_gitlab_routing_bindings_for_master": (
+            service.routing_bindings_for_master
+        ),
         "_gitlab_event_id": service.event_id,
         "_remember_gitlab_event": service.remember_event,
-        "_support_servicedesk_project_paths": service.support_servicedesk_project_paths,
-        "_support_servicedesk_owner_agent": service.support_servicedesk_owner_agent,
-        "_support_servicedesk_project_matches": service.support_servicedesk_project_matches,
-        "_support_servicedesk_ticket_key": service.support_servicedesk_ticket_key,
-        "_is_support_servicedesk_ticket_payload": service.is_support_servicedesk_ticket_payload,
-        "_remember_support_servicedesk_ticket": service.remember_support_servicedesk_ticket,
-        "_support_servicedesk_ticket_seen": service.support_servicedesk_ticket_seen,
-        "_format_support_servicedesk_prompt": service.format_support_servicedesk_prompt,
-        "_dispatch_support_servicedesk_ticket": service.dispatch_support_servicedesk_ticket,
+        "_support_servicedesk_project_paths": (
+            service.support_servicedesk_project_paths
+        ),
+        "_support_servicedesk_owner_agent": (
+            service.support_servicedesk_owner_agent
+        ),
+        "_support_servicedesk_project_matches": (
+            service.support_servicedesk_project_matches
+        ),
+        "_support_servicedesk_ticket_key": (
+            service.support_servicedesk_ticket_key
+        ),
+        "_is_support_servicedesk_ticket_payload": (
+            service.is_support_servicedesk_ticket_payload
+        ),
+        "_remember_support_servicedesk_ticket": (
+            service.remember_support_servicedesk_ticket
+        ),
+        "_support_servicedesk_ticket_seen": (
+            service.support_servicedesk_ticket_seen
+        ),
+        "_format_support_servicedesk_prompt": (
+            service.format_support_servicedesk_prompt
+        ),
+        "_dispatch_support_servicedesk_ticket": (
+            service.dispatch_support_servicedesk_ticket
+        ),
         "_gitlab_api_base_url": service.api_base_url,
         "_gitlab_api_token": service.api_token,
-        "_support_servicedesk_sweep_project": service.support_servicedesk_sweep_project,
-        "_support_servicedesk_sweep_interval": service.support_servicedesk_sweep_interval,
-        "_support_servicedesk_sweep_lookback_hours": service.support_servicedesk_sweep_lookback_hours,
-        "_issue_to_support_servicedesk_payload": service.issue_to_support_servicedesk_payload,
-        "_run_support_servicedesk_sweep_once": service.sweep_support_servicedesk,
-        "_support_servicedesk_sweep_loop": service.support_servicedesk_sweep_loop,
-        "_gitlab_semantic_dedupe_seconds": service.semantic_dedupe_seconds,
-        "_gitlab_semantic_key_for_state": service.semantic_key_for_state,
+        "_support_servicedesk_sweep_project": (
+            service.support_servicedesk_sweep_project
+        ),
+        "_support_servicedesk_sweep_interval": (
+            service.support_servicedesk_sweep_interval
+        ),
+        "_support_servicedesk_sweep_lookback_hours": (
+            service.support_servicedesk_sweep_lookback_hours
+        ),
+        "_issue_to_support_servicedesk_payload": (
+            service.issue_to_support_servicedesk_payload
+        ),
+        "_run_support_servicedesk_sweep_once": (
+            service.sweep_support_servicedesk
+        ),
+        "_support_servicedesk_sweep_loop": (
+            service.support_servicedesk_sweep_loop
+        ),
+        "_gitlab_semantic_dedupe_seconds": (
+            service.semantic_dedupe_seconds
+        ),
+        "_gitlab_semantic_key_for_state": (
+            service.semantic_key_for_state
+        ),
         "_gitlab_semantic_key": service.semantic_key,
-        "_remember_gitlab_semantic_key": service.remember_semantic_key,
-        "_remember_gitlab_semantic_issue_state": service.remember_semantic_issue_state,
+        "_remember_gitlab_semantic_key": (
+            service.remember_semantic_key
+        ),
+        "_remember_gitlab_semantic_issue_state": (
+            service.remember_semantic_issue_state
+        ),
         "_gitlab_label_names": service.label_names,
         "_gitlab_owner_agents": service.owner_agents,
         "_gitlab_project_path_matches": service.project_path_matches,
         "_gitlab_group_path": service.group_path,
         "_gitlab_token_for_project": service.token_for_project,
-        "_gitlab_project_settings_for_payload": service.project_settings_for_payload,
+        "_gitlab_project_settings_for_payload": (
+            service.project_settings_for_payload
+        ),
         "_gitlab_reference": service.reference,
         "_gitlab_url": service.url,
     }
     for name, value in bindings.items():
         setattr(host, name, value)
-    return service
+
