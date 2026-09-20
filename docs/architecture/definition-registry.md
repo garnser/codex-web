@@ -182,6 +182,43 @@ existed retain their original normalized payload/checksum shape. Missing
 lifecycle is interpreted as `active`; new typed drafts persist lifecycle
 explicitly.
 
+## Execution-profile definitions
+
+Execution environment/capability policy is also Definition Registry data.
+
+The canonical profile catalog is:
+
+- kind: `execution-profile-catalog`;
+- stable ID: `execution.profiles.default`;
+- schema: `1.0`.
+
+The bootstrap catalog defines two structural profiles:
+
+- `repository-write` — an isolated repository workspace with one mutable
+  canonical repository, optional read-only repository context, and worker
+  capabilities `git` plus `command_execution`;
+- `orchestration-only` — an isolated scratch workspace with **no repository
+  lease, no Git worktree, no Git capability, no generic network capability and
+  no host-mutation authority**.
+
+Execution roles reference a profile by stable profile ID. The relationship is
+structural rather than a role-name special case: legacy role definitions that
+lack the field are interpreted deterministically from their lane
+(`coordination` -> `orchestration-only`; all other lanes ->
+`repository-write`) without rewriting the historical payload/checksum.
+
+When a work-item contract is resolved, the exact execution-role catalog
+revision and exact execution-profile catalog revision are both pinned into the
+contract and canonical execution state. Thread/worker assignments also persist
+the profile ID and immutable Definition reference used for that execution.
+
+The profile's `control_plane_operations` field describes the operations an
+execution environment may need. It is **not operational authority** and it does
+not create a localhost/network bypass. Actual agent-to-control-plane access is
+mediated separately by the brokered, tenant-scoped capability boundary defined
+in #470. Until that broker grants an operation, an orchestration profile cannot
+reach it merely because it is named in the profile definition.
+
 ## Execution attribution
 
 Every runtime-generated `ExecutionContractV1` includes exact Definition Registry references:
