@@ -180,6 +180,17 @@ def install_bot_binding_selection_service(
     load_bindings: Callable[[], list[BotBinding]] | None = None,
     binding_report_name: Callable[[BotBinding], str] | None = None,
     binding_prefix: Callable[[BotBinding], str] | None = None,
+    lookup_by_id: Callable[[str], BotBinding | None] | None = None,
+    indexed_for_connection: Callable[
+        [str, str],
+        list[BotBinding],
+    ] | None = None,
+    indexed_for_thread: Callable[[str], list[BotBinding]] | None = None,
+    indexed_for_project: Callable[
+        [str, str],
+        list[BotBinding],
+    ] | None = None,
+    indexed_masters: Callable[[str], list[BotBinding]] | None = None,
 ) -> BotBindingSelectionService:
     service = BotBindingSelectionService(
         load_bindings or host._load_bot_bindings,
