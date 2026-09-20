@@ -1750,6 +1750,7 @@ app.state.turn_queue_repository = turn_queue_repository
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 core._thread_queue_record = turn_queue_repository.get
+core._update_thread_queue_record = turn_queue_repository.update
 core._put_thread_queue_record = turn_queue_repository.put
 core._delete_thread_queue_record = turn_queue_repository.delete
 
