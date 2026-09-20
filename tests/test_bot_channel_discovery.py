@@ -351,6 +351,41 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_rate_limit_stops_waiting_metadata_calls_after_bounded_inflight_set(self) -> None:
+        bindings = _Bindings(
+            [
+                _binding(
+                    f"b{index}",
+                    connection_id="c1",
+                    channel=f"C{index:02d}",
+                )
+                for index in range(40)
+            ]
+        )
+        slack = _Slack()
+        response = SimpleNamespace(
+            status_code=429,
+            headers={"Retry-After": "120"},
+        )
+        error = RuntimeError("rate limited")
+        error.response = response
+        slack.info_error = error
+        service = BotChannelDiscoveryService(
+            connections=_Connections([_connection("c1")]),
+            bindings=bindings,
+            projects=_Projects(),
+            slack_client=slack,
+        )
+        service.MAX_METADATA_CONCURRENCY = 4
+
+        await service.refresh("home")
+
+        self.assertLessEqual(len(slack.info_calls), 4)
+        self.assertGreater(
+            service.status("home")["cooldownSkips"],
+            0,
+        )
+
     async def test_normal_list_returns_known_channels_before_slow_provider_refresh(self) -> None:
         connections = _Connections(
             [_connection("c1", channel="C1", name="known")]
