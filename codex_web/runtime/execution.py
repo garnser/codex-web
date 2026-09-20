@@ -298,6 +298,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
         queues = h._load_turn_queues()
@@ -346,6 +347,7 @@ class TurnExecutionService:
             reasoning_effort=reasoning_effort,
             repository_resource_id=repository_resource_id,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
+            execution_profile_id=execution_profile_id,
             source=source,
             reply_target=reply_target,
             created_at=time.time(),
@@ -510,6 +512,7 @@ class TurnExecutionService:
         worker_id: str | None = None,
         fence: int | None = None,
         repository_resource_id: str | None = None,
+        execution_profile_id: str | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -544,6 +547,11 @@ class TurnExecutionService:
                 repository_resource_id
                 or settings.repository_resource_id
                 or (current.repository_resource_id if current else None)
+            ),
+            execution_profile_id=(
+                execution_profile_id
+                or settings.execution_profile_id
+                or (current.execution_profile_id if current else None)
             ),
             started_at=current.started_at if current else now,
             updated_at=now,
@@ -692,6 +700,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
         binding_service, default_session_manager = self._require_worker_routing()
@@ -702,6 +711,9 @@ class TurnExecutionService:
         )
         effective_model = model or settings.model or project.model
         effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
+        effective_execution_profile_id = (
+            execution_profile_id or settings.execution_profile_id
+        )
         effective_developer_instructions = h._effective_developer_instructions(
             thread_id,
             settings.developer_instructions,
