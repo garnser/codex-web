@@ -8,8 +8,10 @@ from typing import Any, Protocol
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, QueuedTurn, TurnCreate
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
+from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import ProviderCapacityBlockedError
 from codex_web.services.thread_execution_settings import (
@@ -86,6 +88,7 @@ class TurnService:
         event_sink: EventSink,
         truncate_text: TextTruncator,
         binding_public: BindingProjector,
+        preflight: ExecutionPreflightService | None = None,
     ) -> None:
         self.projects = projects
         self.settings = settings
@@ -97,6 +100,7 @@ class TurnService:
         self.event_sink = event_sink
         self.truncate_text = truncate_text
         self.binding_public = binding_public
+        self.preflight = preflight
 
     async def resume(
         self,
@@ -216,6 +220,10 @@ class TurnService:
         self,
         thread_id: str,
         payload: TurnCreate,
+        *,
+        actor: AuthenticationActor | None = None,
+        execution_id: str | None = None,
+        retry_claim_id: str | None = None,
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
@@ -255,7 +263,18 @@ class TurnService:
             read_only_repository_resource_ids=effective_read_only_repository_ids,
             execution_profile_id=effective_execution_profile_id,
         )
-        execution_id = f"thread-turn-{uuid.uuid4().hex}"
+        effective_preflight = {
+            "sandbox": effective_sandbox,
+            "approval_policy": effective_approval_policy,
+            "model": effective_model,
+            "reasoning_effort": effective_reasoning_effort,
+            "repository_resource_id": effective_repository_resource_id,
+            "read_only_repository_resource_ids": (
+                effective_read_only_repository_ids
+            ),
+            "execution_profile_id": effective_execution_profile_id,
+        }
+        execution_id = execution_id or f"thread-turn-{uuid.uuid4().hex}"
 
         async def queue_web_turn(
             event_type: str,
@@ -302,6 +321,12 @@ class TurnService:
                     self.execution.schedule_queue_drain,
                     thread_id,
                 )
+            if self.preflight is not None and actor is not None:
+                self.preflight.mark_started_for_execution(
+                    execution_id,
+                    actor=actor,
+                    claim_id=retry_claim_id,
+                )
             return {
                 "queued": True,
                 "queuedId": queued.id,
@@ -323,7 +348,7 @@ class TurnService:
         ):
             return await queue_web_turn("web_turn_queued")
         try:
-            return await self.execution.start_thread_turn_now(
+            result = await self.execution.start_thread_turn_now(
                 thread_id,
                 project=project,
                 message=payload.message,
@@ -336,7 +361,45 @@ class TurnService:
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
                 execution_profile_id=effective_execution_profile_id,
             )
+            if self.preflight is not None and actor is not None:
+                self.preflight.mark_started_for_execution(
+                    execution_id,
+                    actor=actor,
+                    claim_id=retry_claim_id,
+                )
+            return result
         except Exception as exc:
+            if (
+                self.preflight is not None
+                and actor is not None
+                and self.preflight.is_preflight_http_error(exc)
+            ):
+                detail = dict(exc.detail)
+                attempt = self.preflight.record_blocked(
+                    actor=actor,
+                    thread_id=thread_id,
+                    project_id=project.id,
+                    execution_id=execution_id,
+                    payload=payload,
+                    effective=effective_preflight,
+                    detail=detail,
+                )
+                detail.update(
+                    {
+                        "attemptId": attempt.id,
+                        "correlationId": attempt.correlation_id,
+                        "attemptNumber": attempt.attempt_number,
+                        "retainedMessage": True,
+                        "retryUrl": (
+                            f"/api/threads/{thread_id}/preflight-attempts/"
+                            f"{attempt.id}/retry"
+                        ),
+                    }
+                )
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=detail,
+                ) from exc
             if isinstance(exc, ProviderCapacityBlockedError):
                 result = await queue_web_turn(
                     "web_turn_waiting_for_capacity",
@@ -395,6 +458,92 @@ class TurnService:
                     "newThreadId": new_thread_id,
                 }
             raise
+
+    def preflight_attempts(
+        self,
+        thread_id: str,
+        *,
+        actor: AuthenticationActor,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        if self.preflight is None:
+            return {"threadId": thread_id, "items": []}
+        items = self.preflight.for_thread(
+            thread_id,
+            actor=actor,
+            limit=limit,
+        )
+        return {
+            "threadId": thread_id,
+            "items": [
+                item.model_dump(mode="json")
+                for item in items
+            ],
+        }
+
+    async def retry_preflight(
+        self,
+        thread_id: str,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        if self.preflight is None:
+            raise HTTPException(
+                status_code=503,
+                detail="execution preflight retry is unavailable",
+            )
+        attempt, claim_id, claimed = self.preflight.claim_retry(
+            attempt_id,
+            actor=actor,
+        )
+        if attempt.thread_id != thread_id:
+            raise HTTPException(
+                status_code=404,
+                detail="preflight attempt not found",
+            )
+        if attempt.status == "started":
+            return {
+                "ok": True,
+                "alreadyStarted": True,
+                "threadId": thread_id,
+                "attempt": attempt.model_dump(mode="json"),
+            }
+        if not claimed:
+            return {
+                "ok": True,
+                "retrying": True,
+                "deduplicated": True,
+                "threadId": thread_id,
+                "attempt": attempt.model_dump(mode="json"),
+            }
+
+        payload = self.preflight.retry_payload(attempt)
+        try:
+            result = await self.start(
+                thread_id,
+                payload,
+                actor=actor,
+                execution_id=attempt.execution_id,
+                retry_claim_id=claim_id,
+            )
+        except Exception as exc:
+            if not self.preflight.is_preflight_http_error(exc):
+                self.preflight.mark_failed(
+                    attempt.id,
+                    actor=actor,
+                    claim_id=claim_id,
+                    error=exc,
+                )
+            raise
+
+        updated = self.preflight.get(attempt.id, actor=actor)
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "attempt": updated.model_dump(mode="json"),
+            "result": result,
+        }
 
     def queue(self, thread_id: str) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
