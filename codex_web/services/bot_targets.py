@@ -178,8 +178,21 @@ class BotTargetService:
         return f"{binding.provider}:{binding.external_conversation_id}:{binding.thread_id}"
 
     @staticmethod
-    def external_target_key(provider: str, external_conversation_id: str, external_id: str) -> str:
-        return f"{provider}:{external_conversation_id}:external:{external_id}"
+    def external_target_key(
+        provider: str,
+        external_conversation_id: str,
+        external_id: str,
+    ) -> str:
+        return (
+            f"{provider}:{external_conversation_id}:external:{external_id}"
+        )
+
+    @staticmethod
+    def thread_target_key(binding: BotBinding) -> str:
+        return (
+            f"thread:{binding.thread_id}:"
+            f"{binding.provider}:{binding.external_conversation_id}"
+        )
 
     def conversation_target(self, binding: BotBinding) -> BotReplyTarget:
         return BotReplyTarget(
@@ -202,7 +215,10 @@ class BotTargetService:
             message_id=message.message_id,
             updated_at=time.time(),
         )
-        keys = [self.reply_target_key(binding)]
+        keys = [
+            self.reply_target_key(binding),
+            self.thread_target_key(binding),
+        ]
         keys.extend(
             self.external_target_key(
                 binding.provider,
@@ -233,6 +249,7 @@ class BotTargetService:
         context = context or self.routing_context()
         target = (
             self._reply_target(self.reply_target_key(binding), context)
+            or self._reply_target(self.thread_target_key(binding), context)
             or self._reply_target(binding.thread_id, context)
         )
         if not target:
@@ -249,6 +266,10 @@ class BotTargetService:
         context = context or self.routing_context()
         target = (
             self._delivery_target(self.reply_target_key(binding), context)
+            or self._delivery_target(
+                self.thread_target_key(binding),
+                context,
+            )
             or self._delivery_target(binding.thread_id, context)
         )
         if not target:
@@ -346,6 +367,7 @@ class BotTargetService:
         )
         keys = (
             self.reply_target_key(binding),
+            self.thread_target_key(binding),
             self.external_target_key(
                 binding.provider,
                 binding.external_conversation_id,
@@ -591,6 +613,7 @@ def install_bot_target_service(
 
     host._reply_target_key = service.reply_target_key
     host._external_target_key = service.external_target_key
+    host._thread_target_key = service.thread_target_key
     host._conversation_target_for_binding = service.conversation_target
     host._remember_bot_reply_target = service.remember_reply_target
     host._reply_target_for_binding = service.reply_target_for_binding
