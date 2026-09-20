@@ -171,12 +171,13 @@ class ExecutionAssignmentCreate(BaseModel):
         if self.network.enabled and WorkerCapability.NETWORK not in self.required_capabilities:
             raise ValueError("network-enabled assignment requires network capability")
         if self.repository_target is not None:
-            target_ids = set(self.repository_target.read_only_repository_ids)
-            if self.repository_target.mutable_repository_id is not None:
-                target_ids.add(self.repository_target.mutable_repository_id)
-            if target_ids - set(self.resource_ids):
+            mutable_repository_id = self.repository_target.mutable_repository_id
+            if (
+                mutable_repository_id is not None
+                and mutable_repository_id not in self.resource_ids
+            ):
                 raise ValueError(
-                    "repository target resources must be included in assignment resources"
+                    "mutable repository target must be included in assignment resources"
                 )
             if (
                 self.project_id is not None
