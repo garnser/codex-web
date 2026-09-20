@@ -12,6 +12,7 @@ from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings, TurnCreate
 from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
+from codex_web.services.agent_routing import AgentRoutingError
 from codex_web.services.turns import TurnService
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
@@ -131,6 +132,41 @@ class _Host:
 
     def _append_bot_event(self, event):
         self.events.append(event)
+
+
+class _RoutingFailure:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    async def route(self, request, *, actor):
+        raise AgentRoutingError(self.message)
+
+
+class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_network_profile_mismatch_is_structured_preflight_blocker(self) -> None:
+        service = TurnExecutionService(
+            _Host(),
+            control_actor=SimpleNamespace(identity_id="control"),
+            routing_service=_RoutingFailure(
+                "no eligible agent runtime: openai/codex:network_profile_mismatch"
+            ),
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service._select_runtime_binding(
+                project_id="p1",
+                sandbox="workspace-write",
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "execution_preflight_blocked",
+        )
+        blocker = caught.exception.detail["blockers"][0]
+        self.assertEqual(blocker["code"], "network_policy_unsupported")
+        self.assertFalse(blocker["retryable"])
+        self.assertEqual(blocker["target_type"], "agent_runtime")
 
 
 class TurnExecutionQueueTests(unittest.TestCase):
