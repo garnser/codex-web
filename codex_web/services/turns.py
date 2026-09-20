@@ -240,6 +240,10 @@ class TurnService:
             payload.read_only_repository_resource_ids
             or remembered.read_only_repository_resource_ids
         )
+        effective_execution_profile_id = (
+            payload.execution_profile_id
+            or remembered.execution_profile_id
+        )
         self.settings.remember(
             thread_id,
             sandbox=effective_sandbox,
@@ -249,6 +253,7 @@ class TurnService:
             developer_instructions=remembered.developer_instructions,
             repository_resource_id=effective_repository_resource_id,
             read_only_repository_resource_ids=effective_read_only_repository_ids,
+            execution_profile_id=effective_execution_profile_id,
         )
         execution_id = f"thread-turn-{uuid.uuid4().hex}"
 
@@ -268,6 +273,7 @@ class TurnService:
                 execution_id=execution_id,
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
+                execution_profile_id=effective_execution_profile_id,
             )
             queue_depth = self.queue_policy.depth(thread_id)
             event_payload: dict[str, Any] = {
@@ -328,6 +334,7 @@ class TurnService:
                 execution_id=execution_id,
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
+                execution_profile_id=effective_execution_profile_id,
             )
         except Exception as exc:
             if isinstance(exc, ProviderCapacityBlockedError):
