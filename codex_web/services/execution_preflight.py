@@ -317,6 +317,29 @@ class ExecutionPreflightService:
             error=str(error)[:1000],
         )
 
+    @staticmethod
+    def can_retry(actor: AuthenticationActor) -> bool:
+        try:
+            IdentityService.require_admin(actor)
+        except Exception:
+            return False
+        return True
+
+    def public(
+        self,
+        attempt: ExecutionPreflightAttempt,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        self._authorize(attempt, actor)
+        payload = attempt.model_dump(mode="json")
+        payload["can_retry"] = self.can_retry(actor)
+        payload["retry_href"] = (
+            f"/api/threads/{attempt.thread_id}/preflight-attempts/"
+            f"{attempt.id}/retry"
+        )
+        return payload
+
     def retry_payload(
         self,
         attempt: ExecutionPreflightAttempt,
