@@ -17,6 +17,7 @@ from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapabilit
 from codex_web.models import Project
 from codex_web.resources import (
     RepositoryTargetSource,
+    ResourceAlias,
     ResourceCreate,
     ResourceLifecycle,
     ResourceType,
@@ -78,6 +79,18 @@ class _FakeGitBackend:
         return GitWorkspaceProvision(
             path=path,
             branch_name=branch_name,
+            base_revision=base,
+            head_revision=base,
+        )
+
+    def provision_git_readonly(self, repository_path, workspace_id, base_revision):
+        path = self.root / workspace_id
+        path.mkdir(parents=True, exist_ok=False)
+        base = base_revision or "readonly-base"
+        self.provisioned.append((workspace_id, "", base_revision))
+        return GitWorkspaceProvision(
+            path=path,
+            branch_name="",
             base_revision=base,
             head_revision=base,
         )
@@ -446,8 +459,19 @@ class TurnExecutionBindingTests(unittest.TestCase):
 
     def test_read_only_context_is_recorded_without_changing_mutable_repository(self) -> None:
         self._publish_secret()
+        second_path = Path(self.temp.name) / "docs-repository"
+        second_path.mkdir()
         second = self.resources.create(
-            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Docs"),
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Docs",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(second_path),
+                    )
+                ],
+            ),
             actor=self.actor,
         )
         self.resources.bind_project(

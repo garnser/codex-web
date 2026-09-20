@@ -19,7 +19,8 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
     WorkerResourceLimits,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus
+from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
+from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
 from codex_web.local_execution_backend import (
     BubblewrapExecutionBackend,
     LocalExecutionPolicyError,
@@ -55,6 +56,9 @@ class _FakeWorkspaceService:
             base_revision="abc123",
             status=ExecutionWorkspaceStatus.ACTIVE,
             path=str(path),
+            repository_resource_id="repo-1",
+            repository_members=(),
+            actual_disk_bytes=0,
         )
 
     def get(self, workspace_id, actor):
@@ -72,8 +76,26 @@ class _FakeExecutionBackend:
     def validate_assignment(self, assignment):
         self.validated.append(assignment.id)
 
-    def run(self, assignment, *, argv, workspace_path, poll_hook=None, environment=None):
-        self.calls.append((assignment.id, tuple(argv), Path(workspace_path)))
+    def run(
+        self,
+        assignment,
+        *,
+        argv,
+        workspace_path,
+        poll_hook=None,
+        environment=None,
+        trusted_readonly_mounts=(),
+        additional_disk_bytes=0,
+    ):
+        self.calls.append(
+            (
+                assignment.id,
+                tuple(argv),
+                Path(workspace_path),
+                tuple(trusted_readonly_mounts),
+                additional_disk_bytes,
+            )
+        )
         if poll_hook is not None:
             poll_hook()
         return self.result
@@ -513,6 +535,56 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
                 for item in events
             )
         )
+
+    def test_runtime_passes_canonical_read_only_repository_mounts_to_backend(self) -> None:
+        readonly_path = Path(self.temp.name) / "readonly-repo"
+        readonly_path.mkdir()
+        self.workspaces.workspace.resource_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(self.workspace_path),
+                sandbox_path=str(self.workspace_path),
+            ),
+            SimpleNamespace(
+                resource_id="repo-2",
+                access_mode=LeaseMode.READ,
+                workspace_path=str(readonly_path),
+                sandbox_path="/mnt/codex-context/repo-2",
+                disk_bytes=64,
+            ),
+        )
+        assignment = self._create_assignment(
+            resource_ids=("repo-1", "repo-2"),
+            repository_target=RepositoryExecutionTarget(
+                organization_id="local",
+                workspace_id="default",
+                project_id="home",
+                mutable_repository_id="repo-1",
+                read_only_repository_ids=("repo-2",),
+                source=RepositoryTargetSource.EXPLICIT,
+            ),
+        )
+        runtime, backend = self._runtime(
+            LocalExecutionResult(
+                executable="git",
+                command_digest="sha256:" + "d" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+                disk_bytes=10,
+            )
+        )
+
+        runtime.execute(assignment.id, ("git", "status"))
+
+        self.assertEqual(
+            backend.calls[0][3],
+            ((readonly_path.resolve(), Path("/mnt/codex-context/repo-2")),),
+        )
+        self.assertEqual(backend.calls[0][4], 64)
 
     def test_limit_breach_creates_metadata_only_failure_evidence(self) -> None:
         assignment = self._create_assignment()

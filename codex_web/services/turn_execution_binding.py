@@ -428,8 +428,12 @@ class TurnExecutionBindingService:
                 subject=subject,
                 execution_id=normalized_execution_id,
                 project_id=project.id,
-                resource_ids=(repository.id,),
+                resource_ids=(
+                    repository.id,
+                    *repository_target.read_only_repository_ids,
+                ),
                 repository_resource_id=repository.id,
+                read_only_repository_ids=repository_target.read_only_repository_ids,
                 lease_mode=lease_mode,
                 ttl_seconds=session_seconds,
                 requested_disk_bytes=effective_limits.disk_bytes,

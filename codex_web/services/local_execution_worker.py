@@ -140,7 +140,7 @@ class LocalExecutionWorkerRuntime:
             subcommand=subcommand,
         )
 
-    def _workspace_path(self, assignment: ExecutionAssignment) -> Path:
+    def _workspace(self, assignment: ExecutionAssignment):
         if not assignment.execution_workspace_id:
             raise LocalExecutionWorkerRuntimeError(
                 "local command execution requires an isolated execution workspace"
@@ -153,10 +153,6 @@ class LocalExecutionWorkerRuntime:
             raise LocalExecutionWorkerRuntimeError(
                 "execution workspace is not active"
             )
-        if not workspace.path:
-            raise LocalExecutionWorkerRuntimeError(
-                "local command execution requires a filesystem execution workspace"
-            )
         if workspace.execution_id != assignment.execution_id:
             raise LocalExecutionWorkerRuntimeError(
                 "assignment execution no longer matches its execution workspace"
@@ -165,7 +161,63 @@ class LocalExecutionWorkerRuntime:
             raise LocalExecutionWorkerRuntimeError(
                 "assignment resources exceed execution workspace lease"
             )
+        actual_disk_bytes = getattr(workspace, "actual_disk_bytes", None)
+        if (
+            actual_disk_bytes is not None
+            and actual_disk_bytes > assignment.limits.disk_bytes
+        ):
+            raise LocalExecutionWorkerRuntimeError(
+                "execution workspace exceeds assignment disk limit"
+            )
+        return workspace
+
+    def _workspace_path(self, assignment: ExecutionAssignment) -> Path:
+        workspace = self._workspace(assignment)
+        if not workspace.path:
+            raise LocalExecutionWorkerRuntimeError(
+                "local command execution requires a filesystem execution workspace"
+            )
         return Path(workspace.path)
+
+    def readonly_mounts(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> tuple[tuple[Path, Path], ...]:
+        workspace = self._workspace(assignment)
+        target = assignment.repository_target
+        authorized = (
+            set(target.read_only_repository_ids)
+            if target is not None
+            else set()
+        )
+        mounts: list[tuple[Path, Path]] = []
+        for member in getattr(workspace, "repository_members", ()):
+            if member.resource_id == workspace.repository_resource_id:
+                continue
+            if member.resource_id not in authorized:
+                raise LocalExecutionWorkerRuntimeError(
+                    "workspace contains read-only repository outside assignment target"
+                )
+            if member.access_mode.value != "read":
+                raise LocalExecutionWorkerRuntimeError(
+                    "non-primary repository member must remain read-only"
+                )
+            source = Path(member.workspace_path).resolve(strict=True)
+            destination = Path(member.sandbox_path)
+            if not destination.is_absolute():
+                raise LocalExecutionWorkerRuntimeError(
+                    "read-only repository sandbox path must be absolute"
+                )
+            mounts.append((source, destination))
+        return tuple(mounts)
+
+    def readonly_disk_bytes(self, assignment: ExecutionAssignment) -> int:
+        workspace = self._workspace(assignment)
+        return sum(
+            int(getattr(member, "disk_bytes", 0) or 0)
+            for member in getattr(workspace, "repository_members", ())
+            if member.resource_id != workspace.repository_resource_id
+        )
 
     def _claim_or_resume(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
         if assignment.status == AssignmentStatus.PENDING:
@@ -230,6 +282,8 @@ class LocalExecutionWorkerRuntime:
     ) -> LocalExecutionCompletion:
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
+        readonly_mounts = self.readonly_mounts(assignment)
+        readonly_disk_bytes = self.readonly_disk_bytes(assignment)
         self.backend.validate_assignment(assignment)
 
         self.worker_service.heartbeat(
@@ -291,11 +345,18 @@ class LocalExecutionWorkerRuntime:
                 current["assignment"] = renewed
 
         try:
+            run_kwargs = {
+                "argv": argv,
+                "workspace_path": workspace_path,
+                "poll_hook": poll,
+            }
+            if readonly_mounts:
+                run_kwargs["trusted_readonly_mounts"] = readonly_mounts
+            if readonly_disk_bytes:
+                run_kwargs["additional_disk_bytes"] = readonly_disk_bytes
             result = self.backend.run(
                 current["assignment"],
-                argv=argv,
-                workspace_path=workspace_path,
-                poll_hook=poll,
+                **run_kwargs,
             )
         except LocalExecutionBackendError as exc:
             active = current["assignment"]

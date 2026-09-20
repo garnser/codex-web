@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +15,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceEvent,
     ExecutionWorkspaceInspection,
     ExecutionWorkspaceKind,
+    ExecutionWorkspaceMember,
     ExecutionWorkspaceLease,
     ExecutionWorkspaceReference,
     ExecutionWorkspaceRelease,
@@ -29,7 +31,7 @@ from codex_web.execution_workspaces import (
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.models import Project
-from codex_web.resources import ResourceType
+from codex_web.resources import Resource, ResourceType
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
@@ -113,28 +115,104 @@ class ExecutionWorkspaceService:
         if workspace.owner_identity_id != actor.identity_id and not self._admin(actor):
             raise AuthorizationError("execution workspace owner or administrator required")
 
+    @staticmethod
+    def _repository_source_path(
+        resource: Resource,
+        project: Project,
+        *,
+        allow_project_fallback: bool,
+    ) -> Path:
+        project_root = Path(project.path).resolve(strict=True)
+        aliases = [
+            alias
+            for alias in resource.aliases
+            if alias.namespace.casefold()
+            in {"filesystem", "path", "repository-path", "legacy"}
+        ]
+        for alias in aliases:
+            raw = alias.value.strip()
+            if not raw or raw.startswith("~"):
+                continue
+            candidate = Path(raw)
+            try:
+                if candidate.is_absolute():
+                    resolved = candidate.resolve(strict=True)
+                else:
+                    resolved = (project_root / candidate).resolve(strict=True)
+                    if not resolved.is_relative_to(project_root):
+                        raise ExecutionWorkspaceConflictError(
+                            "relative repository source escapes canonical project root"
+                        )
+            except FileNotFoundError:
+                continue
+            if resolved.is_dir():
+                return resolved
+        if allow_project_fallback:
+            return project_root
+        raise ExecutionWorkspaceConflictError(
+            f"repository resource {resource.id} has no canonical filesystem source alias"
+        )
+
     def _resource_set(
         self,
         request: ExecutionWorkspaceAcquire,
         actor: AuthenticationActor,
-    ):
-        resources = [self.resources.get(resource_id, actor) for resource_id in request.resource_ids]
+    ) -> tuple[list[Resource], str | None, tuple[str, ...]]:
+        resources = [
+            self.resources.get(resource_id, actor)
+            for resource_id in request.resource_ids
+        ]
+        by_id = {item.id: item for item in resources}
         repository_resource_id = request.repository_resource_id
-        repositories = [item for item in resources if item.resource_type == ResourceType.REPOSITORY]
+        repositories = [
+            item for item in resources
+            if item.resource_type == ResourceType.REPOSITORY
+        ]
         if repository_resource_id is None and len(repositories) == 1:
             repository_resource_id = repositories[0].id
         if repository_resource_id is not None:
-            repository = next(
-                (item for item in resources if item.id == repository_resource_id),
-                None,
-            )
+            repository = by_id.get(repository_resource_id)
             if repository is None:
-                raise ResourceNotFoundError("repository resource is outside requested resource set")
+                raise ResourceNotFoundError(
+                    "repository resource is outside requested resource set"
+                )
             if repository.resource_type != ResourceType.REPOSITORY:
                 raise ExecutionWorkspaceConflictError(
                     "repository_resource_id must reference a canonical repository resource"
                 )
-        return resources, repository_resource_id
+
+        read_only_repository_ids = tuple(request.read_only_repository_ids)
+        for resource_id in read_only_repository_ids:
+            resource = by_id.get(resource_id)
+            if resource is None:
+                raise ResourceNotFoundError(
+                    "read-only repository is outside requested resource set"
+                )
+            if resource.resource_type != ResourceType.REPOSITORY:
+                raise ExecutionWorkspaceConflictError(
+                    "read-only repository context must reference repository resources"
+                )
+            if resource_id == repository_resource_id:
+                raise ExecutionWorkspaceConflictError(
+                    "mutable repository cannot also be read-only context"
+                )
+        return resources, repository_resource_id, read_only_repository_ids
+
+    @staticmethod
+    def _readonly_member_workspace_id(
+        workspace_id: str,
+        resource_id: str,
+    ) -> str:
+        suffix = hashlib.sha256(resource_id.encode()).hexdigest()[:12]
+        return f"{workspace_id}-readonly-{suffix}"
+
+    @staticmethod
+    def _readonly_sandbox_path(resource_id: str) -> str:
+        safe = "".join(
+            character if character.isalnum() or character in "-._" else "-"
+            for character in resource_id
+        ).strip("-._")
+        return f"/mnt/codex-context/{safe or 'repository'}"
 
     def _existing(self, workspace_id: str, actor: AuthenticationActor) -> ExecutionWorkspace | None:
         item = next(
@@ -161,6 +239,7 @@ class ExecutionWorkspaceService:
             kind=workspace.kind,
             status=workspace.status,
             resource_ids=workspace.resource_ids,
+            repository_members=workspace.repository_members,
             path=workspace.path,
             branch_name=workspace.branch_name,
             base_revision=workspace.base_revision,
@@ -317,6 +396,42 @@ class ExecutionWorkspaceService:
                 break
         return state, abandoned
 
+    def _cleanup_git_workspace(
+        self,
+        workspace: ExecutionWorkspace,
+        *,
+        discard_mutable_branch: bool,
+    ) -> None:
+        if workspace.repository_members:
+            errors: list[str] = []
+            for member in reversed(workspace.repository_members):
+                try:
+                    self.backend.cleanup_git(
+                        Path(member.source_path),
+                        Path(member.workspace_path),
+                        member.branch_name or "",
+                        discard_branch=bool(
+                            discard_mutable_branch
+                            and member.resource_id == workspace.repository_resource_id
+                            and member.branch_name
+                        ),
+                    )
+                except Exception as exc:
+                    errors.append(f"{member.resource_id}: {exc}")
+            if errors:
+                raise ExecutionWorkspaceBackendError(
+                    "repository member cleanup failed: " + "; ".join(errors)
+                )
+            return
+        if workspace.path and workspace.branch_name:
+            project = self.project_lookup(workspace.project_id)
+            self.backend.cleanup_git(
+                Path(project.path),
+                Path(workspace.path),
+                workspace.branch_name,
+                discard_branch=discard_mutable_branch,
+            )
+
     def recover_expired(
         self,
         *,
@@ -338,12 +453,9 @@ class ExecutionWorkspaceService:
             workspace = next(item for item in state.workspaces if item.id == workspace_id)
             if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE and workspace.path and workspace.branch_name:
                 try:
-                    project = self.project_lookup(workspace.project_id)
-                    self.backend.cleanup_git(
-                        Path(project.path),
-                        Path(workspace.path),
-                        workspace.branch_name,
-                        discard_branch=False,
+                    self._cleanup_git_workspace(
+                        workspace,
+                        discard_mutable_branch=False,
                     )
                     cleaned_at = time.time()
 
@@ -384,7 +496,11 @@ class ExecutionWorkspaceService:
         actor: AuthenticationActor,
     ) -> ExecutionWorkspace:
         project = self._project(request.project_id, actor)
-        _, repository_resource_id = self._resource_set(request, actor)
+        resources, repository_resource_id, read_only_repository_ids = self._resource_set(
+            request,
+            actor,
+        )
+        resource_by_id = {item.id: item for item in resources}
         self.recover_expired(scope=actor.tenant)
 
         workspace_id = deterministic_workspace_id(
@@ -396,6 +512,13 @@ class ExecutionWorkspaceService:
         )
         existing = self._existing(workspace_id, actor)
         if existing is not None:
+            if (
+                existing.resource_ids != request.resource_ids
+                or existing.repository_resource_id != repository_resource_id
+            ):
+                raise ExecutionWorkspaceConflictError(
+                    "execution id is already bound to a different resource set"
+                )
             if existing.status in {
                 ExecutionWorkspaceStatus.PROVISIONING,
                 ExecutionWorkspaceStatus.ACTIVE,
@@ -420,9 +543,44 @@ class ExecutionWorkspaceService:
             else None
         )
         if len(request.resource_ids) > self.quota.max_resources_per_workspace:
-            raise ExecutionWorkspaceQuotaError("execution workspace resource quota exceeded")
+            raise ExecutionWorkspaceQuotaError(
+                "execution workspace resource quota exceeded"
+            )
         if request.requested_disk_bytes > self.quota.max_requested_disk_bytes:
-            raise ExecutionWorkspaceQuotaError("execution workspace requested disk quota exceeded")
+            raise ExecutionWorkspaceQuotaError(
+                "execution workspace requested disk quota exceeded"
+            )
+
+        resource_modes = {
+            resource_id: request.lease_mode
+            for resource_id in request.resource_ids
+        }
+        for resource_id in read_only_repository_ids:
+            resource_modes[resource_id] = LeaseMode.READ
+        aggregate_mode = (
+            LeaseMode.WRITE
+            if any(mode == LeaseMode.WRITE for mode in resource_modes.values())
+            else LeaseMode.READ
+        )
+
+        source_paths: dict[str, Path] = {}
+        if repository_resource_id is not None:
+            source_paths[repository_resource_id] = self._repository_source_path(
+                resource_by_id[repository_resource_id],
+                project,
+                allow_project_fallback=True,
+            )
+            for resource_id in read_only_repository_ids:
+                source_paths[resource_id] = self._repository_source_path(
+                    resource_by_id[resource_id],
+                    project,
+                    allow_project_fallback=False,
+                )
+            normalized_sources = [str(path) for path in source_paths.values()]
+            if len(normalized_sources) != len(set(normalized_sources)):
+                raise ExecutionWorkspaceConflictError(
+                    "repository members must resolve to distinct canonical source paths"
+                )
 
         lease = ExecutionWorkspaceLease(
             id=lease_id,
@@ -434,7 +592,8 @@ class ExecutionWorkspaceService:
             execution_id=request.execution_id,
             owner_identity_id=actor.identity_id,
             resource_ids=request.resource_ids,
-            mode=request.lease_mode,
+            mode=aggregate_mode,
+            resource_modes=resource_modes,
             acquired_at=now,
             expires_at=now + request.ttl_seconds,
         )
@@ -472,21 +631,35 @@ class ExecutionWorkspaceService:
                 and item.workspace_id == actor.workspace_id
             ]
             if len(active_leases) >= self.quota.max_active_per_tenant:
-                raise ExecutionWorkspaceQuotaError("tenant active execution workspace quota exceeded")
+                raise ExecutionWorkspaceQuotaError(
+                    "tenant active execution workspace quota exceeded"
+                )
             owner_active = [
-                item for item in active_leases if item.owner_identity_id == actor.identity_id
+                item
+                for item in active_leases
+                if item.owner_identity_id == actor.identity_id
             ]
             if len(owner_active) >= self.quota.max_active_per_identity:
-                raise ExecutionWorkspaceQuotaError("identity active execution workspace quota exceeded")
+                raise ExecutionWorkspaceQuotaError(
+                    "identity active execution workspace quota exceeded"
+                )
             requested = set(request.resource_ids)
             for active in active_leases:
                 overlap = requested.intersection(active.resource_ids)
-                if not overlap:
-                    continue
-                if request.lease_mode == LeaseMode.WRITE or active.mode == LeaseMode.WRITE:
+                conflicting = [
+                    resource_id
+                    for resource_id in overlap
+                    if (
+                        resource_modes.get(resource_id, aggregate_mode)
+                        == LeaseMode.WRITE
+                        or active.resource_modes.get(resource_id, active.mode)
+                        == LeaseMode.WRITE
+                    )
+                ]
+                if conflicting:
                     raise ExecutionWorkspaceConflictError(
                         "conflicting active resource lease: "
-                        + ", ".join(sorted(overlap))
+                        + ", ".join(sorted(conflicting))
                     )
             state.leases.append(lease)
             state.workspaces.append(workspace)
@@ -502,6 +675,11 @@ class ExecutionWorkspaceService:
                         "subject_kind": request.subject.kind.value,
                         "subject_ref": request.subject.ref,
                         "expires_at": lease.expires_at,
+                        "repository_member_count": (
+                            1 + len(read_only_repository_ids)
+                            if repository_resource_id is not None
+                            else 0
+                        ),
                     },
                 ),
             )
@@ -546,19 +724,77 @@ class ExecutionWorkspaceService:
 
             self.store.update(activate_resource)
             activated = next(
-                item for item in self.store.load().workspaces if item.id == workspace_id
+                item
+                for item in self.store.load().workspaces
+                if item.id == workspace_id
             )
             self._sync_work_item(activated)
             return activated
 
+        provisioned_members: list[
+            tuple[Resource, ExecutionWorkspaceMember]
+        ] = []
         try:
-            provisioned = self.backend.provision_git(
-                Path(project.path),
+            mutable_resource = resource_by_id[repository_resource_id]
+            mutable_source = source_paths[repository_resource_id]
+            mutable = self.backend.provision_git(
+                mutable_source,
                 workspace_id,
                 branch_name or "",
                 request.base_revision,
             )
+            provisioned_members.append(
+                (
+                    mutable_resource,
+                    ExecutionWorkspaceMember(
+                        resource_id=repository_resource_id,
+                        access_mode=request.lease_mode,
+                        source_path=str(mutable_source),
+                        workspace_path=str(mutable.path),
+                        sandbox_path=str(mutable.path),
+                        branch_name=mutable.branch_name,
+                        base_revision=mutable.base_revision,
+                        head_revision=mutable.head_revision,
+                        disk_bytes=self.backend.disk_usage(mutable.path),
+                    ),
+                )
+            )
+
+            for resource_id in read_only_repository_ids:
+                resource = resource_by_id[resource_id]
+                source = source_paths[resource_id]
+                provisioned = self.backend.provision_git_readonly(
+                    source,
+                    self._readonly_member_workspace_id(workspace_id, resource_id),
+                    None,
+                )
+                provisioned_members.append(
+                    (
+                        resource,
+                        ExecutionWorkspaceMember(
+                            resource_id=resource_id,
+                            access_mode=LeaseMode.READ,
+                            source_path=str(source),
+                            workspace_path=str(provisioned.path),
+                            sandbox_path=self._readonly_sandbox_path(resource_id),
+                            branch_name=None,
+                            base_revision=provisioned.base_revision,
+                            head_revision=provisioned.head_revision,
+                            disk_bytes=self.backend.disk_usage(provisioned.path),
+                        ),
+                    )
+                )
         except Exception as exc:
+            for _resource, member in reversed(provisioned_members):
+                try:
+                    self.backend.cleanup_git(
+                        Path(member.source_path),
+                        Path(member.workspace_path),
+                        member.branch_name or "",
+                        discard_branch=bool(member.branch_name),
+                    )
+                except Exception:
+                    pass
             failed_at = time.time()
             message = str(exc)
 
@@ -594,6 +830,15 @@ class ExecutionWorkspaceService:
             self.store.update(fail)
             raise ExecutionWorkspaceBackendError(message) from exc
 
+        mutable_member = next(
+            member
+            for _resource, member in provisioned_members
+            if member.resource_id == repository_resource_id
+        )
+        actual_disk_bytes = sum(
+            member.disk_bytes
+            for _resource, member in provisioned_members
+        )
         activated_at = time.time()
 
         def activate(state):
@@ -602,11 +847,15 @@ class ExecutionWorkspaceService:
                     state.workspaces[index] = item.model_copy(
                         update={
                             "status": ExecutionWorkspaceStatus.ACTIVE,
-                            "path": str(provisioned.path),
-                            "branch_name": provisioned.branch_name,
-                            "base_revision": provisioned.base_revision,
-                            "head_revision": provisioned.head_revision,
-                            "actual_disk_bytes": self.backend.disk_usage(provisioned.path),
+                            "path": mutable_member.workspace_path,
+                            "branch_name": mutable_member.branch_name,
+                            "base_revision": mutable_member.base_revision,
+                            "head_revision": mutable_member.head_revision,
+                            "actual_disk_bytes": actual_disk_bytes,
+                            "repository_members": tuple(
+                                member
+                                for _resource, member in provisioned_members
+                            ),
                             "updated_at": activated_at,
                         }
                     )
@@ -617,8 +866,10 @@ class ExecutionWorkspaceService:
                             event_type="workspace_activated",
                             actor_identity_id=actor.identity_id,
                             details={
-                                "base_revision": provisioned.base_revision,
-                                "branch_name": provisioned.branch_name,
+                                "base_revision": mutable_member.base_revision,
+                                "branch_name": mutable_member.branch_name,
+                                "repository_member_count": len(provisioned_members),
+                                "read_only_member_count": len(read_only_repository_ids),
                             },
                         ),
                     )
@@ -627,7 +878,8 @@ class ExecutionWorkspaceService:
 
         self.store.update(activate)
         activated = next(
-            item for item in self.store.load().workspaces if item.id == workspace_id
+            item for item in self.store.load().workspaces
+            if item.id == workspace_id
         )
         self._sync_work_item(activated)
         return activated
@@ -714,13 +966,22 @@ class ExecutionWorkspaceService:
         def apply(state):
             for index, item in enumerate(state.workspaces):
                 if item.id == workspace_id:
-                    state.workspaces[index] = item.model_copy(
-                        update={
-                            "integration": integration,
-                            "status": status,
-                            "updated_at": now,
-                        }
-                    )
+                    updates = {
+                        "integration": integration,
+                        "status": status,
+                        "updated_at": now,
+                    }
+                    if request.resulting_revision:
+                        updates["head_revision"] = request.resulting_revision
+                        updates["repository_members"] = tuple(
+                            member.model_copy(
+                                update={"head_revision": request.resulting_revision}
+                            )
+                            if member.resource_id == item.repository_resource_id
+                            else member
+                            for member in item.repository_members
+                        )
+                    state.workspaces[index] = item.model_copy(update=updates)
                     break
             self._append_event(
                 state,
@@ -790,13 +1051,10 @@ class ExecutionWorkspaceService:
 
         self.store.update(mark_released)
 
-        if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE and workspace.path and workspace.branch_name:
-            project = self.project_lookup(workspace.project_id)
-            self.backend.cleanup_git(
-                Path(project.path),
-                Path(workspace.path),
-                workspace.branch_name,
-                discard_branch=request.discard,
+        if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE:
+            self._cleanup_git_workspace(
+                workspace,
+                discard_mutable_branch=request.discard,
             )
         cleaned_at = time.time()
 

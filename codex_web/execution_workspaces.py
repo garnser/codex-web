@@ -70,6 +70,7 @@ class ExecutionWorkspaceLease(BaseModel):
     owner_identity_id: str
     resource_ids: tuple[str, ...]
     mode: LeaseMode
+    resource_modes: dict[str, LeaseMode] = Field(default_factory=dict)
     acquired_at: float
     expires_at: float
     renewed_at: float | None = None
@@ -82,11 +83,32 @@ class ExecutionWorkspaceLease(BaseModel):
             self.subject,
             self.work_item_ref,
         )
+        normalized = {
+            resource_id: self.resource_modes.get(resource_id, self.mode)
+            for resource_id in self.resource_ids
+        }
+        self.resource_modes = normalized
         return self
 
     @property
     def active(self) -> bool:
         return self.released_at is None and self.expires_at > time.time()
+
+
+class ExecutionWorkspaceMember(BaseModel):
+    """One repository checkout/snapshot included in an execution workspace."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    resource_id: str = Field(min_length=1)
+    access_mode: LeaseMode
+    source_path: str = Field(min_length=1)
+    workspace_path: str = Field(min_length=1)
+    sandbox_path: str = Field(min_length=1)
+    branch_name: str | None = None
+    base_revision: str = Field(min_length=1)
+    head_revision: str = Field(min_length=1)
+    disk_bytes: int = Field(default=0, ge=0)
 
 
 class WorkspaceIntegrationState(BaseModel):
@@ -128,6 +150,7 @@ class ExecutionWorkspace(BaseModel):
     cleaned_at: float | None = None
     error: str | None = None
     integration: WorkspaceIntegrationState = Field(default_factory=WorkspaceIntegrationState)
+    repository_members: tuple[ExecutionWorkspaceMember, ...] = ()
 
     @model_validator(mode="after")
     def normalize_subject(self) -> "ExecutionWorkspace":
@@ -135,6 +158,18 @@ class ExecutionWorkspace(BaseModel):
             self.subject,
             self.work_item_ref,
         )
+        member_ids = [item.resource_id for item in self.repository_members]
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError("execution workspace repository members must be unique")
+        if self.repository_resource_id is not None and self.repository_members:
+            mutable = [
+                item for item in self.repository_members
+                if item.resource_id == self.repository_resource_id
+            ]
+            if len(mutable) != 1:
+                raise ValueError("mutable repository member is missing")
+            if mutable[0].access_mode not in {LeaseMode.READ, LeaseMode.WRITE}:
+                raise ValueError("invalid mutable repository member access")
         return self
 
 
@@ -151,7 +186,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.2"
+    schema_version: str = "1.3"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)
@@ -166,6 +201,7 @@ class ExecutionWorkspaceAcquire(BaseModel):
     project_id: str = Field(min_length=1)
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
+    read_only_repository_ids: tuple[str, ...] = ()
     base_revision: str | None = None
     lease_mode: LeaseMode = LeaseMode.WRITE
     ttl_seconds: int = Field(default=1800, ge=30, le=86400)
@@ -180,8 +216,23 @@ class ExecutionWorkspaceAcquire(BaseModel):
         self.resource_ids = tuple(dict.fromkeys(item.strip() for item in self.resource_ids if item.strip()))
         if not self.resource_ids:
             raise ValueError("execution workspace requires at least one canonical resource")
+        self.read_only_repository_ids = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in self.read_only_repository_ids
+                if item and item.strip()
+            )
+        )
         if self.repository_resource_id and self.repository_resource_id not in self.resource_ids:
             raise ValueError("repository_resource_id must be included in resource_ids")
+        missing_read_only = set(self.read_only_repository_ids) - set(self.resource_ids)
+        if missing_read_only:
+            raise ValueError("read-only repository ids must be included in resource_ids")
+        if (
+            self.repository_resource_id is not None
+            and self.repository_resource_id in self.read_only_repository_ids
+        ):
+            raise ValueError("mutable repository cannot also be read-only context")
         return self
 
 
@@ -242,6 +293,7 @@ class ExecutionWorkspaceReference(BaseModel):
     kind: ExecutionWorkspaceKind
     status: ExecutionWorkspaceStatus
     resource_ids: tuple[str, ...]
+    repository_members: tuple[ExecutionWorkspaceMember, ...] = ()
     path: str | None = None
     branch_name: str | None = None
     base_revision: str | None = None

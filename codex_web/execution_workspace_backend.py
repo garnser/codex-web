@@ -30,6 +30,13 @@ class ExecutionWorkspaceBackend(Protocol):
         base_revision: str | None,
     ) -> GitWorkspaceProvision: ...
 
+    def provision_git_readonly(
+        self,
+        repository_path: Path,
+        workspace_id: str,
+        base_revision: str | None,
+    ) -> GitWorkspaceProvision: ...
+
     def cleanup_git(
         self,
         repository_path: Path,
@@ -103,6 +110,45 @@ class LocalGitWorkspaceBackend:
         return GitWorkspaceProvision(
             path=target,
             branch_name=branch_name,
+            base_revision=base,
+            head_revision=head,
+        )
+
+    def provision_git_readonly(
+        self,
+        repository_path: Path,
+        workspace_id: str,
+        base_revision: str | None,
+    ) -> GitWorkspaceProvision:
+        repository_path = repository_path.resolve()
+        if not repository_path.is_dir():
+            raise ExecutionWorkspaceBackendError("repository path does not exist")
+        self._git("rev-parse", "--git-dir", cwd=repository_path)
+        base = self._git(
+            "rev-parse",
+            "--verify",
+            base_revision or "HEAD",
+            cwd=repository_path,
+        )
+        target = (self.root / workspace_id).resolve()
+        if target.exists():
+            raise ExecutionWorkspaceBackendError("execution workspace path already exists")
+        try:
+            self._git(
+                "worktree",
+                "add",
+                "--detach",
+                str(target),
+                base,
+                cwd=repository_path,
+            )
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+        head = self._git("rev-parse", "HEAD", cwd=target)
+        return GitWorkspaceProvision(
+            path=target,
+            branch_name="",
             base_revision=base,
             head_revision=head,
         )

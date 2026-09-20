@@ -252,7 +252,21 @@ class AssignmentBoundAgentProcessSession:
         def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
-            trusted_mounts: tuple[tuple[Path, Path], ...] = ()
+            readonly_mount_resolver = getattr(
+                self.local_worker,
+                "readonly_mounts",
+                None,
+            )
+            trusted_mounts = (
+                tuple(readonly_mount_resolver(assignment))
+                if callable(readonly_mount_resolver)
+                else ()
+            )
+            if trusted_mounts:
+                environment["CODEX_READONLY_REPOSITORIES"] = ":".join(
+                    str(destination)
+                    for _source, destination in trusted_mounts
+                )
             if broker is not None:
                 environment.update(
                     {
@@ -276,6 +290,7 @@ class AssignmentBoundAgentProcessSession:
                     *launch_input.command,
                 )
                 trusted_mounts = (
+                    *trusted_mounts,
                     (broker.mount_source, broker.mount_destination),
                 )
             process = self.local_worker.backend.spawn_interactive(
@@ -425,6 +440,12 @@ class AssignmentBoundAgentProcessSession:
             self.workspace_path,
             self.git_metadata_path,
         )
+        readonly_disk_bytes = getattr(
+            self.local_worker,
+            "readonly_disk_bytes",
+            lambda _assignment: 0,
+        )(assignment)
+        disk_bytes += readonly_disk_bytes
         if disk_bytes > assignment.limits.disk_bytes:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded disk_bytes"
