@@ -1895,6 +1895,8 @@ bot_target_service = install_bot_target_service(
     save_delivery_targets=bot_state.delivery_targets.save,
     load_active_turns=runtime_state.active_turns.load,
     bindings_for_project=bot_binding_selection_service.for_project,
+    put_reply_target=bot_state.reply_targets.put,
+    put_delivery_target=bot_state.delivery_targets.put,
 )
 
 def _gitlab_routing_enabled_for_project(project_id: str) -> bool:
