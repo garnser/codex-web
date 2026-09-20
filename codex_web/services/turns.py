@@ -476,7 +476,7 @@ class TurnService:
         return {
             "threadId": thread_id,
             "items": [
-                item.model_dump(mode="json")
+                self.preflight.public(item, actor=actor)
                 for item in items
             ],
         }
@@ -507,7 +507,7 @@ class TurnService:
                 "ok": True,
                 "alreadyStarted": True,
                 "threadId": thread_id,
-                "attempt": attempt.model_dump(mode="json"),
+                "attempt": self.preflight.public(attempt, actor=actor),
             }
         if not claimed:
             return {
@@ -541,7 +541,7 @@ class TurnService:
         return {
             "ok": True,
             "threadId": thread_id,
-            "attempt": updated.model_dump(mode="json"),
+            "attempt": self.preflight.public(updated, actor=actor),
             "result": result,
         }
 
