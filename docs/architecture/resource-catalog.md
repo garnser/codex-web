@@ -43,6 +43,33 @@ A typical chain can be:
 
 Project-to-resource association is stored as an explicit `ProjectResourceBinding`, keeping Project as its existing canonical domain while resources remain independently stable.
 
+## Multi-repository Project targeting
+
+A Project may bind multiple active repository Resources. Repository authority for
+one execution is represented by a canonical `RepositoryExecutionTarget`, which
+records tenant/project scope, one mutable repository (or an explicit
+orchestration-only no-mutation target), optional read-only repository context,
+selection source, and source provenance.
+
+Target selection is deterministic and never delegated to a model. Precedence is:
+
+1. canonical Work Item repository Resource;
+2. explicit execution/thread target;
+3. thread/execution-profile target;
+4. an authorized Project binding with purpose `execution-default`;
+5. the compatibility fallback when exactly one active repository is bound.
+
+Multiple active repositories with no deterministic selector fail with
+`repository_target_ambiguous` before an ExecutionWorkspace or
+ExecutionAssignment is created. A requested repository outside the active
+Project/tenant binding fails as unauthorized.
+
+Thread bootstrap persists the selected target onto the canonical execution
+assignment and thread settings. A live bootstrap-bound thread cannot silently
+switch mutable repositories; changing repository scope requires a new compatible
+thread/execution boundary. This preserves the worker/workspace lease authority
+instead of treating a UI selection as authorization.
+
 ## Legacy migration and aliases
 
 `migrate_legacy_strings()` converts existing repository/environment strings into canonical resources using `legacy` aliases and binds them to the owning Project. Re-running the migration is idempotent.
