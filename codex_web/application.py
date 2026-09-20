@@ -86,12 +86,14 @@ from codex_web.paths import (
     BOT_REPLY_TARGETS_FILE,
     BOTS_BINDINGS_FILE,
     BOTS_CONNECTIONS_FILE,
+    DATA_DIR,
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
+    STATIC_DIR,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
@@ -230,11 +232,16 @@ from codex_web.services.upgrades import UpgradeService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.runtime_diagnostics import (
+    RuntimeDiagnosticsService,
+    RuntimeHealthService,
+)
 from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.slack_provider import install_slack_provider_service
+from codex_web.services.static_assets import StaticAssetVersionService
 from codex_web.services.task_source_action_provider import TaskSourceActionProvider
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
@@ -2000,6 +2007,104 @@ app.state.bot_service = bot_service
 # task globals populated for diagnostics while owning cancellation and shutdown.
 runtime_supervisor = install_runtime_supervisor(app, core)
 
+static_asset_version_service = StaticAssetVersionService(
+    STATIC_DIR,
+    repo_root=DATA_DIR.parent,
+)
+app.state.static_asset_version_service = static_asset_version_service
+
+
+def _gitlab_sync_health() -> dict[str, object]:
+    return {
+        "consecutiveFailures": core.GITLAB_SYNC_CONSECUTIVE_FAILURES,
+        "lastError": core.GITLAB_SYNC_LAST_ERROR,
+        "lastErrorAt": core.GITLAB_SYNC_LAST_ERROR_AT,
+        "lastSuccessAt": core.GITLAB_SYNC_LAST_SUCCESS_AT,
+    }
+
+
+runtime_health_service = RuntimeHealthService(
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
+    load_bindings=bot_state.bindings.load,
+    load_queues=turn_queue_repository.load,
+    terminal_failures=core.THREAD_TERMINAL_FAILURES,
+    terminal_recovery_tasks=core.TERMINAL_RECOVERY_TASKS,
+    terminal_failure_window_seconds=core._terminal_failure_window_seconds,
+    slack_health=slack_provider_service.health,
+    gitlab_sync_health=_gitlab_sync_health,
+)
+app.state.runtime_health_service = runtime_health_service
+
+
+def _watchdog_diagnostic_status() -> dict[str, object]:
+    tasks = runtime_supervisor.task_status()
+
+    def running(name: str) -> bool:
+        return bool((tasks.get(name) or {}).get("running"))
+
+    return {
+        "ownerWorkWatchdogIntervalSeconds": (
+            core._owner_work_watchdog_interval()
+        ),
+        "ownerWorkWatchdogRunning": running("owner-work"),
+        "releaseGateWatchdogIntervalSeconds": (
+            core._release_gate_watchdog_interval()
+        ),
+        "releaseGateWatchdogRunning": running("release-gate"),
+        "workItemSlaWatchdogIntervalSeconds": (
+            core._work_item_sla_watchdog_interval()
+        ),
+        "workItemSlaWatchdogRunning": running("work-item-sla"),
+        "orchestratorWatchdogIntervalSeconds": (
+            core._orchestrator_watchdog_interval()
+        ),
+        "orchestratorWatchdogRunning": running("orchestrator"),
+        "splitBrainWatchdogIntervalSeconds": (
+            core._split_brain_watchdog_interval()
+        ),
+        "splitBrainWatchdogRunning": running("split-brain"),
+    }
+
+
+runtime_diagnostics_service = RuntimeDiagnosticsService(
+    assets=static_asset_version_service,
+    health=runtime_health_service,
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
+    load_projects=project_repository.load,
+    get_project=project_runtime_service.get,
+    load_thread_index=thread_index_repository.load,
+    load_active_turns=runtime_state.active_turns.load,
+    load_queues=turn_queue_repository.load,
+    queue_tasks=core.QUEUE_DRAIN_TASKS,
+    connections=bot_connection_service,
+    bindings=bot_binding_selection_service,
+    presentation=bot_presentation_service,
+    thread_is_active=turn_execution_service.thread_is_active,
+    queue_depth=turn_queue_policy.depth,
+    load_agent_presence=core._load_agent_channel_presence_settings,
+    load_reply_targets=bot_state.reply_targets.load,
+    load_delivery_targets=bot_state.delivery_targets.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    work_item_public=work_item_state_machine._work_item_state_public,
+    watchdog_status=_watchdog_diagnostic_status,
+    thread_message_limit=thread_service.default_message_limit,
+    slack_health=slack_provider_service.health,
+)
+app.state.runtime_diagnostics_service = runtime_diagnostics_service
+
+# Historical names remain thin output-only compatibility aliases while direct
+# imports migrate. Extracted UI/system routers use the explicit services.
+core._static_version = static_asset_version_service.version
+core._daemon_health = runtime_health_service.snapshot
+core._diagnostic_snapshot = runtime_diagnostics_service.snapshot
+core._devhealth_work_item_stats = runtime_diagnostics_service.work_item_stats
+core._queued_turn_public = runtime_diagnostics_service.queued_turn_public
+core._binding_public = runtime_diagnostics_service.binding_public
+
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
@@ -2128,13 +2233,22 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "ui": replace_routes(
         app,
-        build_ui_router(core),
+        build_ui_router(
+            static_asset_version_service,
+            runtime_diagnostics_service,
+            core.hub,
+        ),
         paths={"/", "/devstatus", "/devhealth", "/ws"},
         key="ui",
     ),
     "system": replace_routes(
         app,
-        build_system_router(core),
+        build_system_router(
+            assets=static_asset_version_service,
+            health=runtime_health_service,
+            diagnostics_service=runtime_diagnostics_service,
+            route_preview=bot_routing_service.preview,
+        ),
         paths={
             "/api/livez",
             "/api/auth-verifier",
