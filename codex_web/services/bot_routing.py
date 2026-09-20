@@ -828,4 +828,5 @@ def install_bot_routing_service(
         )
     app.state.bot_routing_service = service
     host._handle_bot_inbound = service.handle_inbound
+    host._preview_bot_route = service.preview
     return service
