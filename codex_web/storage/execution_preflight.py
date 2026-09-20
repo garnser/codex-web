@@ -127,6 +127,7 @@ class ExecutionPreflightStore:
         *,
         claim_id: str,
         now: float,
+        stale_after_seconds: float = 60.0,
     ) -> tuple[ExecutionPreflightAttempt, bool]:
         key = self._attempt_key(attempt_id)
         acquired = False
@@ -141,7 +142,10 @@ class ExecutionPreflightStore:
             if current.status == "retrying":
                 if current.retry_claim_id == claim_id:
                     acquired = True
-                return current.model_dump(mode="json")
+                    return current.model_dump(mode="json")
+                retry_started_at = current.retry_started_at or current.updated_at
+                if now - retry_started_at < max(1.0, stale_after_seconds):
+                    return current.model_dump(mode="json")
             acquired = True
             return current.model_copy(
                 update={
