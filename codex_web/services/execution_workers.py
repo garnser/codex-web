@@ -17,6 +17,7 @@ from codex_web.execution_workers import (
     ExecutionWorkerRegister,
     ExecutionWorkerState,
     WorkerEvent,
+    WorkerExecutionReadiness,
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
@@ -194,6 +195,104 @@ class ExecutionWorkerService:
             return False, "worker_concurrency_exhausted"
         return True, None
 
+    def execution_readiness(
+        self,
+        *,
+        required_capabilities: tuple,
+        execution_contract_version: str,
+        actor: AuthenticationActor,
+    ) -> WorkerExecutionReadiness:
+        self._require_admin(actor)
+        required = tuple(
+            sorted(
+                set(required_capabilities),
+                key=lambda value: value.value,
+            )
+        )
+        scoped = [
+            worker
+            for worker in self.store.load().workers
+            if self._same_scope(worker, actor)
+        ]
+        active = [
+            worker
+            for worker in scoped
+            if worker.lifecycle == WorkerLifecycle.ACTIVE
+        ]
+        available = tuple(
+            sorted(
+                {
+                    capability
+                    for worker in active
+                    for capability in worker.capabilities
+                },
+                key=lambda value: value.value,
+            )
+        )
+        eligible = [
+            worker
+            for worker in active
+            if set(required).issubset(set(worker.capabilities))
+            and execution_contract_version
+            in worker.supported_execution_contract_versions
+        ]
+        if eligible:
+            return WorkerExecutionReadiness(
+                ready=True,
+                code="ready",
+                required_capabilities=required,
+                available_capabilities=available,
+                eligible_worker_ids=tuple(worker.id for worker in eligible),
+                active_worker_ids=tuple(worker.id for worker in active),
+                execution_contract_version=execution_contract_version,
+                reason="eligible execution worker is available",
+            )
+
+        missing = tuple(
+            capability
+            for capability in required
+            if capability not in available
+        )
+        if not active:
+            code = "worker_unavailable"
+            reason = "no active execution worker is available"
+            remediation = (
+                "Start or reactivate a qualified execution worker and verify "
+                "its isolation probe."
+            )
+        elif missing:
+            code = "worker_capability_missing"
+            reason = (
+                "active execution workers are missing required capabilities: "
+                + ", ".join(capability.value for capability in missing)
+            )
+            remediation = (
+                "Fix the local isolation/runtime configuration, rerun the "
+                "worker probe, and verify the required capabilities are "
+                "advertised."
+            )
+        else:
+            code = "execution_contract_version_unsupported"
+            reason = (
+                "no active execution worker supports execution contract "
+                f"{execution_contract_version}"
+            )
+            remediation = (
+                "Upgrade/reconcile the execution worker so it advertises the "
+                "required execution contract version."
+            )
+        return WorkerExecutionReadiness(
+            ready=False,
+            code=code,
+            required_capabilities=required,
+            available_capabilities=available,
+            eligible_worker_ids=(),
+            active_worker_ids=tuple(worker.id for worker in active),
+            execution_contract_version=execution_contract_version,
+            reason=reason,
+            remediation=remediation,
+        )
+
     def list_workers(self, actor: AuthenticationActor) -> list[ExecutionWorker]:
         self._require_admin(actor)
         return sorted(
@@ -280,6 +379,7 @@ class ExecutionWorkerService:
         version: str,
         capabilities: tuple,
         actor: AuthenticationActor,
+        supported_execution_contract_versions: tuple[str, ...] = ("1.0",),
     ) -> ExecutionWorker:
         self._require_admin(actor)
         existing = next(
@@ -312,6 +412,9 @@ class ExecutionWorkerService:
                         "capabilities": normalized_capabilities,
                         "last_heartbeat_at": time.time(),
                         "lifecycle": lifecycle,
+                        "supported_execution_contract_versions": (
+                            supported_execution_contract_versions
+                        ),
                     }
                 )
                 state.workers = [
@@ -345,6 +448,9 @@ class ExecutionWorkerService:
                 pool="local",
                 version=version,
                 capabilities=capabilities,
+                supported_execution_contract_versions=(
+                    supported_execution_contract_versions
+                ),
                 max_concurrency=1,
             ),
             actor=actor,
