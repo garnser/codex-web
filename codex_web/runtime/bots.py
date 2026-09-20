@@ -65,7 +65,6 @@ class BotRuntime:
         self.conversation_channels: Any | None = None
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
-        self.slack_payload_locks: dict[str, asyncio.Lock] = {}
         self.slack_payload_queues: dict[
             str,
             list[asyncio.Queue[SlackPayloadWork]],
@@ -545,6 +544,19 @@ class BotRuntime:
         self.slack_payload_workers.pop(connection.id, None)
         self.slack_payload_seen.pop(connection.id, None)
         self.slack_payload_seen_order.pop(connection.id, None)
+        stats = self.slack_payload_stats.setdefault(connection.id, {})
+        stats.update(
+            {
+                "queueDepth": 0,
+                "queueCapacity": 0,
+                "oldestQueuedAgeSeconds": 0.0,
+                "activeWorkers": 0,
+                "workerLimit": 0,
+                "overloaded": False,
+                "perChannelBacklog": {},
+                "dedupeEntries": 0,
+            }
+        )
 
     @staticmethod
     def _credential_identity(
@@ -801,12 +813,10 @@ class BotRuntime:
             )
             if not channel:
                 return
-            lock_key = f"{connection.id}:{channel}"
-            lock = self.slack_payload_locks.setdefault(
-                lock_key,
-                asyncio.Lock(),
-            )
-            async with lock:
+            # Same-channel ordering is already guaranteed by stable
+            # shard assignment and one worker per shard. Avoid retaining a
+            # lock object for every channel ever observed.
+            async with contextlib.nullcontext():
                 if self.conversation_channels is not None:
                     normalized_payload = dict(payload)
                     normalized_event = dict(event)
