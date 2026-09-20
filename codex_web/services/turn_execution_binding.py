@@ -621,6 +621,8 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
+        execution_profile_id: str | None = None,
+        execution_role_id: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -642,6 +644,8 @@ class TurnExecutionBindingService:
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
             orchestration_only=orchestration_only,
+            execution_profile_id=execution_profile_id,
+            execution_role_id=execution_role_id,
         )
 
     def prepare_bootstrap(
@@ -659,6 +663,8 @@ class TurnExecutionBindingService:
         read_only_repository_ids: tuple[str, ...] = (),
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
+        execution_profile_id: str | None = None,
+        execution_role_id: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -689,4 +695,6 @@ class TurnExecutionBindingService:
             read_only_repository_ids=read_only_repository_ids,
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
+            execution_profile_id=execution_profile_id,
+            execution_role_id=execution_role_id,
         )
