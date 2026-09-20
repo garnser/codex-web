@@ -2282,9 +2282,7 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     connection_public=bot_connection_service.public,
     load_bindings=bot_state.bindings.load,
     binding_public=_diagnostic_binding_public,
-    load_agent_presence=(
-        app.state.configuration_state_repositories.agent_channel_presence.load
-    ),
+    load_agent_presence=core._load_agent_channel_presence_settings,
     agent_presence_public=lambda settings: settings.model_dump(),
     load_reply_targets=bot_state.reply_targets.load,
     load_delivery_targets=bot_state.delivery_targets.load,
