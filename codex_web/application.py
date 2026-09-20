@@ -2830,6 +2830,8 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     load_work_item_states=runtime_state.work_item_states.load,
     work_item_public=work_item_state_machine._work_item_state_public,
     recent_events=bot_runtime_telemetry.recent,
+    bot_routing_metrics=bot_target_service.metrics,
+    bot_binding_index_status=bot_binding_repository.index_status,
 )
 operator_ui_service = OperatorUiService(
     static_dir=STATIC_DIR,
