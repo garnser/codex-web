@@ -33,6 +33,13 @@ export function isScratch(profileId) {
   return selected(profileId)?.workspaceMode === "scratch";
 }
 
+export function applyThreadQuery(params, settings) {
+  params.set("execution_profile_id", settings.profileId || defaultId());
+  if (settings.repositoryResourceId && !isScratch(settings.profileId)) {
+    params.set("repository_resource_id", settings.repositoryResourceId);
+  }
+}
+
 export function render(profileId, escapeHtml) {
   const selector = document.getElementById("execution-profile");
   const summary = document.getElementById("execution-profile-summary");
