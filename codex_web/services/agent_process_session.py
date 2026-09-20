@@ -17,6 +17,11 @@ from codex_web.execution_workers import (
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
+from codex_web.services.control_plane_broker import (
+    AssignmentBoundControlPlaneBroker,
+    CONTROL_PLANE_RELAY_SCRIPT,
+    DeferredControlPlaneBrokerFactory,
+)
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialGrant,
@@ -77,6 +82,7 @@ class AssignmentBoundAgentProcessSession:
         runtime_binding: ExecutionRuntimeBinding | None = None,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -87,6 +93,7 @@ class AssignmentBoundAgentProcessSession:
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = max(0.05, watchdog_interval_seconds)
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.control_plane_broker_factory = control_plane_broker_factory
         if credential_provider is None:
             raise AssignmentBoundAgentProcessSessionError(
                 "runtime credential provider is required"
@@ -107,6 +114,7 @@ class AssignmentBoundAgentProcessSession:
         self.last_error: str | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
         self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
+        self.control_plane_broker: AssignmentBoundControlPlaneBroker | None = None
         self._start_lock = asyncio.Lock()
         self._stopping = False
 
