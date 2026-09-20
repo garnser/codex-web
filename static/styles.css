@@ -744,6 +744,17 @@ h1 {
   justify-content: flex-end;
 }
 
+.execution-profile-summary {
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.execution-profile-summary strong {
+  color: var(--text);
+}
+
 .repository-target-control {
   display: inline-flex;
   align-items: center;

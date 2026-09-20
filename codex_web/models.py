@@ -172,6 +172,7 @@ class TurnCreate(BaseModel):
     sandbox: SandboxMode | None = None
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
+    execution_profile_id: str | None = None
 
 
 class ApprovalDecision(BaseModel):
@@ -197,6 +198,7 @@ class ThreadRunSettings(BaseModel):
     developer_instructions: str | None = None
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
+    execution_profile_id: str | None = None
 
 
 class WorkItemHandoff(BaseModel):
@@ -328,6 +330,7 @@ class ActiveThreadTurn(BaseModel):
     worker_id: str | None = None
     fence: int | None = None
     repository_resource_id: str | None = None
+    execution_profile_id: str | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -346,6 +349,7 @@ class QueuedTurn(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
+    execution_profile_id: str | None = None
     source: str = "web"
     reply_target: BotReplyTarget | None = None
     attempts: int = 0

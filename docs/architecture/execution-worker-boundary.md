@@ -183,6 +183,33 @@ home, and secret/key directories remain absent. The local worker also keeps its
 private network namespace; selecting `danger-full-access` does not implicitly
 grant the canonical `network` capability or unrestricted repository egress.
 
+### Orchestration-only scratch execution
+
+Coordination work does not need a fake repository checkout. The canonical
+`orchestration-only` execution profile resolves to a scratch
+`ExecutionWorkspace`:
+
+- the workspace has no canonical repository resource IDs and no Git worktree;
+- the worker assignment requires `command_execution` but not `git`;
+- the workspace is still tenant/project scoped, assignment-bound, deadline
+  bounded and fenced through the normal worker state machine;
+- the scratch directory is created underneath the configured execution-workspace
+  backend root with the same root-escape checks and deterministic cleanup/
+  recovery as repository workspaces;
+- Bubblewrap remains the outer execution boundary and generic networking remains
+  disabled;
+- repository mutation, broad host filesystem access and ad-hoc localhost access
+  are not implied by the profile;
+- the exact execution-profile Definition revision is persisted on the
+  assignment and emitted in assignment audit metadata.
+
+The profile may declare canonical control-plane operations such as work-item
+read/handoff/reconcile for explainability and future capability negotiation.
+Those declarations do not expose the control plane to the worker. Governed
+agent-to-control-plane API access is a separate brokered capability and must
+authorize the exact operation, identity, tenant/project scope and live
+assignment/fence before use.
+
 ### Network policy
 
 Bubblewrap can reliably provide a private network namespace for network-disabled

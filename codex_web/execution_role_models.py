@@ -27,6 +27,10 @@ class ExecutionRoleContract(BaseModel):
     failure_conditions: tuple[str, ...]
     keywords: tuple[str, ...] = ()
     auto_select: bool = True
+    execution_profile_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
 
     @model_validator(mode="after")
     def normalize_lists(self) -> "ExecutionRoleContract":
@@ -41,6 +45,16 @@ class ExecutionRoleContract(BaseModel):
             values = getattr(self, field_name)
             if any(not value.strip() for value in values):
                 raise ValueError(f"{field_name} cannot contain empty values")
+        if self.execution_profile_id is None:
+            object.__setattr__(
+                self,
+                "execution_profile_id",
+                (
+                    "orchestration-only"
+                    if self.lane.strip().casefold() == "coordination"
+                    else "repository-write"
+                ),
+            )
         return self
 
     def public(self) -> dict[str, Any]:
@@ -57,6 +71,7 @@ class ExecutionRoleContract(BaseModel):
             "failureConditions": list(self.failure_conditions),
             "keywords": list(self.keywords),
             "autoSelect": self.auto_select,
+            "executionProfileId": self.execution_profile_id,
         }
 
 
@@ -138,4 +153,6 @@ def validate_execution_role_catalog(payload: dict[str, Any]) -> dict[str, Any]:
         original = original_roles.get(role["id"], {})
         if "lifecycle" not in original:
             role.pop("lifecycle", None)
+        if "execution_profile_id" not in original:
+            role.pop("execution_profile_id", None)
     return normalized

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
+from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     ExecutionAssignment,
@@ -19,6 +20,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceAcquire,
     LeaseMode,
 )
+from codex_web.execution_profiles import ExecutionProfileContract
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ApprovalPolicy, Project, SandboxMode
 from codex_web.resources import (
@@ -34,6 +36,7 @@ from codex_web.services.configuration import (
     ConfigurationNotFoundError,
     ConfigurationService,
 )
+from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.projects import ProjectService
@@ -62,7 +65,7 @@ class TurnExecutionBinding:
     workspace_id: str
     assignment_id: str
     resource_ids: tuple[str, ...]
-    repository_resource_id: str
+    repository_resource_id: str | None
     repository_target: RepositoryExecutionTarget
     base_revision: str | None
     sandbox: SandboxMode
@@ -70,6 +73,8 @@ class TurnExecutionBinding:
     secret_ref: str
     deadline_at: float | None
     runtime_binding: ExecutionRuntimeBinding | None = None
+    execution_profile_id: str | None = None
+    execution_profile_definition: DefinitionReference | None = None
 
     def public(self) -> dict[str, object]:
         return {
@@ -90,6 +95,12 @@ class TurnExecutionBinding:
             "runtime_binding": (
                 self.runtime_binding.model_dump(mode="json")
                 if self.runtime_binding is not None
+                else None
+            ),
+            "execution_profile_id": self.execution_profile_id,
+            "execution_profile_definition": (
+                self.execution_profile_definition.model_dump(mode="json")
+                if self.execution_profile_definition is not None
                 else None
             ),
         }
@@ -115,6 +126,7 @@ class TurnExecutionBindingService:
         control_actor: AuthenticationActor,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
+        execution_profiles: ExecutionProfileDefinitionService | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -124,6 +136,7 @@ class TurnExecutionBindingService:
         self.workers = workers
         self.control_actor = control_actor
         self.runtime_binding = runtime_binding
+        self.execution_profiles = execution_profiles
         self.runtime_credential_configs = dict(
             runtime_credential_configs
             or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
@@ -172,6 +185,29 @@ class TurnExecutionBindingService:
             if item.lifecycle == ResourceLifecycle.ACTIVE
         )
 
+    def _execution_profile(
+        self,
+        project: Project,
+        profile_id: str | None,
+    ) -> tuple[ExecutionProfileContract | None, DefinitionReference | None]:
+        if self.execution_profiles is None:
+            if profile_id:
+                raise TurnExecutionBindingError(
+                    "execution profile resolution is unavailable"
+                )
+            return None, None
+        try:
+            return self.execution_profiles.resolve(
+                profile_id,
+                organization_id=project.organization_id,
+                workspace_id=project.workspace_id,
+                project_id=project.id,
+            )
+        except Exception as exc:
+            raise TurnExecutionBindingError(
+                f"execution profile is unavailable: {profile_id or 'default'}"
+            ) from exc
+
     def _repository_target(
         self,
         project: Project,
@@ -198,9 +234,9 @@ class TurnExecutionBindingService:
             )
         except RepositoryTargetSelectionError as exc:
             raise TurnExecutionBindingError(f"{exc.code}: {exc}") from exc
-        if target.mutable_repository_id is None:
+        if target.mutable_repository_id is None and not orchestration_only:
             raise TurnExecutionBindingError(
-                "orchestration-only repository target requires an orchestration execution profile"
+                "repository execution target requires a mutable repository"
             )
         return target
 
@@ -275,6 +311,8 @@ class TurnExecutionBindingService:
         execution_contract_version: str,
         runtime_binding: ExecutionRuntimeBinding | None,
         repository_target: RepositoryExecutionTarget,
+        execution_profile_id: str | None,
+        execution_profile_definition: DefinitionReference | None,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -297,6 +335,22 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different repository target"
+            )
+        if assignment.execution_profile_id is None:
+            if (
+                execution_profile_id not in {None, "repository-write"}
+                or repository_target.mutable_repository_id is None
+            ):
+                raise TurnExecutionBindingError(
+                    "legacy unprofiled execution cannot change execution profile"
+                )
+        elif (
+            assignment.execution_profile_id != execution_profile_id
+            or assignment.execution_profile_definition
+            != execution_profile_definition
+        ):
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different execution profile"
             )
         if assignment.execution_contract_version != execution_contract_version:
             raise TurnExecutionBindingError(
@@ -325,11 +379,12 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread assignment no longer matches its execution workspace"
             )
-        if workspace.repository_resource_id is None:
-            raise TurnExecutionBindingError(
-                "existing thread workspace has no canonical repository resource"
-            )
-        if workspace.repository_resource_id != repository_target.mutable_repository_id:
+        if repository_target.mutable_repository_id is None:
+            if workspace.repository_resource_id is not None:
+                raise TurnExecutionBindingError(
+                    "orchestration workspace unexpectedly has repository authority"
+                )
+        elif workspace.repository_resource_id != repository_target.mutable_repository_id:
             raise TurnExecutionBindingError(
                 "existing thread workspace no longer matches repository target"
             )
@@ -353,6 +408,8 @@ class TurnExecutionBindingService:
             secret_ref=assignment.secret_refs[0],
             deadline_at=assignment.deadline_at,
             runtime_binding=assignment.runtime_binding,
+            execution_profile_id=assignment.execution_profile_id,
+            execution_profile_definition=assignment.execution_profile_definition,
         )
 
     def _prepare_subject(
@@ -376,6 +433,7 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
+        execution_profile_id: str | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -388,17 +446,50 @@ class TurnExecutionBindingService:
 
         project = self._project(project_id)
         effective_runtime_binding = runtime_binding or self.runtime_binding
+        execution_profile, execution_profile_definition = self._execution_profile(
+            project,
+            execution_profile_id,
+        )
+        profile_is_orchestration = bool(
+            execution_profile is not None
+            and execution_profile.workspace_mode == "scratch"
+            and execution_profile.repository_access == "none"
+        )
+        if orchestration_only and execution_profile is not None and not profile_is_orchestration:
+            raise TurnExecutionBindingError(
+                "orchestration-only request conflicts with repository execution profile"
+            )
+        effective_orchestration_only = orchestration_only or profile_is_orchestration
+        if effective_orchestration_only and execution_profile is None:
+            raise TurnExecutionBindingError(
+                "orchestration-only execution requires a canonical execution profile"
+            )
         repository_target = self._repository_target(
             project,
-            explicit_repository_id=explicit_repository_id,
-            read_only_repository_ids=read_only_repository_ids,
-            work_item_resource_ids=work_item_resource_ids,
+            explicit_repository_id=(
+                None if effective_orchestration_only else explicit_repository_id
+            ),
+            read_only_repository_ids=(
+                () if effective_orchestration_only else read_only_repository_ids
+            ),
+            work_item_resource_ids=(
+                () if effective_orchestration_only else work_item_resource_ids
+            ),
             work_item_ref=work_item_ref,
-            thread_profile_repository_id=thread_profile_repository_id,
-            routing_repository_id=routing_repository_id,
-            orchestration_only=orchestration_only,
+            thread_profile_repository_id=(
+                None
+                if effective_orchestration_only
+                else thread_profile_repository_id
+            ),
+            routing_repository_id=(
+                None if effective_orchestration_only else routing_repository_id
+            ),
+            orchestration_only=effective_orchestration_only,
         )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
+        effective_profile_id = (
+            execution_profile.id if execution_profile is not None else None
+        )
         if existing is not None:
             return self._binding_from_existing(
                 existing,
@@ -410,12 +501,10 @@ class TurnExecutionBindingService:
                 execution_contract_version=execution_contract_version,
                 runtime_binding=effective_runtime_binding,
                 repository_target=repository_target,
+                execution_profile_id=effective_profile_id,
+                execution_profile_definition=execution_profile_definition,
             )
 
-        repository = self.resources.get(
-            repository_target.mutable_repository_id,
-            self.control_actor,
-        )
         secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
@@ -423,24 +512,58 @@ class TurnExecutionBindingService:
         )
         deadline_at = self._clock() + session_seconds
 
-        workspace = self.workspaces.acquire(
-            ExecutionWorkspaceAcquire(
-                subject=subject,
-                execution_id=normalized_execution_id,
-                project_id=project.id,
-                resource_ids=(
-                    repository.id,
-                    *repository_target.read_only_repository_ids,
+        if effective_orchestration_only:
+            workspace = self.workspaces.acquire(
+                ExecutionWorkspaceAcquire(
+                    subject=subject,
+                    execution_id=normalized_execution_id,
+                    project_id=project.id,
+                    resource_ids=(),
+                    scratch=True,
+                    lease_mode=lease_mode,
+                    ttl_seconds=session_seconds,
+                    requested_disk_bytes=effective_limits.disk_bytes,
                 ),
-                repository_resource_id=repository.id,
-                read_only_repository_ids=repository_target.read_only_repository_ids,
-                lease_mode=lease_mode,
-                ttl_seconds=session_seconds,
-                requested_disk_bytes=effective_limits.disk_bytes,
-            ),
-            actor=self.control_actor,
-        )
+                actor=self.control_actor,
+            )
+        else:
+            if repository_target.mutable_repository_id is None:
+                raise TurnExecutionBindingError(
+                    "repository execution profile requires a mutable repository target"
+                )
+            repository = self.resources.get(
+                repository_target.mutable_repository_id,
+                self.control_actor,
+            )
+            workspace = self.workspaces.acquire(
+                ExecutionWorkspaceAcquire(
+                    subject=subject,
+                    execution_id=normalized_execution_id,
+                    project_id=project.id,
+                    resource_ids=(
+                        repository.id,
+                        *repository_target.read_only_repository_ids,
+                    ),
+                    repository_resource_id=repository.id,
+                    read_only_repository_ids=repository_target.read_only_repository_ids,
+                    lease_mode=lease_mode,
+                    ttl_seconds=session_seconds,
+                    requested_disk_bytes=effective_limits.disk_bytes,
+                ),
+                actor=self.control_actor,
+            )
 
+        required_capabilities = (
+            tuple(
+                WorkerCapability(value)
+                for value in execution_profile.required_worker_capabilities
+            )
+            if execution_profile is not None
+            else (
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            )
+        )
         assignment = self.workers.create_assignment(
             ExecutionAssignmentCreate(
                 subject=subject,
@@ -449,10 +572,7 @@ class TurnExecutionBindingService:
                 resource_ids=workspace.resource_ids,
                 base_revision=workspace.base_revision,
                 execution_contract_version=execution_contract_version,
-                required_capabilities=(
-                    WorkerCapability.GIT,
-                    WorkerCapability.COMMAND_EXECUTION,
-                ),
+                required_capabilities=required_capabilities,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 network=NetworkPolicy(),
@@ -462,6 +582,8 @@ class TurnExecutionBindingService:
                 execution_workspace_id=workspace.id,
                 runtime_binding=effective_runtime_binding,
                 repository_target=repository_target,
+                execution_profile_id=effective_profile_id,
+                execution_profile_definition=execution_profile_definition,
             ),
             actor=self.control_actor,
         )
@@ -474,7 +596,7 @@ class TurnExecutionBindingService:
             workspace_id=workspace.id,
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
-            repository_resource_id=repository.id,
+            repository_resource_id=workspace.repository_resource_id,
             repository_target=repository_target,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
@@ -482,6 +604,8 @@ class TurnExecutionBindingService:
             secret_ref=secret_ref,
             deadline_at=assignment.deadline_at,
             runtime_binding=assignment.runtime_binding,
+            execution_profile_id=assignment.execution_profile_id,
+            execution_profile_definition=assignment.execution_profile_definition,
         )
 
     def prepare(
@@ -502,6 +626,7 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
+        execution_profile_id: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -523,6 +648,7 @@ class TurnExecutionBindingService:
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
             orchestration_only=orchestration_only,
+            execution_profile_id=execution_profile_id,
         )
 
     def prepare_bootstrap(
@@ -540,6 +666,7 @@ class TurnExecutionBindingService:
         read_only_repository_ids: tuple[str, ...] = (),
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
+        execution_profile_id: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -570,4 +697,5 @@ class TurnExecutionBindingService:
             read_only_repository_ids=read_only_repository_ids,
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
+            execution_profile_id=execution_profile_id,
         )

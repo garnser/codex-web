@@ -443,6 +443,7 @@ class ThreadService:
         runtime_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
     ) -> dict[str, Any]:
         (
             binding_service,
@@ -473,6 +474,7 @@ class ThreadService:
             runtime_binding=runtime_binding,
             explicit_repository_id=repository_resource_id,
             read_only_repository_ids=read_only_repository_resource_ids,
+            execution_profile_id=execution_profile_id,
         )
         session = await session_manager.start(binding.assignment_id)
         status = session.status()
@@ -635,6 +637,7 @@ class ThreadService:
             read_only_repository_resource_ids=(
                 binding.repository_target.read_only_repository_ids
             ),
+            execution_profile_id=getattr(binding, "execution_profile_id", None),
         )
         self.event_sink(
             {
@@ -647,6 +650,19 @@ class ThreadService:
                 "worker_id": status.worker_id,
                 "fence": status.fence,
                 "repository_target": binding.repository_target.model_dump(mode="json"),
+                "execution_profile_id": getattr(
+                    binding,
+                    "execution_profile_id",
+                    None,
+                ),
+                "execution_profile_definition": (
+                    getattr(binding, "execution_profile_definition", None).model_dump(
+                        mode="json"
+                    )
+                    if getattr(binding, "execution_profile_definition", None)
+                    is not None
+                    else None
+                ),
                 "agent_session_id": (
                     canonical_session.id if canonical_session is not None else None
                 ),

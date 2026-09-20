@@ -14,6 +14,7 @@ from codex_web.execution_subjects import ExecutionSubject, normalize_execution_s
 class ExecutionWorkspaceKind(StrEnum):
     GIT_WORKTREE = "git_worktree"
     RESOURCE_LEASE = "resource_lease"
+    SCRATCH = "scratch"
 
 
 class ExecutionWorkspaceStatus(StrEnum):
@@ -202,6 +203,7 @@ class ExecutionWorkspaceAcquire(BaseModel):
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
     read_only_repository_ids: tuple[str, ...] = ()
+    scratch: bool = False
     base_revision: str | None = None
     lease_mode: LeaseMode = LeaseMode.WRITE
     ttl_seconds: int = Field(default=1800, ge=30, le=86400)
@@ -214,8 +216,12 @@ class ExecutionWorkspaceAcquire(BaseModel):
             self.work_item_ref,
         )
         self.resource_ids = tuple(dict.fromkeys(item.strip() for item in self.resource_ids if item.strip()))
-        if not self.resource_ids:
-            raise ValueError("execution workspace requires at least one canonical resource")
+        if not self.resource_ids and not self.scratch:
+            raise ValueError(
+                "execution workspace requires a canonical resource unless scratch mode is explicit"
+            )
+        if self.scratch and self.resource_ids:
+            raise ValueError("scratch execution workspace cannot lease canonical resources")
         self.read_only_repository_ids = tuple(
             dict.fromkeys(
                 item.strip()
@@ -223,6 +229,12 @@ class ExecutionWorkspaceAcquire(BaseModel):
                 if item and item.strip()
             )
         )
+        if self.scratch and (
+            self.repository_resource_id is not None
+            or self.read_only_repository_ids
+            or self.base_revision is not None
+        ):
+            raise ValueError("scratch execution workspace cannot reference repositories")
         if self.repository_resource_id and self.repository_resource_id not in self.resource_ids:
             raise ValueError("repository_resource_id must be included in resource_ids")
         missing_read_only = set(self.read_only_repository_ids) - set(self.resource_ids)

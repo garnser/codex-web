@@ -396,6 +396,10 @@ class ExecutionWorkspaceService:
                 break
         return state, abandoned
 
+    def _cleanup_scratch_workspace(self, workspace: ExecutionWorkspace) -> None:
+        if workspace.path:
+            self.backend.cleanup_scratch(Path(workspace.path))
+
     def _cleanup_git_workspace(
         self,
         workspace: ExecutionWorkspace,
@@ -451,12 +455,21 @@ class ExecutionWorkspaceService:
         for workspace_id in abandoned_ids:
             state = self.store.load()
             workspace = next(item for item in state.workspaces if item.id == workspace_id)
-            if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE and workspace.path and workspace.branch_name:
+            if (
+                workspace.kind in {
+                    ExecutionWorkspaceKind.GIT_WORKTREE,
+                    ExecutionWorkspaceKind.SCRATCH,
+                }
+                and workspace.path
+            ):
                 try:
-                    self._cleanup_git_workspace(
-                        workspace,
-                        discard_mutable_branch=False,
-                    )
+                    if workspace.kind == ExecutionWorkspaceKind.SCRATCH:
+                        self._cleanup_scratch_workspace(workspace)
+                    else:
+                        self._cleanup_git_workspace(
+                            workspace,
+                            discard_mutable_branch=False,
+                        )
                     cleaned_at = time.time()
 
                     def mark_cleaned(current_state):
@@ -533,9 +546,13 @@ class ExecutionWorkspaceService:
         now = time.time()
         lease_id = f"{workspace_id}-lease"
         kind = (
-            ExecutionWorkspaceKind.GIT_WORKTREE
-            if repository_resource_id is not None
-            else ExecutionWorkspaceKind.RESOURCE_LEASE
+            ExecutionWorkspaceKind.SCRATCH
+            if request.scratch
+            else (
+                ExecutionWorkspaceKind.GIT_WORKTREE
+                if repository_resource_id is not None
+                else ExecutionWorkspaceKind.RESOURCE_LEASE
+            )
         )
         branch_name = (
             deterministic_branch_name(request.subject.key, request.execution_id)
@@ -698,6 +715,79 @@ class ExecutionWorkspaceService:
             raise ExecutionWorkspaceConflictError(
                 "execution id already has a terminal workspace; use a new execution id"
             )
+
+        if kind == ExecutionWorkspaceKind.SCRATCH:
+            try:
+                scratch_path = self.backend.provision_scratch(workspace_id)
+            except Exception as exc:
+                failed_at = time.time()
+                message = str(exc)
+
+                def fail_scratch(state):
+                    for index, item in enumerate(state.leases):
+                        if item.id == lease_id:
+                            state.leases[index] = item.model_copy(
+                                update={
+                                    "released_at": failed_at,
+                                    "release_reason": "provisioning-failed",
+                                }
+                            )
+                    for index, item in enumerate(state.workspaces):
+                        if item.id == workspace_id:
+                            state.workspaces[index] = item.model_copy(
+                                update={
+                                    "status": ExecutionWorkspaceStatus.ERROR,
+                                    "error": message,
+                                    "updated_at": failed_at,
+                                }
+                            )
+                    self._append_event(
+                        state,
+                        ExecutionWorkspaceEvent(
+                            workspace_id=workspace_id,
+                            event_type="workspace_provisioning_failed",
+                            actor_identity_id=actor.identity_id,
+                            details={"error": message[:500]},
+                        ),
+                    )
+                    return state
+
+                self.store.update(fail_scratch)
+                raise ExecutionWorkspaceBackendError(message) from exc
+
+            activated_at = time.time()
+
+            def activate_scratch(state):
+                for index, item in enumerate(state.workspaces):
+                    if item.id == workspace_id:
+                        state.workspaces[index] = item.model_copy(
+                            update={
+                                "status": ExecutionWorkspaceStatus.ACTIVE,
+                                "path": str(scratch_path),
+                                "actual_disk_bytes": self.backend.disk_usage(scratch_path),
+                                "updated_at": activated_at,
+                            }
+                        )
+                        self._append_event(
+                            state,
+                            ExecutionWorkspaceEvent(
+                                workspace_id=workspace_id,
+                                event_type="workspace_activated",
+                                actor_identity_id=actor.identity_id,
+                                details={"scratch": True},
+                            ),
+                        )
+                        break
+                return state
+
+            self.store.update(activate_scratch)
+            activated = next(
+                item
+                for item in self.store.load().workspaces
+                if item.id == workspace_id
+            )
+            self._sync_work_item(activated)
+            return activated
 
         if kind == ExecutionWorkspaceKind.RESOURCE_LEASE:
             activated_at = time.time()
@@ -1056,6 +1146,8 @@ class ExecutionWorkspaceService:
                 workspace,
                 discard_mutable_branch=request.discard,
             )
+        elif workspace.kind == ExecutionWorkspaceKind.SCRATCH:
+            self._cleanup_scratch_workspace(workspace)
         cleaned_at = time.time()
 
         def mark_cleaned(state):

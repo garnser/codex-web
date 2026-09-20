@@ -1,3 +1,5 @@
+import*as ep from"./execution_profile_controls.js";
+
 const state = {
   projects: [],
   projectResources: [],
@@ -251,6 +253,7 @@ function currentRunSettings() {
   return {
     sandbox: saved.sandbox || project?.sandbox || "workspace-write",
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
+    profileId:saved.profileId||ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
@@ -329,6 +332,7 @@ function applyRunSettings() {
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
   if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
+  ep.render(settings.profileId, escapeHtml);
 }
 
 function persistRunSettings() {
@@ -338,6 +342,7 @@ function persistRunSettings() {
   allSettings[project.id] = {
     sandbox: $("sandbox").value,
     approvalPolicy: $("approval-policy").value,
+    profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
@@ -1174,9 +1179,10 @@ async function refresh() {
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
   state.refreshInFlight = (async () => {
-    const [projects, projectResources, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
+    const [projects, projectResources, _ep, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
       api("/api/projects"),
       api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
+      ep.load(state.projectId),
       api("/api/bots/bindings"),
       api("/api/thread-settings"),
       api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
@@ -1439,9 +1445,7 @@ async function newThread() {
     sandbox: settings.sandbox,
     approval_policy: settings.approvalPolicy,
   });
-  if (settings.repositoryResourceId) {
-    qs.set("repository_resource_id", settings.repositoryResourceId);
-  }
+  ep.applyThreadQuery(qs,settings);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
@@ -1481,16 +1485,9 @@ async function sendPrompt() {
     approval_policy: runSettings.approvalPolicy,
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
-    repository_resource_id: (
-      selectedThreadSettings.repository_resource_id
-      || runSettings.repositoryResourceId
-      || null
-    ),
-    read_only_repository_resource_ids: (
-      selectedThreadSettings.read_only_repository_resource_ids
-      || runSettings.readOnlyRepositoryResourceIds
-      || []
-    ),
+    repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
+    execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
   };
   try {
     let targetThreadId = threadId;
@@ -2427,6 +2424,7 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
+$("execution-profile").addEventListener("change",()=>{persistRunSettings();ep.render(currentRunSettings().profileId,escapeHtml);renderRepositoryTargets();});
 $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
