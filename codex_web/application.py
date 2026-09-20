@@ -82,6 +82,8 @@ from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapabilit
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     ARTIFACT_CONTENT_DIR,
+    BOTS_BINDINGS_FILE,
+    BOTS_CONNECTIONS_FILE,
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
@@ -282,6 +284,7 @@ from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
 from codex_web.storage.business_data_sources import BusinessDataSourceStore
 from codex_web.storage.business_kpis import BusinessKPIStore
+from codex_web.storage.bot_state import BotStateRepositories
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -1441,6 +1444,20 @@ core._load_active_turns = runtime_state.active_turns.load
 core._save_active_turns = runtime_state.active_turns.save
 core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
+
+bot_state = BotStateRepositories(
+    state_store,
+    connections_file=BOTS_CONNECTIONS_FILE,
+    bindings_file=BOTS_BINDINGS_FILE,
+)
+app.state.bot_state_repositories = bot_state
+# Transitional aliases for unextracted bot services. The authoritative mutable
+# state lives in BotStateRepositories rather than legacy_core.
+core._load_bot_connections = bot_state.connections.load
+core._save_bot_connections = bot_state.connections.save
+core._load_bot_bindings = bot_state.bindings.load
+core._save_bot_bindings = bot_state.bindings.save
+
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
