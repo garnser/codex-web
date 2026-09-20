@@ -41,7 +41,7 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
         self.assertIs(core._set_thread_name.__self__, application.thread_naming_service)
         self.assertIs(
             core._web_thread_resume_task.__self__,
-            application.thread_resume_service,
+            application.app.state.thread_resume_compatibility_service,
         )
         self.assertIs(
             core._set_thread_primary.__self__,
@@ -53,7 +53,7 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
         )
         self.assertIs(
             core._raise_if_thread_replaced.__self__,
-            application.thread_recovery_service,
+            application.app.state.thread_recovery_compatibility_service,
         )
         self.assertIs(
             core._thread_run_settings.__self__,
