@@ -956,6 +956,7 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                execution_profile_id=canonical_execution_profile_id,
             )
 
             params: dict[str, Any] = {
@@ -1064,6 +1065,7 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                execution_profile_id=canonical_execution_profile_id,
             )
         h._append_bot_event(
             {
@@ -1131,6 +1133,7 @@ class TurnExecutionService:
                 execution_id=queued.execution_id,
                 repository_resource_id=queued.repository_resource_id,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                execution_profile_id=queued.execution_profile_id,
             )
             h._append_bot_event(
                 {
