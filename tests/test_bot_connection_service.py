@@ -35,10 +35,21 @@ class Host:
         return binding.route_prefix
 
 
+def _service(host: Host) -> BotConnectionService:
+    return BotConnectionService(
+        load_connections=host._load_bot_connections,
+        save_connections=host._save_bot_connections,
+        load_bindings=host._load_bot_bindings,
+        save_bindings=host._save_bot_bindings,
+        projects=SimpleNamespace(get=host._project),
+        binding_prefix=host._binding_prefix,
+    )
+
+
 class BotConnectionServiceTests(unittest.TestCase):
     def test_public_projection_masks_connection_secrets(self) -> None:
         host = Host()
-        service = BotConnectionService(host)
+        service = _service(host)
         connection = BotConnection(
             id="c1",
             provider="slack",
@@ -76,7 +87,7 @@ class BotConnectionServiceTests(unittest.TestCase):
                 updated_at=1,
             )
         ]
-        service = BotConnectionService(host)
+        service = _service(host)
 
         updated = service.upsert(
             BotConnectionCreate(
@@ -147,7 +158,7 @@ class BotConnectionServiceTests(unittest.TestCase):
             ),
         ]
 
-        BotConnectionService(host).dedupe_integrations()
+        _service(host).dedupe_integrations()
 
         self.assertEqual([connection.id for connection in host.connections], ["first"])
         self.assertEqual(len(host.bindings), 1)
