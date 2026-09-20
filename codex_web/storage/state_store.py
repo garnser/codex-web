@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 from urllib.parse import quote, unquote
@@ -10,6 +12,47 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 _RECORD_STORAGE_ROOT = "__codex_records__/"
+
+
+class OperationTimingMetrics:
+    """Small process-local timing accumulator for storage hot paths."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+        self._failures = 0
+        self._total_seconds = 0.0
+        self._last_seconds = 0.0
+        self._max_seconds = 0.0
+        self._last_at: float | None = None
+
+    def observe(self, seconds: float, *, success: bool = True) -> None:
+        duration = max(0.0, float(seconds))
+        with self._lock:
+            self._count += 1
+            if not success:
+                self._failures += 1
+            self._total_seconds += duration
+            self._last_seconds = duration
+            self._max_seconds = max(self._max_seconds, duration)
+            self._last_at = time.time()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            average = (
+                self._total_seconds / self._count
+                if self._count
+                else 0.0
+            )
+            return {
+                "count": self._count,
+                "failures": self._failures,
+                "lastSeconds": self._last_seconds,
+                "averageSeconds": average,
+                "maxSeconds": self._max_seconds,
+                "lastAt": self._last_at,
+            }
+
 
 
 def state_record_prefix(namespace: str) -> str:
