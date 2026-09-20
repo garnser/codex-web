@@ -15,6 +15,7 @@ from codex_web.services.task_sources import (
     TaskSourceCreateRequest,
     TaskSourceEvent,
     TaskSourceSnapshot,
+    TaskSourceWritebackResult,
 )
 
 
@@ -377,6 +378,92 @@ class GitLabTaskSource:
             kept.append(replacement)
         return list(dict.fromkeys(kept))
 
+    @staticmethod
+    def _status_label_for_stage(state: WorkItemStage) -> str | None:
+        return {
+            "implementation_active": "status::in progress",
+            "ready_for_validation": "status::awaiting confirmation",
+            "validation_running": "status::in progress",
+            "failed_with_action_owner": "status::blocked",
+            "ready_to_close": "status::in progress",
+            "closed": None,
+        }[state]
+
+    async def write_projection(
+        self,
+        identity: TaskSourceIdentity,
+        current: TaskSourceSnapshot,
+        *,
+        owner: str | None,
+        stage: WorkItemStage,
+    ) -> TaskSourceWritebackResult:
+        """Apply owner and lifecycle projection with at most one issue update.
+
+        The caller owns the provider read so it can coalesce/supersede stale
+        desired state before this mutation is issued.
+        """
+        self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
+        self.capabilities.require(TaskSourceCapability.STATE_WRITE)
+        self._validate_identity(identity)
+        if stage not in get_args(WorkItemStage):
+            raise ValueError(
+                f"Unsupported canonical work-item stage: {stage!r}"
+            )
+
+        normalized_owner = str(owner or "").strip().lower() or None
+        labels = self._replace_prefixed_label(
+            current.labels,
+            "owner::",
+            (
+                f"owner::{normalized_owner}"
+                if normalized_owner
+                else None
+            ),
+        )
+        desired_status = self._status_label_for_stage(stage)
+        labels = self._replace_prefixed_label(
+            tuple(labels),
+            "status::",
+            desired_status,
+        )
+
+        current_owner = self._owner_from_labels(current.labels)
+        current_status = self._status_label(current.labels)
+        source_closed = (current.source_state or "").lower() == "closed"
+        desired_closed = stage == "closed"
+        labels_changed = (
+            current_owner != normalized_owner
+            or current_status != desired_status
+        )
+        state_changed = source_closed != desired_closed
+        if not labels_changed and not state_changed:
+            return TaskSourceWritebackResult(
+                snapshot=current,
+                mutated=False,
+            )
+
+        payload: dict[str, Any] = {"labels": ",".join(labels)}
+        if desired_closed and not source_closed:
+            payload["state_event"] = "close"
+        elif not desired_closed and source_closed:
+            payload["state_event"] = "reopen"
+
+        project_path, iid = self._split_external_id(identity.external_id)
+        issue = await self.client.update_project_issue(
+            self.api_base,
+            project_path,
+            iid,
+            token=self.token,
+            payload=payload,
+        )
+        return TaskSourceWritebackResult(
+            snapshot=self._snapshot_from_issue(
+                issue,
+                project_path=project_path,
+            ),
+            mutated=True,
+        )
+
     async def write_owner(
         self,
         identity: TaskSourceIdentity,
@@ -411,18 +498,10 @@ class GitLabTaskSource:
 
         current = await self.read(identity)
         project_path, iid = self._split_external_id(identity.external_id)
-        status_by_stage = {
-            "implementation_active": "status::in progress",
-            "ready_for_validation": "status::awaiting confirmation",
-            "validation_running": "status::in progress",
-            "failed_with_action_owner": "status::blocked",
-            "ready_to_close": "status::in progress",
-            "closed": None,
-        }
         labels = self._replace_prefixed_label(
             current.labels,
             "status::",
-            status_by_stage[state],
+            self._status_label_for_stage(state),
         )
         update_payload: dict[str, Any] = {"labels": ",".join(labels)}
         if state == "closed":

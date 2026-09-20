@@ -1511,6 +1511,10 @@ work_item_compatibility_service = install_work_item_compatibility(
     work_item_service,
 )
 app.state.work_item_service = work_item_service
+app.state.task_source_registry = work_item_service.task_source_registry
+app.state.task_source_writeback_service = (
+    work_item_service.task_source_writeback
+)
 
 control_plane_broker_audit_store = ControlPlaneBrokerAuditStore(state_store)
 control_plane_broker_service = ControlPlaneBrokerService(
@@ -2757,6 +2761,9 @@ runtime_service = RuntimeService(
     deployment_mode=deployment_mode,
     instance_id=instance_id,
     compatibility_state_metrics=_compatibility_state_metrics,
+    task_source_writeback_status=(
+        work_item_service.task_source_writeback.status
+    ),
 )
 app.state.runtime_service = runtime_service
 core.healthz = runtime_service.healthz

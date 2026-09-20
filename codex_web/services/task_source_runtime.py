@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from typing import Any
@@ -11,6 +12,7 @@ from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencie
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
+    TaskSourceCombinedWriteCapable,
     TaskSourceSnapshot,
 )
 
@@ -197,7 +199,9 @@ class TaskSourceRegistry:
 
 
 class TaskSourceWritebackService:
-    """Project canonical work state to its authoritative source through capabilities."""
+    """Coalesced projection of canonical Work Item state to TaskSources."""
+
+    MAX_RETRIES = 5
 
     def __init__(
         self,
@@ -205,6 +209,7 @@ class TaskSourceWritebackService:
         registry: TaskSourceRegistry,
         *,
         dependencies: WorkItemRuntimeDependencies | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if dependencies is None:
             if host is None:
@@ -214,43 +219,371 @@ class TaskSourceWritebackService:
             dependencies = WorkItemRuntimeDependencies.from_host(host)
         self.dependencies = dependencies
         self.registry = registry
+        self.event_sink = event_sink or (
+            getattr(host, "_append_bot_event", None)
+            if host is not None
+            else None
+        ) or (lambda _event: None)
+        self._desired: dict[tuple[str, ...], WorkItemState] = {}
+        self._desired_at: dict[tuple[str, ...], float] = {}
+        self._generation: dict[tuple[str, ...], int] = {}
+        self._tasks: dict[
+            tuple[str, ...],
+            asyncio.Task[None],
+        ] = {}
+        self._last_applied: dict[
+            tuple[str, ...],
+            tuple[str | None, str, str | None],
+        ] = {}
+        self._stats: dict[str, int] = {
+            "scheduled": 0,
+            "coalesced": 0,
+            "skipped": 0,
+            "applied": 0,
+            "retried": 0,
+            "failed": 0,
+            "providerReads": 0,
+            "providerWrites": 0,
+        }
+        self._last_error: dict[tuple[str, ...], str] = {}
+        self._backoff_until: dict[tuple[str, ...], float] = {}
+
+    @staticmethod
+    def _desired_fingerprint(
+        state: WorkItemState,
+    ) -> tuple[str | None, str, str | None]:
+        identity = getattr(state, "source_identity", None)
+        return (
+            state.current_owner,
+            state.current_stage,
+            getattr(identity, "revision", None),
+        )
+
+    @staticmethod
+    def _key(state: WorkItemState) -> tuple[str, ...] | None:
+        identity = getattr(state, "source_identity", None)
+        if identity is None:
+            return None
+        return (
+            str(state.organization_id or ""),
+            str(state.workspace_id or ""),
+            str(identity.source_type or "").casefold(),
+            str(identity.source_instance or "").rstrip("/"),
+            str(identity.external_id or ""),
+        )
+
+    def _copy_state(self, state: WorkItemState) -> WorkItemState:
+        return state.model_copy(deep=True)
+
+    def _is_current(
+        self,
+        key: tuple[str, ...],
+        generation: int,
+    ) -> bool:
+        return self._generation.get(key) == generation
 
     def _save_snapshot(
         self,
         state: WorkItemState,
         snapshot: TaskSourceSnapshot,
     ) -> WorkItemState:
-        state.source_identity = snapshot.identity
-        state.labels = list(snapshot.labels)
-        state.updated_at = max(state.updated_at, time.time())
+        # Provider feedback must never restore an older scheduled owner/stage.
+        # Merge provider metadata into the latest canonical row.
+        current = (
+            self.dependencies.get_state(state.ref)
+            if self.dependencies.get_state is not None
+            else None
+        )
+        target = (
+            current.model_copy(deep=True)
+            if current is not None
+            else state.model_copy(deep=True)
+        )
+        target.source_identity = snapshot.identity
+        target.labels = list(snapshot.labels)
+        target.updated_at = max(target.updated_at, time.time())
         if self.dependencies.save_state is not None:
-            self.dependencies.save_state(state)
-            return state
+            self.dependencies.save_state(target)
+            return target
         states = self.dependencies.load_states()
-        states[state.ref] = state
+        latest = states.get(target.ref)
+        if latest is not None:
+            latest.source_identity = snapshot.identity
+            latest.labels = list(snapshot.labels)
+            latest.updated_at = max(latest.updated_at, time.time())
+            target = latest
+        states[target.ref] = target
         self.dependencies.save_states(states)
-        return state
+        return target
 
-    async def sync(self, state: WorkItemState) -> WorkItemState:
-        """Best-effort canonical owner/state projection for normal work updates.
-
-        A temporarily unavailable configured provider must not make canonical
-        progress impossible. Direct provider operations such as comments remain
-        strict and fail visibly through ``required=True`` resolution.
-        """
-
+    async def _sync_once(
+        self,
+        state: WorkItemState,
+        *,
+        key: tuple[str, ...] | None = None,
+        generation: int | None = None,
+    ) -> WorkItemState:
         source = self.registry.resolve(state, required=False)
         identity = getattr(state, "source_identity", None)
         if source is None or identity is None:
+            self._stats["skipped"] += 1
             return state
+
+        desired = self._desired_fingerprint(state)
+        if (
+            key is not None
+            and self._last_applied.get(key) == desired
+        ):
+            self._stats["skipped"] += 1
+            return state
+
+        combined = (
+            source
+            if isinstance(source, TaskSourceCombinedWriteCapable)
+            else None
+        )
+        if (
+            combined is not None
+            and source.capabilities.supports(TaskSourceCapability.READ)
+            and source.capabilities.supports(
+                TaskSourceCapability.OWNER_WRITE
+            )
+            and source.capabilities.supports(
+                TaskSourceCapability.STATE_WRITE
+            )
+        ):
+            current = await source.read(identity)
+            self._stats["providerReads"] += 1
+            if (
+                key is not None
+                and generation is not None
+                and not self._is_current(key, generation)
+            ):
+                self._stats["coalesced"] += 1
+                return state
+            result = await combined.write_projection(
+                identity,
+                current,
+                owner=state.current_owner,
+                stage=state.current_stage,
+            )
+            if result.mutated:
+                self._stats["providerWrites"] += 1
+                self._stats["applied"] += 1
+            else:
+                self._stats["skipped"] += 1
+            if key is not None:
+                self._last_applied[key] = (
+                    state.current_owner,
+                    state.current_stage,
+                    result.snapshot.identity.revision,
+                )
+            return self._save_snapshot(state, result.snapshot)
 
         snapshot: TaskSourceSnapshot | None = None
         if source.capabilities.supports(TaskSourceCapability.OWNER_WRITE):
-            snapshot = await source.write_owner(identity, state.current_owner)
+            snapshot = await source.write_owner(
+                identity,
+                state.current_owner,
+            )
+            self._stats["providerWrites"] += 1
             identity = snapshot.identity
         if source.capabilities.supports(TaskSourceCapability.STATE_WRITE):
-            snapshot = await source.write_state(identity, state.current_stage)
-        return self._save_snapshot(state, snapshot) if snapshot is not None else state
+            if (
+                key is not None
+                and generation is not None
+                and not self._is_current(key, generation)
+            ):
+                self._stats["coalesced"] += 1
+                return state
+            snapshot = await source.write_state(
+                identity,
+                state.current_stage,
+            )
+            self._stats["providerWrites"] += 1
+        if snapshot is None:
+            self._stats["skipped"] += 1
+            return state
+        self._stats["applied"] += 1
+        if key is not None:
+            self._last_applied[key] = (
+                state.current_owner,
+                state.current_stage,
+                snapshot.identity.revision,
+            )
+        return self._save_snapshot(state, snapshot)
+
+    async def sync(self, state: WorkItemState) -> WorkItemState:
+        """Synchronously project one canonical state update.
+
+        Direct API flows still await provider synchronization, but provider
+        adapters that support combined projection use one read plus at most one
+        mutation and skip unchanged desired state.
+        """
+        key = self._key(state)
+        return await self._sync_once(state, key=key)
+
+    def schedule(self, state: WorkItemState) -> WorkItemState:
+        """Coalesce asynchronous writeback by authoritative source identity."""
+        key = self._key(state)
+        if key is None:
+            return state
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return state
+
+        self._stats["scheduled"] += 1
+        if key in self._desired:
+            self._stats["coalesced"] += 1
+        self._desired[key] = self._copy_state(state)
+        self._desired_at.setdefault(key, time.time())
+        generation = self._generation.get(key, 0) + 1
+        self._generation[key] = generation
+
+        task = self._tasks.get(key)
+        if task is None or task.done():
+            self._tasks[key] = asyncio.create_task(
+                self._run_key(key),
+                name=(
+                    "task-source-writeback:"
+                    + ":".join(key[-3:])
+                ),
+            )
+        return state
+
+    @staticmethod
+    def _retry_delay(exc: Exception, retry: int) -> float:
+        response = getattr(exc, "response", None)
+        if (
+            response is not None
+            and getattr(response, "status_code", None) == 429
+        ):
+            headers = getattr(response, "headers", {}) or {}
+            try:
+                retry_after = float(headers.get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+            if retry_after > 0:
+                return min(60.0, retry_after)
+        return min(5.0, 0.25 * (2 ** (retry - 1)))
+
+    async def _run_key(self, key: tuple[str, ...]) -> None:
+        retry = 0
+        # One event-loop turn intentionally collapses synchronous update bursts.
+        await asyncio.sleep(0)
+        try:
+            while key in self._desired:
+                generation = self._generation[key]
+                desired = self._copy_state(self._desired[key])
+                try:
+                    await self._sync_once(
+                        desired,
+                        key=key,
+                        generation=generation,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    retry += 1
+                    self._stats["failed"] += 1
+                    self._last_error[key] = str(exc)[:500]
+                    if retry > self.MAX_RETRIES:
+                        self.event_sink(
+                            {
+                                "type": "task_source_writeback_failed",
+                                "ref": desired.ref,
+                                "attempts": retry,
+                                "error": str(exc)[:500],
+                            }
+                        )
+                        return
+                    self._stats["retried"] += 1
+                    delay = self._retry_delay(exc, retry)
+                    self._backoff_until[key] = time.time() + delay
+                    await asyncio.sleep(delay)
+                    continue
+
+                retry = 0
+                self._last_error.pop(key, None)
+                self._backoff_until.pop(key, None)
+                if self._generation.get(key) != generation:
+                    continue
+                self._desired.pop(key, None)
+                self._desired_at.pop(key, None)
+                return
+        finally:
+            current = asyncio.current_task()
+            if self._tasks.get(key) is current:
+                self._tasks.pop(key, None)
+
+    async def stop(self) -> None:
+        tasks = list(self._tasks.values())
+        self._tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def status(self) -> dict[str, Any]:
+        now = time.time()
+        return {
+            **self._stats,
+            "queueDepth": len(self._desired),
+            "activeTasks": sum(
+                1 for task in self._tasks.values() if not task.done()
+            ),
+            "oldestAgeSeconds": (
+                max(
+                    0.0,
+                    now - min(self._desired_at.values()),
+                )
+                if self._desired_at
+                else 0.0
+            ),
+            "backoffItems": sum(
+                1
+                for until in self._backoff_until.values()
+                if until > now
+            ),
+            "lastErrors": {
+                "|".join(key): value
+                for key, value in self._last_error.items()
+            },
+            "items": {
+                "|".join(key): {
+                    "generation": self._generation.get(key, 0),
+                    "lastDesired": (
+                        {
+                            "owner": desired.current_owner,
+                            "stage": desired.current_stage,
+                            "updatedAt": desired.updated_at,
+                            "revision": (
+                                desired.source_identity.revision
+                                if desired.source_identity is not None
+                                else None
+                            ),
+                        }
+                        if desired is not None
+                        else None
+                    ),
+                    "lastApplied": (
+                        {
+                            "owner": applied[0],
+                            "stage": applied[1],
+                            "revision": applied[2],
+                        }
+                        if (
+                            applied := self._last_applied.get(key)
+                        )
+                        is not None
+                        else None
+                    ),
+                    "backoffUntil": self._backoff_until.get(key),
+                }
+                for key, desired in self._desired.items()
+            },
+        }
 
     async def add_comment(self, state: WorkItemState, body: str) -> None:
         source = self.registry.resolve(state, required=True)
@@ -266,9 +599,15 @@ class TaskSourceWritebackService:
         source.capabilities.require(TaskSourceCapability.ARTIFACT_LINKS)
         await source.attach_artifact(identity, url)
 
-    def supports(self, state: WorkItemState, capability: TaskSourceCapability) -> bool:
+    def supports(
+        self,
+        state: WorkItemState,
+        capability: TaskSourceCapability,
+    ) -> bool:
         source = self.registry.resolve(state, required=False)
-        return bool(source and source.capabilities.supports(capability))
+        return bool(
+            source and source.capabilities.supports(capability)
+        )
 
 
 def install_task_source_runtime(
