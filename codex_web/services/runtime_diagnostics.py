@@ -200,6 +200,7 @@ class RuntimeDiagnosticsService:
         health: Callable[[], dict[str, Any]],
         codex: Any,
         bot_runtime: Any,
+        telemetry: Any,
         runtime_policy: Any,
         supervisor: Any,
         thread_message_limit: Callable[[], int],
@@ -209,11 +210,14 @@ class RuntimeDiagnosticsService:
         load_thread_index: Callable[[], list[Any]],
         load_active_turns: Callable[[], dict[str, Any]],
         load_queues: Callable[[], dict[str, list[Any]]],
+        queued_turn_public: Callable[[Any], dict[str, Any]],
         queue_tasks: dict[str, Any],
         load_connections: Callable[[], list[Any]],
         connection_public: Callable[[Any], dict[str, Any]],
         load_bindings: Callable[[], list[Any]],
+        binding_public: Callable[[Any], dict[str, Any]],
         load_agent_presence: Callable[[], Any],
+        agent_presence_public: Callable[[Any], dict[str, Any]],
         load_reply_targets: Callable[[], dict[str, Any]],
         load_delivery_targets: Callable[[], dict[str, Any]],
         load_work_item_states: Callable[[], dict[str, Any]],
@@ -224,6 +228,7 @@ class RuntimeDiagnosticsService:
         self.health = health
         self.codex = codex
         self.bot_runtime = bot_runtime
+        self.telemetry = telemetry
         self.runtime_policy = runtime_policy
         self.supervisor = supervisor
         self.thread_message_limit = thread_message_limit
@@ -233,11 +238,14 @@ class RuntimeDiagnosticsService:
         self.load_thread_index = load_thread_index
         self.load_active_turns = load_active_turns
         self.load_queues = load_queues
+        self.queued_turn_public = queued_turn_public
         self.queue_tasks = queue_tasks
         self.load_connections = load_connections
         self.connection_public = connection_public
         self.load_bindings = load_bindings
+        self.binding_public = binding_public
         self.load_agent_presence = load_agent_presence
+        self.agent_presence_public = agent_presence_public
         self.load_reply_targets = load_reply_targets
         self.load_delivery_targets = load_delivery_targets
         self.load_work_item_states = load_work_item_states
@@ -325,7 +333,9 @@ class RuntimeDiagnosticsService:
                 active.model_dump() for active in active_turns.values()
             ],
             "queues": {
-                thread_id: [queued.model_dump() for queued in items]
+                thread_id: [
+                    self.queued_turn_public(queued) for queued in items
+                ]
                 for thread_id, items in queues.items()
                 if not project_id
                 or any(
@@ -342,11 +352,7 @@ class RuntimeDiagnosticsService:
             "connections": [
                 {
                     **self.connection_public(connection),
-                    "runtime": self.bot_runtime.telemetry.snapshot().get(
-                        connection.id
-                    )
-                    if hasattr(self.bot_runtime, "telemetry")
-                    else None,
+                    "runtime": self.telemetry.snapshot().get(connection.id),
                     "runtimeTaskRunning": (
                         connection.id in self.bot_runtime.tasks
                         and not self.bot_runtime.tasks[
@@ -359,10 +365,10 @@ class RuntimeDiagnosticsService:
                 or connection.project_id == project_id
             ],
             "bindings": [
-                binding.model_dump() for binding in bindings
+                self.binding_public(binding) for binding in bindings
             ],
-            "agentChannelPresence": (
-                self.load_agent_presence().model_dump()
+            "agentChannelPresence": self.agent_presence_public(
+                self.load_agent_presence()
             ),
             "replyTargets": {
                 key: target.model_dump()
