@@ -17,6 +17,11 @@ from codex_web.execution_workers import (
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
+from codex_web.services.control_plane_broker import (
+    AssignmentBoundControlPlaneBroker,
+    CONTROL_PLANE_RELAY_SCRIPT,
+    DeferredControlPlaneBrokerFactory,
+)
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialGrant,
@@ -77,6 +82,7 @@ class AssignmentBoundAgentProcessSession:
         runtime_binding: ExecutionRuntimeBinding | None = None,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -87,6 +93,7 @@ class AssignmentBoundAgentProcessSession:
         self.runtime_factory = runtime_factory
         self.watchdog_interval_seconds = max(0.05, watchdog_interval_seconds)
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.control_plane_broker_factory = control_plane_broker_factory
         if credential_provider is None:
             raise AssignmentBoundAgentProcessSessionError(
                 "runtime credential provider is required"
@@ -107,6 +114,7 @@ class AssignmentBoundAgentProcessSession:
         self.last_error: str | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
         self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
+        self.control_plane_broker: AssignmentBoundControlPlaneBroker | None = None
         self._start_lock = asyncio.Lock()
         self._stopping = False
 
@@ -237,6 +245,7 @@ class AssignmentBoundAgentProcessSession:
         assignment: ExecutionAssignment,
         workspace_path: Path,
         broker: AssignmentBoundAgentModelEgressBroker | None,
+        control_broker: AssignmentBoundControlPlaneBroker | None,
     ):
         delegation_service = self.credential_provider
         if delegation_service is None:
@@ -292,6 +301,26 @@ class AssignmentBoundAgentProcessSession:
                 trusted_mounts = (
                     *trusted_mounts,
                     (broker.mount_source, broker.mount_destination),
+                )
+            if control_broker is not None:
+                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
+                    control_broker.sandbox_url
+                )
+                command = (
+                    "/usr/bin/python3",
+                    "-u",
+                    "-c",
+                    CONTROL_PLANE_RELAY_SCRIPT,
+                    str(control_broker.sandbox_socket_path),
+                    "8788",
+                    *command,
+                )
+                trusted_mounts = (
+                    *trusted_mounts,
+                    (
+                        control_broker.mount_source,
+                        control_broker.mount_destination,
+                    ),
                 )
             process = self.local_worker.backend.spawn_interactive(
                 assignment,
@@ -362,6 +391,26 @@ class AssignmentBoundAgentProcessSession:
         await broker.start()
         return broker
 
+    async def _start_control_plane_broker(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> AssignmentBoundControlPlaneBroker | None:
+        factory = self.control_plane_broker_factory
+        lease = assignment.lease
+        if factory is None or lease is None:
+            return None
+        worker = self._current_worker()
+        return await factory.start(
+            assignment=assignment,
+            worker_id=worker.id,
+            service_identity_id=worker.service_identity_id,
+            fence=lease.fence,
+            validator=self._validate_egress_state,
+            worker_service_identity_validator=lambda: (
+                self._current_worker().service_identity_id
+            ),
+        )
+
     async def start(self) -> "AssignmentBoundAgentProcessSession":
         async with self._start_lock:
             current = self.status()
@@ -380,14 +429,20 @@ class AssignmentBoundAgentProcessSession:
                 )
             process = None
             broker = None
+            control_broker = None
             try:
                 self.fence = lease.fence
                 broker = await self._start_egress_broker()
                 self.egress_broker = broker
+                control_broker = await self._start_control_plane_broker(
+                    assignment
+                )
+                self.control_plane_broker = control_broker
                 process, delegation, command = self._spawn_delegated_process(
                     assignment,
                     workspace_path,
                     broker,
+                    control_broker,
                 )
                 self.delegation = delegation
                 self.workspace_path = workspace_path
@@ -422,6 +477,11 @@ class AssignmentBoundAgentProcessSession:
                         await broker.stop()
                     if self.egress_broker is broker:
                         self.egress_broker = None
+                if control_broker is not None:
+                    with contextlib.suppress(Exception):
+                        await control_broker.stop()
+                    if self.control_plane_broker is control_broker:
+                        self.control_plane_broker = None
                 raise
 
     def _validate_resource_bounds(self, assignment: ExecutionAssignment) -> None:
@@ -589,6 +649,10 @@ class AssignmentBoundAgentProcessSession:
         self.egress_broker = None
         if broker is not None:
             await broker.stop()
+        control_broker = self.control_plane_broker
+        self.control_plane_broker = None
+        if control_broker is not None:
+            await control_broker.stop()
         self._stopping = False
 
 
@@ -606,6 +670,7 @@ class AssignmentBoundAgentProcessSessionManager:
         session_factory: Callable[..., AssignmentBoundAgentProcessSession] = AssignmentBoundAgentProcessSession,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
@@ -613,6 +678,7 @@ class AssignmentBoundAgentProcessSessionManager:
         self.session_factory = session_factory
         self.watchdog_interval_seconds = watchdog_interval_seconds
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.control_plane_broker_factory = control_plane_broker_factory
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
@@ -635,6 +701,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 runtime_factory=self.runtime_factory,
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
                 egress_endpoints_resolver=self.egress_endpoints_resolver,
+                control_plane_broker_factory=self.control_plane_broker_factory,
                 credential_provider=self.credential_provider,
                 runtime_binding=self.runtime_binding,
             )
