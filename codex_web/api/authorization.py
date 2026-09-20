@@ -188,6 +188,19 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    (
+        "POST",
+        "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry",
+    ): ApiAuthorizationPolicy(
+        capability="execution.retry",
+        level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description=(
+            "Retry a retained execution only with administrator authority "
+            "and MFA."
+        ),
+    ),
     ("POST", "/api/work-items/{ref:path}/retry"): ApiAuthorizationPolicy(
         capability="work-item.operate",
         level=AuthorityLevel.EXECUTE,
