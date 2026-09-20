@@ -393,6 +393,34 @@ class ExecutionWorkspaceService:
                 break
         return state, abandoned
 
+    def _cleanup_git_workspace(
+        self,
+        workspace: ExecutionWorkspace,
+        *,
+        discard_mutable_branch: bool,
+    ) -> None:
+        if workspace.repository_members:
+            for member in reversed(workspace.repository_members):
+                self.backend.cleanup_git(
+                    Path(member.source_path),
+                    Path(member.workspace_path),
+                    member.branch_name or "",
+                    discard_branch=bool(
+                        discard_mutable_branch
+                        and member.resource_id == workspace.repository_resource_id
+                        and member.branch_name
+                    ),
+                )
+            return
+        if workspace.path and workspace.branch_name:
+            project = self.project_lookup(workspace.project_id)
+            self.backend.cleanup_git(
+                Path(project.path),
+                Path(workspace.path),
+                workspace.branch_name,
+                discard_branch=discard_mutable_branch,
+            )
+
     def recover_expired(
         self,
         *,
@@ -460,7 +488,11 @@ class ExecutionWorkspaceService:
         actor: AuthenticationActor,
     ) -> ExecutionWorkspace:
         project = self._project(request.project_id, actor)
-        _, repository_resource_id = self._resource_set(request, actor)
+        resources, repository_resource_id, read_only_repository_ids = self._resource_set(
+            request,
+            actor,
+        )
+        resource_by_id = {item.id: item for item in resources}
         self.recover_expired(scope=actor.tenant)
 
         workspace_id = deterministic_workspace_id(
@@ -472,6 +504,13 @@ class ExecutionWorkspaceService:
         )
         existing = self._existing(workspace_id, actor)
         if existing is not None:
+            if (
+                existing.resource_ids != request.resource_ids
+                or existing.repository_resource_id != repository_resource_id
+            ):
+                raise ExecutionWorkspaceConflictError(
+                    "execution id is already bound to a different resource set"
+                )
             if existing.status in {
                 ExecutionWorkspaceStatus.PROVISIONING,
                 ExecutionWorkspaceStatus.ACTIVE,
@@ -496,9 +535,39 @@ class ExecutionWorkspaceService:
             else None
         )
         if len(request.resource_ids) > self.quota.max_resources_per_workspace:
-            raise ExecutionWorkspaceQuotaError("execution workspace resource quota exceeded")
+            raise ExecutionWorkspaceQuotaError(
+                "execution workspace resource quota exceeded"
+            )
         if request.requested_disk_bytes > self.quota.max_requested_disk_bytes:
-            raise ExecutionWorkspaceQuotaError("execution workspace requested disk quota exceeded")
+            raise ExecutionWorkspaceQuotaError(
+                "execution workspace requested disk quota exceeded"
+            )
+
+        resource_modes = {
+            resource_id: request.lease_mode
+            for resource_id in request.resource_ids
+        }
+        for resource_id in read_only_repository_ids:
+            resource_modes[resource_id] = LeaseMode.READ
+        aggregate_mode = (
+            LeaseMode.WRITE
+            if any(mode == LeaseMode.WRITE for mode in resource_modes.values())
+            else LeaseMode.READ
+        )
+
+        source_paths: dict[str, Path] = {}
+        if repository_resource_id is not None:
+            source_paths[repository_resource_id] = self._repository_source_path(
+                resource_by_id[repository_resource_id],
+                project,
+                allow_project_fallback=True,
+            )
+            for resource_id in read_only_repository_ids:
+                source_paths[resource_id] = self._repository_source_path(
+                    resource_by_id[resource_id],
+                    project,
+                    allow_project_fallback=False,
+                )
 
         lease = ExecutionWorkspaceLease(
             id=lease_id,
@@ -510,7 +579,8 @@ class ExecutionWorkspaceService:
             execution_id=request.execution_id,
             owner_identity_id=actor.identity_id,
             resource_ids=request.resource_ids,
-            mode=request.lease_mode,
+            mode=aggregate_mode,
+            resource_modes=resource_modes,
             acquired_at=now,
             expires_at=now + request.ttl_seconds,
         )
@@ -548,21 +618,35 @@ class ExecutionWorkspaceService:
                 and item.workspace_id == actor.workspace_id
             ]
             if len(active_leases) >= self.quota.max_active_per_tenant:
-                raise ExecutionWorkspaceQuotaError("tenant active execution workspace quota exceeded")
+                raise ExecutionWorkspaceQuotaError(
+                    "tenant active execution workspace quota exceeded"
+                )
             owner_active = [
-                item for item in active_leases if item.owner_identity_id == actor.identity_id
+                item
+                for item in active_leases
+                if item.owner_identity_id == actor.identity_id
             ]
             if len(owner_active) >= self.quota.max_active_per_identity:
-                raise ExecutionWorkspaceQuotaError("identity active execution workspace quota exceeded")
+                raise ExecutionWorkspaceQuotaError(
+                    "identity active execution workspace quota exceeded"
+                )
             requested = set(request.resource_ids)
             for active in active_leases:
                 overlap = requested.intersection(active.resource_ids)
-                if not overlap:
-                    continue
-                if request.lease_mode == LeaseMode.WRITE or active.mode == LeaseMode.WRITE:
+                conflicting = [
+                    resource_id
+                    for resource_id in overlap
+                    if (
+                        resource_modes.get(resource_id, aggregate_mode)
+                        == LeaseMode.WRITE
+                        or active.resource_modes.get(resource_id, active.mode)
+                        == LeaseMode.WRITE
+                    )
+                ]
+                if conflicting:
                     raise ExecutionWorkspaceConflictError(
                         "conflicting active resource lease: "
-                        + ", ".join(sorted(overlap))
+                        + ", ".join(sorted(conflicting))
                     )
             state.leases.append(lease)
             state.workspaces.append(workspace)
@@ -578,6 +662,11 @@ class ExecutionWorkspaceService:
                         "subject_kind": request.subject.kind.value,
                         "subject_ref": request.subject.ref,
                         "expires_at": lease.expires_at,
+                        "repository_member_count": (
+                            1 + len(read_only_repository_ids)
+                            if repository_resource_id is not None
+                            else 0
+                        ),
                     },
                 ),
             )
@@ -622,19 +711,77 @@ class ExecutionWorkspaceService:
 
             self.store.update(activate_resource)
             activated = next(
-                item for item in self.store.load().workspaces if item.id == workspace_id
+                item
+                for item in self.store.load().workspaces
+                if item.id == workspace_id
             )
             self._sync_work_item(activated)
             return activated
 
+        provisioned_members: list[
+            tuple[Resource, ExecutionWorkspaceMember]
+        ] = []
         try:
-            provisioned = self.backend.provision_git(
-                Path(project.path),
+            mutable_resource = resource_by_id[repository_resource_id]
+            mutable_source = source_paths[repository_resource_id]
+            mutable = self.backend.provision_git(
+                mutable_source,
                 workspace_id,
                 branch_name or "",
                 request.base_revision,
             )
+            provisioned_members.append(
+                (
+                    mutable_resource,
+                    ExecutionWorkspaceMember(
+                        resource_id=repository_resource_id,
+                        access_mode=request.lease_mode,
+                        source_path=str(mutable_source),
+                        workspace_path=str(mutable.path),
+                        sandbox_path=str(mutable.path),
+                        branch_name=mutable.branch_name,
+                        base_revision=mutable.base_revision,
+                        head_revision=mutable.head_revision,
+                        disk_bytes=self.backend.disk_usage(mutable.path),
+                    ),
+                )
+            )
+
+            for resource_id in read_only_repository_ids:
+                resource = resource_by_id[resource_id]
+                source = source_paths[resource_id]
+                provisioned = self.backend.provision_git_readonly(
+                    source,
+                    self._readonly_member_workspace_id(workspace_id, resource_id),
+                    None,
+                )
+                provisioned_members.append(
+                    (
+                        resource,
+                        ExecutionWorkspaceMember(
+                            resource_id=resource_id,
+                            access_mode=LeaseMode.READ,
+                            source_path=str(source),
+                            workspace_path=str(provisioned.path),
+                            sandbox_path=self._readonly_sandbox_path(resource_id),
+                            branch_name=None,
+                            base_revision=provisioned.base_revision,
+                            head_revision=provisioned.head_revision,
+                            disk_bytes=self.backend.disk_usage(provisioned.path),
+                        ),
+                    )
+                )
         except Exception as exc:
+            for _resource, member in reversed(provisioned_members):
+                try:
+                    self.backend.cleanup_git(
+                        Path(member.source_path),
+                        Path(member.workspace_path),
+                        member.branch_name or "",
+                        discard_branch=bool(member.branch_name),
+                    )
+                except Exception:
+                    pass
             failed_at = time.time()
             message = str(exc)
 
@@ -670,6 +817,15 @@ class ExecutionWorkspaceService:
             self.store.update(fail)
             raise ExecutionWorkspaceBackendError(message) from exc
 
+        mutable_member = next(
+            member
+            for _resource, member in provisioned_members
+            if member.resource_id == repository_resource_id
+        )
+        actual_disk_bytes = sum(
+            member.disk_bytes
+            for _resource, member in provisioned_members
+        )
         activated_at = time.time()
 
         def activate(state):
@@ -678,11 +834,15 @@ class ExecutionWorkspaceService:
                     state.workspaces[index] = item.model_copy(
                         update={
                             "status": ExecutionWorkspaceStatus.ACTIVE,
-                            "path": str(provisioned.path),
-                            "branch_name": provisioned.branch_name,
-                            "base_revision": provisioned.base_revision,
-                            "head_revision": provisioned.head_revision,
-                            "actual_disk_bytes": self.backend.disk_usage(provisioned.path),
+                            "path": mutable_member.workspace_path,
+                            "branch_name": mutable_member.branch_name,
+                            "base_revision": mutable_member.base_revision,
+                            "head_revision": mutable_member.head_revision,
+                            "actual_disk_bytes": actual_disk_bytes,
+                            "repository_members": tuple(
+                                member
+                                for _resource, member in provisioned_members
+                            ),
                             "updated_at": activated_at,
                         }
                     )
@@ -693,8 +853,10 @@ class ExecutionWorkspaceService:
                             event_type="workspace_activated",
                             actor_identity_id=actor.identity_id,
                             details={
-                                "base_revision": provisioned.base_revision,
-                                "branch_name": provisioned.branch_name,
+                                "base_revision": mutable_member.base_revision,
+                                "branch_name": mutable_member.branch_name,
+                                "repository_member_count": len(provisioned_members),
+                                "read_only_member_count": len(read_only_repository_ids),
                             },
                         ),
                     )
@@ -703,7 +865,8 @@ class ExecutionWorkspaceService:
 
         self.store.update(activate)
         activated = next(
-            item for item in self.store.load().workspaces if item.id == workspace_id
+            item for item in self.store.load().workspaces
+            if item.id == workspace_id
         )
         self._sync_work_item(activated)
         return activated
