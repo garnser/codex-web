@@ -253,7 +253,10 @@ from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
 from codex_web.services.runtime_policy import RuntimePolicy
-from codex_web.services.native_recovery import NativeRecoveryService
+from codex_web.services.native_recovery import (
+    DeferredRecoveryScheduler,
+    NativeRecoveryService,
+)
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.task_source_action_provider import TaskSourceActionProvider
 from codex_web.services.thread_recovery import install_thread_recovery_service
@@ -1453,11 +1456,15 @@ gitlab_sync_health = GitLabSyncHealth(
 _mirror_gitlab_sync_health(gitlab_sync_health.snapshot())
 app.state.gitlab_sync_health = gitlab_sync_health
 
+work_item_recovery_scheduler = DeferredRecoveryScheduler()
+app.state.work_item_recovery_scheduler = work_item_recovery_scheduler
+
 work_item_service = WorkItemService(
     None,
     gitlab_client,
     work_item_state_machine,
     continuity=work_item_continuity_service,
+    recovery=work_item_recovery_scheduler,
     sync_health=gitlab_sync_health,
     event_sink=bot_runtime_telemetry.append,
     publish_event=core.hub.publish,
@@ -2087,7 +2094,7 @@ native_recovery_service = NativeRecoveryService(
     append_event=bot_runtime_telemetry.append,
 )
 app.state.native_recovery_service = native_recovery_service
-work_item_service.recovery = native_recovery_service
+work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
