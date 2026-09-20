@@ -4,8 +4,42 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
+from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+_RECORD_STORAGE_ROOT = "__codex_records__/"
+
+
+def state_record_prefix(namespace: str) -> str:
+    return f"{_RECORD_STORAGE_ROOT}{quote(str(namespace), safe='')}/"
+
+
+def state_record_marker(namespace: str) -> str:
+    return f"{state_record_prefix(namespace)}__meta__"
+
+
+def state_record_storage_key(namespace: str, key: str) -> str:
+    return f"{state_record_prefix(namespace)}k/{quote(str(key), safe='')}"
+
+
+def parse_state_record_storage_key(
+    storage_namespace: str,
+) -> tuple[str, str | None] | None:
+    if not storage_namespace.startswith(_RECORD_STORAGE_ROOT):
+        return None
+    encoded_namespace, separator, suffix = storage_namespace[
+        len(_RECORD_STORAGE_ROOT):
+    ].partition("/")
+    if not separator:
+        return None
+    namespace = unquote(encoded_namespace)
+    if suffix == "__meta__":
+        return namespace, None
+    if suffix.startswith("k/"):
+        return namespace, unquote(suffix[2:])
+    return None
 
 
 @runtime_checkable
@@ -26,6 +60,21 @@ class StateStore(Protocol):
         defaults: dict[str, Any],
         updater: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]: ...
+    def record_collection_exists(self, namespace: str) -> bool: ...
+    def record_get(self, namespace: str, key: str) -> Any | None: ...
+    def record_items(self, namespace: str) -> dict[str, Any]: ...
+    def record_apply(
+        self,
+        namespace: str,
+        *,
+        upserts: dict[str, Any],
+        deletes: tuple[str, ...] = (),
+    ) -> None: ...
+    def record_replace(
+        self,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None: ...
     def contains(self, namespace: str) -> bool: ...
     def delete(self, namespace: str) -> bool: ...
     def documents(self) -> dict[str, Any]: ...
