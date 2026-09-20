@@ -14,6 +14,7 @@ from codex_web.execution_subjects import ExecutionSubject, normalize_execution_s
 class ExecutionWorkspaceKind(StrEnum):
     GIT_WORKTREE = "git_worktree"
     RESOURCE_LEASE = "resource_lease"
+    SCRATCH = "scratch"
 
 
 class ExecutionWorkspaceStatus(StrEnum):
@@ -202,6 +203,7 @@ class ExecutionWorkspaceAcquire(BaseModel):
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
     read_only_repository_ids: tuple[str, ...] = ()
+    scratch: bool = False
     base_revision: str | None = None
     lease_mode: LeaseMode = LeaseMode.WRITE
     ttl_seconds: int = Field(default=1800, ge=30, le=86400)
@@ -213,9 +215,19 @@ class ExecutionWorkspaceAcquire(BaseModel):
             self.subject,
             self.work_item_ref,
         )
-        self.resource_ids = tuple(dict.fromkeys(item.strip() for item in self.resource_ids if item.strip()))
-        if not self.resource_ids:
+        self.resource_ids = tuple(
+            dict.fromkeys(item.strip() for item in self.resource_ids if item.strip())
+        )
+        if not self.resource_ids and not self.scratch:
             raise ValueError("execution workspace requires at least one canonical resource")
+        if self.scratch and (
+            self.resource_ids
+            or self.repository_resource_id is not None
+            or self.read_only_repository_ids
+        ):
+            raise ValueError(
+                "scratch execution workspace cannot carry repository/resource authority"
+            )
         self.read_only_repository_ids = tuple(
             dict.fromkeys(
                 item.strip()
