@@ -271,6 +271,52 @@ class ExecutionPreflightService:
 
         return self.store.update(attempt_id, update)
 
+    def get_for_execution(
+        self,
+        execution_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionPreflightAttempt | None:
+        attempt = self.store.get(self._attempt_id(execution_id))
+        if attempt is None:
+            return None
+        self._authorize(attempt, actor)
+        return attempt
+
+    def mark_started_for_execution(
+        self,
+        execution_id: str,
+        *,
+        actor: AuthenticationActor,
+        claim_id: str | None,
+    ) -> ExecutionPreflightAttempt | None:
+        attempt = self.get_for_execution(execution_id, actor=actor)
+        if attempt is None:
+            return None
+        return self.mark_started(
+            attempt.id,
+            actor=actor,
+            claim_id=claim_id,
+        )
+
+    def mark_failed(
+        self,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+        claim_id: str | None,
+        error: Exception,
+    ) -> ExecutionPreflightAttempt:
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+        if claim_id and current.retry_claim_id not in {None, claim_id}:
+            return current
+        return self.store.mark_failed(
+            attempt_id,
+            now=float(self.clock()),
+            error=str(error)[:1000],
+        )
+
     def retry_payload(
         self,
         attempt: ExecutionPreflightAttempt,
