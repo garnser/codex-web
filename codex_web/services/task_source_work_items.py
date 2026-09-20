@@ -7,6 +7,7 @@ from typing import Any
 
 from codex_web.models import WorkItemState
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
+from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import TaskSource, TaskSourceSnapshot
 from codex_web.services.work_item_state import WorkItemStateMachine
@@ -21,8 +22,20 @@ class TaskSourceWorkItemProjector:
     it performs only deterministic in-process state transformation/persistence.
     """
 
-    def __init__(self, host: Any, state_machine: WorkItemStateMachine) -> None:
-        self.host = host
+    def __init__(
+        self,
+        host: Any | None,
+        state_machine: WorkItemStateMachine,
+        *,
+        dependencies: WorkItemRuntimeDependencies | None = None,
+    ) -> None:
+        if dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "TaskSourceWorkItemProjector requires work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(host)
+        self.dependencies = dependencies
         self.state_machine = state_machine
         self.conformance = TaskSourceConformanceSuite()
 
@@ -68,22 +81,31 @@ class TaskSourceWorkItemProjector:
         return None
 
     def _project_tenant(self, project_id: str) -> tuple[str, str]:
-        loader = getattr(self.host, "_load_projects", None)
-        if callable(loader):
-            for project in loader():
-                if getattr(project, "id", None) == project_id:
-                    return (
-                        str(getattr(project, "organization_id", "local") or "local"),
-                        str(getattr(project, "workspace_id", "default") or "default"),
-                    )
+        for project in self.dependencies.load_projects():
+            if getattr(project, "id", None) == project_id:
+                return (
+                    str(
+                        getattr(project, "organization_id", "local")
+                        or "local"
+                    ),
+                    str(
+                        getattr(project, "workspace_id", "default")
+                        or "default"
+                    ),
+                )
         return ("local", "default")
 
     def _project_resource_ids(self, project_id: str) -> list[str]:
-        resolver = getattr(self.host, "_resource_ids_for_project", None)
-        if not callable(resolver):
-            return []
         try:
-            return list(dict.fromkeys(str(item) for item in resolver(project_id) if str(item).strip()))
+            return list(
+                dict.fromkeys(
+                    str(item)
+                    for item in self.dependencies.resource_ids_for_project(
+                        project_id
+                    )
+                    if str(item).strip()
+                )
+            )
         except Exception:
             return []
 
@@ -99,7 +121,7 @@ class TaskSourceWorkItemProjector:
         if not external_ref:
             raise ValueError("Task-source snapshot external identity must not be empty")
 
-        states = self.host._load_work_item_states()
+        states = self.dependencies.load_states()
         state = self._find_existing_state(states, snapshot)
         ref = state.ref if state is not None else external_ref
         projection = source.project(
@@ -137,11 +159,11 @@ class TaskSourceWorkItemProjector:
                 current_stage=projected_stage,
                 implementation_owner=(
                     projected_owner
-                    if projected_owner and projected_owner not in self.host.NON_IMPLEMENTATION_OWNERS
+                    if projected_owner and projected_owner not in self.dependencies.non_implementation_owners
                     else None
                 ),
-                validation_owner=self.host.DEFAULT_VALIDATION_OWNER,
-                release_owner=self.host.DEFAULT_RELEASE_OWNER,
+                validation_owner=self.dependencies.default_validation_owner,
+                release_owner=self.dependencies.default_release_owner,
                 artifact_state="branch",
                 last_meaningful_update_at=now,
                 last_owner_activity_at=now,
@@ -284,5 +306,5 @@ class TaskSourceWorkItemProjector:
         state = self.state_machine._ensure_work_item_lane_defaults(state)
         state.artifact_state = self.state_machine._infer_artifact_state_from_state(state)
         states[ref] = state
-        self.host._save_work_item_states(states)
+        self.dependencies.save_states(states)
         return state
