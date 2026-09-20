@@ -36,33 +36,74 @@ class ApprovalService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         *,
+        runtime_transport: Any | None = None,
         assignment_sessions: AssignmentBoundAgentSessionManager | tuple[AssignmentBoundAgentSessionManager, ...] | None = None,
         canonical: ApprovalRequestService | None = None,
         canonical_requester: AuthenticationActor | None = None,
         compatibility_actor: AuthenticationActor | None = None,
+        approval_summary=None,
+        approval_result=None,
+        request_id_value=None,
+        load_approval_messages=None,
+        save_approval_messages=None,
+        compatibility_resolver=None,
     ) -> None:
         self.host = host
+        self.runtime_transport = (
+            runtime_transport
+            if runtime_transport is not None
+            else getattr(host, "codex", None)
+        )
+        if self.runtime_transport is None:
+            raise ValueError("ApprovalService requires a runtime transport")
         self.assignment_sessions = assignment_sessions
         self.canonical = canonical
         self.canonical_requester = canonical_requester
         self.compatibility_actor = compatibility_actor
-
-        # ApprovalService is already composed by application.py. Rebind the
-        # historical mutation seams here so compatibility surfaces share the
-        # same transport and, when configured, the canonical approval gate.
-        host._remember_approval_message = self.remember_message
-        host._forget_approval_messages = self.forget_messages
-        host._pending_codex_approvals = self.pending
-        host._respond_codex_approval = (
-            self.respond_compatibility if canonical is not None else self.respond
+        self.approval_summary = (
+            approval_summary
+            or getattr(host, "_approval_summary", None)
+            or (lambda request: f"{request.get('method') or 'approval'} approval")
         )
-        if canonical is not None:
-            host._register_canonical_approval_request = self.register_native_request
+        self.approval_result = (
+            approval_result
+            or getattr(host, "_approval_result", None)
+            or self.native_result
+        )
+        self.request_id_value = (
+            request_id_value
+            or getattr(host, "_request_id_value", None)
+            or self.normalize_request_id
+        )
+        self.load_approval_messages = (
+            load_approval_messages
+            or getattr(host, "_load_approval_messages", None)
+        )
+        self.save_approval_messages = (
+            save_approval_messages
+            or getattr(host, "_save_approval_messages", None)
+        )
+        self.compatibility_resolver = (
+            compatibility_resolver
+            or getattr(host, "_resolve_approval_request", None)
+        )
+
+        # Historical aliases are output-only compatibility. Production callers
+        # use this service directly and do not read runtime behavior from host.
+        if host is not None:
+            host._remember_approval_message = self.remember_message
+            host._forget_approval_messages = self.forget_messages
+            host._pending_codex_approvals = self.pending
+            host._respond_codex_approval = (
+                self.respond_compatibility if canonical is not None else self.respond
+            )
+            if canonical is not None:
+                host._register_canonical_approval_request = self.register_native_request
 
     def _approval_runtimes(self):
-        yield self.host.codex
+        yield self.runtime_transport
         managers = self.assignment_sessions
         if managers is None:
             return
@@ -156,11 +197,7 @@ class ApprovalService:
                 )
             return existing
 
-        summary = getattr(self.host, "_approval_summary", None)
-        if callable(summary):
-            reason = str(summary(request))
-        else:
-            reason = f"Native Codex approval requested for {method}"
+        reason = str(self.approval_summary(request))
 
         return await canonical.create(
             ApprovalRequestCreate(
@@ -182,6 +219,52 @@ class ApprovalService:
             requester=requester,
             request_id=canonical_id,
         )
+
+    @staticmethod
+    def normalize_request_id(request_id: int | str) -> int | str:
+        return (
+            int(request_id)
+            if isinstance(request_id, str) and request_id.isdigit()
+            else request_id
+        )
+
+    @staticmethod
+    def native_result(method: str, decision: str) -> dict[str, Any]:
+        accept = decision in {
+            "accept",
+            "acceptForSession",
+            "approved",
+            "approved_for_session",
+        }
+        session = decision in {"acceptForSession", "approved_for_session"}
+        if method in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+        }:
+            return {
+                "decision": (
+                    "acceptForSession"
+                    if session
+                    else ("accept" if accept else "decline")
+                )
+            }
+        if method == "execCommandApproval":
+            return {
+                "decision": (
+                    "approved_for_session"
+                    if session
+                    else ("approved" if accept else "denied")
+                )
+            }
+        if method == "applyPatchApproval":
+            return {"decision": "approved" if accept else "denied"}
+        if method == "item/permissions/requestApproval":
+            return {
+                "permissions": {},
+                "scope": "session" if session else "turn",
+                "strictAutoReview": not accept,
+            }
+        return {"decision": "accept" if accept else "decline"}
 
     @staticmethod
     def _outcome_for_native_decision(decision: str) -> ApprovalDecisionOutcome:
@@ -287,10 +370,14 @@ class ApprovalService:
         *,
         actor: AuthenticationActor | None = None,
     ) -> dict[str, bool]:
-        normalized_id = self.host._request_id_value(request_id)
+        normalized_id = self.request_id_value(request_id)
         canonical = self.canonical
         if canonical is None:
-            return await self.host._resolve_approval_request(
+            if self.compatibility_resolver is None:
+                raise RuntimeError(
+                    "native approval compatibility resolver is unavailable"
+                )
+            return await self.compatibility_resolver(
                 normalized_id,
                 decision,
                 actor="Codex Web",
@@ -332,7 +419,7 @@ class ApprovalService:
             ApprovalRequestStatus.CONSUMED,
             ApprovalRequestStatus.REJECTED,
         }:
-            result = self.host._approval_result(
+            result = self.approval_result(
                 str(native_request.get("method") or "approval"),
                 decision,
             )
@@ -350,7 +437,9 @@ class ApprovalService:
         context: str,
         thread_id: str | None = None,
     ) -> None:
-        messages = self.host._load_approval_messages()
+        if self.load_approval_messages is None or self.save_approval_messages is None:
+            raise RuntimeError("approval message repository is unavailable")
+        messages = self.load_approval_messages()
         key = str(request_id)
         current = messages.setdefault(key, [])
         if any(
@@ -371,9 +460,11 @@ class ApprovalService:
                 created_at=time.time(),
             )
         )
-        self.host._save_approval_messages(messages)
+        self.save_approval_messages(messages)
 
     def forget_messages(self, request_id: int | str) -> None:
-        messages = self.host._load_approval_messages()
+        if self.load_approval_messages is None or self.save_approval_messages is None:
+            raise RuntimeError("approval message repository is unavailable")
+        messages = self.load_approval_messages()
         if messages.pop(str(request_id), None) is not None:
-            self.host._save_approval_messages(messages)
+            self.save_approval_messages(messages)
