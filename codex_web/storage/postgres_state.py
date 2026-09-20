@@ -5,6 +5,14 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
+from codex_web.storage.state_store import (
+    OperationTimingMetrics,
+    parse_state_record_storage_key,
+    state_record_marker,
+    state_record_prefix,
+    state_record_storage_key,
+)
+
 
 class PostgresStateStore:
     """Shared transactional document store backed by PostgreSQL.
@@ -34,6 +42,7 @@ class PostgresStateStore:
                 ) from exc
             connect = psycopg.connect
         self._connect_factory = connect
+        self._keyed_mutation_metrics = OperationTimingMetrics()
         self._initialize()
 
     def _connect(self):
@@ -125,6 +134,317 @@ class PostgresStateStore:
                         "PostgreSQL state schema is newer than this codex-web binary"
                     )
 
+    @staticmethod
+    def _record_collection_exists_in_cursor(
+        cursor: Any,
+        namespace: str,
+    ) -> bool:
+        cursor.execute(
+            "SELECT 1 FROM codex_state_documents WHERE namespace = %s",
+            (state_record_marker(namespace),),
+        )
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def _record_items_in_cursor(
+        cursor: Any,
+        namespace: str,
+    ) -> dict[str, Any]:
+        prefix = f"{state_record_prefix(namespace)}k/"
+        cursor.execute(
+            """
+            SELECT namespace, payload
+            FROM codex_state_documents
+            WHERE LEFT(namespace, LENGTH(%s)) = %s
+            ORDER BY namespace
+            """,
+            (prefix, prefix),
+        )
+        rows = cursor.fetchall()
+        result: dict[str, Any] = {}
+        for storage_namespace, payload in rows:
+            parsed = parse_state_record_storage_key(str(storage_namespace))
+            if parsed is None or parsed[1] is None:
+                continue
+            result[parsed[1]] = (
+                json.loads(payload) if isinstance(payload, str) else payload
+            )
+        return result
+
+    @classmethod
+    def _replace_records_in_cursor(
+        cls,
+        cursor: Any,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None:
+        prefix = state_record_prefix(namespace)
+        cursor.execute(
+            "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
+            (prefix, prefix),
+        )
+        cursor.execute(
+            "DELETE FROM codex_state_documents WHERE namespace = %s",
+            (namespace,),
+        )
+        cls._upsert(
+            cursor,
+            state_record_marker(namespace),
+            {"schemaVersion": 1},
+        )
+        for key, payload in records.items():
+            cls._upsert(
+                cursor,
+                state_record_storage_key(namespace, str(key)),
+                payload,
+            )
+
+    @classmethod
+    def _ensure_record_collection_in_cursor(
+        cls,
+        cursor: Any,
+        namespace: str,
+    ) -> None:
+        if cls._record_collection_exists_in_cursor(cursor, namespace):
+            return
+        cursor.execute(
+            "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+            (namespace,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            cls._upsert(
+                cursor,
+                state_record_marker(namespace),
+                {"schemaVersion": 1},
+            )
+            return
+        payload = cls._decode(row)
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"state namespace {namespace!r} is not a keyed mapping"
+            )
+        cls._replace_records_in_cursor(cursor, namespace, payload)
+
+    def record_collection_exists(self, namespace: str) -> bool:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                return self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                )
+
+    def record_get(self, namespace: str, key: str) -> Any | None:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    cursor.execute(
+                        "SELECT payload FROM codex_state_documents WHERE namespace = %s",
+                        (state_record_storage_key(namespace, key),),
+                    )
+                    return self._decode(cursor.fetchone())
+                cursor.execute(
+                    "SELECT payload FROM codex_state_documents WHERE namespace = %s",
+                    (namespace,),
+                )
+                payload = self._decode(cursor.fetchone())
+                if isinstance(payload, dict):
+                    return payload.get(key)
+                return None
+
+    def record_items(self, namespace: str) -> dict[str, Any]:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    return self._record_items_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                cursor.execute(
+                    "SELECT payload FROM codex_state_documents WHERE namespace = %s",
+                    (namespace,),
+                )
+                payload = self._decode(cursor.fetchone())
+                return dict(payload) if isinstance(payload, dict) else {}
+
+    def record_page(
+        self,
+        namespace: str,
+        *,
+        key_prefix: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]:
+        page_size = max(1, min(int(limit), 1000))
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                lower = (
+                    state_record_storage_key(namespace, key_prefix)
+                    if key_prefix is not None
+                    else f"{state_record_prefix(namespace)}k/"
+                )
+                upper = f"{lower}\uffff"
+                after_storage = (
+                    state_record_storage_key(namespace, after)
+                    if after is not None
+                    else lower
+                )
+                cursor.execute(
+                    """
+                    SELECT namespace, payload
+                    FROM codex_state_documents
+                    WHERE namespace >= %s
+                      AND namespace < %s
+                      AND namespace > %s
+                    ORDER BY namespace
+                    LIMIT %s
+                    """,
+                    (lower, upper, after_storage, page_size + 1),
+                )
+                rows = cursor.fetchall()
+
+        page: dict[str, Any] = {}
+        for storage_namespace, payload in rows[:page_size]:
+            parsed = parse_state_record_storage_key(
+                str(storage_namespace)
+            )
+            if parsed is None or parsed[1] is None:
+                continue
+            page[parsed[1]] = (
+                json.loads(payload)
+                if isinstance(payload, str)
+                else payload
+            )
+        next_cursor = (
+            next(reversed(page))
+            if len(rows) > page_size and page
+            else None
+        )
+        return page, next_cursor
+
+    def record_apply(
+        self,
+        namespace: str,
+        *,
+        upserts: dict[str, Any],
+        deletes: tuple[str, ...] = (),
+    ) -> None:
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                    for key in dict.fromkeys(str(item) for item in deletes):
+                        cursor.execute(
+                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            (state_record_storage_key(namespace, key),),
+                        )
+                    for key, payload in upserts.items():
+                        self._upsert(
+                            cursor,
+                            state_record_storage_key(namespace, str(key)),
+                            payload,
+                        )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
+
+    def record_update(
+        self,
+        namespace: str,
+        key: str,
+        updater: Callable[[Any], Any],
+        *,
+        default: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, f"{namespace}:{key}")
+                    if not self._record_collection_exists_in_cursor(
+                        cursor,
+                        namespace,
+                    ):
+                        # Migration is a namespace-wide transition; serialize the
+                        # one-time conversion before returning to per-key locks.
+                        self._lock(cursor, namespace)
+                        self._ensure_record_collection_in_cursor(
+                            cursor,
+                            namespace,
+                        )
+                    storage_key = state_record_storage_key(
+                        namespace,
+                        str(key),
+                    )
+                    cursor.execute(
+                        "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+                        (storage_key,),
+                    )
+                    current = self._decode(cursor.fetchone(), default)
+                    updated = updater(current)
+                    if updated is None:
+                        cursor.execute(
+                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            (storage_key,),
+                        )
+                    else:
+                        self._upsert(cursor, storage_key, updated)
+            success = True
+            return updated
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
+
+    def record_replace(
+        self,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None:
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, namespace)
+                    self._replace_records_in_cursor(
+                        cursor,
+                        namespace,
+                        records,
+                    )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
+
     def schema_version(self) -> int:
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -139,7 +459,19 @@ class PostgresStateStore:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT COUNT(*), MAX(updated_at) FROM codex_state_documents"
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE namespace NOT LIKE %s
+                               OR namespace LIKE %s
+                        ),
+                        MAX(updated_at)
+                    FROM codex_state_documents
+                    """,
+                    (
+                        "__codex_records__/%",
+                        "__codex_records__/%/__meta__",
+                    ),
                 )
                 row = cursor.fetchone() or (0, None)
                 cursor.execute("SELECT 1")
@@ -154,6 +486,7 @@ class PostgresStateStore:
                 float(row[1]) if row[1] is not None else None
             ),
             "shared": True,
+            "keyedMutationMetrics": self._keyed_mutation_metrics.snapshot(),
         }
 
     def get(self, namespace: str) -> Any | None:
@@ -164,12 +497,37 @@ class PostgresStateStore:
                     (namespace,),
                 )
                 row = cursor.fetchone()
-        return self._decode(row)
+                if row is not None:
+                    return self._decode(row)
+                if self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    return self._record_items_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                return None
 
     def put(self, namespace: str, payload: Any) -> None:
+        if (
+            isinstance(payload, dict)
+            and self.record_collection_exists(namespace)
+        ):
+            self.record_replace(namespace, payload)
+            return
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 self._lock(cursor, namespace)
+                if self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    prefix = state_record_prefix(namespace)
+                    cursor.execute(
+                        "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
+                        (prefix, prefix),
+                    )
                 self._upsert(cursor, namespace, payload)
 
     def update(
@@ -182,6 +540,25 @@ class PostgresStateStore:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 self._lock(cursor, namespace)
+                if self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    current = self._record_items_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                    updated = updater(current)
+                    if not isinstance(updated, dict):
+                        raise TypeError(
+                            "record-backed namespace updates must return a mapping"
+                        )
+                    self._replace_records_in_cursor(
+                        cursor,
+                        namespace,
+                        updated,
+                    )
+                    return updated
                 cursor.execute(
                     "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
                     (namespace,),
@@ -203,7 +580,18 @@ class PostgresStateStore:
             with connection.cursor() as cursor:
                 self._lock_many(cursor, namespaces)
                 current: dict[str, Any] = {}
+                record_backed: set[str] = set()
                 for namespace in namespaces:
+                    if self._record_collection_exists_in_cursor(
+                        cursor,
+                        namespace,
+                    ):
+                        record_backed.add(namespace)
+                        current[namespace] = self._record_items_in_cursor(
+                            cursor,
+                            namespace,
+                        )
+                        continue
                     cursor.execute(
                         "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
                         (namespace,),
@@ -218,7 +606,18 @@ class PostgresStateStore:
                         "update_many updater must return exactly the requested namespaces"
                     )
                 for namespace in namespaces:
-                    self._upsert(cursor, namespace, updated[namespace])
+                    if namespace in record_backed:
+                        if not isinstance(updated[namespace], dict):
+                            raise TypeError(
+                                "record-backed namespace updates must return a mapping"
+                            )
+                        self._replace_records_in_cursor(
+                            cursor,
+                            namespace,
+                            updated[namespace],
+                        )
+                    else:
+                        self._upsert(cursor, namespace, updated[namespace])
                 return updated
 
     def contains(self, namespace: str) -> bool:
@@ -228,7 +627,13 @@ class PostgresStateStore:
                     "SELECT 1 FROM codex_state_documents WHERE namespace = %s",
                     (namespace,),
                 )
-                return cursor.fetchone() is not None
+                return (
+                    cursor.fetchone() is not None
+                    or self._record_collection_exists_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                )
 
     def delete(self, namespace: str) -> bool:
         with self._connection() as connection:
@@ -238,7 +643,13 @@ class PostgresStateStore:
                     "DELETE FROM codex_state_documents WHERE namespace = %s",
                     (namespace,),
                 )
-                return bool(cursor.rowcount)
+                direct_count = int(cursor.rowcount or 0)
+                prefix = state_record_prefix(namespace)
+                cursor.execute(
+                    "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
+                    (prefix, prefix),
+                )
+                return bool(direct_count or cursor.rowcount)
 
     def documents(self) -> dict[str, Any]:
         with self._connection() as connection:
@@ -247,7 +658,21 @@ class PostgresStateStore:
                     "SELECT namespace, payload FROM codex_state_documents ORDER BY namespace"
                 )
                 rows = cursor.fetchall()
-        return {
-            str(namespace): json.loads(payload) if isinstance(payload, str) else payload
-            for namespace, payload in rows
-        }
+        documents: dict[str, Any] = {}
+        records: dict[str, dict[str, Any]] = {}
+        record_collections: set[str] = set()
+        for storage_namespace, payload in rows:
+            name = str(storage_namespace)
+            parsed = parse_state_record_storage_key(name)
+            decoded = json.loads(payload) if isinstance(payload, str) else payload
+            if parsed is None:
+                documents[name] = decoded
+                continue
+            logical_namespace, key = parsed
+            record_collections.add(logical_namespace)
+            if key is not None:
+                records.setdefault(logical_namespace, {})[key] = decoded
+        for namespace in record_collections:
+            if namespace not in documents:
+                documents[namespace] = records.get(namespace, {})
+        return documents

@@ -31,16 +31,37 @@ class _Host:
         self.queues = {}
         self.active = {}
         self.events: list[dict] = []
+        self.bulk_queue_loads = 0
+        self.bulk_active_loads = 0
         self.hub = _Hub()
         self.codex = SimpleNamespace(request=AsyncMock())
         self.IS_SHUTTING_DOWN = False
         self.uuid = __import__("uuid")
 
     def _load_turn_queues(self):
+        self.bulk_queue_loads += 1
         return {key: list(value) for key, value in self.queues.items()}
 
     def _save_turn_queues(self, queues):
         self.queues = {key: list(value) for key, value in queues.items()}
+
+    def _thread_queue_record(self, thread_id):
+        return list(self.queues.get(thread_id, []))
+
+    def _update_thread_queue_record(self, thread_id, updater):
+        current = list(self.queues.get(thread_id, []))
+        updated = list(updater(current))
+        if updated:
+            self.queues[thread_id] = updated
+        else:
+            self.queues.pop(thread_id, None)
+        return updated
+
+    def _put_thread_queue_record(self, thread_id, items):
+        self.queues[thread_id] = list(items)
+
+    def _delete_thread_queue_record(self, thread_id):
+        return self.queues.pop(thread_id, None) is not None
 
     def _thread_queue(self, thread_id):
         return list(self.queues.get(thread_id, []))
@@ -61,10 +82,20 @@ class _Host:
         return 10
 
     def _load_active_turns(self):
+        self.bulk_active_loads += 1
         return dict(self.active)
 
     def _save_active_turns(self, active):
         self.active = dict(active)
+
+    def _get_active_turn_record(self, thread_id):
+        return self.active.get(thread_id)
+
+    def _put_active_turn_record(self, thread_id, active):
+        self.active[thread_id] = active
+
+    def _delete_active_turn_record(self, thread_id):
+        return self.active.pop(thread_id, None) is not None
 
     @staticmethod
     def _thread_run_settings(thread_id):
@@ -115,6 +146,31 @@ class TurnExecutionQueueTests(unittest.TestCase):
         self.assertEqual(popped.id, first.id)
         service.requeue_turn_front(popped)
         self.assertEqual([item.id for item in host._thread_queue("t1")], [first.id, second.id])
+
+    def test_queue_hot_path_uses_per_thread_records(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+
+        queued = service.enqueue_turn(
+            thread_id="t1",
+            project_id="p1",
+            message="one",
+        )
+        self.assertEqual(host.bulk_queue_loads, 0)
+
+        self.assertEqual(service.pop_next_queued_turn("t1").id, queued.id)
+        self.assertEqual(host.bulk_queue_loads, 0)
+
+    def test_active_turn_hot_path_uses_per_thread_records(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+
+        service.mark_thread_active("t1", turn_id="turn-1")
+        self.assertTrue(service.thread_is_active("t1"))
+        service.clear_thread_active("t1", turn_id="turn-1")
+
+        self.assertEqual(host.bulk_active_loads, 0)
+        self.assertNotIn("t1", host.active)
 
     def test_duplicate_source_and_message_reuses_existing_queue_item(self) -> None:
         host = _Host()

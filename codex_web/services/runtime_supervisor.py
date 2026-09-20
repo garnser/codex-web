@@ -176,6 +176,7 @@ class RuntimeSupervisor:
         thread_is_active: Callable[[str], bool] | None = None,
         release_stale_active_turn: Callable[[str, str], Any] | None = None,
         schedule_queue_drain: Callable[[str], Any] | None = None,
+        flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
         self.app = app
         self.host = host
@@ -245,6 +246,10 @@ class RuntimeSupervisor:
             host,
             "_schedule_queue_drain",
             _noop,
+        )
+        self.flush_compatibility_state = (
+            flush_compatibility_state
+            or getattr(host, "_flush_compatibility_state", _noop)
         )
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.startup_tasks: set[asyncio.Task[Any]] = set()
@@ -650,6 +655,18 @@ class RuntimeSupervisor:
             await self.bot_runtime.stop()
         if self.codex is not None:
             await self.codex.stop()
+        # Keyed operational writes deliberately defer large JSON compatibility
+        # mirrors. A controlled shutdown is the checkpoint boundary required
+        # before rollback to a JSON-reading release.
+        try:
+            self.flush_compatibility_state()
+        except Exception as exc:
+            self.event_sink(
+                {
+                    "type": "compatibility_state_checkpoint_failed",
+                    "error": self.truncate_text(str(exc), 500),
+                }
+            )
         self.started = False
 
 

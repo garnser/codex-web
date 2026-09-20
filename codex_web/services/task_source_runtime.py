@@ -223,6 +223,9 @@ class TaskSourceWritebackService:
         state.source_identity = snapshot.identity
         state.labels = list(snapshot.labels)
         state.updated_at = max(state.updated_at, time.time())
+        if self.dependencies.save_state is not None:
+            self.dependencies.save_state(state)
+            return state
         states = self.dependencies.load_states()
         states[state.ref] = state
         self.dependencies.save_states(states)

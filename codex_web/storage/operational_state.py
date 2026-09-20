@@ -12,6 +12,7 @@ from codex_web.models import BotBinding, BotConnection, BotReplyTarget, QueuedTu
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.state_store import StateStore
+from codex_web.storage.turn_queue import TurnQueueRepository
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -271,7 +272,7 @@ class OperationalStateRepositories:
         bot_reply_targets_file: Path,
         bot_delivery_targets_file: Path,
     ) -> None:
-        self.turn_queues = QueuedTurnRepository(store, turn_queue_file)
+        self.turn_queues = TurnQueueRepository(store, turn_queue_file)
         self.bot_connections = ModelListRepository(
             store,
             namespace="bot_connections",
@@ -329,6 +330,10 @@ def install_operational_state(app: Any, host: Any) -> OperationalStateRepositori
 
     host._load_turn_queues = repositories.turn_queues.load
     host._save_turn_queues = repositories.turn_queues.save
+    host._thread_queue_record = repositories.turn_queues.get
+    host._update_thread_queue_record = repositories.turn_queues.update
+    host._put_thread_queue_record = repositories.turn_queues.put
+    host._delete_thread_queue_record = repositories.turn_queues.delete
     host._load_bot_connections = repositories.bot_connections.load
     host._save_bot_connections = repositories.bot_connections.save
     host._load_bot_bindings = repositories.bot_bindings.load

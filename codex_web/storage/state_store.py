@@ -2,10 +2,87 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
+from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+_RECORD_STORAGE_ROOT = "__codex_records__/"
+
+
+class OperationTimingMetrics:
+    """Small process-local timing accumulator for storage hot paths."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+        self._failures = 0
+        self._total_seconds = 0.0
+        self._last_seconds = 0.0
+        self._max_seconds = 0.0
+        self._last_at: float | None = None
+
+    def observe(self, seconds: float, *, success: bool = True) -> None:
+        duration = max(0.0, float(seconds))
+        with self._lock:
+            self._count += 1
+            if not success:
+                self._failures += 1
+            self._total_seconds += duration
+            self._last_seconds = duration
+            self._max_seconds = max(self._max_seconds, duration)
+            self._last_at = time.time()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            average = (
+                self._total_seconds / self._count
+                if self._count
+                else 0.0
+            )
+            return {
+                "count": self._count,
+                "failures": self._failures,
+                "lastSeconds": self._last_seconds,
+                "averageSeconds": average,
+                "maxSeconds": self._max_seconds,
+                "lastAt": self._last_at,
+            }
+
+
+
+def state_record_prefix(namespace: str) -> str:
+    return f"{_RECORD_STORAGE_ROOT}{quote(str(namespace), safe='')}/"
+
+
+def state_record_marker(namespace: str) -> str:
+    return f"{state_record_prefix(namespace)}__meta__"
+
+
+def state_record_storage_key(namespace: str, key: str) -> str:
+    return f"{state_record_prefix(namespace)}k/{quote(str(key), safe='')}"
+
+
+def parse_state_record_storage_key(
+    storage_namespace: str,
+) -> tuple[str, str | None] | None:
+    if not storage_namespace.startswith(_RECORD_STORAGE_ROOT):
+        return None
+    encoded_namespace, separator, suffix = storage_namespace[
+        len(_RECORD_STORAGE_ROOT):
+    ].partition("/")
+    if not separator:
+        return None
+    namespace = unquote(encoded_namespace)
+    if suffix == "__meta__":
+        return namespace, None
+    if suffix.startswith("k/"):
+        return namespace, unquote(suffix[2:])
+    return None
 
 
 @runtime_checkable
@@ -26,6 +103,37 @@ class StateStore(Protocol):
         defaults: dict[str, Any],
         updater: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]: ...
+    def record_collection_exists(self, namespace: str) -> bool: ...
+    def record_get(self, namespace: str, key: str) -> Any | None: ...
+    def record_items(self, namespace: str) -> dict[str, Any]: ...
+    def record_page(
+        self,
+        namespace: str,
+        *,
+        key_prefix: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]: ...
+    def record_apply(
+        self,
+        namespace: str,
+        *,
+        upserts: dict[str, Any],
+        deletes: tuple[str, ...] = (),
+    ) -> None: ...
+    def record_update(
+        self,
+        namespace: str,
+        key: str,
+        updater: Callable[[Any], Any],
+        *,
+        default: Any,
+    ) -> Any: ...
+    def record_replace(
+        self,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None: ...
     def contains(self, namespace: str) -> bool: ...
     def delete(self, namespace: str) -> bool: ...
     def documents(self) -> dict[str, Any]: ...

@@ -32,6 +32,7 @@ from codex_web.storage.operational_state import QueuedTurnRepository
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.state_store import StateStoreMigrator
+from codex_web.storage.turn_queue import TurnQueueRepository
 
 
 class _Clock:
@@ -214,6 +215,91 @@ class SharedCanonicalStateTests(unittest.TestCase):
                 if item.source == "bot" and item.message == "duplicate"
             ]
             self.assertEqual(len(duplicates), 1)
+
+
+class KeyedTurnQueueConcurrencyTests(unittest.TestCase):
+    def test_canonical_queue_repository_merges_concurrent_same_thread_enqueues(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            store_a = SQLiteStateStore(path / "shared.sqlite3")
+            store_b = SQLiteStateStore(path / "shared.sqlite3")
+            first = TurnQueueRepository(store_a, path / "queue-a.json")
+            second = TurnQueueRepository(store_b, path / "queue-b.json")
+
+            first_rows = first.load()
+            second_rows = second.load()
+            q1 = QueuedTurn(
+                id="q1",
+                thread_id="thread-a",
+                created_at=100.0,
+                project_id="project-a",
+                message="first",
+                source="web",
+            )
+            q2 = QueuedTurn(
+                id="q2",
+                thread_id="thread-a",
+                created_at=101.0,
+                project_id="project-a",
+                message="second",
+                source="web",
+            )
+            first_rows["thread-a"] = [q1]
+            second_rows["thread-a"] = [q2]
+
+            first.save(first_rows)
+            second.save(second_rows)
+
+            final = TurnQueueRepository(
+                store_a,
+                path / "queue-final.json",
+            ).get("thread-a")
+            self.assertEqual(
+                {item.id for item in final},
+                {"q1", "q2"},
+            )
+
+    def test_atomic_queue_update_serializes_concurrent_enqueues(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            first = TurnQueueRepository(
+                SQLiteStateStore(path / "shared.sqlite3"),
+                path / "queue-a.json",
+            )
+            second = TurnQueueRepository(
+                SQLiteStateStore(path / "shared.sqlite3"),
+                path / "queue-b.json",
+            )
+
+            first.update(
+                "thread-a",
+                lambda items: items
+                + [
+                    QueuedTurn(
+                        id="q1",
+                        thread_id="thread-a",
+                        created_at=100.0,
+                        project_id="project-a",
+                        message="first",
+                    )
+                ],
+            )
+            second.update(
+                "thread-a",
+                lambda items: items
+                + [
+                    QueuedTurn(
+                        id="q2",
+                        thread_id="thread-a",
+                        created_at=101.0,
+                        project_id="project-a",
+                        message="second",
+                    )
+                ],
+            )
+
+            final = first.get("thread-a")
+            self.assertEqual([item.id for item in final], ["q1", "q2"])
 
 
 class CoordinationFailoverTests(unittest.TestCase):

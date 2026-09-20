@@ -30,9 +30,50 @@ those backends without the optional dependency fails visibly.
 
 High-churn runtime state that historically had JSON files (thread settings,
 active turns, work-item state, turn queues, bot bindings/connections and
-auxiliary state) is StateStore-primary. JSON files remain compatibility mirrors
-for rollback, not an alternate authority. The project registry and work-item
-event journal likewise use shared StateStore state in shared deployments.
+auxiliary state) is StateStore-primary. JSON files remain compatibility
+checkpoints for rollback, not an alternate authority. The project registry and
+work-item event journal likewise use shared StateStore state in shared
+deployments.
+
+### Keyed operational records
+
+High-churn mapping domains may opt into the keyed-record extension of the
+`StateStore` contract:
+
+- `record_get(namespace, key)`
+- `record_apply(namespace, upserts=..., deletes=...)`
+- `record_items(namespace)`
+- `record_page(namespace, key_prefix=..., after=..., limit=...)`
+- `record_replace(namespace, records)`
+
+SQLite and PostgreSQL store these records as separate physical rows under a
+reserved internal namespace. A logical `get(namespace)`, `documents()`,
+backup, or migration still reconstructs the canonical mapping, so callers and
+recovery tooling do not observe the physical sharding.
+
+The first keyed mutation of an older monolithic mapping migrates that namespace
+transactionally and idempotently. Thereafter, a single Work Item, active turn,
+thread setting, or per-thread queue mutation updates only its keyed row rather
+than deserializing and replacing the entire namespace document.
+
+Compatibility JSON is intentionally **not** rewritten for every keyed mutation.
+Doing so would reintroduce the multi-megabyte serialization/disk-write hot path
+that keyed persistence removes. Bulk compatibility saves and explicit
+`flush_legacy_mirror()` checkpoints refresh those files. Before rolling back
+to a release that still reads the historical JSON files directly, operators
+must take a compatibility checkpoint as part of the supported upgrade/rollback
+procedure. Canonical StateStore data remains authoritative between checkpoints.
+
+Both canonical keyed mutations and compatibility checkpoints expose separate
+timing counters. State-store status reports `keyedMutationMetrics`; distributed
+runtime diagnostics report per-namespace compatibility checkpoint metrics.
+This keeps canonical write latency distinguishable from compatibility-export
+cost and failure.
+
+Bounded `record_page()` reads use the physical primary-key ordering and accept
+a key prefix plus cursor. They are the read-side primitive for provider,
+conversation, Project, or tenant scoped indexes; callers should encode those
+scope dimensions into domain keys rather than loading the full collection.
 
 ## Scaling principles
 

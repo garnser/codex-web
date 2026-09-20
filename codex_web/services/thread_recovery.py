@@ -110,6 +110,10 @@ class ThreadRecoveryService:
     def retarget_active_turn(self, old_thread_id: str, new_thread_id: str) -> None:
         del new_thread_id
         h = self.host
+        deleter = getattr(h, "_delete_active_turn_record", None)
+        if callable(deleter):
+            deleter(old_thread_id)
+            return
         active_turns = h._load_active_turns()
         if active_turns.pop(old_thread_id, None) is not None:
             # A replacement is a new Codex session. Migrating the old active
@@ -339,7 +343,12 @@ class ThreadRecoveryService:
         if not thread_id:
             return False
         effective_max_age = self.active_turn_stale_seconds() if max_age is None else max_age
-        active = self.host._load_active_turns().get(thread_id)
+        loader = getattr(self.host, "_get_active_turn_record", None)
+        active = (
+            loader(thread_id)
+            if callable(loader)
+            else self.host._load_active_turns().get(thread_id)
+        )
         return bool(active and time.time() - active.updated_at > effective_max_age)
 
     def release_stale_active_turn(self, thread_id: str | None, reason: str) -> None:

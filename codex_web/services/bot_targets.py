@@ -19,6 +19,8 @@ class BotTargetService:
         save_delivery_targets: Callable[[dict[str, BotReplyTarget]], None],
         load_active_turns: Callable[[], dict[str, Any]],
         bindings_for_project: Callable[[str, str], list[BotBinding]],
+        put_reply_target: Callable[[str, BotReplyTarget], Any] | None = None,
+        put_delivery_target: Callable[[str, BotReplyTarget], Any] | None = None,
     ) -> None:
         self.load_reply_targets = load_reply_targets
         self.save_reply_targets = save_reply_targets
@@ -26,6 +28,8 @@ class BotTargetService:
         self.save_delivery_targets = save_delivery_targets
         self.load_active_turns = load_active_turns
         self.bindings_for_project = bindings_for_project
+        self.put_reply_target = put_reply_target
+        self.put_delivery_target = put_delivery_target
 
     @staticmethod
     def reply_target_key(binding: BotBinding) -> str:
@@ -48,7 +52,6 @@ class BotTargetService:
     def remember_reply_target(self, binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
         if not message.external_thread_id and not message.message_id:
             return None
-        targets = self.load_reply_targets()
         target = BotReplyTarget(
             thread_id=binding.thread_id,
             provider=binding.provider,
@@ -57,10 +60,26 @@ class BotTargetService:
             message_id=message.message_id,
             updated_at=time.time(),
         )
-        targets[self.reply_target_key(binding)] = target
-        for external_id in {message.external_thread_id, message.message_id}:
-            if external_id:
-                targets[self.external_target_key(binding.provider, binding.external_conversation_id, external_id)] = target
+        keys = [self.reply_target_key(binding)]
+        keys.extend(
+            self.external_target_key(
+                binding.provider,
+                binding.external_conversation_id,
+                external_id,
+            )
+            for external_id in {
+                message.external_thread_id,
+                message.message_id,
+            }
+            if external_id
+        )
+        if self.put_reply_target is not None:
+            for key in dict.fromkeys(keys):
+                self.put_reply_target(key, target)
+            return target
+        targets = self.load_reply_targets()
+        for key in dict.fromkeys(keys):
+            targets[key] = target
         self.save_reply_targets(targets)
         return target
 
@@ -145,7 +164,6 @@ class BotTargetService:
         ts = response.get("ts")
         if not delivery.get("sent") or not ts:
             return
-        targets = self.load_delivery_targets()
         target = BotReplyTarget(
             thread_id=binding.thread_id,
             provider=binding.provider,
@@ -154,8 +172,21 @@ class BotTargetService:
             message_id=str(ts),
             updated_at=time.time(),
         )
-        targets[self.reply_target_key(binding)] = target
-        targets[self.external_target_key(binding.provider, binding.external_conversation_id, str(ts))] = target
+        keys = (
+            self.reply_target_key(binding),
+            self.external_target_key(
+                binding.provider,
+                binding.external_conversation_id,
+                str(ts),
+            ),
+        )
+        if self.put_delivery_target is not None:
+            for key in keys:
+                self.put_delivery_target(key, target)
+            return
+        targets = self.load_delivery_targets()
+        for key in keys:
+            targets[key] = target
         self.save_delivery_targets(targets)
 
     def master_reply_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
@@ -300,6 +331,8 @@ def install_bot_target_service(
     save_delivery_targets: Callable[[dict[str, BotReplyTarget]], None] | None = None,
     load_active_turns: Callable[[], dict[str, Any]] | None = None,
     bindings_for_project: Callable[[str, str], list[BotBinding]] | None = None,
+    put_reply_target: Callable[[str, BotReplyTarget], Any] | None = None,
+    put_delivery_target: Callable[[str, BotReplyTarget], Any] | None = None,
 ) -> BotTargetService:
     service = BotTargetService(
         load_reply_targets=load_reply_targets or host._load_bot_reply_targets,
@@ -308,6 +341,14 @@ def install_bot_target_service(
         save_delivery_targets=save_delivery_targets or host._save_bot_delivery_targets,
         load_active_turns=load_active_turns or host._load_active_turns,
         bindings_for_project=bindings_for_project or host._bindings_for_project,
+        put_reply_target=(
+            put_reply_target
+            or getattr(host, "_put_bot_reply_target_record", None)
+        ),
+        put_delivery_target=(
+            put_delivery_target
+            or getattr(host, "_put_bot_delivery_target_record", None)
+        ),
     )
     app.state.bot_target_service = service
 

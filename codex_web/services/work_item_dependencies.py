@@ -29,6 +29,8 @@ class WorkItemRuntimeDependencies:
     default_validation_owner: str
     default_release_owner: str
     non_implementation_owners: frozenset[str]
+    get_state: Callable[[str], WorkItemState | None] | None = None
+    save_state: Callable[[WorkItemState], None] | None = None
 
     @classmethod
     def from_host(cls, host: Any) -> "WorkItemRuntimeDependencies":
@@ -84,6 +86,16 @@ class WorkItemRuntimeDependencies:
                         "orchestrator",
                     },
                 )
+            ),
+            get_state=getattr(
+                host,
+                "_get_work_item_state_record",
+                None,
+            ),
+            save_state=getattr(
+                host,
+                "_put_work_item_state_record",
+                None,
             ),
         )
 

@@ -11,18 +11,26 @@ from codex_web.models import QueuedTurn
 
 
 TurnQueueLoader = Callable[[], dict[str, list[QueuedTurn]]]
+TurnQueueGetter = Callable[[str], list[QueuedTurn]]
 
 
 class TurnQueuePolicy:
     """Own queue visibility, depth limits, and steering-rate policy."""
 
-    def __init__(self, load_queues: TurnQueueLoader) -> None:
+    def __init__(
+        self,
+        load_queues: TurnQueueLoader,
+        get_queue: TurnQueueGetter | None = None,
+    ) -> None:
         self.load_queues = load_queues
+        self.get_queue = get_queue
         self.steer_times: dict[str, deque[float]] = {}
 
     def queue(self, thread_id: str | None) -> list[QueuedTurn]:
         if not thread_id:
             return []
+        if self.get_queue is not None:
+            return self.get_queue(thread_id)
         return self.load_queues().get(thread_id, [])
 
     def depth(self, thread_id: str | None) -> int:
@@ -76,16 +84,19 @@ def install_turn_queue_policy(
     host,
     *,
     load_queues: TurnQueueLoader | None = None,
+    get_queue: TurnQueueGetter | None = None,
 ) -> TurnQueuePolicy:
     existing = getattr(app.state, "turn_queue_policy", None)
     load_queues = load_queues or host._load_turn_queues
+    get_queue = get_queue or getattr(host, "_thread_queue_record", None)
     if (
         isinstance(existing, TurnQueuePolicy)
         and existing.load_queues == load_queues
+        and existing.get_queue == get_queue
     ):
         policy = existing
     else:
-        policy = TurnQueuePolicy(load_queues)
+        policy = TurnQueuePolicy(load_queues, get_queue=get_queue)
         app.state.turn_queue_policy = policy
 
     # Compatibility aliases for direct import-server callers. Internal services
