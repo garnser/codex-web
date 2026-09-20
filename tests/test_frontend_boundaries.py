@@ -351,6 +351,14 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("/ui-state", source)
         self.assertNotIn("fetch(", source)
 
+    def test_project_ui_event_reconciler_has_focused_budget(self) -> None:
+        source_path = STATIC / "project_ui_events.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 12_000)
+        self.assertIn("/ui-state/bindings", source)
+        self.assertIn("/api/threads", source)
+        self.assertNotIn("fetch(", source)
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
