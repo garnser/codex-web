@@ -596,8 +596,33 @@ def install_bot_delivery_service(
         )
     app.state.bot_delivery_service = service
 
+    async def _compat_send_bot_outbound(
+        binding: BotBinding,
+        text: str,
+        *,
+        reply_in_thread: bool | None = None,
+        username: str | None = None,
+        icon_emoji: str | None = None,
+    ) -> dict[str, Any]:
+        compatibility = BotDeliveryService(
+            host,
+            slack_client=service.slack,
+            telegram_client=service.telegram,
+            secret_broker=service.secret_broker,
+        )
+        return await compatibility.send_outbound(
+            binding,
+            text,
+            reply_in_thread=reply_in_thread,
+            username=username,
+            icon_emoji=icon_emoji,
+        )
+
     # Transitional aliases for direct imports until legacy_core is deleted.
-    host._send_bot_outbound = service.send_outbound
+    # Keep outbound delivery dynamic for supported callers/tests that replace
+    # the historical compatibility helpers. Production services use the
+    # explicit service graph above and never discover dependencies from host.
+    host._send_bot_outbound = _compat_send_bot_outbound
     host._send_bot_details = service.send_details
     host._record_bot_outbound = service.record_outbound
     host._record_bot_approval_request = service.record_approval_request
