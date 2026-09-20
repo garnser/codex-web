@@ -89,6 +89,7 @@ from codex_web.paths import (
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
+    DATA_DIR,
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
@@ -234,6 +235,8 @@ from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
+from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.services.native_recovery import NativeRecoveryService
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.task_source_action_provider import TaskSourceActionProvider
 from codex_web.services.thread_recovery import install_thread_recovery_service
@@ -250,6 +253,10 @@ from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
+from codex_web.services.work_item_continuity import (
+    WorkItemContinuityService,
+    build_work_item_continuity_compatibility_service,
+)
 from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_watchdog_candidates import install_work_item_watchdog_candidate_policy
@@ -316,6 +323,36 @@ from codex_web.secret_backends import LocalFileSecretBackend
 # extracted. The legacy runtime is now a compatibility host for the portions
 # that have not moved yet, rather than the place new API behavior is added.
 app = core.app
+
+runtime_policy = RuntimePolicy(DATA_DIR)
+app.state.runtime_policy = runtime_policy
+
+# Compatibility names are output-only while callers migrate to the policy.
+core._autonomy_enabled = runtime_policy.autonomy_enabled
+core._owner_work_watchdog_interval = (
+    runtime_policy.owner_work_watchdog_interval
+)
+core._release_gate_watchdog_interval = (
+    runtime_policy.release_gate_watchdog_interval
+)
+core._work_item_sla_watchdog_interval = (
+    runtime_policy.work_item_sla_watchdog_interval
+)
+core._orchestrator_watchdog_interval = (
+    runtime_policy.orchestrator_watchdog_interval
+)
+core._split_brain_watchdog_interval = (
+    runtime_policy.split_brain_watchdog_interval
+)
+core._actionable_owner_continuity_delay_seconds = (
+    runtime_policy.actionable_owner_continuity_delay
+)
+core._handoff_continuity_delay_seconds = (
+    runtime_policy.handoff_continuity_delay
+)
+core._native_recovery_schedule_cooldown_seconds = (
+    runtime_policy.native_recovery_cooldown
+)
 
 # Shared persistence primitives are owned outside the legacy runtime. Existing
 # unextracted state helpers resolve these globals at call time, so they use the
@@ -1249,7 +1286,82 @@ work_item_contract_service = install_work_item_contract_service(
     core,
     execution_role_definition_service,
 )
-work_item_service = WorkItemService(core, gitlab_client, work_item_state_machine)
+work_item_continuity_service = WorkItemContinuityService(
+    policy=runtime_policy,
+    get_state=work_item_state_machine._work_item_state,
+    coerce_owner=lambda owner: core._coerce_owner(owner),
+    binding_for_agent=lambda *args, **kwargs: core._binding_for_agent(
+        *args,
+        **kwargs,
+    ),
+    replace_nonperforming_thread=(
+        lambda binding, reason: core._replace_nonperforming_thread_if_needed(
+            binding,
+            reason,
+        )
+    ),
+    dispatch_event=lambda binding, text, source: core._dispatch_event_to_binding(
+        binding,
+        text,
+        source,
+    ),
+    dispatch_text=lambda state: core._work_item_dispatch_text(state),
+    append_event=core._append_bot_event,
+    truncate_text=core._truncate_text,
+    thread_is_active=lambda thread_id: core._thread_is_active(thread_id),
+    thread_queue_depth=lambda thread_id: core._thread_queue_depth(thread_id),
+    thread_recently_active=lambda thread_id: core._thread_recently_active(
+        thread_id
+    ),
+    watchdog_dispatch_allowed=(
+        lambda key: core._watchdog_dispatch_allowed(key)
+    ),
+    record_watchdog_dispatch=lambda key: core._record_watchdog_dispatch(key),
+    coordination_channel=core.HANDOFF_COORDINATION_CHANNEL,
+)
+app.state.work_item_continuity_service = work_item_continuity_service
+work_item_continuity_compatibility = (
+    build_work_item_continuity_compatibility_service(core)
+)
+app.state.work_item_continuity_compatibility = (
+    work_item_continuity_compatibility
+)
+
+# Historical names are output-only compatibility aliases. They terminate in
+# the extracted compatibility service; legacy_core contains no implementation.
+core._schedule_structured_handoff_dispatch = (
+    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
+)
+core._schedule_handoff_continuity_check = (
+    work_item_continuity_compatibility.schedule_handoff_continuity_check
+)
+core._schedule_actionable_owner_dispatch = (
+    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
+)
+core._schedule_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
+)
+core._dispatch_structured_handoff_to_recipient = (
+    work_item_continuity_compatibility.dispatch_structured_handoff
+)
+core._run_handoff_continuity_check = (
+    work_item_continuity_compatibility.run_handoff_continuity_check
+)
+core._actionable_owner_dispatch_stage = (
+    work_item_continuity_compatibility.actionable_owner_stage
+)
+core._dispatch_actionable_owner_to_responsible_thread = (
+    work_item_continuity_compatibility.dispatch_actionable_owner
+)
+core._run_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.run_actionable_owner_continuity_check
+)
+work_item_service = WorkItemService(
+    core,
+    gitlab_client,
+    work_item_state_machine,
+    continuity=work_item_continuity_service,
+)
 authority_policy_explorer_service = AuthorityPolicyExplorerService(
     authority_role_service,
     definition_registry_service,
@@ -1821,34 +1933,15 @@ async def _resume_provider_capacity_wait(wait):
         turn_execution_service.schedule_queue_drain(wait.thread_id)
         return
 
-    if wait.work_item_ref:
-        state = core._load_work_item_states().get(wait.work_item_ref)
-        if state is not None and state.project_id:
-            owner = core._coerce_owner(state.current_owner or state.next_owner)
-            binding = (
-                core._binding_for_agent(
-                    owner,
-                    state.project_id,
-                    preferred_conversation_id=core.HANDOFF_COORDINATION_CHANNEL,
-                )
-                if owner
-                else None
-            )
-            if binding is not None:
-                turn_execution_service.enqueue_turn(
-                    thread_id=binding.thread_id,
-                    project_id=state.project_id,
-                    message=core._work_item_dispatch_text(state),
-                    source=f"provider-capacity-resume:{wait.id}",
-                    execution_id=wait.execution_id,
-                )
-                turn_execution_service.schedule_queue_drain(binding.thread_id)
-                return
+    if await work_item_service.resume_provider_capacity_wait(
+        wait,
+        turn_execution_service,
+    ):
+        return
 
-    if core._autonomy_enabled():
-        core._schedule_native_recovery_cycles(
-            reason="provider-capacity-resumed"
-        )
+    recovery = getattr(app.state, "native_recovery_service", None)
+    if recovery is not None:
+        recovery.schedule(reason="provider-capacity-resumed")
 
 
 provider_capacity_service.register_resume_handler(
@@ -1866,6 +1959,19 @@ autonomy_service = install_autonomy_service(
     controller=autonomy_controller,
     canonical_events=canonical_event_ingestion,
 )
+native_recovery_service = NativeRecoveryService(
+    policy=runtime_policy,
+    cycles=(
+        autonomy_service.run_owner_work_cycle,
+        autonomy_service.run_release_gate_cycle,
+        autonomy_service.run_work_item_sla_cycle,
+        autonomy_service.run_orchestrator_cycle,
+    ),
+    append_event=core._append_bot_event,
+)
+app.state.native_recovery_service = native_recovery_service
+work_item_service.recovery = native_recovery_service
+core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
 # Bot provider runtime is composed from explicit domain owners. Compatibility
@@ -1998,7 +2104,30 @@ app.state.bot_service = bot_service
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor keeps the historical
 # task globals populated for diagnostics while owning cancellation and shutdown.
-runtime_supervisor = install_runtime_supervisor(app, core)
+runtime_supervisor = install_runtime_supervisor(
+    app,
+    core,
+    policy=runtime_policy,
+    autonomy=autonomy_service,
+    gitlab=gitlab_service,
+    native_recovery=native_recovery_service,
+    continuity=work_item_continuity_service,
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    event_sink=core._append_bot_event,
+    truncate_text=core._truncate_text,
+    sd_notify=core._sd_notify,
+    daemon_health=core._daemon_health,
+    load_projects=project_repository.load,
+    compact_turn_queues=core._compact_turn_queues,
+    dedupe_bot_integrations=core._dedupe_bot_integrations,
+    restore_thread_names=thread_naming_service.restore_all,
+    resume_active_threads=turn_execution_service.resume_active_threads_after_startup,
+    load_turn_queues=turn_queue_repository.load,
+    thread_is_active=turn_execution_service.thread_is_active,
+    release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
+    schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+)
 
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
