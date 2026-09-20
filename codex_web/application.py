@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
@@ -68,6 +71,7 @@ from codex_web.api.work_graph import build_work_graph_router
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.composition import replace_routes
 from codex_web.configuration import ConfigurationContext
+from codex_web.events import EventHub
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.extension_packages import LocalExtensionPackageCatalog
 from codex_web.integrations.gitlab_client import GitLabClient
@@ -364,10 +368,14 @@ from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
 
 
-# Keep one FastAPI application and one runtime lifecycle while domains are
-# extracted. The legacy runtime is now a compatibility host for the portions
-# that have not moved yet, rather than the place new API behavior is added.
-app = core.app
+# Application and EventHub ownership lives in the composed application layer.
+# The compatibility module receives output-only aliases for historical
+# `import server` callers; startup no longer depends on a legacy-owned app.
+app = FastAPI(title="Codex Web Local")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+event_hub = EventHub()
+core.app = app
+core.hub = event_hub
 
 runtime_policy = RuntimePolicy(DATA_DIR)
 app.state.runtime_policy = runtime_policy
