@@ -138,7 +138,8 @@ class BubblewrapExecutionBackend:
         ):
             return (
                 "Use the documented rootless Podman Bubblewrap profile "
-                "(seccomp=unconfined, label=disable), or run the execution "
+                "(container-scoped SYS_ADMIN, seccomp=unconfined, "
+                "label=disable), or run the execution "
                 "worker natively/in a dedicated VM if that syscall relaxation "
                 "is not acceptable."
             )
