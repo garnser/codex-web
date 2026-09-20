@@ -552,6 +552,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
                 access_mode=LeaseMode.READ,
                 workspace_path=str(readonly_path),
                 sandbox_path="/mnt/codex-context/repo-2",
+                disk_bytes=64,
             ),
         )
         assignment = self._create_assignment(
@@ -583,7 +584,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             backend.calls[0][3],
             ((readonly_path.resolve(), Path("/mnt/codex-context/repo-2")),),
         )
-        self.assertEqual(backend.calls[0][4], 0)
+        self.assertEqual(backend.calls[0][4], 64)
 
     def test_limit_breach_creates_metadata_only_failure_evidence(self) -> None:
         assignment = self._create_assignment()
