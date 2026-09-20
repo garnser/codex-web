@@ -515,6 +515,45 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
+    def test_missing_control_plane_broker_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        service = TurnExecutionBindingService(
+            self.configuration,
+            self.projects,
+            self.resources,
+            self.workspaces,
+            self.workers,
+            control_actor=self.actor,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+            ),
+            runtime_credential_configs={
+                ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+            },
+            execution_profiles=self.execution_profiles,
+            control_plane_available=lambda: False,
+            clock=lambda: self.clock,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            service.prepare(
+                thread_id="thread-orchestration",
+                execution_id="exec-orchestration",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="orchestration-only",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "control_plane_scope_missing",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
     def test_unknown_execution_profile_is_typed_before_workspace_creation(self) -> None:
         self._publish_secret()
 
