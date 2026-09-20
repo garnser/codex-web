@@ -12,6 +12,7 @@ from codex_web.services.task_source_reconciliation import (
 )
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
 from codex_web.services.task_sources import TaskSource, TaskSourceEvent
+from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,12 +31,20 @@ class TaskSourceWorkItemEventReconciler:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None,
         projector: TaskSourceWorkItemProjector,
         *,
         policy: TaskSourceReconciliationPolicy | None = None,
+        dependencies: WorkItemRuntimeDependencies | None = None,
     ) -> None:
-        self.host = host
+        if dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "TaskSourceWorkItemEventReconciler requires "
+                    "work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(host)
+        self.dependencies = dependencies
         self.projector = projector
         self.policy = policy or TaskSourceReconciliationPolicy()
         self.conformance = TaskSourceConformanceSuite()
@@ -59,7 +68,7 @@ class TaskSourceWorkItemEventReconciler:
             event = replace(event, identity=identity, snapshot=snapshot)
             self.conformance.validate_event(source, event)
 
-        states = self.host._load_work_item_states()
+        states = self.dependencies.load_states()
         state = None
         if event.snapshot is not None:
             state = self.projector._find_existing_state(states, event.snapshot)
