@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,19 @@ class BotRuntimeTelemetry:
             connection_id: dict(value)
             for connection_id, value in self.status.items()
         }
+
+    def recent(self, limit: int = 80) -> list[dict[str, Any]]:
+        if not self.events_file.exists():
+            return []
+        with self.events_file.open(errors="replace") as handle:
+            lines = deque(handle, maxlen=max(1, min(int(limit), 300)))
+        events: list[dict[str, Any]] = []
+        for line in lines:
+            with contextlib.suppress(Exception):
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    events.append(value)
+        return events
 
 
 def install_bot_runtime_telemetry(app: Any, host: Any) -> BotRuntimeTelemetry:
