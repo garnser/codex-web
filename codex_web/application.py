@@ -389,7 +389,10 @@ from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
 from codex_web.storage.business_data_sources import BusinessDataSourceStore
 from codex_web.storage.business_kpis import BusinessKPIStore
-from codex_web.storage.bot_state import BotStateRepositories
+from codex_web.storage.bot_state import (
+    BotStateRepositories,
+    IndexedBotBindingRepository,
+)
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -1732,18 +1735,26 @@ bot_state = BotStateRepositories(
     delivery_targets_file=BOT_DELIVERY_TARGETS_FILE,
 )
 app.state.bot_state_repositories = bot_state
+bot_binding_repository = IndexedBotBindingRepository(
+    bot_state.bindings
+)
+app.state.bot_binding_repository = bot_binding_repository
 # Transitional aliases for unextracted bot services. The authoritative mutable
 # state lives canonically in BotStateRepositories.
 core._load_bot_connections = bot_state.connections.load
 core._save_bot_connections = bot_state.connections.save
-core._load_bot_bindings = bot_state.bindings.load
-core._save_bot_bindings = bot_state.bindings.save
+core._load_bot_bindings = bot_binding_repository.load
+core._save_bot_bindings = bot_binding_repository.save
 assert bot_state.reply_targets is not None
 assert bot_state.delivery_targets is not None
 core._load_bot_reply_targets = bot_state.reply_targets.load
 core._save_bot_reply_targets = bot_state.reply_targets.save
+core._get_bot_reply_target_record = bot_state.reply_targets.get
+core._put_bot_reply_target_record = bot_state.reply_targets.put
 core._load_bot_delivery_targets = bot_state.delivery_targets.load
 core._save_bot_delivery_targets = bot_state.delivery_targets.save
+core._get_bot_delivery_target_record = bot_state.delivery_targets.get
+core._put_bot_delivery_target_record = bot_state.delivery_targets.put
 
 turn_queue_repository = TurnQueueRepository(
     state_store,
@@ -1875,8 +1886,8 @@ bot_connection_service = install_bot_connection_service(
     projects=project_runtime_service,
     load_connections=bot_state.connections.load,
     save_connections=bot_state.connections.save,
-    load_bindings=bot_state.bindings.load,
-    save_bindings=bot_state.bindings.save,
+    load_bindings=bot_binding_repository.load,
+    save_bindings=bot_binding_repository.save,
     binding_prefix=bot_presentation_service.binding_prefix,
     secret_broker=secret_broker,
     identity_service=identity_service,
@@ -1884,9 +1895,14 @@ bot_connection_service = install_bot_connection_service(
 bot_binding_selection_service = install_bot_binding_selection_service(
     app,
     core,
-    load_bindings=bot_state.bindings.load,
+    load_bindings=bot_binding_repository.load,
     binding_report_name=bot_presentation_service.binding_report_name,
     binding_prefix=bot_presentation_service.binding_prefix,
+    lookup_by_id=bot_binding_repository.by_id,
+    indexed_for_connection=bot_binding_repository.for_connection,
+    indexed_for_thread=bot_binding_repository.for_thread,
+    indexed_for_project=bot_binding_repository.for_project,
+    indexed_masters=bot_binding_repository.masters,
 )
 
 bot_target_service = install_bot_target_service(
@@ -1900,6 +1916,11 @@ bot_target_service = install_bot_target_service(
     bindings_for_project=bot_binding_selection_service.for_project,
     put_reply_target=bot_state.reply_targets.put,
     put_delivery_target=bot_state.delivery_targets.put,
+    get_reply_target=bot_state.reply_targets.get,
+    get_delivery_target=bot_state.delivery_targets.get,
+    get_active_turn=runtime_state.active_turns.get,
+    page_reply_targets=bot_state.reply_targets.page,
+    page_delivery_targets=bot_state.delivery_targets.page,
 )
 
 def _gitlab_routing_enabled_for_project(project_id: str) -> bool:
@@ -1916,8 +1937,8 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     load_settings=runtime_state.thread_settings.load,
     save_settings=runtime_state.thread_settings.save,
     bindings=bot_binding_selection_service,
-    load_bindings=bot_state.bindings.load,
-    save_bindings=bot_state.bindings.save,
+    load_bindings=bot_binding_repository.load,
+    save_bindings=bot_binding_repository.save,
     gitlab_routing_enabled_for_project=(
         _gitlab_routing_enabled_for_project
     ),
@@ -1931,7 +1952,7 @@ legacy_project_migration_service = LegacyProjectMigrationService(
     resources=resource_catalog_service,
     thread_settings=thread_execution_settings_service,
     load_threads=thread_index_repository.load,
-    load_bindings=bot_state.bindings.load,
+    load_bindings=bot_binding_repository.load,
     store=legacy_project_migration_store,
 )
 app.state.legacy_project_migration_store = legacy_project_migration_store
@@ -1982,7 +2003,7 @@ async def _thread_recovery_runtime_request(method, params):
 thread_naming_service = ThreadNamingService(
     _existing_thread_runtime_request,
     thread_index_repository,
-    bot_state.bindings.load,
+    bot_binding_repository.load,
     event_sink=bot_runtime_telemetry.append,
 )
 thread_resume_service = ThreadResumeService(
@@ -2041,8 +2062,8 @@ thread_recovery_service = install_thread_recovery_service(
 bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
     app,
     core,
-    load_bindings=bot_state.bindings.load,
-    save_bindings=bot_state.bindings.save,
+    load_bindings=bot_binding_repository.load,
+    save_bindings=bot_binding_repository.save,
     connections=bot_connection_service,
     selection=bot_binding_selection_service,
     targets=bot_target_service,
@@ -2055,8 +2076,8 @@ bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
 thread_bot_collaboration_service = ThreadBotCollaborationService(
     project_runtime_service,
     _existing_thread_runtime_request,
-    load_bindings=bot_state.bindings.load,
-    save_bindings=bot_state.bindings.save,
+    load_bindings=bot_binding_repository.load,
+    save_bindings=bot_binding_repository.save,
     load_connections=bot_state.connections.load,
     upsert_binding=bot_binding_lifecycle_service.upsert,
 )
@@ -2205,7 +2226,7 @@ agent_channel_preference_service = (
         normalize_strings=normalize_string_list,
         known_channels=bot_channel_discovery_service.known,
         clone_binding=bot_binding_lifecycle_service.clone_to_conversation,
-        load_bindings=bot_state.bindings.load,
+        load_bindings=bot_binding_repository.load,
         binding_prefix=bot_presentation_service.binding_prefix,
         same_logical_binding=thread_recovery_service.same_logical_binding,
     )
@@ -2622,7 +2643,7 @@ runtime_health_service = RuntimeHealthService(
     codex=codex_runtime,
     bot_runtime=bot_runtime,
     telemetry=bot_runtime_telemetry,
-    load_bindings=bot_state.bindings.load,
+    load_bindings=bot_binding_repository.load,
     terminal_failures=turn_execution_service.terminal_failures,
     terminal_recovery_tasks=turn_execution_service.terminal_recovery_tasks,
     terminal_failure_window_seconds=(
@@ -2800,7 +2821,7 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     queue_tasks=turn_execution_service.queue_drain_tasks,
     load_connections=bot_state.connections.load,
     connection_public=bot_connection_service.public,
-    load_bindings=bot_state.bindings.load,
+    load_bindings=bot_binding_repository.load,
     binding_public=_diagnostic_binding_public,
     load_agent_presence=configuration_state.agent_channel_presence.load,
     agent_presence_public=lambda settings: settings.model_dump(),
@@ -2809,6 +2830,8 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     load_work_item_states=runtime_state.work_item_states.load,
     work_item_public=work_item_state_machine._work_item_state_public,
     recent_events=bot_runtime_telemetry.recent,
+    bot_routing_metrics=bot_target_service.metrics,
+    bot_binding_index_status=bot_binding_repository.index_status,
 )
 operator_ui_service = OperatorUiService(
     static_dir=STATIC_DIR,
@@ -2831,7 +2854,7 @@ def _compat_daemon_health():
         codex=getattr(core, "codex", codex_runtime),
         bot_runtime=getattr(core, "bot_runtime", bot_runtime),
         telemetry=bot_runtime_telemetry,
-        load_bindings=bot_state.bindings.load,
+        load_bindings=bot_binding_repository.load,
         terminal_failures=getattr(
             core,
             "THREAD_TERMINAL_FAILURES",

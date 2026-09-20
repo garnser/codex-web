@@ -138,6 +138,191 @@ class ModelListRepository(Generic[T]):
         )
 
 
+class IndexedBotBindingRepository:
+    """Revision-aware read indexes over canonical BotBinding list state.
+
+    Mutating callers keep the existing load()/save() snapshot semantics. Routing
+    callers use indexed methods that rebuild only when the canonical namespace
+    revision changes, including writes made by another process.
+    """
+
+    def __init__(self, repository: ModelListRepository[BotBinding]) -> None:
+        self.repository = repository
+        self._lock = threading.RLock()
+        self._revision: float | None = None
+        self._loaded = False
+        self._all: tuple[BotBinding, ...] = ()
+        self._by_id: dict[str, BotBinding] = {}
+        self._by_thread: dict[str, tuple[BotBinding, ...]] = {}
+        self._by_project_provider: dict[
+            tuple[str, str],
+            tuple[BotBinding, ...],
+        ] = {}
+        self._by_connection: dict[
+            tuple[str, str],
+            tuple[BotBinding, ...],
+        ] = {}
+        self._masters_by_project: dict[str, tuple[BotBinding, ...]] = {}
+
+    @staticmethod
+    def _copies(values: tuple[BotBinding, ...]) -> list[BotBinding]:
+        return [value.model_copy(deep=True) for value in values]
+
+    def _canonical_revision(self) -> float | None:
+        return self.repository.store.namespace_revision(
+            self.repository.namespace
+        )
+
+    def _build(self) -> None:
+        values: list[BotBinding] = []
+        stable_revision: float | None = None
+        for _attempt in range(3):
+            before = self._canonical_revision()
+            raw = self.repository._raw()
+            values = [
+                BotBinding.model_validate(item)
+                for item in raw
+                if isinstance(item, dict)
+            ]
+            after = self._canonical_revision()
+            if before == after:
+                stable_revision = after
+                break
+
+        by_thread: dict[str, list[BotBinding]] = {}
+        by_project_provider: dict[
+            tuple[str, str],
+            list[BotBinding],
+        ] = {}
+        by_connection: dict[
+            tuple[str, str],
+            list[BotBinding],
+        ] = {}
+        masters: dict[str, list[BotBinding]] = {}
+        for binding in values:
+            provider = binding.provider.lower()
+            by_thread.setdefault(binding.thread_id, []).append(binding)
+            by_project_provider.setdefault(
+                (provider, binding.project_id),
+                [],
+            ).append(binding)
+            by_connection.setdefault(
+                (provider, binding.external_conversation_id),
+                [],
+            ).append(binding)
+            if binding.is_master:
+                masters.setdefault(binding.project_id, []).append(binding)
+
+        self._all = tuple(values)
+        self._by_id = {binding.id: binding for binding in values}
+        self._by_thread = {
+            key: tuple(items) for key, items in by_thread.items()
+        }
+        self._by_project_provider = {
+            key: tuple(items)
+            for key, items in by_project_provider.items()
+        }
+        self._by_connection = {
+            key: tuple(items) for key, items in by_connection.items()
+        }
+        self._masters_by_project = {
+            key: tuple(items) for key, items in masters.items()
+        }
+        # If state changed continuously during the rebuild, deliberately leave
+        # the revision unset so the next lookup rebuilds rather than treating a
+        # potentially stale snapshot as current.
+        self._revision = stable_revision
+        self._loaded = True
+
+    def _ensure(self) -> None:
+        revision = self._canonical_revision()
+        with self._lock:
+            if (
+                self._loaded
+                and self._revision is not None
+                and revision == self._revision
+            ):
+                return
+            self._build()
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._revision = None
+            self._loaded = False
+
+    def load(self) -> list[BotBinding]:
+        return self.repository.load()
+
+    def save(self, values: list[BotBinding]) -> None:
+        with self._lock:
+            self.repository.save(values)
+            self._revision = None
+            self._loaded = False
+
+    def all(self) -> list[BotBinding]:
+        self._ensure()
+        with self._lock:
+            return self._copies(self._all)
+
+    def by_id(self, binding_id: str) -> BotBinding | None:
+        self._ensure()
+        with self._lock:
+            binding = self._by_id.get(str(binding_id))
+            return binding.model_copy(deep=True) if binding else None
+
+    def for_thread(self, thread_id: str) -> list[BotBinding]:
+        self._ensure()
+        with self._lock:
+            return self._copies(
+                self._by_thread.get(str(thread_id), ())
+            )
+
+    def for_project(
+        self,
+        provider: str,
+        project_id: str,
+    ) -> list[BotBinding]:
+        self._ensure()
+        key = (provider.lower(), str(project_id))
+        with self._lock:
+            return self._copies(
+                self._by_project_provider.get(key, ())
+            )
+
+    def for_connection(
+        self,
+        provider: str,
+        external_conversation_id: str,
+    ) -> list[BotBinding]:
+        self._ensure()
+        key = (
+            provider.lower(),
+            str(external_conversation_id),
+        )
+        with self._lock:
+            return self._copies(self._by_connection.get(key, ()))
+
+    def masters(self, project_id: str) -> list[BotBinding]:
+        self._ensure()
+        with self._lock:
+            return self._copies(
+                self._masters_by_project.get(str(project_id), ())
+            )
+
+    def index_status(self) -> dict[str, Any]:
+        self._ensure()
+        with self._lock:
+            return {
+                "revision": self._revision,
+                "bindings": len(self._all),
+                "byId": len(self._by_id),
+                "threads": len(self._by_thread),
+                "projectProviders": len(self._by_project_provider),
+                "connections": len(self._by_connection),
+                "masterProjects": len(self._masters_by_project),
+            }
+
+
 class BotStateRepositories:
     def __init__(
         self,
