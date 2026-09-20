@@ -397,7 +397,7 @@ def install_bot_target_service(
         )
 
     # Direct-import compatibility remains dynamic so supported callers that
-    # replace one historical helper keep working until legacy_core is removed.
+    # replace one historical helper keep working through the compatibility facade.
     host._master_reply_target_for_binding = (
         _compat_master_reply_target_for_binding
     )
