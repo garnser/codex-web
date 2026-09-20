@@ -203,12 +203,7 @@ class WorkItemContractService:
             execution_profile=profile,
             execution_profile_definition=profile_ref,
         )
-        return (
-            f"{security_boundary_instructions()}\n\n"
-            f"{untrusted_base}\n\n"
-            f"CANONICAL EXECUTION CONTRACT (schema {contract.schema_version})\n"
-            "This work item was populated/reconciled from its authoritative task source and codex-web state remains "
-            "authoritative for owner, stage, handoff and next action. The versioned execution contract and its exact "
+        profile_text = (
             (
                 f"Definition Registry revisions ({definition_ref.definition_id}@{definition_ref.revision}, "
                 f"{profile_ref.definition_id}@{profile_ref.revision}) were validated before dispatch. "
@@ -216,12 +211,20 @@ class WorkItemContractService:
                 f"repository access: {profile.repository_access}; required worker capabilities: "
                 f"{', '.join(profile.required_worker_capabilities)}. "
                 "The execution profile constrains the environment; it does not grant operational authority. "
-                if profile is not None and profile_ref is not None
-                else (
-                    f"Definition Registry revision ({definition_ref.definition_id}@"
-                    f"{definition_ref.revision}) was validated before dispatch. "
-                )
             )
+            if profile is not None and profile_ref is not None
+            else (
+                f"Definition Registry revision ({definition_ref.definition_id}@"
+                f"{definition_ref.revision}) was validated before dispatch. "
+            )
+        )
+        return (
+            f"{security_boundary_instructions()}\n\n"
+            f"{untrusted_base}\n\n"
+            f"CANONICAL EXECUTION CONTRACT (schema {contract.schema_version})\n"
+            "This work item was populated/reconciled from its authoritative task source and codex-web state remains "
+            "authoritative for owner, stage, handoff and next action. The versioned execution contract and its exact "
+            f"{profile_text}"
             "Apply the resolved role below; do not create parallel ownership, definition or permission state.\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
