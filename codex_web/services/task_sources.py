@@ -85,6 +85,29 @@ class TaskSourceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskSourceWritebackResult:
+    """Result of one provider-efficient canonical projection."""
+
+    snapshot: TaskSourceSnapshot
+    mutated: bool
+
+
+@runtime_checkable
+class TaskSourceCombinedWriteCapable(Protocol):
+    """Optional combined owner/state projection using one provider snapshot."""
+
+    async def write_projection(
+        self,
+        identity: TaskSourceIdentity,
+        current: TaskSourceSnapshot,
+        *,
+        owner: str | None,
+        stage: WorkItemStage,
+    ) -> TaskSourceWritebackResult:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSourcePage:
     """One bounded provider-neutral discovery page."""
 
