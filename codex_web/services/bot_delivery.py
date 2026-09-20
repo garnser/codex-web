@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
@@ -28,33 +29,74 @@ class BotDeliveryService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
-        connections: BotConnectionService,
-        bindings: BotBindingSelectionService,
-        targets: BotTargetService,
-        presentation: BotPresentationService,
-        details: BotDetailService,
-        telemetry: BotRuntimeTelemetry,
-        collaboration: ThreadBotCollaborationService,
-        approvals: ApprovalService,
-        publish_event: Callable[[dict[str, Any]], Awaitable[object]],
-        workflow_claim_findings: Callable[[str], tuple[list[str], list[Any]]],
-        workflow_correction: Callable[[str, list[Any], list[str]], str],
+        connections: BotConnectionService | Any | None = None,
+        bindings: BotBindingSelectionService | Any | None = None,
+        targets: BotTargetService | Any | None = None,
+        presentation: BotPresentationService | Any | None = None,
+        details: BotDetailService | Any | None = None,
+        telemetry: BotRuntimeTelemetry | Any | None = None,
+        collaboration: ThreadBotCollaborationService | Any | None = None,
+        approvals: ApprovalService | Any | None = None,
+        publish_event: Callable[[dict[str, Any]], Awaitable[object]] | None = None,
+        workflow_claim_findings: Callable[[str], tuple[list[str], list[Any]]] | None = None,
+        workflow_correction: Callable[[str, list[Any], list[str]], str] | None = None,
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
         secret_broker: SecretBroker | None = None,
     ) -> None:
-        self.connections = connections
-        self.bindings = bindings
-        self.targets = targets
-        self.presentation = presentation
-        self.details = details
-        self.telemetry = telemetry
-        self.collaboration = collaboration
-        self.approvals = approvals
-        self.publish_event = publish_event
-        self.workflow_claim_findings = workflow_claim_findings
-        self.workflow_correction = workflow_correction
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        if host is not None:
+            connections = connections or SimpleNamespace(
+                get=getattr(host, "_bot_connection", lambda _connection_id: None),
+                runtime_actor=getattr(host, "_bot_runtime_actor", lambda _project_id: None),
+            )
+            targets = targets or SimpleNamespace(
+                thread_target_for_outbound=getattr(
+                    host,
+                    "_thread_target_for_outbound",
+                    lambda _binding, _reply: (None, False),
+                )
+            )
+            presentation = presentation or SimpleNamespace(
+                slack_reply_username=getattr(
+                    host,
+                    "_slack_reply_username",
+                    lambda _binding: "Codex",
+                ),
+                slack_reply_icon=getattr(
+                    host,
+                    "_slack_reply_icon",
+                    lambda _binding: ":robot_face:",
+                ),
+            )
+
+        self.connections = connections or SimpleNamespace(
+            get=lambda _connection_id: None,
+            runtime_actor=lambda _project_id: None,
+        )
+        self.bindings = bindings or SimpleNamespace(for_thread=lambda _thread_id: [])
+        self.targets = targets or SimpleNamespace(
+            thread_target_for_outbound=lambda _binding, _reply: (None, False)
+        )
+        self.presentation = presentation or SimpleNamespace(
+            slack_reply_username=lambda _binding: "Codex",
+            slack_reply_icon=lambda _binding: ":robot_face:",
+        )
+        self.details = details or SimpleNamespace()
+        self.telemetry = telemetry or SimpleNamespace(append=lambda _event: None)
+        self.collaboration = collaboration or SimpleNamespace()
+        self.approvals = approvals or SimpleNamespace()
+        self.publish_event = publish_event or _publish_noop
+        self.workflow_claim_findings = workflow_claim_findings or (
+            lambda _text: ([], [])
+        )
+        self.workflow_correction = workflow_correction or (
+            lambda text, _states, _findings: text
+        )
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
@@ -517,30 +559,41 @@ def install_bot_delivery_service(
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
 ) -> BotDeliveryService:
-    service = BotDeliveryService(
-        connections=connections or app.state.bot_connection_service,
-        bindings=bindings or app.state.bot_binding_selection_service,
-        targets=targets or app.state.bot_target_service,
-        presentation=presentation or app.state.bot_presentation_service,
-        details=details or app.state.bot_detail_service,
-        telemetry=telemetry or app.state.bot_runtime_telemetry,
-        collaboration=(
-            collaboration or app.state.thread_bot_collaboration_service
-        ),
-        approvals=approvals or app.state.approval_service,
-        publish_event=publish_event or host.hub.publish,
-        workflow_claim_findings=(
-            workflow_claim_findings
-            or host._workflow_outbound_claim_findings
-        ),
-        workflow_correction=(
-            workflow_correction
-            or host._canonical_workflow_correction
-        ),
-        slack_client=slack_client,
-        telegram_client=telegram_client,
-        secret_broker=getattr(app.state, "secret_broker", None),
-    )
+    if (
+        connections is None
+        and not hasattr(app.state, "bot_connection_service")
+    ):
+        service = BotDeliveryService(
+            host,
+            slack_client=slack_client,
+            telegram_client=telegram_client,
+            secret_broker=getattr(app.state, "secret_broker", None),
+        )
+    else:
+        service = BotDeliveryService(
+            connections=connections or app.state.bot_connection_service,
+            bindings=bindings or app.state.bot_binding_selection_service,
+            targets=targets or app.state.bot_target_service,
+            presentation=presentation or app.state.bot_presentation_service,
+            details=details or app.state.bot_detail_service,
+            telemetry=telemetry or app.state.bot_runtime_telemetry,
+            collaboration=(
+                collaboration or app.state.thread_bot_collaboration_service
+            ),
+            approvals=approvals or app.state.approval_service,
+            publish_event=publish_event or host.hub.publish,
+            workflow_claim_findings=(
+                workflow_claim_findings
+                or host._workflow_outbound_claim_findings
+            ),
+            workflow_correction=(
+                workflow_correction
+                or host._canonical_workflow_correction
+            ),
+            slack_client=slack_client,
+            telegram_client=telegram_client,
+            secret_broker=getattr(app.state, "secret_broker", None),
+        )
     app.state.bot_delivery_service = service
 
     # Transitional aliases for direct imports until legacy_core is deleted.
