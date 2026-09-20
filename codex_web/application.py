@@ -97,6 +97,7 @@ from codex_web.paths import (
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
+    WORK_ITEM_EVENTS_FILE,
     WORK_ITEM_STATES_FILE,
 )
 from codex_web.runtime import core
@@ -270,7 +271,25 @@ from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_
 from codex_web.services.work_item_watchdog_candidates import install_work_item_watchdog_candidate_policy
 from codex_web.services.work_item_watchdog_prompts import install_work_item_watchdog_prompt_policy
 from codex_web.services.work_item_contracts import install_work_item_contract_service
-from codex_web.services.work_items import WorkItemService
+from codex_web.services.work_item_dependencies import (
+    DEFAULT_RELEASE_OWNER,
+    DEFAULT_VALIDATION_OWNER,
+    NON_IMPLEMENTATION_OWNERS,
+    GitLabWorkItemDependencies,
+    WorkItemRuntimeDependencies,
+    default_leading_owner_cue,
+    gitlab_group_path,
+    gitlab_label_names,
+    gitlab_mr_refs_from_payload,
+    gitlab_owner_agents,
+    gitlab_project_issue_ref,
+    gitlab_token_for_project,
+    gitlab_url,
+)
+from codex_web.services.work_items import (
+    WorkItemService,
+    install_work_item_compatibility,
+)
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_providers import AgentProviderStore
@@ -453,6 +472,8 @@ app.state.event_transport_runtime = event_transport_runtime
 app.state.canonical_event_store = canonical_event_store
 app.state.canonical_event_bus = canonical_event_bus
 app.state.canonical_event_ingestion = canonical_event_ingestion
+app.state.sqlite_state_store = state_store
+configuration_state = install_configuration_state(app, core)
 
 scheduler_store = SchedulerStore(state_store)
 scheduler_service = SchedulerService(scheduler_store, canonical_event_ingestion)
@@ -1285,11 +1306,43 @@ assignment_session_managers = {
 }
 
 gitlab_client = GitLabClient()
+work_item_dependencies = WorkItemRuntimeDependencies(
+    data_dir=DATA_DIR,
+    events_file=WORK_ITEM_EVENTS_FILE,
+    load_states=runtime_state.work_item_states.load,
+    save_states=runtime_state.work_item_states.save,
+    load_projects=project_repository.load,
+    resource_ids_for_project=_resource_ids_for_project,
+    leading_owner_cue_in_action=default_leading_owner_cue,
+    default_validation_owner=DEFAULT_VALIDATION_OWNER,
+    default_release_owner=DEFAULT_RELEASE_OWNER,
+    non_implementation_owners=NON_IMPLEMENTATION_OWNERS,
+)
+gitlab_work_item_dependencies = GitLabWorkItemDependencies(
+    api_base_url=os.environ.get(
+        "CODEX_WEB_GITLAB_API_BASE",
+        "https://dev.veridataops.com/gitlab/api/v4",
+    ),
+    token_for_project=lambda project_id: gitlab_token_for_project(
+        project_id,
+        project_lookup=project_runtime_service.get,
+    ),
+    group_path=gitlab_group_path,
+    load_routing_settings=configuration_state.gitlab_routing.load,
+    project_issue_ref=gitlab_project_issue_ref,
+    label_names=gitlab_label_names,
+    owner_agents=gitlab_owner_agents,
+    url=gitlab_url,
+    mr_refs_from_payload=gitlab_mr_refs_from_payload,
+)
+app.state.work_item_dependencies = work_item_dependencies
+app.state.gitlab_work_item_dependencies = gitlab_work_item_dependencies
 work_item_state_machine = install_work_item_state_machine(
     app,
     core,
     gitlab_client,
     store=state_store,
+    dependencies=work_item_dependencies,
 )
 work_item_contract_service = install_work_item_contract_service(
     app,
@@ -1386,7 +1439,7 @@ app.state.gitlab_sync_health = gitlab_sync_health
 bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
 
 work_item_service = WorkItemService(
-    core,
+    None,
     gitlab_client,
     work_item_state_machine,
     continuity=work_item_continuity_service,
@@ -1394,7 +1447,18 @@ work_item_service = WorkItemService(
     event_sink=bot_runtime_telemetry.append,
     publish_event=core.hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
+    work_item_dependencies=work_item_dependencies,
+    gitlab_dependencies=gitlab_work_item_dependencies,
+    identity_service=identity_service,
+    secret_broker=secret_broker,
 )
+work_item_compatibility_service = install_work_item_compatibility(
+    app,
+    core,
+    work_item_service,
+)
+app.state.work_item_service = work_item_service
+
 authority_policy_explorer_service = AuthorityPolicyExplorerService(
     authority_role_service,
     definition_registry_service,
@@ -1624,9 +1688,7 @@ app.state.turn_queue_repository = turn_queue_repository
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 
-app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
-configuration_state = install_configuration_state(app, core)
 auxiliary_state = install_auxiliary_state(app, core)
 bot_presentation_service = install_bot_presentation_service(app, core)
 bot_detail_service = install_bot_detail_service(
