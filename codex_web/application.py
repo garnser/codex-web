@@ -229,6 +229,7 @@ from codex_web.services.entitlements import EntitlementService
 from codex_web.services.evaluations import EvaluationService
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
+from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
@@ -362,6 +363,7 @@ from codex_web.storage.entitlements import EntitlementStore
 from codex_web.storage.evaluations import EvaluationStore
 from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.crypto_keys import CryptoKeyStore
+from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.executive_activations import ExecutiveActivationStore
@@ -471,6 +473,8 @@ state_store = build_state_store(
     backend=os.environ.get("CODEX_WEB_STATE_BACKEND", "sqlite"),
     postgres_dsn=os.environ.get("CODEX_WEB_POSTGRES_DSN"),
 )
+execution_preflight_store = ExecutionPreflightStore(state_store)
+app.state.execution_preflight_store = execution_preflight_store
 project_repository = ProjectRepository(
     PROJECTS_FILE,
     store=state_store,
@@ -2182,6 +2186,11 @@ thread_service = ThreadService(
     active_turn_loader=runtime_state.active_turns.load,
     active_turn_getter=runtime_state.active_turns.get,
 )
+execution_preflight_service = ExecutionPreflightService(
+    execution_preflight_store,
+)
+app.state.execution_preflight_service = execution_preflight_service
+
 turn_service = TurnService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -2193,6 +2202,7 @@ turn_service = TurnService(
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
     binding_public=_binding_public,
+    preflight=execution_preflight_service,
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
