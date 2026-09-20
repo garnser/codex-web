@@ -444,6 +444,10 @@ function renderDetail(payload) {
           schema: contract.schema_version,
           role: contract.role_id,
           agent: contract.agent_id,
+          execution_profile: contract.execution_profile?.id,
+          workspace_mode: contract.execution_profile?.workspace_mode,
+          repository_access: contract.execution_profile?.repository_access,
+          worker_capabilities: (contract.execution_profile?.required_worker_capabilities || []).join(', ') || null,
           sandbox: policy.sandbox || contract.permissions?.sandbox,
           approval_policy: policy.approval_policy || contract.permissions?.approval_policy,
         })}</div>
