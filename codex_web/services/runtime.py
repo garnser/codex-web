@@ -16,48 +16,179 @@ class RuntimeService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
-        codex: Any,
-        static_version: Callable[[], str],
-        runtime_health: Callable[[], dict[str, Any]],
-        load_active_turns: Callable[[], dict[str, Any]],
-        load_turn_queues: Callable[[], dict[str, list[Any]]],
-        active_turn_stale_seconds: Callable[[], float],
+        codex: Any | None = None,
+        static_version: Callable[[], str] | None = None,
+        runtime_health: Callable[[], dict[str, Any]] | None = None,
+        load_active_turns: Callable[[], dict[str, Any]] | None = None,
+        load_turn_queues: Callable[[], dict[str, list[Any]]] | None = None,
+        active_turn_stale_seconds: Callable[[], float] | None = None,
         resume_active_threads_after_startup: Callable[
             [set[str]], Any
-        ],
-        schedule_queue_drain: Callable[[str], Any],
-        load_work_item_states: Callable[[], dict[str, Any]],
-        work_item_split_brain_findings: Callable[[Any], list[str]],
-        recent_events: Callable[[int], list[dict[str, Any]]],
-        supervisor_status: Callable[[], dict[str, Any]],
-        event_sink: Callable[[dict[str, Any]], None],
-        state_store: Any | None,
-        coordination_backend: Any | None,
-        replicated_ownership: Any | None,
-        canonical_event_bus: Any | None,
-        event_transport_runtime: Any | None,
-        event_transport: Any | None,
-        deployment_mode: str,
-        instance_id: str,
+        ] | None = None,
+        schedule_queue_drain: Callable[[str], Any] | None = None,
+        load_work_item_states: Callable[[], dict[str, Any]] | None = None,
+        work_item_split_brain_findings: Callable[
+            [Any], list[str]
+        ] | None = None,
+        recent_events: Callable[
+            [int], list[dict[str, Any]]
+        ] | None = None,
+        supervisor_status: Callable[[], dict[str, Any]] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        state_store: Any | None = None,
+        coordination_backend: Any | None = None,
+        replicated_ownership: Any | None = None,
+        canonical_event_bus: Any | None = None,
+        event_transport_runtime: Any | None = None,
+        event_transport: Any | None = None,
+        deployment_mode: str = "local",
+        instance_id: str = "local",
     ) -> None:
+        if host is not None:
+            codex = codex or getattr(host, "codex", None)
+            static_version = static_version or getattr(
+                host,
+                "_static_version",
+                lambda: "unknown",
+            )
+            runtime_health = runtime_health or getattr(
+                host,
+                "_daemon_health",
+                lambda: {"ok": True, "problems": []},
+            )
+            load_active_turns = load_active_turns or getattr(
+                host,
+                "_load_active_turns",
+                lambda: {},
+            )
+            load_turn_queues = load_turn_queues or getattr(
+                host,
+                "_load_turn_queues",
+                lambda: {},
+            )
+            active_turn_stale_seconds = (
+                active_turn_stale_seconds
+                or getattr(
+                    host,
+                    "_active_turn_stale_seconds",
+                    lambda: 120.0,
+                )
+            )
+            resume_active_threads_after_startup = (
+                resume_active_threads_after_startup
+                or getattr(
+                    host,
+                    "_resume_active_threads_after_startup",
+                    lambda _ids: None,
+                )
+            )
+            schedule_queue_drain = schedule_queue_drain or getattr(
+                host,
+                "_schedule_queue_drain",
+                lambda _thread_id: None,
+            )
+            load_work_item_states = (
+                load_work_item_states
+                or getattr(host, "_load_work_item_states", lambda: {})
+            )
+            work_item_split_brain_findings = (
+                work_item_split_brain_findings
+                or getattr(
+                    host,
+                    "_work_item_split_brain_findings",
+                    lambda _state: [],
+                )
+            )
+            recent_events = recent_events or getattr(
+                host,
+                "_recent_bot_events",
+                lambda _limit: [],
+            )
+            supervisor_status = supervisor_status or (
+                lambda: {}
+            )
+            event_sink = event_sink or getattr(
+                host,
+                "_append_bot_event",
+                lambda _event: None,
+            )
+            state = getattr(
+                getattr(host, "app", None),
+                "state",
+                None,
+            )
+            state_store = state_store or getattr(
+                state,
+                "state_store",
+                None,
+            )
+            coordination_backend = coordination_backend or getattr(
+                state,
+                "coordination_backend",
+                None,
+            )
+            replicated_ownership = replicated_ownership or getattr(
+                state,
+                "replicated_ownership_service",
+                None,
+            )
+            canonical_event_bus = canonical_event_bus or getattr(
+                state,
+                "canonical_event_bus",
+                None,
+            )
+            event_transport_runtime = event_transport_runtime or getattr(
+                state,
+                "event_transport_runtime",
+                None,
+            )
+            event_transport = event_transport or getattr(
+                state,
+                "event_transport",
+                None,
+            )
+            deployment_mode = getattr(
+                state,
+                "deployment_mode",
+                deployment_mode,
+            )
+            instance_id = getattr(
+                state,
+                "instance_id",
+                instance_id,
+            )
+
+        if codex is None:
+            raise TypeError("RuntimeService requires a runtime transport")
         self.codex = codex
-        self.static_version = static_version
-        self.runtime_health = runtime_health
-        self.load_active_turns = load_active_turns
-        self.load_turn_queues = load_turn_queues
-        self.active_turn_stale_seconds = active_turn_stale_seconds
+        self.static_version = static_version or (lambda: "unknown")
+        self.runtime_health = runtime_health or (
+            lambda: {"ok": True, "problems": []}
+        )
+        self.load_active_turns = load_active_turns or (lambda: {})
+        self.load_turn_queues = load_turn_queues or (lambda: {})
+        self.active_turn_stale_seconds = (
+            active_turn_stale_seconds or (lambda: 120.0)
+        )
         self.resume_active_threads_after_startup = (
             resume_active_threads_after_startup
+            or (lambda _ids: None)
         )
-        self.schedule_queue_drain = schedule_queue_drain
-        self.load_work_item_states = load_work_item_states
+        self.schedule_queue_drain = (
+            schedule_queue_drain or (lambda _thread_id: None)
+        )
+        self.load_work_item_states = (
+            load_work_item_states or (lambda: {})
+        )
         self.work_item_split_brain_findings = (
             work_item_split_brain_findings
+            or (lambda _state: [])
         )
-        self.recent_events = recent_events
-        self.supervisor_status = supervisor_status
-        self.event_sink = event_sink
+        self.recent_events = recent_events or (lambda _limit: [])
+        self.supervisor_status = supervisor_status or (lambda: {})
+        self.event_sink = event_sink or (lambda _event: None)
         self.state_store = state_store
         self.coordination_backend = coordination_backend
         self.replicated_ownership = replicated_ownership
@@ -66,6 +197,10 @@ class RuntimeService:
         self.event_transport = event_transport
         self.deployment_mode = deployment_mode
         self.instance_id = instance_id
+
+        if host is not None:
+            host.healthz = self.healthz
+            host.recovery_resume = self.recovery_resume
 
     async def status(self) -> dict[str, Any]:
         try:
