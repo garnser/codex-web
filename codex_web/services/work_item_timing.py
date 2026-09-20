@@ -12,8 +12,10 @@ class WorkItemTimingPolicy:
 
     def __init__(
         self,
-        coerce_owner: Callable[[str | None], str | None],
+        coerce_owner: Callable[[str | None], str | None] | Any,
     ) -> None:
+        if not callable(coerce_owner):
+            coerce_owner = coerce_owner._coerce_owner
         self.coerce_owner = coerce_owner
 
     @staticmethod
