@@ -7,6 +7,7 @@ from typing import Callable, Mapping
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
 from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
+from codex_web.execution_workspace_backend import ExecutionWorkspaceBackendError
 from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
@@ -827,7 +828,7 @@ class TurnExecutionBindingService:
                     "remediation_route": "/api/execution-workspaces",
                 },
             ) from exc
-        except ExecutionWorkspaceError as exc:
+        except (ExecutionWorkspaceError, ExecutionWorkspaceBackendError) as exc:
             raise TurnExecutionBindingError(
                 str(exc),
                 code="workspace_provisioning_blocked",
