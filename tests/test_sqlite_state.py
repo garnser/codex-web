@@ -46,6 +46,16 @@ class _TrackingStore(SQLiteStateStore):
         return tracked
 
 
+class _CountingKeyedStore(SQLiteStateStore):
+    def __init__(self, path: Path) -> None:
+        self.record_items_calls = 0
+        super().__init__(path)
+
+    def record_items(self, namespace: str):
+        self.record_items_calls += 1
+        return super().record_items(namespace)
+
+
 class SQLiteStateStoreTests(unittest.TestCase):
     def test_imports_legacy_json_once_and_uses_sqlite_as_primary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,6 +305,61 @@ class SQLiteStateStoreTests(unittest.TestCase):
                 store.get("thread_settings")["thread-1"]["sandbox"],
                 "read-only",
             )
+
+    def test_keyed_write_cost_does_not_depend_on_registry_materialization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = _CountingKeyedStore(root / "codex-web.db")
+            store.record_replace(
+                "thread_settings",
+                {
+                    f"thread-{index}": {"model": f"model-{index}"}
+                    for index in range(5000)
+                },
+            )
+            repository = ModelMapRepository(
+                store,
+                namespace="thread_settings",
+                legacy_path=root / "thread_settings.json",
+                model=ThreadRunSettings,
+            )
+            store.record_items_calls = 0
+
+            repository.put(
+                "thread-2500",
+                ThreadRunSettings(model="updated"),
+            )
+
+            self.assertEqual(store.record_items_calls, 0)
+            self.assertEqual(
+                repository.get("thread-2500").model,
+                "updated",
+            )
+
+    def test_keyed_mutation_and_mirror_metrics_are_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SQLiteStateStore(root / "codex-web.db")
+            repository = ModelMapRepository(
+                store,
+                namespace="thread_settings",
+                legacy_path=root / "thread_settings.json",
+                model=ThreadRunSettings,
+            )
+
+            repository.put(
+                "thread-1",
+                ThreadRunSettings(model="gpt-test"),
+            )
+            keyed = store.status()["keyedMutationMetrics"]
+            mirror_before = repository.compatibility_metrics()["checkpoint"]
+            self.assertGreaterEqual(keyed["count"], 1)
+            self.assertEqual(mirror_before["count"], 0)
+
+            repository.flush_legacy_mirror()
+            mirror_after = repository.compatibility_metrics()["checkpoint"]
+            self.assertEqual(mirror_after["count"], 1)
+            self.assertGreaterEqual(mirror_after["lastSeconds"], 0.0)
 
     def test_every_store_connection_is_closed_after_use(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
