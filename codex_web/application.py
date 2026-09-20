@@ -94,6 +94,7 @@ from codex_web.paths import (
     BOTS_CONNECTIONS_FILE,
     BOTS_EVENTS_FILE,
     EXECUTION_WORKSPACE_DIR,
+    GITLAB_SEMANTIC_EVENTS_FILE,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
     DATA_DIR,
@@ -392,6 +393,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 event_hub = EventHub()
 core.app = app
 core.hub = event_hub
+
+# Verified import-server compatibility data. Canonical ownership remains in
+# codex_web.paths; the compatibility namespace only mirrors these references.
+core.DATA_DIR = DATA_DIR
+core.WORK_ITEM_STATES_FILE = WORK_ITEM_STATES_FILE
+core.WORK_ITEM_EVENTS_FILE = WORK_ITEM_EVENTS_FILE
+core.BOTS_EVENTS_FILE = BOTS_EVENTS_FILE
+core.GITLAB_SEMANTIC_EVENTS_FILE = GITLAB_SEMANTIC_EVENTS_FILE
 
 runtime_policy = RuntimePolicy(DATA_DIR)
 app.state.runtime_policy = runtime_policy
