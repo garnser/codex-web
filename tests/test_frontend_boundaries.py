@@ -379,6 +379,45 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("visible.map((item)", source)
         self.assertIn("limit: String(PAGE_SIZE)", source)
 
+    def test_frontend_performance_telemetry_is_bounded_and_content_free(self) -> None:
+        source_path = STATIC / "frontend_perf.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 7_000)
+        self.assertIn("FRONTEND_BUDGETS", source)
+        self.assertIn("MAX_SAMPLES = 200", source)
+        self.assertIn("endpointIdentity", source)
+        self.assertIn("maxRoutineResponseBytes", source)
+        self.assertNotIn("requestBody", source)
+        self.assertNotIn("responseBody", source)
+        self.assertNotIn("prompt", source.casefold())
+        self.assertNotIn("secret", source.casefold())
+
+    def test_shared_client_records_bytes_latency_and_aborts(self) -> None:
+        source = (STATIC / "api_client.js").read_text(encoding="utf-8")
+        self.assertLessEqual((STATIC / "api_client.js").stat().st_size, 4_000)
+        self.assertIn("observeRequest", source)
+        self.assertIn("responseBytes", source)
+        self.assertIn("AbortError", source)
+        self.assertNotIn("console.log", source)
+
+    def test_workspace_refresh_is_latest_navigation_wins(self) -> None:
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        loader = (STATIC / "project_ui_state.js").read_text(encoding="utf-8")
+        self.assertIn("refreshController?.abort()", app)
+        self.assertIn("refreshGeneration", app)
+        self.assertIn("generation!==state.refreshGeneration", app)
+        self.assertIn("projectId!==state.projectId", app)
+        self.assertIn("signal:controller.signal", app)
+        self.assertIn("signal = null", loader)
+        self.assertIn("{ signal }", loader)
+
+    def test_collapsed_thread_rows_do_not_build_expensive_action_controls(self) -> None:
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn("if(expanded){", app)
+        self.assertIn("let actionMarkup", app)
+        self.assertIn("bindingsByThread=new Map()", app)
+        self.assertIn('observeRender("threads"', app)
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
