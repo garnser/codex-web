@@ -493,6 +493,7 @@ class AssignmentBoundControlPlaneBroker:
         service_identity_id: str,
         fence: int,
         validator: Callable[[], ExecutionAssignment],
+        worker_service_identity_validator: Callable[[], str] | None = None,
     ) -> None:
         self.service = service
         self.snapshot = assignment.model_copy(deep=True)
@@ -500,6 +501,7 @@ class AssignmentBoundControlPlaneBroker:
         self.service_identity_id = service_identity_id
         self.fence = fence
         self.validator = validator
+        self.worker_service_identity_validator = worker_service_identity_validator
         self.limits = service.limits
         self._root = Path(tempfile.mkdtemp(prefix="control-plane-broker-"))
         os.chmod(self._root, 0o700)
@@ -544,11 +546,18 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError("assignment worker changed")
         if assignment.fence != self.fence:
             raise ControlPlaneBrokerDeniedError("assignment fence changed")
+        if self.worker_service_identity_validator is not None:
+            current_identity = self.worker_service_identity_validator()
+            if current_identity != self.service_identity_id:
+                raise ControlPlaneBrokerDeniedError(
+                    "worker service identity changed"
+                )
         lease = assignment.lease
         if (
             lease is None
             or lease.worker_id != self.worker_id
             or lease.fence != self.fence
+            or lease.expires_at <= self.service._clock()
         ):
             raise ControlPlaneBrokerDeniedError("assignment lease is stale")
         return assignment
@@ -854,6 +863,7 @@ class DeferredControlPlaneBrokerFactory:
         service_identity_id: str,
         fence: int,
         validator: Callable[[], ExecutionAssignment],
+        worker_service_identity_validator: Callable[[], str] | None = None,
     ) -> AssignmentBoundControlPlaneBroker | None:
         service = self.service
         if service is None or assignment.execution_profile_id != "orchestration-only":
@@ -865,6 +875,7 @@ class DeferredControlPlaneBrokerFactory:
             service_identity_id=service_identity_id,
             fence=fence,
             validator=validator,
+            worker_service_identity_validator=worker_service_identity_validator,
         )
         await broker.start()
         return broker
