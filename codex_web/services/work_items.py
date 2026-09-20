@@ -176,6 +176,51 @@ class WorkItemCompatibilityFacade:
         if publish is not None:
             await publish(event)
 
+    def append_work_item_event(self, event: Any) -> None:
+        path = getattr(
+            self.host,
+            "WORK_ITEM_EVENTS_FILE",
+            self.service.work_items.events_file,
+        )
+        canonical_path = self.service.work_items.events_file
+        if path == canonical_path:
+            self.service.state_machine._append_work_item_event(event)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(event.model_dump_json())
+            handle.write("\n")
+
+    def project_gitlab_issue(
+        self,
+        issue: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        return self.service.project_gitlab_issue_compat(
+            issue,
+            project_id=project_id,
+        )
+
+    def project_gitlab_event(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        return self.service.project_gitlab_event_compat(
+            payload,
+            project_id=project_id,
+            append_event=self.resolve(
+                "_append_work_item_event",
+                self.append_work_item_event,
+            ),
+            sync_writeback=self.resolve(
+                "_sync_gitlab_issue_labels_from_work_item",
+                self.service.schedule_task_source_writeback,
+            ),
+        )
+
     async def handoff(
         self,
         ref: str,
@@ -706,8 +751,13 @@ class WorkItemService:
         state: Any,
         *,
         payload: dict[str, Any],
+        append_event: Any | None = None,
     ) -> None:
-        append = getattr(self.state_machine, "_append_work_item_event", None)
+        append = append_event or getattr(
+            self.state_machine,
+            "_append_work_item_event",
+            None,
+        )
         make_event = getattr(self.state_machine, "_work_item_event", None)
         if state is None or not callable(append) or not callable(make_event):
             return
@@ -725,7 +775,12 @@ class WorkItemService:
             )
         )
 
-    def _preserve_gitlab_closed_label_cleanup(self, state: Any) -> Any:
+    def _preserve_gitlab_closed_label_cleanup(
+        self,
+        state: Any,
+        *,
+        sync_writeback: Any | None = None,
+    ) -> Any:
         if state is None or getattr(state, "current_stage", None) != "closed":
             return state
         labels = list(getattr(state, "labels", None) or [])
@@ -733,7 +788,8 @@ class WorkItemService:
             str(label).startswith(("owner::", "status::")) for label in labels
         ):
             return state
-        projected = self.schedule_task_source_writeback(state)
+        sync = sync_writeback or self.schedule_task_source_writeback
+        projected = sync(state)
         if projected is not None:
             state = projected
         save = getattr(self.state_machine, "_save_work_item_state", None)
@@ -746,6 +802,8 @@ class WorkItemService:
         payload: dict[str, Any],
         *,
         project_id: str,
+        append_event: Any | None = None,
+        sync_writeback: Any | None = None,
     ) -> Any:
         """Compatibility hook used by GitLabService during migration."""
 
@@ -764,8 +822,15 @@ class WorkItemService:
         )
         state = result.state
         if result.decision.outcome.value == "stale":
-            self._append_legacy_gitlab_stale_event(state, payload=payload)
-        state = self._preserve_gitlab_closed_label_cleanup(state)
+            self._append_legacy_gitlab_stale_event(
+                state,
+                payload=payload,
+                append_event=append_event,
+            )
+        state = self._preserve_gitlab_closed_label_cleanup(
+            state,
+            sync_writeback=sync_writeback,
+        )
         return state
 
     async def sync_from_gitlab(
@@ -999,11 +1064,12 @@ def install_work_item_compatibility(
     host.ack_work_item_handoff = compatibility.acknowledge
     host.update_work_item_progress = compatibility.progress
     host._reconcile_task_source_event = service.reconcile_task_source_event
+    host._append_work_item_event = compatibility.append_work_item_event
     host._upsert_work_item_state_from_gitlab_issue = (
-        service.project_gitlab_issue_compat
+        compatibility.project_gitlab_issue
     )
     host._upsert_work_item_state_from_gitlab_event = (
-        service.project_gitlab_event_compat
+        compatibility.project_gitlab_event
     )
     host._sync_gitlab_issue_labels_from_work_item = (
         service.schedule_task_source_writeback
