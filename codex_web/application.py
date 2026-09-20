@@ -1020,7 +1020,7 @@ def _runtime_usage_attribution(session):
     work_state = None
     if work_item_ref:
         try:
-            work_state = runtime_state.work_item_states.load().get(work_item_ref)
+            work_state = runtime_state.work_item_states.get(work_item_ref)
         except Exception:
             work_state = None
     return {
@@ -1407,6 +1407,10 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     default_validation_owner=DEFAULT_VALIDATION_OWNER,
     default_release_owner=DEFAULT_RELEASE_OWNER,
     non_implementation_owners=NON_IMPLEMENTATION_OWNERS,
+    get_state=runtime_state.work_item_states.get,
+    save_state=(
+        lambda state: runtime_state.work_item_states.put(state.ref, state)
+    ),
 )
 gitlab_work_item_dependencies = GitLabWorkItemDependencies(
     api_base_url=os.environ.get(
@@ -1694,17 +1698,28 @@ extension_runtime_registry = ExtensionRuntimeRegistry(
 )
 app.state.extension_runtime_registry = extension_runtime_registry
 # Legacy code still needing project/runtime state consumes the extracted
-# repositories. SQLite is primary for mutable runtime documents; repositories
-# mirror legacy JSON on every write during the migration window so rolling back
-# to the previous release remains safe.
+# repositories. Canonical keyed mutations avoid whole-registry rewrites.
+# Legacy JSON remains a compatibility checkpoint and is refreshed by bulk
+# compatibility saves rather than every keyed hot-path mutation.
 core._load_projects = project_repository.load
 core._save_projects = project_repository.save
 core._load_thread_settings = runtime_state.thread_settings.load
 core._save_thread_settings = runtime_state.thread_settings.save
+core._get_thread_setting_record = runtime_state.thread_settings.get
+core._put_thread_setting_record = runtime_state.thread_settings.put
+core._delete_thread_setting_record = runtime_state.thread_settings.delete
 core._load_active_turns = runtime_state.active_turns.load
 core._save_active_turns = runtime_state.active_turns.save
+core._get_active_turn_record = runtime_state.active_turns.get
+core._put_active_turn_record = runtime_state.active_turns.put
+core._delete_active_turn_record = runtime_state.active_turns.delete
 core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
+core._get_work_item_state_record = runtime_state.work_item_states.get
+core._put_work_item_state_record = (
+    lambda state: runtime_state.work_item_states.put(state.ref, state)
+)
+core._delete_work_item_state_record = runtime_state.work_item_states.delete
 
 bot_state = BotStateRepositories(
     state_store,
