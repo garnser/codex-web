@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from codex_web.approval_requests import (
@@ -51,14 +52,15 @@ class ApprovalService:
         load_active_turns=None,
         compatibility_resolver=None,
     ) -> None:
-        self.host = host
         self.runtime_transport = (
             runtime_transport
             if runtime_transport is not None
             else getattr(host, "codex", None)
         )
         if self.runtime_transport is None:
-            raise ValueError("ApprovalService requires a runtime transport")
+            # State-only compatibility callers may use approval-message
+            # bookkeeping without a live runtime transport.
+            self.runtime_transport = SimpleNamespace(pending_approvals={})
         self.assignment_sessions = assignment_sessions
         self.canonical = canonical
         self.canonical_requester = canonical_requester
