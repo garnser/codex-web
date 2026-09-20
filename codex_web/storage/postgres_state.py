@@ -273,6 +273,70 @@ class PostgresStateStore:
                 payload = self._decode(cursor.fetchone())
                 return dict(payload) if isinstance(payload, dict) else {}
 
+    def record_page(
+        self,
+        namespace: str,
+        *,
+        key_prefix: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]:
+        page_size = max(1, min(int(limit), 1000))
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                lower = (
+                    state_record_storage_key(namespace, key_prefix)
+                    if key_prefix is not None
+                    else f"{state_record_prefix(namespace)}k/"
+                )
+                upper = f"{lower}\uffff"
+                after_storage = (
+                    state_record_storage_key(namespace, after)
+                    if after is not None
+                    else lower
+                )
+                cursor.execute(
+                    """
+                    SELECT namespace, payload
+                    FROM codex_state_documents
+                    WHERE namespace >= %s
+                      AND namespace < %s
+                      AND namespace > %s
+                    ORDER BY namespace
+                    LIMIT %s
+                    """,
+                    (lower, upper, after_storage, page_size + 1),
+                )
+                rows = cursor.fetchall()
+
+        page: dict[str, Any] = {}
+        for storage_namespace, payload in rows[:page_size]:
+            parsed = parse_state_record_storage_key(
+                str(storage_namespace)
+            )
+            if parsed is None or parsed[1] is None:
+                continue
+            page[parsed[1]] = (
+                json.loads(payload)
+                if isinstance(payload, str)
+                else payload
+            )
+        next_cursor = (
+            next(reversed(page))
+            if len(rows) > page_size and page
+            else None
+        )
+        return page, next_cursor
+
     def record_apply(
         self,
         namespace: str,
