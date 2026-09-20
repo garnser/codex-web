@@ -12,6 +12,7 @@ from codex_web.services.task_sources import (
     TaskSourceCapability,
     UnsupportedTaskSourceCapability,
 )
+from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.work_item_execution_models import WorkItemExecutionUpdate
 
@@ -31,26 +32,68 @@ class WorkItemOperatorService:
 
     def __init__(self, work_items: Any) -> None:
         self.work_items = work_items
-        self.host = work_items.host
         self.state_machine = work_items.state_machine
-        self.lifecycle = WorkItemExecutionLifecycleService(self.host, self.state_machine)
+        compatibility_host = getattr(work_items, "host", None)
+        dependencies = getattr(work_items, "work_items", None)
+        if dependencies is None:
+            if compatibility_host is None:
+                raise TypeError(
+                    "WorkItemOperatorService requires work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(
+                compatibility_host
+            )
+        self.dependencies = dependencies
+        self.lifecycle = WorkItemExecutionLifecycleService(
+            compatibility_host,
+            self.state_machine,
+            dependencies=dependencies,
+        )
+        self.sync_health = getattr(work_items, "sync_health", None)
+        self.publish_event = getattr(work_items, "publish_event", None)
+        if self.publish_event is None and compatibility_host is not None:
+            hub = getattr(compatibility_host, "hub", None)
+            self.publish_event = getattr(hub, "publish", None)
+        self.gitlab_api_base = str(
+            getattr(
+                getattr(work_items, "gitlab_dependencies", None),
+                "api_base_url",
+                getattr(compatibility_host, "GITLAB_API_BASE", ""),
+            )
+            or ""
+        )
+        self.execution_contract = getattr(
+            work_items,
+            "execution_contract",
+            None,
+        )
+        if self.execution_contract is None and compatibility_host is not None:
+            self.execution_contract = getattr(
+                compatibility_host,
+                "_work_item_execution_contract",
+                None,
+            )
+        continuity = getattr(work_items, "continuity", None)
+        self.schedule_owner_dispatch = getattr(
+            continuity,
+            "schedule_actionable_owner_dispatch",
+            None,
+        )
+        if (
+            self.schedule_owner_dispatch is None
+            and compatibility_host is not None
+        ):
+            self.schedule_owner_dispatch = getattr(
+                compatibility_host,
+                "_schedule_actionable_owner_dispatch",
+                None,
+            )
 
     def _projects(self) -> list[Any]:
-        loader = getattr(self.host, "_load_projects", None)
-        if not callable(loader):
-            return []
         try:
-            return list(loader() or [])
+            return list(self.dependencies.load_projects() or [])
         except Exception:
             return []
-
-    def _project(self, project_id: str | None) -> Any | None:
-        if not project_id:
-            return None
-        for project in self._projects():
-            if getattr(project, "id", None) == project_id:
-                return project
-        return None
 
     @staticmethod
     def _project_source(project: Any | None) -> Any | None:
@@ -88,14 +131,14 @@ class WorkItemOperatorService:
         return sorted(capability.value for capability in source.capabilities.supported)
 
     def _sync_status(self) -> dict[str, Any]:
-        return {
-            "last_success_at": getattr(self.host, "GITLAB_SYNC_LAST_SUCCESS_AT", None),
-            "last_error": getattr(self.host, "GITLAB_SYNC_LAST_ERROR", None),
-            "last_error_at": getattr(self.host, "GITLAB_SYNC_LAST_ERROR_AT", None),
-            "consecutive_failures": int(
-                getattr(self.host, "GITLAB_SYNC_CONSECUTIVE_FAILURES", 0) or 0
-            ),
-        }
+        if self.sync_health is None:
+            return {
+                "last_success_at": None,
+                "last_error": None,
+                "last_error_at": None,
+                "consecutive_failures": 0,
+            }
+        return self.sync_health.snapshot()
 
     def task_source_catalog(self) -> dict[str, Any]:
         """Describe configured authoritative sources and their live capabilities."""
@@ -128,7 +171,7 @@ class WorkItemOperatorService:
         # operator can create a binding without provider-specific shadow UI.
         builtin_catalog = {
             "gitlab": {
-                "source_instance": str(getattr(self.host, "GITLAB_API_BASE", "") or ""),
+                "source_instance": self.gitlab_api_base,
                 "capabilities": [
                     "comments",
                     "discovery",
@@ -180,7 +223,7 @@ class WorkItemOperatorService:
         return {"items": items, "sync": self._sync_status()}
 
     def _execution_contract(self, state: WorkItemState) -> dict[str, Any] | None:
-        builder = getattr(self.host, "_work_item_execution_contract", None)
+        builder = self.execution_contract
         if not callable(builder):
             return None
         try:
@@ -334,9 +377,12 @@ class WorkItemOperatorService:
             ),
         )
         state = self.state_machine._work_item_state(ref)
-        schedule = getattr(self.host, "_schedule_actionable_owner_dispatch", None)
-        if callable(schedule):
-            schedule(state, source="operator-retry", actor=actor)
+        if callable(self.schedule_owner_dispatch):
+            self.schedule_owner_dispatch(
+                state,
+                source="operator-retry",
+                actor=actor,
+            )
         return self.detail(ref)
 
     async def reconcile(
@@ -432,15 +478,10 @@ class WorkItemOperatorService:
                 )
             )
 
-        now = time.time()
-        if hasattr(self.host, "GITLAB_SYNC_LAST_SUCCESS_AT"):
-            self.host.GITLAB_SYNC_LAST_SUCCESS_AT = now
-            self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
-            self.host.GITLAB_SYNC_LAST_ERROR = None
-        hub = getattr(self.host, "hub", None)
-        publish = getattr(hub, "publish", None)
-        if callable(publish):
-            await publish(
+        if self.sync_health is not None:
+            self.sync_health.record_success()
+        if callable(self.publish_event):
+            await self.publish_event(
                 {
                     "type": "work-item.sync",
                     "project_id": project_id,
