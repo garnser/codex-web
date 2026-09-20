@@ -442,12 +442,9 @@ class ExecutionWorkspaceService:
             workspace = next(item for item in state.workspaces if item.id == workspace_id)
             if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE and workspace.path and workspace.branch_name:
                 try:
-                    project = self.project_lookup(workspace.project_id)
-                    self.backend.cleanup_git(
-                        Path(project.path),
-                        Path(workspace.path),
-                        workspace.branch_name,
-                        discard_branch=False,
+                    self._cleanup_git_workspace(
+                        workspace,
+                        discard_mutable_branch=False,
                     )
                     cleaned_at = time.time()
 
@@ -953,13 +950,22 @@ class ExecutionWorkspaceService:
         def apply(state):
             for index, item in enumerate(state.workspaces):
                 if item.id == workspace_id:
-                    state.workspaces[index] = item.model_copy(
-                        update={
-                            "integration": integration,
-                            "status": status,
-                            "updated_at": now,
-                        }
-                    )
+                    updates = {
+                        "integration": integration,
+                        "status": status,
+                        "updated_at": now,
+                    }
+                    if request.resulting_revision:
+                        updates["head_revision"] = request.resulting_revision
+                        updates["repository_members"] = tuple(
+                            member.model_copy(
+                                update={"head_revision": request.resulting_revision}
+                            )
+                            if member.resource_id == item.repository_resource_id
+                            else member
+                            for member in item.repository_members
+                        )
+                    state.workspaces[index] = item.model_copy(update=updates)
                     break
             self._append_event(
                 state,
@@ -1029,13 +1035,10 @@ class ExecutionWorkspaceService:
 
         self.store.update(mark_released)
 
-        if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE and workspace.path and workspace.branch_name:
-            project = self.project_lookup(workspace.project_id)
-            self.backend.cleanup_git(
-                Path(project.path),
-                Path(workspace.path),
-                workspace.branch_name,
-                discard_branch=request.discard,
+        if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE:
+            self._cleanup_git_workspace(
+                workspace,
+                discard_mutable_branch=request.discard,
             )
         cleaned_at = time.time()
 
