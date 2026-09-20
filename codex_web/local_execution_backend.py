@@ -523,6 +523,7 @@ class BubblewrapExecutionBackend:
         environment: Mapping[str, str] | None = None,
         poll_hook: Callable[[], None] | None = None,
         git_metadata_path: Path | None = None,
+        trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
     ) -> LocalExecutionResult:
         status = self.probe()
         if not status.ready:
@@ -546,6 +547,7 @@ class BubblewrapExecutionBackend:
             argv=argv,
             workspace_path=workspace,
             git_metadata_path=resolved_git_metadata,
+            trusted_readonly_mounts=trusted_readonly_mounts,
         )
         env = self.minimal_environment(extra=environment)
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
