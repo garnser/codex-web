@@ -272,6 +272,15 @@ class BotChannelDiscoveryService:
 
             try:
                 async with semaphore:
+                    if (
+                        self.cooldowns.get(
+                            (project_id, group_key),
+                            0.0,
+                        )
+                        > time.time()
+                    ):
+                        metrics["cooldownSkips"] += 1
+                        return
                     metrics["providerCalls"] += 1
                     metrics["listCalls"] += 1
                     discovered = await self._with_credential(
@@ -334,6 +343,24 @@ class BotChannelDiscoveryService:
 
                 try:
                     async with semaphore:
+                        if (
+                            self.negative_cache.get(
+                                negative_key,
+                                0.0,
+                            )
+                            > time.time()
+                        ):
+                            metrics["negativeCacheHits"] += 1
+                            continue
+                        if (
+                            self.cooldowns.get(
+                                (project_id, group_key),
+                                0.0,
+                            )
+                            > time.time()
+                        ):
+                            metrics["cooldownSkips"] += 1
+                            continue
                         metrics["providerCalls"] += 1
                         metrics["metadataLookupCount"] += 1
                         resolved = await self._with_credential(
@@ -419,6 +446,11 @@ class BotChannelDiscoveryService:
             metrics.update(
                 {
                     "cacheHit": True,
+                    "providerCalls": 0,
+                    "listCalls": 0,
+                    "metadataLookupCount": 0,
+                    "providerFailures": 0,
+                    "rateLimitEvents": 0,
                     "refreshScheduled": False,
                     "refreshRunning": bool(
                         project_id in self.refresh_tasks
@@ -446,7 +478,10 @@ class BotChannelDiscoveryService:
             def clear(completed: asyncio.Task, *, key: str = project_id) -> None:
                 if self.refresh_tasks.get(key) is completed:
                     self.refresh_tasks.pop(key, None)
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(
+                    asyncio.CancelledError,
+                    Exception,
+                ):
                     completed.result()
 
             task.add_done_callback(clear)
@@ -460,6 +495,11 @@ class BotChannelDiscoveryService:
         metrics.update(
             {
                 "cacheHit": bool(cached),
+                "providerCalls": 0,
+                "listCalls": 0,
+                "metadataLookupCount": 0,
+                "providerFailures": 0,
+                "rateLimitEvents": 0,
                 "refreshScheduled": scheduled,
                 "refreshRunning": True,
                 "requestDurationSeconds": (
