@@ -45,6 +45,7 @@ class RuntimeService:
         event_transport: Any | None = None,
         deployment_mode: str = "local",
         instance_id: str = "local",
+        compatibility_state_metrics: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if host is not None:
             codex = codex or getattr(host, "codex", None)
@@ -197,6 +198,9 @@ class RuntimeService:
         self.event_transport = event_transport
         self.deployment_mode = deployment_mode
         self.instance_id = instance_id
+        self.compatibility_state_metrics = (
+            compatibility_state_metrics or (lambda: {})
+        )
 
         if host is not None:
             host.healthz = self.healthz
@@ -454,6 +458,7 @@ class RuntimeService:
                 if self.event_transport_runtime is not None
                 else None
             ),
+            "compatibilityState": self.compatibility_state_metrics(),
             "replicatedSafety": {
                 "sharedStore": bool(
                     self.state_store is not None
