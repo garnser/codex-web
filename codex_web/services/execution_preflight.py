@@ -226,44 +226,17 @@ class ExecutionPreflightService:
     ) -> tuple[ExecutionPreflightAttempt, str | None, bool]:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)
-        now = float(self.clock())
-
         if current.status == "started":
             return current, None, False
-        if (
-            current.status == "retrying"
-            and current.retry_started_at is not None
-            and now - current.retry_started_at
-            < self.RETRY_CLAIM_TTL_SECONDS
-        ):
-            return current, current.retry_claim_id, False
 
         claim_id = f"retry-{uuid.uuid4().hex}"
-
-        def update(
-            value: ExecutionPreflightAttempt,
-        ) -> ExecutionPreflightAttempt:
-            if value.status == "started":
-                return value
-            if (
-                value.status == "retrying"
-                and value.retry_started_at is not None
-                and now - value.retry_started_at
-                < self.RETRY_CLAIM_TTL_SECONDS
-            ):
-                return value
-            return value.model_copy(
-                update={
-                    "status": "retrying",
-                    "attempt_number": value.attempt_number + 1,
-                    "retry_claim_id": claim_id,
-                    "retry_started_at": now,
-                    "updated_at": now,
-                }
-            )
-
-        updated = self.store.update(attempt_id, update)
-        claimed = updated.retry_claim_id == claim_id
+        updated, claimed = self.store.claim_retry(
+            attempt_id,
+            claim_id=claim_id,
+            now=float(self.clock()),
+            stale_after_seconds=self.RETRY_CLAIM_TTL_SECONDS,
+        )
+        self._authorize(updated, actor, require_admin=True)
         return updated, updated.retry_claim_id, claimed
 
     def mark_started(
