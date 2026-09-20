@@ -744,6 +744,19 @@ h1 {
   justify-content: flex-end;
 }
 
+.sandbox-danger-warning {
+  display: none;
+  max-width: 420px;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+#sandbox:has(option[value="danger-full-access"]:checked) + .sandbox-danger-warning {
+  display: inline;
+}
+
 .codex-status {
   min-height: 34px;
   flex: 0 0 auto;
