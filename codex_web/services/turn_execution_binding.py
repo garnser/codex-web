@@ -9,6 +9,7 @@ from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
+    ExecutionProfileBinding,
     ExecutionRuntimeBinding,
     NetworkPolicy,
     WorkerCapability,
@@ -17,6 +18,7 @@ from codex_web.execution_workers import (
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceAcquire,
+    ExecutionWorkspaceKind,
     LeaseMode,
 )
 from codex_web.identity import AuthenticationActor
@@ -34,7 +36,13 @@ from codex_web.services.configuration import (
     ConfigurationNotFoundError,
     ConfigurationService,
 )
-from codex_web.services.execution_workers import ExecutionWorkerService
+from codex_web.services.execution_profile_definitions import (
+    ExecutionProfileDefinitionService,
+)
+from codex_web.services.execution_workers import (
+    ExecutionWorkerService,
+    WorkerConflictError,
+)
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.projects import ProjectService
 from codex_web.services.resources import (
@@ -62,8 +70,9 @@ class TurnExecutionBinding:
     workspace_id: str
     assignment_id: str
     resource_ids: tuple[str, ...]
-    repository_resource_id: str
+    repository_resource_id: str | None
     repository_target: RepositoryExecutionTarget
+    execution_profile: ExecutionProfileBinding | None
     base_revision: str | None
     sandbox: SandboxMode
     approval_policy: ApprovalPolicy
@@ -82,6 +91,11 @@ class TurnExecutionBinding:
             "resource_ids": list(self.resource_ids),
             "repository_resource_id": self.repository_resource_id,
             "repository_target": self.repository_target.model_dump(mode="json"),
+            "execution_profile": (
+                self.execution_profile.model_dump(mode="json")
+                if self.execution_profile is not None
+                else None
+            ),
             "base_revision": self.base_revision,
             "sandbox": self.sandbox,
             "approval_policy": self.approval_policy,
@@ -115,6 +129,7 @@ class TurnExecutionBindingService:
         control_actor: AuthenticationActor,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
+        execution_profiles: ExecutionProfileDefinitionService | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -128,6 +143,7 @@ class TurnExecutionBindingService:
             runtime_credential_configs
             or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
         )
+        self.execution_profiles = execution_profiles
         self._clock = clock
 
     @staticmethod
@@ -157,6 +173,32 @@ class TurnExecutionBindingService:
             return self.projects.get(normalized, self.control_actor.tenant)
         except Exception as exc:
             raise TurnExecutionBindingError("thread execution project is unavailable") from exc
+
+    def _execution_profile(
+        self,
+        project: Project,
+        *,
+        execution_profile_id: str | None = None,
+        execution_role_id: str | None = None,
+    ) -> ExecutionProfileBinding | None:
+        if self.execution_profiles is None:
+            if execution_profile_id or execution_role_id:
+                raise TurnExecutionBindingError(
+                    "execution profile service is unavailable"
+                )
+            return None
+        try:
+            return self.execution_profiles.binding(
+                execution_profile_id,
+                execution_role_id=execution_role_id,
+                organization_id=project.organization_id,
+                workspace_id=project.workspace_id,
+                project_id=project.id,
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            raise TurnExecutionBindingError(
+                f"execution profile is unavailable: {exc}"
+            ) from exc
 
     def _project_resources(
         self,
