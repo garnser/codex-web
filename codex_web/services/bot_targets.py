@@ -320,11 +320,89 @@ def install_bot_target_service(
     host._active_reply_target_for_thread_provider = service.active_reply_target_for_thread_provider
     host._target_for_external_thread = service.target_for_external_thread
     host._remember_bot_delivery_target = service.remember_delivery_target
-    host._master_reply_target_for_binding = service.master_reply_target_for_binding
+    def _compat_master_reply_target_for_binding(
+        binding: BotBinding,
+    ) -> BotReplyTarget | None:
+        if binding.is_master:
+            return None
+        candidates = [
+            candidate
+            for candidate in host._bindings_for_project(
+                binding.provider,
+                binding.project_id,
+            )
+            if candidate.is_master
+            and candidate.external_conversation_id
+            == binding.external_conversation_id
+        ]
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.updated_at,
+                candidate.created_at,
+            ),
+            reverse=True,
+        )
+        for candidate in candidates:
+            target = (
+                host._active_reply_target_for_binding(candidate)
+                or host._reply_target_for_binding(candidate)
+                or host._delivery_target_for_binding(candidate)
+            )
+            if target:
+                return target
+        return None
+
+    def _compat_thread_target_for_outbound(
+        binding: BotBinding,
+        reply_in_thread: bool | None = None,
+    ) -> tuple[BotReplyTarget | None, bool]:
+        active_target = host._active_reply_target_for_binding(binding)
+        if active_target:
+            return (
+                active_target,
+                True if reply_in_thread is None else reply_in_thread,
+            )
+
+        own_target = host._reply_target_for_binding(binding)
+        if own_target:
+            should_thread = (
+                host._should_reply_in_external_thread(binding)
+                if reply_in_thread is None
+                else reply_in_thread
+            )
+            return own_target, should_thread
+
+        master_target = host._master_reply_target_for_binding(binding)
+        if master_target:
+            return (
+                master_target,
+                True if reply_in_thread is None else reply_in_thread,
+            )
+
+        delivery_target = host._delivery_target_for_binding(binding)
+        if delivery_target:
+            should_thread = (
+                host._should_reply_in_external_thread(binding)
+                if reply_in_thread is None
+                else reply_in_thread
+            )
+            if should_thread:
+                return delivery_target, True
+
+        return (
+            None,
+            False if reply_in_thread is None else reply_in_thread,
+        )
+
+    # Direct-import compatibility remains dynamic so supported callers that
+    # replace one historical helper keep working until legacy_core is removed.
+    host._master_reply_target_for_binding = (
+        _compat_master_reply_target_for_binding
+    )
     host._should_reply_in_external_thread = (
         service.should_reply_in_external_thread
     )
-    host._thread_target_for_outbound = service.thread_target_for_outbound
+    host._thread_target_for_outbound = _compat_thread_target_for_outbound
     host._outbound_bindings_for_thread = service.outbound_bindings_for_thread
     host._forget_bot_reply_target = service.forget_reply_target
     host._retarget_bot_targets = service.retarget
