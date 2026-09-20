@@ -257,6 +257,7 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             self.service.apply(
                 plan,
                 actor=self.actor,
+                approve_material_authority_changes=True,
                 fail_after_operations=1,
             )
 
@@ -275,7 +276,11 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             ("repository:saas-app",),
         )
 
-        resumed = self.service.apply(plan, actor=self.actor)
+        resumed = self.service.apply(
+            plan,
+            actor=self.actor,
+            approve_material_authority_changes=True,
+        )
         self.assertEqual(resumed.status, MigrationApplyStatus.APPLIED)
         self.assertEqual(
             set(resumed.applied_operation_ids),
@@ -291,7 +296,11 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             1,
         )
 
-        repeated = self.service.apply(plan, actor=self.actor)
+        repeated = self.service.apply(
+            plan,
+            actor=self.actor,
+            approve_material_authority_changes=True,
+        )
         self.assertEqual(repeated.id, resumed.id)
         self.assertEqual(
             len(
@@ -347,7 +356,11 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             MigrationDisposition.BLOCKED,
         )
 
-        result = self.service.apply(plan, actor=self.actor)
+        result = self.service.apply(
+            plan,
+            actor=self.actor,
+            approve_material_authority_changes=True,
+        )
         self.assertEqual(result.status, MigrationApplyStatus.APPLIED)
         migrated = self.settings.values["thread-orch"]
         self.assertEqual(
@@ -366,6 +379,7 @@ class LegacyProjectMigrationTests(unittest.TestCase):
         result = self.service.apply(
             plan,
             actor=self.actor,
+            approve_material_authority_changes=True,
             compatibility_window_seconds=60,
         )
         mapping = self.service.resolve_legacy_path(
