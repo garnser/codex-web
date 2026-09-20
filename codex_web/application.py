@@ -1845,6 +1845,14 @@ bot_target_service = install_bot_target_service(
     bindings_for_project=bot_binding_selection_service.for_project,
 )
 
+def _gitlab_routing_enabled_for_project(project_id: str) -> bool:
+    settings = configuration_state.gitlab_routing.load()
+    if not settings.enabled:
+        return False
+    project_settings = settings.projects.get(project_id)
+    return bool(project_settings and project_settings.enabled)
+
+
 thread_execution_settings_service = install_thread_execution_settings_service(
     app,
     core,
@@ -1853,6 +1861,11 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     bindings=bot_binding_selection_service,
     load_bindings=bot_state.bindings.load,
     save_bindings=bot_state.bindings.save,
+    gitlab_routing_enabled_for_project=(
+        _gitlab_routing_enabled_for_project
+    ),
+    binding_report_name=bot_presentation_service.binding_report_name,
+    binding_prefix=bot_presentation_service.binding_prefix,
 )
 
 turn_execution_service = install_turn_execution_service(
