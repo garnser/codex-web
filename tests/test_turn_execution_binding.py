@@ -12,6 +12,7 @@ from codex_web.configuration import (
 )
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
+from codex_web.execution_workspaces import LeaseMode
 from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.models import Project
 from codex_web.resources import (
@@ -229,6 +230,27 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertFalse(assignment.network.enabled)
         self.assertEqual(binding.deadline_at, self.clock + 900)
         self.assertEqual(len(self.backend.provisioned), 1)
+
+    def test_danger_full_access_uses_write_workspace_and_canonical_assignment(self) -> None:
+        self._publish_secret()
+
+        binding = self._prepare(
+            execution_id="turn-exec-danger",
+            sandbox="danger-full-access",
+        )
+        inspection = next(
+            item
+            for item in self.workspaces.inspect(self.actor)
+            if item.workspace.id == binding.workspace_id
+        )
+        assignment = self.workers.list_assignments(self.actor)[0]
+
+        self.assertEqual(binding.sandbox, "danger-full-access")
+        self.assertEqual(assignment.sandbox, "danger-full-access")
+        self.assertIsNotNone(inspection.lease)
+        self.assertEqual(inspection.lease.mode, LeaseMode.WRITE)
+        self.assertFalse(assignment.network.enabled)
+        self.assertEqual(assignment.execution_workspace_id, binding.workspace_id)
 
     def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:
         self._publish_secret()

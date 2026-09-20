@@ -156,7 +156,7 @@ A local command execution requires all of the following:
 - an active canonical filesystem execution workspace matching the execution,
   execution subject, project/resource set and base revision;
 - `command_execution` in the assignment capability set;
-- a sandbox other than `danger-full-access`;
+- an explicit sandbox mode of `read-only`, `workspace-write`, or `danger-full-access`;
 - a network-disabled policy that Bubblewrap can actually enforce;
 - bounded CPU, address-space, process-count, file-size/disk and wall-clock
   limits.
@@ -164,14 +164,24 @@ A local command execution requires all of the following:
 The local backend builds a minimal filesystem namespace rather than exposing
 the host root. It mounts the runtime toolchain from `/usr` read-only, provides
 `/proc`, `/dev`, private `/tmp` and a private HOME, and mounts only the
-assigned execution workspace writable for `workspace-write` assignments
-(read-only otherwise). Git worktrees may additionally receive the canonical
+assigned execution workspace writable for `workspace-write` and
+`danger-full-access` assignments (read-only for `read-only`). Git worktrees may
+additionally receive the canonical
 target repository's shared Git metadata directory required by that worktree;
 unrelated control-plane data, application state, key/secret directories and
 the operator's home are absent. The backend unshares process/user/IPC/UTS/network
 namespaces and starts the command in a new process session. POSIX rlimits constrain CPU time, address space,
 processes and individual file size. The parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
+
+`danger-full-access` is deliberately scoped to the assigned worker environment.
+The sandbox value is passed through to Codex so its inner command sandbox is
+disabled, while the outer Bubblewrap worker boundary remains authoritative. The
+assigned execution workspace and canonical Git metadata are writable, but the
+host root, control-plane database/state, unrelated tenant workspaces, operator
+home, and secret/key directories remain absent. The local worker also keeps its
+private network namespace; selecting `danger-full-access` does not implicitly
+grant the canonical `network` capability or unrestricted repository egress.
 
 ### Network policy
 
@@ -316,9 +326,8 @@ The binding stage:
 Preparation is idempotent for the same explicit execution ID. An existing
 assignment must still match the thread subject, project, execution controls and
 workspace correlation; conflicting state fails closed. Missing credential
-configuration, no eligible repository, multiple active repositories,
-unsupported `danger-full-access`, invalid deadlines or divergent canonical
-state also fail closed.
+configuration, no eligible repository, multiple active repositories, invalid
+deadlines or divergent canonical state also fail closed.
 
 Configuration selects which secret reference is attached to the assignment but
 does **not** authorize its use. SecretBroker ACL/expiry plus the worker-scoped
