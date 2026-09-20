@@ -21,7 +21,11 @@ from codex_web.execution_workspaces import (
 )
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ApprovalPolicy, Project, SandboxMode
-from codex_web.resources import Resource, ResourceLifecycle, ResourceType
+from codex_web.resources import (
+    RepositoryExecutionTarget,
+    Resource,
+    ResourceLifecycle,
+)
 from codex_web.services.codex_worker_configuration import (
     CODEX_WORKER_ACCESS_TOKEN_CONFIG,
 )
@@ -33,7 +37,10 @@ from codex_web.services.configuration import (
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.projects import ProjectService
-from codex_web.services.resources import ResourceCatalogService
+from codex_web.services.resources import (
+    RepositoryTargetSelectionError,
+    ResourceCatalogService,
+)
 
 
 THREAD_TURN_EXECUTION_CONTRACT_VERSION = "thread-turn/1.0"
@@ -56,6 +63,7 @@ class TurnExecutionBinding:
     assignment_id: str
     resource_ids: tuple[str, ...]
     repository_resource_id: str
+    repository_target: RepositoryExecutionTarget
     base_revision: str | None
     sandbox: SandboxMode
     approval_policy: ApprovalPolicy
@@ -73,6 +81,7 @@ class TurnExecutionBinding:
             "assignment_id": self.assignment_id,
             "resource_ids": list(self.resource_ids),
             "repository_resource_id": self.repository_resource_id,
+            "repository_target": self.repository_target.model_dump(mode="json"),
             "base_revision": self.base_revision,
             "sandbox": self.sandbox,
             "approval_policy": self.approval_policy,
@@ -152,31 +161,48 @@ class TurnExecutionBindingService:
     def _project_resources(
         self,
         project: Project,
-    ) -> tuple[tuple[Resource, ...], Resource]:
+    ) -> tuple[Resource, ...]:
         resource_ids = self.resources.resource_ids_for_project(project)
-        items = tuple(
-            self.resources.get(resource_id, self.control_actor)
-            for resource_id in resource_ids
-        )
-        eligible = tuple(
+        return tuple(
             item
-            for item in items
+            for item in (
+                self.resources.get(resource_id, self.control_actor)
+                for resource_id in resource_ids
+            )
             if item.lifecycle == ResourceLifecycle.ACTIVE
         )
-        repositories = tuple(
-            item
-            for item in eligible
-            if item.resource_type == ResourceType.REPOSITORY
-        )
-        if not repositories:
-            raise TurnExecutionBindingError(
-                "project has no active canonical repository resource for isolated Codex execution"
+
+    def _repository_target(
+        self,
+        project: Project,
+        *,
+        explicit_repository_id: str | None = None,
+        read_only_repository_ids: tuple[str, ...] = (),
+        work_item_resource_ids: tuple[str, ...] = (),
+        work_item_ref: str | None = None,
+        thread_profile_repository_id: str | None = None,
+        routing_repository_id: str | None = None,
+        orchestration_only: bool = False,
+    ) -> RepositoryExecutionTarget:
+        try:
+            target = self.resources.resolve_repository_target(
+                project,
+                actor=self.control_actor,
+                work_item_resource_ids=work_item_resource_ids,
+                work_item_ref=work_item_ref,
+                explicit_repository_id=explicit_repository_id,
+                thread_profile_repository_id=thread_profile_repository_id,
+                routing_repository_id=routing_repository_id,
+                read_only_repository_ids=read_only_repository_ids,
+                orchestration_only=orchestration_only,
             )
-        if len(repositories) != 1:
+        except RepositoryTargetSelectionError as exc:
+            raise TurnExecutionBindingError(f"{exc.code}: {exc}") from exc
+        if target.mutable_repository_id is None:
             raise TurnExecutionBindingError(
-                "project has multiple active canonical repository resources; explicit target selection is required"
+                "orchestration-only repository target requires an orchestration execution profile"
             )
-        return eligible, repositories[0]
+        return target
 
     def _secret_ref(
         self,
@@ -248,6 +274,7 @@ class TurnExecutionBindingService:
         approval_policy: ApprovalPolicy,
         execution_contract_version: str,
         runtime_binding: ExecutionRuntimeBinding | None,
+        repository_target: RepositoryExecutionTarget,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -263,6 +290,13 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to different execution controls"
+            )
+        if (
+            assignment.repository_target is not None
+            and assignment.repository_target != repository_target
+        ):
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different repository target"
             )
         if assignment.execution_contract_version != execution_contract_version:
             raise TurnExecutionBindingError(
@@ -295,6 +329,10 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread workspace has no canonical repository resource"
             )
+        if workspace.repository_resource_id != repository_target.mutable_repository_id:
+            raise TurnExecutionBindingError(
+                "existing thread workspace no longer matches repository target"
+            )
         if len(assignment.secret_refs) != 1:
             raise TurnExecutionBindingError(
                 "existing thread assignment does not have exactly one credential reference"
@@ -308,6 +346,7 @@ class TurnExecutionBindingService:
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
             repository_resource_id=workspace.repository_resource_id,
+            repository_target=assignment.repository_target or repository_target,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
@@ -330,6 +369,13 @@ class TurnExecutionBindingService:
         max_session_seconds: int,
         limits: WorkerResourceLimits | None,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        explicit_repository_id: str | None = None,
+        read_only_repository_ids: tuple[str, ...] = (),
+        work_item_resource_ids: tuple[str, ...] = (),
+        work_item_ref: str | None = None,
+        thread_profile_repository_id: str | None = None,
+        routing_repository_id: str | None = None,
+        orchestration_only: bool = False,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -342,6 +388,16 @@ class TurnExecutionBindingService:
 
         project = self._project(project_id)
         effective_runtime_binding = runtime_binding or self.runtime_binding
+        repository_target = self._repository_target(
+            project,
+            explicit_repository_id=explicit_repository_id,
+            read_only_repository_ids=read_only_repository_ids,
+            work_item_resource_ids=work_item_resource_ids,
+            work_item_ref=work_item_ref,
+            thread_profile_repository_id=thread_profile_repository_id,
+            routing_repository_id=routing_repository_id,
+            orchestration_only=orchestration_only,
+        )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
         if existing is not None:
             return self._binding_from_existing(
@@ -353,9 +409,14 @@ class TurnExecutionBindingService:
                 approval_policy=approval_policy,
                 execution_contract_version=execution_contract_version,
                 runtime_binding=effective_runtime_binding,
+                repository_target=repository_target,
             )
 
-        project_resources, repository = self._project_resources(project)
+        project_resources = self._project_resources(project)
+        repository = self.resources.get(
+            repository_target.mutable_repository_id,
+            self.control_actor,
+        )
         secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
@@ -397,6 +458,7 @@ class TurnExecutionBindingService:
                 deadline_at=deadline_at,
                 execution_workspace_id=workspace.id,
                 runtime_binding=effective_runtime_binding,
+                repository_target=repository_target,
             ),
             actor=self.control_actor,
         )
@@ -410,6 +472,7 @@ class TurnExecutionBindingService:
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
             repository_resource_id=repository.id,
+            repository_target=repository_target,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
@@ -429,6 +492,13 @@ class TurnExecutionBindingService:
         limits: WorkerResourceLimits | None = None,
         deadline_seconds: int = DEFAULT_TURN_DEADLINE_SECONDS,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        explicit_repository_id: str | None = None,
+        read_only_repository_ids: tuple[str, ...] = (),
+        work_item_resource_ids: tuple[str, ...] = (),
+        work_item_ref: str | None = None,
+        thread_profile_repository_id: str | None = None,
+        routing_repository_id: str | None = None,
+        orchestration_only: bool = False,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -443,6 +513,13 @@ class TurnExecutionBindingService:
             max_session_seconds=DEFAULT_TURN_DEADLINE_SECONDS,
             limits=limits,
             runtime_binding=runtime_binding,
+            explicit_repository_id=explicit_repository_id,
+            read_only_repository_ids=read_only_repository_ids,
+            work_item_resource_ids=work_item_resource_ids,
+            work_item_ref=work_item_ref,
+            thread_profile_repository_id=thread_profile_repository_id,
+            routing_repository_id=routing_repository_id,
+            orchestration_only=orchestration_only,
         )
 
     def prepare_bootstrap(
@@ -456,6 +533,10 @@ class TurnExecutionBindingService:
         limits: WorkerResourceLimits | None = None,
         session_seconds: int = THREAD_BOOTSTRAP_SESSION_SECONDS,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        explicit_repository_id: str | None = None,
+        read_only_repository_ids: tuple[str, ...] = (),
+        thread_profile_repository_id: str | None = None,
+        routing_repository_id: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -482,4 +563,8 @@ class TurnExecutionBindingService:
             max_session_seconds=THREAD_BOOTSTRAP_SESSION_SECONDS,
             limits=effective_limits,
             runtime_binding=runtime_binding,
+            explicit_repository_id=explicit_repository_id,
+            read_only_repository_ids=read_only_repository_ids,
+            thread_profile_repository_id=thread_profile_repository_id,
+            routing_repository_id=routing_repository_id,
         )
