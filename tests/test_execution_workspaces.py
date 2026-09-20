@@ -76,6 +76,17 @@ class _FakeBackend:
             head_revision=base,
         )
 
+    def provision_scratch(self, workspace_id):
+        if self.fail_provision:
+            raise RuntimeError("provision failed")
+        path = self.root / workspace_id
+        path.mkdir(parents=True, exist_ok=False)
+        self.provisioned.append((workspace_id, "scratch", None))
+        return path
+
+    def cleanup_scratch(self, workspace_path):
+        self.cleaned.append((str(workspace_path), "scratch", False))
+
     def cleanup_git(self, repository_path, workspace_path, branch_name, *, discard_branch):
         self.cleaned.append((str(workspace_path), branch_name, discard_branch))
 
@@ -536,6 +547,57 @@ class ExecutionWorkspaceTests(unittest.TestCase):
                 self.database.id,
                 repository_resource_id=None,
                 lease_mode=LeaseMode.WRITE,
+            )
+
+    def test_scratch_workspace_has_filesystem_without_resource_or_git_lease(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+                    ref="bootstrap-orchestrator",
+                ),
+                execution_id="scratch-exec",
+                project_id="home",
+                resource_ids=(),
+                scratch=True,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        lease = next(
+            item
+            for item in self.service.store.load().leases
+            if item.id == workspace.lease_id
+        )
+
+        self.assertEqual(workspace.kind, ExecutionWorkspaceKind.SCRATCH)
+        self.assertEqual(workspace.resource_ids, ())
+        self.assertIsNone(workspace.repository_resource_id)
+        self.assertIsNotNone(workspace.path)
+        self.assertTrue(Path(workspace.path).is_dir())
+        self.assertEqual(lease.resource_ids, ())
+        self.assertEqual(lease.resource_modes, {})
+
+        released = self.service.release(
+            workspace.id,
+            ExecutionWorkspaceRelease(reason="scratch complete"),
+            actor=self.actor,
+        )
+        self.assertEqual(released.status, ExecutionWorkspaceStatus.RELEASED)
+        self.assertFalse(Path(workspace.path).exists())
+
+    def test_scratch_workspace_rejects_repository_authority(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "scratch execution workspace cannot lease canonical resources",
+        ):
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="invalid-scratch",
+                project_id="home",
+                resource_ids=(self.repo.id,),
+                repository_resource_id=self.repo.id,
+                scratch=True,
             )
 
     def test_non_git_resource_uses_lease_only_workspace(self) -> None:
