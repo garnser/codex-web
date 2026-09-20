@@ -2,8 +2,8 @@ import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,initialProjectId}from"./project_context.js";
-import{request as apiRequest}from"./api_client.js";
-import{endpointIdentity,markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
+import{createLoggedApi}from"./frontend_api.js";
+import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 
 const state = {
   projects: [],
@@ -167,20 +167,7 @@ function scheduleCommunicationLogRender() {
   });
 }
 
-async function api(path, options = {}) {
-  const endpoint=endpointIdentity(path);
-  logEvent("api.request",{endpoint,method:options.method||"GET"});
-  try{
-    const result=await apiRequest(path,options);
-    logEvent("api.response",{endpoint});
-    return result;
-  }catch(error){
-    if(error?.name!=="AbortError"){
-      logEvent("api.error",{endpoint,status:error?.status||0});
-    }
-    throw error;
-  }
-}
+const api=createLoggedApi(logEvent);
 
 const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
