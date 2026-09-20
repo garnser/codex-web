@@ -123,6 +123,20 @@ class ExecutionWorkerRegister(BaseModel):
     max_concurrency: int = Field(default=1, ge=1, le=128)
 
 
+class WorkerExecutionReadiness(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ready: bool
+    code: str
+    required_capabilities: tuple[WorkerCapability, ...] = ()
+    available_capabilities: tuple[WorkerCapability, ...] = ()
+    eligible_worker_ids: tuple[str, ...] = ()
+    active_worker_ids: tuple[str, ...] = ()
+    execution_contract_version: str
+    reason: str
+    remediation: str | None = None
+
+
 class ExecutionRuntimeBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
