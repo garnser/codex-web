@@ -104,6 +104,7 @@ class WorkItemContinuityService:
         watchdog_dispatch_allowed: Callable[[str], bool],
         record_watchdog_dispatch: Callable[[str], None],
         coordination_channel: str,
+        revalidate_after_thread_replacement: bool = True,
     ) -> None:
         self.policy = policy
         self.get_state = get_state
@@ -120,14 +121,31 @@ class WorkItemContinuityService:
         self.watchdog_dispatch_allowed = watchdog_dispatch_allowed
         self.record_watchdog_dispatch = record_watchdog_dispatch
         self.coordination_channel = coordination_channel
+        self.revalidate_after_thread_replacement = (
+            revalidate_after_thread_replacement
+        )
         self.actionable_owner_tasks: dict[str, asyncio.Task[None]] = {}
         self.handoff_tasks: dict[str, asyncio.Task[None]] = {}
+        max_concurrency_getter = getattr(
+            self.policy,
+            "background_task_max_concurrency",
+            None,
+        )
+        per_scope_getter = getattr(
+            self.policy,
+            "continuity_per_project_concurrency",
+            None,
+        )
         self.dispatch_coordinator = KeyedTaskCoordinator(
             max_concurrency=(
-                self.policy.background_task_max_concurrency()
+                int(max_concurrency_getter())
+                if callable(max_concurrency_getter)
+                else 16
             ),
             per_scope_concurrency=(
-                self.policy.continuity_per_project_concurrency()
+                int(per_scope_getter())
+                if callable(per_scope_getter)
+                else 4
             ),
         )
 
@@ -223,23 +241,25 @@ class WorkItemContinuityService:
             )
             return
         binding = await self.replace_nonperforming_thread(binding, source)
-        try:
-            latest = self.get_state(state.ref)
-        except HTTPException:
-            return
-        latest_handoff = latest.handoff
-        latest_recipient = (
-            self.coerce_owner(latest_handoff.to_agent)
-            if latest_handoff
-            else None
-        )
-        if (
-            not latest_handoff
-            or latest_handoff.status != "pending"
-            or latest_recipient != recipient
-            or latest_handoff.requested_at != handoff.requested_at
-        ):
-            return
+        if self.revalidate_after_thread_replacement:
+            try:
+                latest = self.get_state(state.ref)
+            except HTTPException:
+                return
+            latest_handoff = latest.handoff
+            latest_recipient = (
+                self.coerce_owner(latest_handoff.to_agent)
+                if latest_handoff
+                else None
+            )
+            if (
+                not latest_handoff
+                or latest_handoff.status != "pending"
+                or latest_recipient != recipient
+                or latest_handoff.requested_at != handoff.requested_at
+            ):
+                return
+            state = latest
         dispatch_key = (
             f"handoff-dispatch:{state.ref}:{binding.thread_id}:"
             f"{recipient}:{handoff.requested_at}"
@@ -247,7 +267,6 @@ class WorkItemContinuityService:
         if not self.watchdog_dispatch_allowed(dispatch_key):
             return
         self.record_watchdog_dispatch(dispatch_key)
-        state = latest
         result = await self.dispatch_event(
             binding,
             self.dispatch_text(state),
@@ -322,7 +341,13 @@ class WorkItemContinuityService:
             revision=self._handoff_revision(state),
             scope=state.project_id,
             timeout_seconds=(
-                self.policy.continuity_dispatch_timeout()
+                float(
+                    getattr(
+                        self.policy,
+                        "continuity_dispatch_timeout",
+                        lambda: 120.0,
+                    )()
+                )
             ),
         )
 
@@ -462,23 +487,27 @@ class WorkItemContinuityService:
         ):
             return
         binding = await self.replace_nonperforming_thread(binding, source)
-        try:
-            latest = self.get_state(state.ref)
-        except HTTPException:
-            return
-        latest_owner = self.coerce_owner(
-            latest.current_owner or latest.next_owner
-        )
-        if (
-            latest.current_stage == "closed"
-            or latest.closed_at
-            or not self.actionable_owner_stage(latest.current_stage)
-            or (latest.handoff and latest.handoff.status == "pending")
-            or latest_owner != owner
-            or latest.current_stage != state.current_stage
-        ):
-            return
-        state = latest
+        if self.revalidate_after_thread_replacement:
+            try:
+                latest = self.get_state(state.ref)
+            except HTTPException:
+                return
+            latest_owner = self.coerce_owner(
+                latest.current_owner or latest.next_owner
+            )
+            if (
+                latest.current_stage == "closed"
+                or latest.closed_at
+                or not self.actionable_owner_stage(latest.current_stage)
+                or (
+                    latest.handoff
+                    and latest.handoff.status == "pending"
+                )
+                or latest_owner != owner
+                or latest.current_stage != state.current_stage
+            ):
+                return
+            state = latest
         dispatch_key = (
             f"work-item-owner-progress:{state.ref}:{binding.thread_id}:"
             f"{owner}:{state.current_stage}"
@@ -578,7 +607,13 @@ class WorkItemContinuityService:
             revision=self._owner_revision(state),
             scope=state.project_id,
             timeout_seconds=(
-                self.policy.continuity_dispatch_timeout()
+                float(
+                    getattr(
+                        self.policy,
+                        "continuity_dispatch_timeout",
+                        lambda: 120.0,
+                    )()
+                )
             ),
         )
 
@@ -754,4 +789,5 @@ def build_work_item_continuity_compatibility_service(
             key
         ),
         coordination_channel=host.HANDOFF_COORDINATION_CHANNEL,
+        revalidate_after_thread_replacement=False,
     )
