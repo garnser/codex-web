@@ -24,6 +24,9 @@ class ThreadExecutionSettingsService:
         gitlab_routing_enabled_for_project: Callable[[str], bool],
         binding_report_name: Callable[[BotBinding], str | None],
         binding_prefix: Callable[[BotBinding], str | None],
+        get_setting: Callable[[str], ThreadRunSettings | None] | None = None,
+        put_setting: Callable[[str, ThreadRunSettings], Any] | None = None,
+        delete_setting: Callable[[str], bool] | None = None,
     ) -> None:
         self.load_settings = load_settings
         self.save_settings = save_settings
@@ -33,6 +36,9 @@ class ThreadExecutionSettingsService:
         self.gitlab_routing_enabled_for_project = gitlab_routing_enabled_for_project
         self.binding_report_name = binding_report_name
         self.binding_prefix = binding_prefix
+        self.get_setting = get_setting
+        self.put_setting = put_setting
+        self.delete_setting = delete_setting
 
     def remember(
         self,
@@ -47,8 +53,12 @@ class ThreadExecutionSettingsService:
         read_only_repository_resource_ids: tuple[str, ...] | None = None,
         execution_profile_id: str | None = None,
     ) -> ThreadRunSettings:
-        all_settings = self.load_settings()
-        current = all_settings.get(thread_id, ThreadRunSettings())
+        all_settings = None
+        current = (
+            self.get_setting(thread_id)
+            if self.get_setting is not None
+            else None
+        ) or ThreadRunSettings()
         if sandbox is not None:
             current.sandbox = sandbox
         if approval_policy is not None:
@@ -74,8 +84,12 @@ class ThreadExecutionSettingsService:
             )
         if execution_profile_id is not None:
             current.execution_profile_id = execution_profile_id or None
-        all_settings[thread_id] = current
-        self.save_settings(all_settings)
+        if self.put_setting is not None:
+            self.put_setting(thread_id, current)
+        else:
+            all_settings = all_settings or self.load_settings()
+            all_settings[thread_id] = current
+            self.save_settings(all_settings)
         self.sync_bot_binding_settings(thread_id, current)
         return current
 
@@ -83,6 +97,18 @@ class ThreadExecutionSettingsService:
         return dict(self.load_settings())
 
     def retarget(self, old_thread_id: str, new_thread_id: str) -> None:
+        if (
+            self.get_setting is not None
+            and self.put_setting is not None
+            and self.delete_setting is not None
+        ):
+            old_settings = self.get_setting(old_thread_id)
+            if old_settings is None:
+                return
+            if self.get_setting(new_thread_id) is None:
+                self.put_setting(new_thread_id, old_settings)
+            self.delete_setting(old_thread_id)
+            return
         all_settings = self.load_settings()
         old_settings = all_settings.pop(old_thread_id, None)
         if old_settings is None:
@@ -94,7 +120,11 @@ class ThreadExecutionSettingsService:
     def get(self, thread_id: str | None) -> ThreadRunSettings:
         if not thread_id:
             return ThreadRunSettings()
-        settings = self.load_settings().get(thread_id)
+        settings = (
+            self.get_setting(thread_id)
+            if self.get_setting is not None
+            else self.load_settings().get(thread_id)
+        )
         if settings:
             return settings
         bindings = self.bindings.for_thread(thread_id)
@@ -244,6 +274,18 @@ def install_thread_execution_settings_service(
             binding_report_name or host._binding_report_name
         ),
         binding_prefix=binding_prefix or host._binding_prefix,
+        get_setting=(
+            get_setting
+            or getattr(host, "_get_thread_setting_record", None)
+        ),
+        put_setting=(
+            put_setting
+            or getattr(host, "_put_thread_setting_record", None)
+        ),
+        delete_setting=(
+            delete_setting
+            or getattr(host, "_delete_thread_setting_record", None)
+        ),
     )
     app.state.thread_execution_settings_service = service
 
