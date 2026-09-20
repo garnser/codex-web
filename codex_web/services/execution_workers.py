@@ -425,6 +425,8 @@ class ExecutionWorkerService:
                     current.version != version
                     or current.capabilities != normalized_capabilities
                     or current.lifecycle != lifecycle
+                    or current.supported_execution_contract_versions
+                    != supported_execution_contract_versions
                 )
                 if changed:
                     self._event(
