@@ -462,6 +462,34 @@ class ExecutionWorkerService:
         self.store.update(apply)
         return updated[0]
 
+    def require_compatible_worker(
+        self,
+        *,
+        required_capabilities: tuple[WorkerCapability, ...],
+        execution_contract_version: str,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorker:
+        """Fail before workspace/assignment creation when no worker can run a profile."""
+
+        self._require_admin(actor)
+        required = set(required_capabilities)
+        candidates = [
+            worker
+            for worker in self.store.load().workers
+            if self._same_scope(worker, actor)
+            and worker.lifecycle == WorkerLifecycle.ACTIVE
+            and required.issubset(set(worker.capabilities))
+            and execution_contract_version
+            in worker.supported_execution_contract_versions
+        ]
+        if not candidates:
+            names = ", ".join(sorted(item.value for item in required))
+            raise WorkerConflictError(
+                "no active execution worker supports required capabilities "
+                f"[{names}] for {execution_contract_version}"
+            )
+        return sorted(candidates, key=lambda item: (item.registered_at, item.id))[0]
+
     def create_assignment(
         self,
         payload: ExecutionAssignmentCreate,
