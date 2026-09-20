@@ -98,6 +98,10 @@ class BotTargetServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(target)
         self.assertIn("slack:C1:thread-1", host.reply_targets)
+        self.assertIn(
+            "thread:thread-1:slack:C1",
+            host.reply_targets,
+        )
         self.assertIn("slack:C1:external:111.22", host.reply_targets)
         self.assertEqual(
             service.target_for_external_thread("slack", "C1", "111.22").thread_id,
@@ -272,6 +276,42 @@ class BotTargetServiceTests(unittest.TestCase):
         self.assertEqual(counts["active"], 1)
         self.assertEqual(counts["reply"], 1)
         self.assertLessEqual(counts["delivery"], 2)
+
+    def test_thread_scoped_alias_resolves_without_bulk_target_load(self) -> None:
+        host = _TargetHost()
+        binding = _binding("b1", thread_id="thread-1")
+        target = BotReplyTarget(
+            thread_id="thread-1",
+            provider="slack",
+            external_conversation_id="C1",
+            external_thread_id="thread-ts",
+            message_id="thread-ts",
+            updated_at=time.time(),
+        )
+        thread_key = "thread:thread-1:slack:C1"
+        reads: list[str] = []
+
+        service = BotTargetService(
+            load_reply_targets=lambda: (_ for _ in ()).throw(
+                AssertionError("full reply target load is forbidden")
+            ),
+            save_reply_targets=lambda _targets: None,
+            load_delivery_targets=lambda: {},
+            save_delivery_targets=lambda _targets: None,
+            load_active_turns=host._load_active_turns,
+            bindings_for_project=host._bindings_for_project,
+            get_reply_target=lambda key: (
+                reads.append(key) or (target if key == thread_key else None)
+            ),
+        )
+
+        resolved = service.reply_target_for_binding(binding)
+
+        self.assertIs(resolved, target)
+        self.assertEqual(
+            reads,
+            ["slack:C1:thread-1", thread_key],
+        )
 
     def test_missing_legacy_alias_uses_one_bounded_observable_repair_page(self) -> None:
         host = _TargetHost()
