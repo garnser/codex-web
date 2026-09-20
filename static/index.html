@@ -1086,11 +1086,12 @@
             </div>
           </details>
           <button id="theme-toggle" class="icon-button theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode" aria-pressed="false">◐</button>
-          <select id="sandbox">
+          <select id="sandbox" aria-describedby="sandbox-danger-warning">
             <option value="workspace-write">Workspace write</option>
             <option value="read-only">Read only</option>
-            <option value="danger-full-access">Full access</option>
+            <option value="danger-full-access">Full access (high risk)</option>
           </select>
+          <span id="sandbox-danger-warning" class="sandbox-danger-warning" role="status">⚠ Full access disables the Codex inner sandbox inside the assigned worker environment. Control-plane isolation still applies.</span>
           <select id="approval-policy">
             <option value="on-request">Ask on request</option>
             <option value="untrusted">Ask untrusted</option>
