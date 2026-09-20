@@ -75,6 +75,28 @@ a key prefix plus cursor. They are the read-side primitive for provider,
 conversation, Project, or tenant scoped indexes; callers should encode those
 scope dimensions into domain keys rather than loading the full collection.
 
+### Bot routing read indexes
+
+Bot binding routing maintains a process-local index over canonical binding state
+for binding ID, thread ID, provider + Project, provider + external
+conversation, and Project masters. The index records the canonical namespace
+revision and rebuilds when that revision changes, including writes performed by
+another control-plane process. Callers receive model copies rather than mutable
+references into the cached index.
+
+Reply and delivery targets do not require a second full in-memory registry.
+Normal routing uses canonical keyed reads for binding, thread-scoped, and
+provider + conversation + external message/thread aliases. A single typed
+routing context memoizes active-turn and target reads across nested selection
+helpers so one delivery decision cannot repeatedly reload the same state.
+
+Legacy target records missing the external alias may use one bounded
+provider/conversation-prefixed repair page. Repair scans are intentionally
+bounded and counted separately from normal keyed reads; a successful repair
+backfills the canonical alias so subsequent routing remains exact-key. Runtime
+diagnostics expose binding-index status plus target keyed-read and compatibility
+repair counters without serializing the target registries themselves.
+
 ## Scaling principles
 
 The scaling architecture separates three responsibilities:
