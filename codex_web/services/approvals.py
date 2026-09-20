@@ -48,6 +48,7 @@ class ApprovalService:
         request_id_value=None,
         load_approval_messages=None,
         save_approval_messages=None,
+        load_active_turns=None,
         compatibility_resolver=None,
     ) -> None:
         self.host = host
@@ -85,6 +86,11 @@ class ApprovalService:
             save_approval_messages
             or getattr(host, "_save_approval_messages", None)
         )
+        self.load_active_turns = (
+            load_active_turns
+            or getattr(host, "_load_active_turns", None)
+            or (lambda: {})
+        )
         self.compatibility_resolver = (
             compatibility_resolver
             or getattr(host, "_resolve_approval_request", None)
@@ -101,6 +107,9 @@ class ApprovalService:
             )
             if canonical is not None:
                 host._register_canonical_approval_request = self.register_native_request
+            host._approval_thread_id = self.thread_id
+            host._request_id_value = self.request_id_value
+            host._approval_result = self.approval_result
 
     def _approval_runtimes(self):
         yield self.runtime_transport
@@ -265,6 +274,58 @@ class ApprovalService:
                 "strictAutoReview": not accept,
             }
         return {"decision": "accept" if accept else "decline"}
+
+    @staticmethod
+    def _nested_value(payload: Any, keys: set[str]) -> Any:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in keys and value:
+                    return value
+            for value in payload.values():
+                found = ApprovalService._nested_value(value, keys)
+                if found:
+                    return found
+        elif isinstance(payload, list):
+            for value in payload:
+                found = ApprovalService._nested_value(value, keys)
+                if found:
+                    return found
+        return None
+
+    def thread_id(self, request: dict[str, Any]) -> str | None:
+        params = request.get("params") or {}
+        thread_id = (
+            params.get("threadId")
+            or params.get("thread_id")
+            or params.get("conversationId")
+            or params.get("conversation_id")
+            or (params.get("item") or {}).get("threadId")
+            or self._nested_value(
+                params,
+                {
+                    "threadId",
+                    "thread_id",
+                    "conversationId",
+                    "conversation_id",
+                },
+            )
+        )
+        if thread_id:
+            return str(thread_id)
+
+        turn_id = (
+            params.get("turnId")
+            or params.get("turn_id")
+            or (params.get("turn") or {}).get("id")
+            or (params.get("item") or {}).get("turnId")
+            or self._nested_value(params, {"turnId", "turn_id"})
+        )
+        if not turn_id:
+            return None
+        for candidate_thread_id, active in self.load_active_turns().items():
+            if active.turn_id == str(turn_id):
+                return candidate_thread_id
+        return None
 
     @staticmethod
     def _outcome_for_native_decision(decision: str) -> ApprovalDecisionOutcome:
