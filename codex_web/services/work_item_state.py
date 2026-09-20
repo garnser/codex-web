@@ -731,13 +731,18 @@ class WorkItemStateMachine:
         return state
 
     def _work_item_state(self, ref: str) -> WorkItemState:
-        states = self.dependencies.load_states()
-        state = states.get(ref)
+        if self.dependencies.get_state is not None:
+            state = self.dependencies.get_state(ref)
+        else:
+            state = self.dependencies.load_states().get(ref)
         if state is None:
             raise HTTPException(status_code=404, detail="Work item state not found")
         return state
 
     def _save_work_item_state(self, state: WorkItemState) -> WorkItemState:
+        if self.dependencies.save_state is not None:
+            self.dependencies.save_state(state)
+            return state
         states = self.dependencies.load_states()
         states[state.ref] = state
         self.dependencies.save_states(states)
