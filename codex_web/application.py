@@ -1388,10 +1388,20 @@ work_item_state_machine = install_work_item_state_machine(
     store=state_store,
     dependencies=work_item_dependencies,
 )
+work_item_dispatch_prompt_policy = WorkItemDispatchPromptPolicy(
+    coerce_owner=work_item_state_machine._coerce_owner,
+    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+)
 work_item_contract_service = install_work_item_contract_service(
     app,
-    core,
+    None,
     execution_role_definition_service,
+    base_formatter=work_item_dispatch_prompt_policy.render,
+    split_brain_findings=(
+        work_item_state_machine._work_item_split_brain_findings
+    ),
+    save_state=work_item_state_machine._save_work_item_state,
+    append_event=work_item_state_machine._append_work_item_event,
 )
 # Telemetry has no dependency on bot repositories/runtime tasks, so compose it
 # before work-item services that need an explicit event sink.
@@ -2097,10 +2107,6 @@ agent_channel_preference_service = (
     )
 )
 
-work_item_dispatch_prompt_policy = WorkItemDispatchPromptPolicy(
-    coerce_owner=work_item_state_machine._coerce_owner,
-    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
-)
 bot_event_dispatch_service = BotEventDispatchService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -2130,7 +2136,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
         bot_event_dispatch_service.replace_nonperforming_thread
     ),
     dispatch_event=bot_event_dispatch_service.dispatch,
-    dispatch_text=work_item_dispatch_prompt_policy.render,
+    dispatch_text=work_item_contract_service.dispatch_text,
     append_event=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
     thread_is_active=turn_execution_service.thread_is_active,
@@ -2155,7 +2161,10 @@ core._replace_nonperforming_thread_if_needed = (
 core._dispatch_event_to_binding = (
     bot_event_dispatch_compatibility.dispatch
 )
-core._work_item_dispatch_text = work_item_dispatch_prompt_policy.render
+core._work_item_dispatch_text = work_item_contract_service.dispatch_text
+core._work_item_execution_contract = (
+    work_item_contract_service.contract_for_state
+)
 core._thread_recently_active = bot_event_dispatch_service.thread_recently_active
 core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
 core._record_watchdog_dispatch = watchdog_dispatch_policy.record
