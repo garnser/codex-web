@@ -181,6 +181,21 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
+    def test_legacy_project_migration_admin_is_focused_and_uses_shared_client(self) -> None:
+        source_path = STATIC / "legacy_project_migration_admin.js"
+        source = source_path.read_text(encoding="utf-8")
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+        self.assertLessEqual(source_path.stat().st_size, 8_000)
+        self.assertIn("api_client.js", source)
+        self.assertIn("apiRequest", source)
+        self.assertNotIn("fetch(", source)
+        self.assertIn("approve_material_authority_changes", source)
+        self.assertIn("authority_difference", source)
+        self.assertIn("rollback_boundary", source)
+        self.assertIn("legacy_project_migration_admin.js", html)
+        self.assertIn('id="legacy-project-migration-panel"', html)
+
     def test_control_plane_broker_admin_has_focused_budget_and_no_secret_surface(self) -> None:
         source_path = STATIC / "control_plane_broker_admin.js"
         source = source_path.read_text(encoding="utf-8")
