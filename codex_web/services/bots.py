@@ -26,16 +26,18 @@ class BotService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
-        connections: BotConnectionService,
-        bindings: BotBindingSelectionService,
-        binding_lifecycle: BotBindingLifecycleService,
-        channels: BotChannelDiscoveryService,
-        presentation: BotPresentationService,
-        telemetry: BotRuntimeTelemetry,
-        runtime: BotRuntime,
-        routing_service: BotRoutingService,
-        load_gitlab_routing_settings: Callable[[], Any],
+        connections: BotConnectionService | None = None,
+        bindings: BotBindingSelectionService | None = None,
+        binding_lifecycle: BotBindingLifecycleService | None = None,
+        channels: BotChannelDiscoveryService | None = None,
+        presentation: BotPresentationService | None = None,
+        telemetry: BotRuntimeTelemetry | None = None,
+        runtime: BotRuntime | None = None,
+        routing_service: BotRoutingService | None = None,
+        load_gitlab_routing_settings: Callable[[], Any] | None = None,
+        slack_client: Any | None = None,
     ) -> None:
         self.connections = connections
         self.bindings = bindings
@@ -46,6 +48,29 @@ class BotService:
         self.runtime = runtime
         self.routing_service = routing_service
         self.load_gitlab_routing_settings = load_gitlab_routing_settings
+
+        # Compatibility for direct service consumers while legacy_core is being
+        # removed. Keep only narrow callables; never retain the mutable host.
+        self._legacy_known_channels = None
+        self._legacy_load_connections = None
+        self._legacy_channel_needs_name = None
+        self._legacy_slack = slack_client
+        if host is not None and channels is None:
+            self._legacy_known_channels = getattr(
+                host,
+                "_known_bot_channels",
+                None,
+            )
+            self._legacy_load_connections = getattr(
+                host,
+                "_load_bot_connections",
+                None,
+            )
+            self._legacy_channel_needs_name = getattr(
+                host,
+                "_channel_needs_name",
+                None,
+            )
 
     @staticmethod
     def _credential_identity(connection, field: str) -> str | None:
@@ -148,7 +173,49 @@ class BotService:
         self,
         project_id: str,
     ) -> list[dict[str, str]]:
-        return await self.channels.list(project_id)
+        if self.channels is not None:
+            return await self.channels.list(project_id)
+        if self._legacy_known_channels is None:
+            return []
+
+        channels = {
+            (item["provider"], item["id"]): item
+            for item in self._legacy_known_channels(project_id)
+        }
+        load_connections = self._legacy_load_connections
+        if callable(load_connections) and self._legacy_slack is not None:
+            for connection in load_connections():
+                if (
+                    getattr(connection, "project_id", None) != project_id
+                    or getattr(connection, "provider", None) != "slack"
+                    or not getattr(connection, "bot_token", None)
+                ):
+                    continue
+                discovered = await self._legacy_slack.list_channels(
+                    connection.bot_token
+                )
+                for channel in discovered:
+                    channels[(channel["provider"], channel["id"])] = channel
+
+                needs_name = self._legacy_channel_needs_name
+                if callable(needs_name):
+                    for channel in list(channels.values()):
+                        if (
+                            channel.get("provider") == "slack"
+                            and needs_name(channel)
+                        ):
+                            resolved = await self._legacy_slack.channel_info(
+                                connection.bot_token,
+                                channel["id"],
+                            )
+                            if resolved:
+                                channels[
+                                    (resolved["provider"], resolved["id"])
+                                ] = resolved
+        return sorted(
+            channels.values(),
+            key=lambda item: (item["provider"], item["label"]),
+        )
 
     async def create_binding(
         self,
