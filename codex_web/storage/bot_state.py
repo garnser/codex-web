@@ -158,6 +158,7 @@ class IndexedBotBindingRepository:
             tuple[str, str],
             tuple[BotBinding, ...],
         ] = {}
+        self._by_project: dict[str, tuple[BotBinding, ...]] = {}
         self._by_connection: dict[
             tuple[str, str],
             tuple[BotBinding, ...],
@@ -194,6 +195,7 @@ class IndexedBotBindingRepository:
             tuple[str, str],
             list[BotBinding],
         ] = {}
+        by_project: dict[str, list[BotBinding]] = {}
         by_connection: dict[
             tuple[str, str],
             list[BotBinding],
@@ -204,6 +206,10 @@ class IndexedBotBindingRepository:
             by_thread.setdefault(binding.thread_id, []).append(binding)
             by_project_provider.setdefault(
                 (provider, binding.project_id),
+                [],
+            ).append(binding)
+            by_project.setdefault(
+                binding.project_id,
                 [],
             ).append(binding)
             by_connection.setdefault(
@@ -221,6 +227,10 @@ class IndexedBotBindingRepository:
         self._by_project_provider = {
             key: tuple(items)
             for key, items in by_project_provider.items()
+        }
+        self._by_project = {
+            key: tuple(items)
+            for key, items in by_project.items()
         }
         self._by_connection = {
             key: tuple(items) for key, items in by_connection.items()
@@ -289,6 +299,16 @@ class IndexedBotBindingRepository:
                 self._by_project_provider.get(key, ())
             )
 
+    def for_project_all(
+        self,
+        project_id: str,
+    ) -> list[BotBinding]:
+        self._ensure()
+        with self._lock:
+            return self._copies(
+                self._by_project.get(str(project_id), ())
+            )
+
     def for_connection(
         self,
         provider: str,
@@ -317,6 +337,7 @@ class IndexedBotBindingRepository:
                 "bindings": len(self._all),
                 "byId": len(self._by_id),
                 "threads": len(self._by_thread),
+                "projects": len(self._by_project),
                 "projectProviders": len(self._by_project_provider),
                 "connections": len(self._by_connection),
                 "masterProjects": len(self._masters_by_project),
