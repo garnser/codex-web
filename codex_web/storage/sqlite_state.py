@@ -272,6 +272,36 @@ class SQLiteStateStore:
                     payload,
                 )
 
+    def record_update(
+        self,
+        namespace: str,
+        key: str,
+        updater: Callable[[Any], Any],
+        *,
+        default: Any,
+    ) -> Any:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_record_collection_in_connection(
+                connection,
+                namespace,
+            )
+            storage_key = state_record_storage_key(namespace, str(key))
+            row = connection.execute(
+                "SELECT payload FROM state_documents WHERE namespace = ?",
+                (storage_key,),
+            ).fetchone()
+            current = self._decode(row, default)
+            updated = updater(current)
+            if updated is None:
+                connection.execute(
+                    "DELETE FROM state_documents WHERE namespace = ?",
+                    (storage_key,),
+                )
+            else:
+                self._upsert(connection, storage_key, updated)
+            return updated
+
     def record_replace(
         self,
         namespace: str,
