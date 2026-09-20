@@ -71,9 +71,14 @@ class TurnQueuePolicy:
         recent.append(timestamp)
 
 
-def install_turn_queue_policy(app, host) -> TurnQueuePolicy:
+def install_turn_queue_policy(
+    app,
+    host,
+    *,
+    load_queues: TurnQueueLoader | None = None,
+) -> TurnQueuePolicy:
     existing = getattr(app.state, "turn_queue_policy", None)
-    load_queues = host._load_turn_queues
+    load_queues = load_queues or host._load_turn_queues
     if (
         isinstance(existing, TurnQueuePolicy)
         and existing.load_queues == load_queues
