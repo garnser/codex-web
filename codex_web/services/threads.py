@@ -441,6 +441,8 @@ class ThreadService:
         reasoning_effort: str | None = None,
         provider_id: str | None = None,
         runtime_id: str | None = None,
+        repository_resource_id: str | None = None,
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         (
             binding_service,
@@ -469,6 +471,8 @@ class ThreadService:
             sandbox=effective_sandbox,
             approval_policy=effective_approval_policy,
             runtime_binding=runtime_binding,
+            explicit_repository_id=repository_resource_id,
+            read_only_repository_ids=read_only_repository_resource_ids,
         )
         session = await session_manager.start(binding.assignment_id)
         status = session.status()
@@ -627,6 +631,10 @@ class ThreadService:
             model=model or project.model,
             reasoning_effort=reasoning_effort,
             developer_instructions=None,
+            repository_resource_id=binding.repository_resource_id,
+            read_only_repository_resource_ids=(
+                binding.repository_target.read_only_repository_ids
+            ),
         )
         self.event_sink(
             {
@@ -638,6 +646,7 @@ class ThreadService:
                 "execution_workspace_id": bootstrap.execution_workspace_id,
                 "worker_id": status.worker_id,
                 "fence": status.fence,
+                "repository_target": binding.repository_target.model_dump(mode="json"),
                 "agent_session_id": (
                     canonical_session.id if canonical_session is not None else None
                 ),
@@ -705,6 +714,8 @@ class ThreadService:
             model=payload.model,
             reasoning_effort=payload.reasoning_effort,
             developer_instructions=payload.developer_instructions,
+            repository_resource_id=payload.repository_resource_id,
+            read_only_repository_resource_ids=payload.read_only_repository_resource_ids,
         )
         return {"ok": True, "threadId": thread_id, **settings.model_dump()}
 
