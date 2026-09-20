@@ -932,6 +932,7 @@ app.include_router(
     build_execution_workers_router(
         execution_worker_service,
         control_plane_broker_factory=control_plane_broker_factory,
+        local_isolation_status=lambda: local_execution_backend.probe(),
     )
 )
 app.state.execution_worker_store = execution_worker_store
@@ -2682,6 +2683,28 @@ static_asset_version_service = StaticAssetVersionService(
     STATIC_DIR,
     DATA_DIR.parent,
 )
+def _execution_readiness_health():
+    result = execution_worker_service.execution_readiness(
+        required_capabilities=(
+            WorkerCapability.GIT,
+            WorkerCapability.COMMAND_EXECUTION,
+        ),
+        execution_contract_version="thread-turn/1.0",
+        actor=identity_service.local_trusted_actor(),
+    )
+    payload = result.model_dump(mode="json")
+    isolation = local_execution_backend.probe()
+    payload["local_isolation"] = {
+        "backend": isolation.backend,
+        "ready": isolation.ready,
+        "reason": isolation.reason,
+        "capabilities": [
+            capability.value for capability in isolation.capabilities
+        ],
+    }
+    return payload
+
+
 runtime_health_service = RuntimeHealthService(
     codex=codex_runtime,
     bot_runtime=bot_runtime,
@@ -2695,6 +2718,7 @@ runtime_health_service = RuntimeHealthService(
     load_queues=turn_queue_repository.load,
     slack_provider_health=slack_provider_service.health,
     gitlab_sync_status=gitlab_sync_health.snapshot,
+    execution_readiness=_execution_readiness_health,
 )
 app.state.static_asset_version_service = static_asset_version_service
 app.state.runtime_health_service = runtime_health_service
