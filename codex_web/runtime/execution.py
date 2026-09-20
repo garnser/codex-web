@@ -296,6 +296,8 @@ class TurnExecutionService:
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
+        repository_resource_id: str | None = None,
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> QueuedTurn:
         h = self.host
         queues = h._load_turn_queues()
@@ -342,6 +344,8 @@ class TurnExecutionService:
             approval_policy=approval_policy,
             model=model,
             reasoning_effort=reasoning_effort,
+            repository_resource_id=repository_resource_id,
+            read_only_repository_resource_ids=read_only_repository_resource_ids,
             source=source,
             reply_target=reply_target,
             created_at=time.time(),
@@ -505,6 +509,7 @@ class TurnExecutionService:
         execution_workspace_id: str | None = None,
         worker_id: str | None = None,
         fence: int | None = None,
+        repository_resource_id: str | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -535,6 +540,11 @@ class TurnExecutionService:
             ),
             worker_id=worker_id or (current.worker_id if current else None),
             fence=fence if fence is not None else (current.fence if current else None),
+            repository_resource_id=(
+                repository_resource_id
+                or settings.repository_resource_id
+                or (current.repository_resource_id if current else None)
+            ),
             started_at=current.started_at if current else now,
             updated_at=now,
             resume_attempts=current.resume_attempts if current else 0,
@@ -680,6 +690,8 @@ class TurnExecutionService:
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
+        repository_resource_id: str | None = None,
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         h = self.host
         binding_service, default_session_manager = self._require_worker_routing()
@@ -741,6 +753,27 @@ class TurnExecutionService:
                             "immutable for the live isolated session"
                         ),
                     )
+                target = getattr(assignment, "repository_target", None)
+                requested_repository = (
+                    repository_resource_id or settings.repository_resource_id
+                )
+                if requested_repository and (
+                    target is None
+                    or target.mutable_repository_id != requested_repository
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "thread_repository_target_immutable",
+                            "threadId": thread_id,
+                            "requestedRepositoryResourceId": requested_repository,
+                            "effectiveRepositoryResourceId": (
+                                target.mutable_repository_id
+                                if target is not None
+                                else None
+                            ),
+                        },
+                    )
                 canonical_execution_id = bootstrap.execution_id
                 assignment_id = bootstrap.assignment_id
                 workspace_id = bootstrap.execution_workspace_id
@@ -769,6 +802,14 @@ class TurnExecutionService:
                     sandbox=effective_sandbox,
                     approval_policy=effective_approval_policy,
                     runtime_binding=runtime_binding,
+                    explicit_repository_id=(
+                        repository_resource_id
+                        or settings.repository_resource_id
+                    ),
+                    read_only_repository_ids=(
+                        read_only_repository_resource_ids
+                        or settings.read_only_repository_resource_ids
+                    ),
                 )
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
@@ -863,6 +904,13 @@ class TurnExecutionService:
                 execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
+                repository_resource_id=(
+                    getattr(
+                        getattr(session.validate_current(), "repository_target", None),
+                        "mutable_repository_id",
+                        None,
+                    )
+                ),
             )
 
             params: dict[str, Any] = {
@@ -970,6 +1018,13 @@ class TurnExecutionService:
                 execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
+                repository_resource_id=(
+                    getattr(
+                        getattr(session.validate_current(), "repository_target", None),
+                        "mutable_repository_id",
+                        None,
+                    )
+                ),
             )
         h._append_bot_event(
             {
@@ -1035,6 +1090,8 @@ class TurnExecutionService:
                 source=f"queued:{queued.source}",
                 reply_target=queued.reply_target,
                 execution_id=queued.execution_id,
+                repository_resource_id=queued.repository_resource_id,
+                read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
             )
             h._append_bot_event(
                 {
@@ -1223,6 +1280,7 @@ class TurnExecutionService:
                     source=f"restart-recovery:{active.source or 'unknown'}",
                     reply_target=active.reply_target,
                     execution_id=active.execution_id,
+                    repository_resource_id=active.repository_resource_id,
                 )
                 self.mark_thread_active(
                     thread_id,
