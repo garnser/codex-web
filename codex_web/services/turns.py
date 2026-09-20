@@ -12,6 +12,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, QueuedTurn, TurnCreate
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
 from codex_web.services.execution_preflight import ExecutionPreflightService
+from codex_web.services.agent_routing import AgentCapacityRoutingError
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import ProviderCapacityBlockedError
 from codex_web.services.thread_execution_settings import (
@@ -280,6 +281,8 @@ class TurnService:
             event_type: str,
             reason: str | None = None,
             capacity_error: ProviderCapacityBlockedError | None = None,
+            capacity_provider_keys: tuple[str, ...] = (),
+            capacity_retry_at: float | None = None,
         ) -> dict[str, Any]:
             queued = self.execution.enqueue_turn(
                 thread_id=thread_id,
@@ -307,13 +310,20 @@ class TurnService:
             self.event_sink(event_payload)
             await self.execution.publish_queue_status(thread_id)
             wait = None
+            provider_keys = capacity_provider_keys
+            retry_at = capacity_retry_at
+            capacity_reason = reason
             if capacity_error is not None:
+                provider_keys = (capacity_error.record.key,)
+                retry_at = capacity_error.retry_at
+                capacity_reason = str(capacity_error)
+            if provider_keys:
                 wait = self.execution.wait_for_thread_capacity(
                     thread_id=thread_id,
                     execution_id=execution_id,
-                    provider_keys=(capacity_error.record.key,),
-                    retry_at=capacity_error.retry_at,
-                    reason=str(capacity_error),
+                    provider_keys=provider_keys,
+                    retry_at=retry_at,
+                    reason=str(capacity_reason or "provider capacity blocked"),
                 )
             elif not self.execution.thread_is_active(thread_id):
                 asyncio.get_running_loop().call_later(
@@ -332,11 +342,11 @@ class TurnService:
                 "queuedId": queued.id,
                 "queueDepth": queue_depth,
                 "threadId": thread_id,
-                "waitingForCapacity": capacity_error is not None,
+                "waitingForCapacity": bool(provider_keys),
                 "capacityWaitId": getattr(wait, "id", None),
                 "retryAt": (
-                    capacity_error.retry_at
-                    if capacity_error is not None
+                    retry_at
+                    if provider_keys
                     else None
                 ),
             }
@@ -400,6 +410,16 @@ class TurnService:
                     status_code=exc.status_code,
                     detail=detail,
                 ) from exc
+            if isinstance(exc, AgentCapacityRoutingError):
+                result = await queue_web_turn(
+                    "web_turn_waiting_for_routing_capacity",
+                    str(exc),
+                    capacity_provider_keys=tuple(exc.provider_keys),
+                    capacity_retry_at=exc.retry_at,
+                )
+                result["providerKeys"] = list(exc.provider_keys)
+                result["capacityStatus"] = "routing-capacity"
+                return result
             if isinstance(exc, ProviderCapacityBlockedError):
                 result = await queue_web_turn(
                     "web_turn_waiting_for_capacity",
