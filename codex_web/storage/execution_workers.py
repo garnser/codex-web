@@ -62,6 +62,18 @@ def _migrate_1_2_to_1_3(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 EXECUTION_WORKER_MIGRATIONS.register("1.2", "1.3", _migrate_1_2_to_1_3)
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.3",
+    "1.4",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.4",
+        "assignments": [
+            {**dict(item), "repository_target": dict(item).get("repository_target")}
+            for item in payload.get("assignments", [])
+        ],
+    },
+)
 
 
 class ExecutionWorkerStore:
