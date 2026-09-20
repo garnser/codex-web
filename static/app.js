@@ -1,6 +1,9 @@
 const state = {
   projects: [],
   projectResources: [],
+  executionProfiles: [],
+  executionProfileDefaultId: "repository-write",
+  executionProfileDefinition: null,
   projectId: "home",
   threads: [],
   threadId: null,
@@ -251,6 +254,7 @@ function currentRunSettings() {
   return {
     sandbox: saved.sandbox || project?.sandbox || "workspace-write",
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
+    executionProfileId: saved.executionProfileId || state.executionProfileDefaultId || "repository-write",
     repositoryResourceId: saved.repositoryResourceId || "",
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
@@ -280,6 +284,34 @@ function renderRepositoryTargets() {
       `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
     ))
     .join("");
+}
+
+function selectedExecutionProfile() {
+  const settings = currentRunSettings();
+  return (state.executionProfiles || []).find((item) => item.id === settings.executionProfileId) || null;
+}
+
+function renderExecutionProfiles() {
+  const selector = $("execution-profile");
+  const summary = $("execution-profile-summary");
+  if (!selector || !summary) return;
+  const settings = currentRunSettings();
+  selector.innerHTML = (state.executionProfiles || []).map((item) => (
+    `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
+  )).join("") || '<option value="repository-write">Repository write</option>';
+  selector.value = settings.executionProfileId;
+  const profile = selectedExecutionProfile();
+  const orchestration = profile?.workspaceMode === "scratch";
+  if (profile) {
+    const caps = (profile.requiredWorkerCapabilities || []).join(", ") || "none";
+    summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(caps)}.${orchestration ? " No mutable Git worktree is created." : ""}`;
+  } else {
+    summary.textContent = "Execution profile metadata unavailable.";
+  }
+  const mutable = $("repository-target");
+  const readOnly = $("repository-read-context");
+  if (mutable) mutable.disabled = orchestration;
+  if (readOnly) readOnly.disabled = orchestration;
 }
 
 function threadRunSettings(threadId = state.threadId) {
@@ -328,7 +360,9 @@ function applyRunSettings() {
   const settings = currentRunSettings();
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
+  if ($("execution-profile")) $("execution-profile").value = settings.executionProfileId;
   if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
+  renderExecutionProfiles();
 }
 
 function persistRunSettings() {
@@ -338,6 +372,7 @@ function persistRunSettings() {
   allSettings[project.id] = {
     sandbox: $("sandbox").value,
     approvalPolicy: $("approval-policy").value,
+    executionProfileId: $("execution-profile")?.value || state.executionProfileDefaultId || "repository-write",
     repositoryResourceId: $("repository-target")?.value || "",
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
@@ -1174,9 +1209,10 @@ async function refresh() {
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
   state.refreshInFlight = (async () => {
-    const [projects, projectResources, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
+    const [projects, projectResources, executionProfiles, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
       api("/api/projects"),
       api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
+      api(`/api/execution-profiles?project_id=${encodeURIComponent(state.projectId)}`).catch(() => ({ items: [], default_profile_id: "repository-write" })),
       api("/api/bots/bindings"),
       api("/api/thread-settings"),
       api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
@@ -1192,6 +1228,9 @@ async function refresh() {
     ]);
     state.projects = projects;
     state.projectResources = projectResources.items || [];
+    state.executionProfiles = executionProfiles.items || [];
+    state.executionProfileDefaultId = executionProfiles.default_profile_id || "repository-write";
+    state.executionProfileDefinition = executionProfiles.definition || null;
     state.botBindings = botBindings;
     state.threadSettings = threadSettings;
     state.botChannels = botChannels;
@@ -1200,6 +1239,7 @@ async function refresh() {
       state.models = modelsResponse;
     }
     renderRepositoryTargets();
+    renderExecutionProfiles();
     applyRunSettings();
     renderGitLabIntegration();
     renderAgentChannelPresence();
@@ -1439,7 +1479,8 @@ async function newThread() {
     sandbox: settings.sandbox,
     approval_policy: settings.approvalPolicy,
   });
-  if (settings.repositoryResourceId) {
+  qs.set("execution_profile_id", settings.executionProfileId);
+  if (settings.repositoryResourceId && selectedExecutionProfile()?.workspaceMode !== "scratch") {
     qs.set("repository_resource_id", settings.repositoryResourceId);
   }
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
@@ -1490,6 +1531,11 @@ async function sendPrompt() {
       selectedThreadSettings.read_only_repository_resource_ids
       || runSettings.readOnlyRepositoryResourceIds
       || []
+    ),
+    execution_profile_id: (
+      selectedThreadSettings.execution_profile_id
+      || runSettings.executionProfileId
+      || state.executionProfileDefaultId
     ),
   };
   try {
@@ -2427,6 +2473,11 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
+$("execution-profile").addEventListener("change", () => {
+  persistRunSettings();
+  renderExecutionProfiles();
+  renderRepositoryTargets();
+});
 $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
