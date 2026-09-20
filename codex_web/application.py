@@ -203,6 +203,9 @@ from codex_web.services.context import ContextCompactionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
+from codex_web.services.execution_profile_definitions import (
+    install_execution_profile_definitions,
+)
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
 from codex_web.services.data_governance import DataGovernanceService
@@ -581,6 +584,9 @@ definition_registry_service = DefinitionRegistryService(
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
+execution_profile_definition_service = install_execution_profile_definitions(
+    definition_registry_service
+)
 executive_role_definition_service = install_executive_role_definitions(
     definition_registry_service
 )
@@ -592,6 +598,7 @@ input_pipeline_definition_service = install_input_plugin_definitions(
 )
 app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
+app.state.execution_profile_definition_service = execution_profile_definition_service
 app.state.executive_role_definition_service = executive_role_definition_service
 app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
@@ -916,6 +923,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
         ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
         ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
     },
+    execution_profiles=execution_profile_definition_service,
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
