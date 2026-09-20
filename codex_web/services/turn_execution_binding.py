@@ -153,6 +153,7 @@ class TurnExecutionBindingService:
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
         execution_profiles: ExecutionProfileDefinitionService | None = None,
+        control_plane_available: Callable[[], bool] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -163,6 +164,7 @@ class TurnExecutionBindingService:
         self.control_actor = control_actor
         self.runtime_binding = runtime_binding
         self.execution_profiles = execution_profiles
+        self.control_plane_available = control_plane_available or (lambda: True)
         self.runtime_credential_configs = dict(
             runtime_credential_configs
             or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
@@ -579,6 +581,31 @@ class TurnExecutionBindingService:
             and execution_profile.workspace_mode == "scratch"
             and execution_profile.repository_access == "none"
         )
+        if (
+            execution_profile is not None
+            and execution_profile.control_plane_operations
+            and not self.control_plane_available()
+        ):
+            raise TurnExecutionBindingError(
+                "brokered control-plane access is unavailable",
+                code="control_plane_scope_missing",
+                blocker={
+                    "code": "control_plane_scope_missing",
+                    "message": "brokered control-plane access is unavailable",
+                    "retryable": False,
+                    "target_type": "execution_profile",
+                    "target_id": execution_profile.id,
+                    "required_operations": list(
+                        execution_profile.control_plane_operations
+                    ),
+                    "remediation": (
+                        "Enable the assignment-bound control-plane broker or "
+                        "select a profile that does not request brokered "
+                        "control-plane operations."
+                    ),
+                    "remediation_route": "/api/control-plane-broker",
+                },
+            )
         if orchestration_only and execution_profile is not None and not profile_is_orchestration:
             raise TurnExecutionBindingError(
                 "orchestration-only request conflicts with repository execution profile",
