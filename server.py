@@ -7,7 +7,6 @@ from codex_web.observability import install_observability
 from codex_web.runtime import core as _runtime
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.deployment import install_deployment_configuration
-from codex_web.runtime.workers import install_worker_supervisor
 from codex_web.storage.configuration_state import install_configuration_state
 from codex_web.storage.operational_state import install_operational_state
 
@@ -37,10 +36,8 @@ install_bot_runtime(
     telegram_client=_application.app.state.telegram_client,
 )
 
-# The executable entrypoint owns lifecycle supervision. The active Codex,
-# autonomy and bot integration implementations are already present on the
-# compatibility host.
-install_worker_supervisor(_application.app, _runtime)
+# Lifecycle supervision is composed once in application.py through
+# RuntimeSupervisor. The server module is only a CLI/compatibility edge.
 
 
 if __name__ == "__main__":
