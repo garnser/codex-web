@@ -199,6 +199,7 @@ class LegacyProjectMigrationService:
     def _authority_difference(
         settings: ThreadRunSettings,
         *,
+        current_sandbox: str | None,
         proposed_sandbox: str | None,
         proposed_profile: str | None,
         proposed_repository_key: str | None,
@@ -206,7 +207,7 @@ class LegacyProjectMigrationService:
         summary: list[str] = []
         material = False
         approval = False
-        if settings.sandbox == "danger-full-access":
+        if current_sandbox == "danger-full-access":
             # A legacy native thread may have had materially broader host authority
             # than current contained danger-full-access. Never claim equivalence
             # unless canonical repository/profile scope was already explicit.
@@ -233,11 +234,11 @@ class LegacyProjectMigrationService:
             summary.append(
                 "Mutable repository authority becomes explicit and project-scoped."
             )
-        if settings.sandbox and proposed_sandbox and settings.sandbox != proposed_sandbox:
+        if current_sandbox and proposed_sandbox and current_sandbox != proposed_sandbox:
             material = True
             approval = True
             summary.append(
-                f"Sandbox changes from {settings.sandbox} to {proposed_sandbox}."
+                f"Sandbox changes from {current_sandbox} to {proposed_sandbox}."
             )
         return AuthorityDifference(
             material_change=material,
@@ -391,6 +392,7 @@ class LegacyProjectMigrationService:
         proposed_sandbox = current_sandbox or "workspace-write"
         difference = self._authority_difference(
             settings,
+            current_sandbox=current_sandbox,
             proposed_sandbox=proposed_sandbox,
             proposed_profile=proposed_profile,
             proposed_repository_key=(proposed_repo.key if proposed_repo else None),
@@ -570,19 +572,6 @@ class LegacyProjectMigrationService:
         compatibility_window_seconds: int = 7 * 24 * 60 * 60,
         fail_after_operations: int | None = None,
     ) -> LegacyMigrationExecution:
-        current = self.plan(plan.project_id, actor=actor)
-        if current.id != plan.id:
-            raise LegacyProjectMigrationPlanStale(
-                "migration plan is stale; run dry-run again before apply"
-            )
-        if plan.blockers:
-            raise LegacyProjectMigrationBlocked(
-                "migration has blocked thread mappings: " + ", ".join(plan.blockers)
-            )
-        if plan.requires_approval and not approve_material_authority_changes:
-            raise LegacyProjectMigrationApprovalRequired(
-                "material authority changes require explicit operator approval"
-            )
         if compatibility_window_seconds < 0:
             raise LegacyProjectMigrationError(
                 "compatibility window must be zero or positive"
@@ -599,6 +588,33 @@ class LegacyProjectMigrationService:
             ),
             None,
         )
+        if existing is None:
+            current = self.plan(plan.project_id, actor=actor)
+            if current.id != plan.id:
+                raise LegacyProjectMigrationPlanStale(
+                    "migration plan is stale; run dry-run again before apply"
+                )
+            if plan.blockers:
+                raise LegacyProjectMigrationBlocked(
+                    "migration has blocked thread mappings: "
+                    + ", ".join(plan.blockers)
+                )
+            if (
+                plan.requires_approval
+                and not approve_material_authority_changes
+            ):
+                raise LegacyProjectMigrationApprovalRequired(
+                    "material authority changes require explicit operator approval"
+                )
+        elif (
+            plan.requires_approval
+            and existing.approved_by is None
+            and not approve_material_authority_changes
+        ):
+            raise LegacyProjectMigrationApprovalRequired(
+                "material authority changes require explicit operator approval"
+            )
+
         now = self.clock()
         execution = existing or LegacyMigrationExecution(
             plan_id=plan.id,
@@ -616,6 +632,9 @@ class LegacyProjectMigrationService:
             created_at=now,
             updated_at=now,
         )
+        if approve_material_authority_changes and execution.approved_by is None:
+            execution.approved_by = actor.identity_id
+            execution.approved_at = now
         if execution.status == MigrationApplyStatus.APPLIED:
             return execution
 
