@@ -192,7 +192,7 @@ test("turn completion is visible with zero HTTP revalidation and measured latenc
 });
 
 test("Thread selection is one bounded detail request", async ({ page }) => {
-  await page.route("**/api/threads/thread-1", async (route) => {
+  await page.route("**/api/threads/thread-1?**", async (route) => {
     await route.fulfill({
       json: {
         thread: {
