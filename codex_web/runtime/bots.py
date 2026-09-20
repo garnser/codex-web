@@ -457,6 +457,13 @@ class BotRuntime:
                     int(stats.get("processed", 0)) + 1
                 )
             except asyncio.CancelledError:
+                stats = self.slack_payload_stats.get(
+                    connection.id,
+                    {},
+                )
+                stats["cancelled"] = (
+                    int(stats.get("cancelled", 0)) + 1
+                )
                 raise
             except Exception as exc:
                 stats = self.slack_payload_stats[connection.id]
