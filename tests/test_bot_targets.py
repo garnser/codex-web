@@ -104,6 +104,62 @@ class BotTargetServiceTests(unittest.TestCase):
             "thread-1",
         )
 
+    def test_remember_targets_use_keyed_writes_without_full_registry_load(self) -> None:
+        host = _TargetHost()
+        reply_loads = 0
+        delivery_loads = 0
+
+        def load_reply_targets():
+            nonlocal reply_loads
+            reply_loads += 1
+            return {}
+
+        def load_delivery_targets():
+            nonlocal delivery_loads
+            delivery_loads += 1
+            return {}
+
+        service = BotTargetService(
+            load_reply_targets=load_reply_targets,
+            save_reply_targets=lambda _targets: None,
+            load_delivery_targets=load_delivery_targets,
+            save_delivery_targets=lambda _targets: None,
+            load_active_turns=host._load_active_turns,
+            bindings_for_project=host._bindings_for_project,
+            put_reply_target=host.reply_targets.__setitem__,
+            put_delivery_target=host.delivery_targets.__setitem__,
+        )
+        binding = _binding("b1", thread_id="thread-1")
+        message = BotInboundMessage(
+            provider="slack",
+            external_conversation_id="C1",
+            text="hello",
+            external_thread_id="111.22",
+            message_id="111.22",
+        )
+
+        service.remember_reply_target(binding, message)
+        service.remember_delivery_target(
+            binding,
+            {
+                "sent": True,
+                "providerResponse": {"ts": "222.33"},
+            },
+        )
+
+        self.assertEqual(reply_loads, 0)
+        self.assertEqual(delivery_loads, 0)
+        self.assertIn("slack:C1:thread-1", host.reply_targets)
+        self.assertIn(
+            "slack:C1:external:111.22",
+            host.reply_targets,
+        )
+        self.assertIn("slack:C1:thread-1", host.delivery_targets)
+        self.assertIn(
+            "slack:C1:external:222.33",
+            host.delivery_targets,
+        )
+
     def test_active_target_wins_outbound_selection(self) -> None:
         host = _TargetHost()
         service = _service(host)
