@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import hashlib
 import time
 from typing import Any
 
@@ -16,6 +18,9 @@ class BotChannelDiscoveryService:
     """Own known/discovered conversation channels and their bounded cache."""
 
     CACHE_SECONDS = 300.0
+    NEGATIVE_CACHE_SECONDS = 60.0
+    MAX_METADATA_CONCURRENCY = 8
+    DEFAULT_RATE_LIMIT_SECONDS = 30.0
 
     def __init__(
         self,
@@ -32,6 +37,9 @@ class BotChannelDiscoveryService:
         self.slack = slack_client
         self.secret_broker = secret_broker
         self.cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self.negative_cache: dict[tuple[str, str], float] = {}
+        self.cooldowns: dict[str, float] = {}
+        self.discovery_metrics: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def channel_label(channel_id: str, name: str | None = None) -> str:
@@ -61,6 +69,36 @@ class BotChannelDiscoveryService:
             field,
             None,
         )
+
+    @classmethod
+    def _credential_group_key(
+        cls,
+        connection: BotConnection,
+    ) -> str | None:
+        identity = cls._credential_identity(connection, "bot_token")
+        if not identity:
+            return None
+        return hashlib.sha256(str(identity).encode()).hexdigest()
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> float | None:
+        response = getattr(exc, "response", None)
+        if response is None or getattr(response, "status_code", None) != 429:
+            return None
+        headers = getattr(response, "headers", {})
+        value = headers.get("Retry-After") if headers is not None else None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def status(self, project_id: str | None = None) -> dict[str, Any]:
+        if project_id is not None:
+            return dict(self.discovery_metrics.get(project_id, {}))
+        return {
+            key: dict(value)
+            for key, value in self.discovery_metrics.items()
+        }
 
     async def _with_credential(
         self,
