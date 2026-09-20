@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import HTTPException
@@ -11,8 +12,26 @@ from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 
 
 class RuntimeService:
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        static_version: Callable[[], str] | None = None,
+        runtime_health: Callable[[], dict[str, Any]] | None = None,
+    ) -> None:
         self.host = host
+        self.static_version = (
+            static_version
+            or getattr(host, "_static_version", lambda: "unknown")
+        )
+        self.runtime_health = (
+            runtime_health
+            or getattr(
+                host,
+                "_daemon_health",
+                lambda: {"ok": True, "problems": []},
+            )
+        )
         # Preserve the historical direct-call health/recovery entrypoints without
         # retaining duplicate implementations in the legacy runtime.
         host.healthz = self.healthz
@@ -27,14 +46,14 @@ class RuntimeService:
             "ok": self.host.codex.ready.is_set(),
             "pid": self.host.codex.proc.pid if self.host.codex.proc else None,
             "error": None if self.host.codex.ready.is_set() else self.host.codex.last_error,
-            "version": self.host._static_version(),
+            "version": self.static_version(),
             "pendingApprovals": list(self.host.codex.pending_approvals.values()),
             "activeTurns": len(self.host._load_active_turns()),
             "queuedTurns": sum(len(items) for items in self.host._load_turn_queues().values()),
         }
 
     def health(self) -> dict[str, Any]:
-        return self.host._daemon_health()
+        return self.runtime_health()
 
     async def healthz(self) -> dict[str, Any]:
         health = self.health()
@@ -127,7 +146,7 @@ class RuntimeService:
 
         supervisor = getattr(getattr(h.app, "state", None), "runtime_supervisor", None)
         supervisor_tasks = supervisor.task_status() if supervisor is not None else {}
-        health = h._daemon_health()
+        health = self.runtime_health()
 
         return {
             "generatedAt": now,
