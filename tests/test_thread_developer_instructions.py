@@ -440,6 +440,11 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
             patch.object(server, "_thread_run_settings", return_value=remembered),
             patch.object(server, "_work_item_contract_instructions", return_value="contract"),
             patch.object(server, "_remember_thread_run_settings") as remember,
+            patch.object(
+                execution_service,
+                "_select_runtime_binding",
+                new=AsyncMock(return_value=None),
+            ),
             patch.object(execution_service.binding_service, "prepare", return_value=binding),
             patch.object(execution_service.session_manager, "start", new=AsyncMock(return_value=session)),
             patch.object(execution_service, "mark_thread_active"),

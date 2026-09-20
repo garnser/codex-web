@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from codex_web import application
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.models import Project, QueuedTurn, ThreadRunSettings, TurnCreate
+from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.turns import TurnService
+from codex_web.storage.execution_preflight import ExecutionPreflightStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 def _path_tags(path: str) -> set[str]:
@@ -155,6 +168,9 @@ class _Execution:
     def thread_is_active(self, thread_id):
         return self.active
 
+    def active_execution_id(self, thread_id):
+        return getattr(self, "active_execution", None)
+
     async def start_thread_turn_now(self, thread_id, **kwargs):
         return {"turn": {"id": "turn-1"}}
 
@@ -181,6 +197,48 @@ class _Execution:
 
     async def request_for_thread(self, thread_id, method, params=None):
         return {}
+
+
+class _PreflightBlockingExecution(_Execution):
+    def __init__(self, queue_policy: _QueuePolicy) -> None:
+        super().__init__(queue_policy)
+        self.active = False
+        self.blocked = True
+        self.start_calls = []
+
+    async def start_thread_turn_now(self, thread_id, **kwargs):
+        self.start_calls.append((thread_id, kwargs))
+        if self.blocked:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "execution_preflight_blocked",
+                    "message": "worker command execution is unavailable",
+                    "blockers": [
+                        {
+                            "code": "worker_capability_missing",
+                            "message": (
+                                "worker command execution is unavailable"
+                            ),
+                            "retryable": False,
+                            "remediation": "Repair the execution worker.",
+                        }
+                    ],
+                    "retryable": False,
+                },
+            )
+        return {"turn": {"id": "turn-retried"}}
+
+
+def _admin_actor() -> AuthenticationActor:
+    return AuthenticationActor(
+        identity_id="admin",
+        principal_kind=PrincipalKind.HUMAN,
+        organization_id="local",
+        workspace_id="default",
+        roles=(MembershipRole.ADMIN,),
+        assurance=AuthenticationAssurance.MFA,
+    )
 
 
 class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -257,6 +315,137 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             queue.queued[0].read_only_repository_resource_ids,
             ("repo-docs",),
+        )
+
+    async def test_preflight_failure_is_retained_and_retry_reuses_execution_id(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        queue = _QueuePolicy()
+        queue.queued = []
+        execution = _PreflightBlockingExecution(queue)
+        preflight = ExecutionPreflightService(
+            ExecutionPreflightStore(
+                SQLiteStateStore(Path(temp.name) / "state.sqlite3")
+            )
+        )
+        service = TurnService(
+            projects=_Projects(),
+            settings=_Settings(),
+            recovery=_Recovery(),
+            resume_runtime=_Resume(),
+            bindings=_Bindings(),
+            queue_policy=queue,
+            execution=execution,
+            event_sink=lambda _event: None,
+            truncate_text=lambda value, limit: str(value)[:limit],
+            binding_public=lambda binding: binding.model_dump(),
+            preflight=preflight,
+        )
+        actor = _admin_actor()
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start(
+                "thread-1",
+                TurnCreate(message="apply fix", project_id="home"),
+                actor=actor,
+                execution_id="thread-turn-retained",
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        detail = caught.exception.detail
+        self.assertEqual(detail["code"], "execution_preflight_blocked")
+        self.assertTrue(detail["retainedMessage"])
+        attempt_id = detail["attemptId"]
+        retained = preflight.get(attempt_id, actor=actor)
+        self.assertEqual(retained.message, "apply fix")
+        self.assertEqual(retained.execution_id, "thread-turn-retained")
+        self.assertEqual(retained.status, "blocked")
+
+        execution.blocked = False
+        retried = await service.retry_preflight(
+            "thread-1",
+            attempt_id,
+            actor=actor,
+        )
+
+        self.assertEqual(retried["result"]["turn"]["id"], "turn-retried")
+        self.assertEqual(retried["attempt"]["status"], "started")
+        self.assertEqual(len(execution.start_calls), 2)
+        self.assertEqual(
+            execution.start_calls[-1][1]["execution_id"],
+            "thread-turn-retained",
+        )
+
+        duplicate = await service.retry_preflight(
+            "thread-1",
+            attempt_id,
+            actor=actor,
+        )
+        self.assertTrue(duplicate["alreadyStarted"])
+        self.assertEqual(len(execution.start_calls), 2)
+
+    async def test_retry_recovers_same_active_execution_without_duplicate_dispatch(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        queue = _QueuePolicy()
+        queue.queued = []
+        execution = _PreflightBlockingExecution(queue)
+        preflight = ExecutionPreflightService(
+            ExecutionPreflightStore(
+                SQLiteStateStore(Path(temp.name) / "state.sqlite3")
+            )
+        )
+        service = TurnService(
+            projects=_Projects(),
+            settings=_Settings(),
+            recovery=_Recovery(),
+            resume_runtime=_Resume(),
+            bindings=_Bindings(),
+            queue_policy=queue,
+            execution=execution,
+            event_sink=lambda _event: None,
+            truncate_text=lambda value, limit: str(value)[:limit],
+            binding_public=lambda binding: binding.model_dump(),
+            preflight=preflight,
+        )
+        actor = _admin_actor()
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start(
+                "thread-1",
+                TurnCreate(message="apply fix", project_id="home"),
+                actor=actor,
+                execution_id="thread-turn-recovered",
+            )
+        attempt_id = caught.exception.detail["attemptId"]
+        self.assertEqual(len(execution.start_calls), 1)
+
+        execution.active = True
+        execution.active_execution = "thread-turn-recovered"
+        result = await service.retry_preflight(
+            "thread-1",
+            attempt_id,
+            actor=actor,
+        )
+
+        self.assertTrue(result["alreadyStarted"])
+        self.assertTrue(result["recoveredActiveExecution"])
+        self.assertEqual(result["attempt"]["status"], "started")
+        self.assertEqual(len(execution.start_calls), 1)
+        self.assertEqual(queue.queued, [])
+
+    def test_preflight_routes_are_owned_by_turn_domain(self) -> None:
+        self.assertIn(
+            "turns",
+            _path_tags(
+                "/api/threads/{thread_id}/preflight-attempts"
+            ),
+        )
+        self.assertIn(
+            "turns",
+            _path_tags(
+                "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry"
+            ),
         )
 
     def test_queue_snapshot_is_presentational(self) -> None:

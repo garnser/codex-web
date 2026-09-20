@@ -12,7 +12,7 @@ from codex_web.configuration import (
 )
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
-from codex_web.execution_workspaces import LeaseMode
+from codex_web.execution_workspaces import LeaseMode, WorkspaceQuota
 from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
     ExecutionWorkerRegister,
@@ -475,12 +475,17 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(len(self.backend.provisioned), 1)
 
     def test_missing_credential_configuration_fails_before_workspace_creation(self) -> None:
-        with self.assertRaisesRegex(
-            TurnExecutionBindingError,
-            "credential reference configuration is unavailable",
-        ):
+        with self.assertRaises(TurnExecutionBindingError) as caught:
             self._prepare()
 
+        self.assertEqual(
+            caught.exception.code,
+            "credential_reference_missing",
+        )
+        self.assertIn(
+            "credential reference configuration is unavailable",
+            str(caught.exception),
+        )
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
@@ -496,14 +501,224 @@ class TurnExecutionBindingTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        with self.assertRaisesRegex(
-            TurnExecutionBindingError,
-            "repository_target_ambiguous",
-        ):
+        with self.assertRaises(TurnExecutionBindingError) as caught:
             self._prepare()
 
+        self.assertEqual(
+            caught.exception.code,
+            "repository_target_ambiguous",
+        )
+        self.assertEqual(
+            caught.exception.public()["code"],
+            "repository_target_ambiguous",
+        )
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_unbound_explicit_repository_is_typed_as_unauthorized(self) -> None:
+        self._publish_secret()
+        unbound = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Unbound repository",
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-unbound",
+                execution_id="exec-unbound",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                explicit_repository_id=unbound.id,
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "repository_target_unauthorized",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_workspace_quota_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        limited_workspaces = ExecutionWorkspaceService(
+            ExecutionWorkspaceStateStore(self.sqlite),
+            self.backend,
+            self.resources,
+            lambda project_id: self.projects.get(project_id),
+            quota=WorkspaceQuota(max_requested_disk_bytes=1),
+        )
+        service = TurnExecutionBindingService(
+            self.configuration,
+            self.projects,
+            self.resources,
+            limited_workspaces,
+            self.workers,
+            control_actor=self.actor,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+            ),
+            runtime_credential_configs={
+                ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+            },
+            execution_profiles=self.execution_profiles,
+            clock=lambda: self.clock,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            service.prepare(
+                thread_id="thread-quota",
+                execution_id="exec-quota",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "quota_or_capacity_blocked",
+        )
+        self.assertEqual(limited_workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_workspace_backend_failure_is_typed_before_assignment_creation(self) -> None:
+        self._publish_secret()
+        original = self.backend.provision_git
+
+        def fail_provision(*_args, **_kwargs):
+            raise RuntimeError("fixture workspace provisioning failed")
+
+        self.backend.provision_git = fail_provision
+        try:
+            with self.assertRaises(TurnExecutionBindingError) as caught:
+                self.service.prepare(
+                    thread_id="thread-workspace-failure",
+                    execution_id="exec-workspace-failure",
+                    project_id=self.project.id,
+                    sandbox="workspace-write",
+                    approval_policy="on-request",
+                )
+        finally:
+            self.backend.provision_git = original
+
+        self.assertEqual(
+            caught.exception.code,
+            "workspace_provisioning_blocked",
+        )
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+        failed = self.workspaces.list(self.actor)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0].status.value, "error")
+
+    def test_missing_control_plane_broker_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        service = TurnExecutionBindingService(
+            self.configuration,
+            self.projects,
+            self.resources,
+            self.workspaces,
+            self.workers,
+            control_actor=self.actor,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+            ),
+            runtime_credential_configs={
+                ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+            },
+            execution_profiles=self.execution_profiles,
+            control_plane_available=lambda: False,
+            clock=lambda: self.clock,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            service.prepare(
+                thread_id="thread-orchestration",
+                execution_id="exec-orchestration",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="orchestration-only",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "control_plane_scope_missing",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_unknown_execution_profile_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-profile",
+                execution_id="exec-profile",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="does-not-exist",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "execution_profile_incompatible",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_unsupported_sandbox_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-sandbox",
+                execution_id="exec-sandbox",
+                project_id=self.project.id,
+                sandbox="unsupported",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "sandbox_profile_unsupported",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_conflicting_write_lease_is_typed_and_creates_no_second_assignment(self) -> None:
+        self._publish_secret()
+        first = self.service.prepare(
+            thread_id="thread-first",
+            execution_id="exec-first",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-second",
+                execution_id="exec-second",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(len(self.workspaces.list(self.actor)), 1)
+        self.assertEqual(
+            self.workspaces.list(self.actor)[0].id,
+            first.workspace_id,
+        )
+        self.assertEqual(len(self.workers.list_assignments(self.actor)), 1)
 
     def test_explicit_repository_target_is_persisted(self) -> None:
         self._publish_secret()
@@ -621,12 +836,14 @@ class TurnExecutionBindingTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        with self.assertRaisesRegex(
-            TurnExecutionBindingError,
-            "no active canonical repository resource",
-        ):
+        with self.assertRaises(TurnExecutionBindingError) as caught:
             self._prepare()
 
+        self.assertEqual(caught.exception.code, "repository_target_missing")
+        self.assertIn(
+            "no active canonical repository resource",
+            str(caught.exception),
+        )
         self.assertEqual(self.workspaces.list(self.actor), [])
 
     def test_existing_execution_with_different_controls_fails_closed(self) -> None:
