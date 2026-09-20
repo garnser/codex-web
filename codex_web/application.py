@@ -1652,7 +1652,7 @@ bot_state = BotStateRepositories(
 )
 app.state.bot_state_repositories = bot_state
 # Transitional aliases for unextracted bot services. The authoritative mutable
-# state lives in BotStateRepositories rather than legacy_core.
+# state lives canonically in BotStateRepositories.
 core._load_bot_connections = bot_state.connections.load
 core._save_bot_connections = bot_state.connections.save
 core._load_bot_bindings = bot_state.bindings.load
@@ -2072,7 +2072,7 @@ provider_capacity_service.register_resume_handler(
 )
 
 # Bot provider runtime is composed from explicit domain owners. Compatibility
-# aliases written to legacy_core are output-only and are not read by these
+# compatibility aliases are output-only and are not read by these
 # services after construction.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
@@ -2685,7 +2685,7 @@ app.state.runtime_diagnostics_service = runtime_diagnostics_service
 app.state.operator_ui_service = operator_ui_service
 
 # Output-only compatibility aliases. Implementations live in extracted
-# services; legacy_core only receives names for historical direct callers.
+# services; the compatibility namespace serves historical direct callers.
 core._static_version = static_asset_version_service.version
 
 def _compat_daemon_health():
