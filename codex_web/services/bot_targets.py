@@ -7,14 +7,26 @@ from codex_web.models import BotBinding, BotInboundMessage, BotReplyTarget
 
 
 class BotTargetService:
-    """Own reply/delivery target selection independently from runtime.core."""
+    """Own reply/delivery target selection over explicit state collaborators."""
 
-    def __init__(self, host: Any) -> None:
-        self.host = host
-
-    def _compat(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
-        """Use a host override when installed, otherwise keep standalone use valid."""
-        return getattr(self.host, name, fallback)
+    def __init__(
+        self,
+        *,
+        load_reply_targets: Callable[[], dict[str, BotReplyTarget]],
+        save_reply_targets: Callable[[dict[str, BotReplyTarget]], None],
+        load_delivery_targets: Callable[[], dict[str, BotReplyTarget]],
+        save_delivery_targets: Callable[[dict[str, BotReplyTarget]], None],
+        load_active_turns: Callable[[], dict[str, Any]],
+        bindings_for_project: Callable[[str, str], list[BotBinding]],
+        should_reply_in_external_thread: Callable[[BotBinding], bool],
+    ) -> None:
+        self.load_reply_targets = load_reply_targets
+        self.save_reply_targets = save_reply_targets
+        self.load_delivery_targets = load_delivery_targets
+        self.save_delivery_targets = save_delivery_targets
+        self.load_active_turns = load_active_turns
+        self.bindings_for_project = bindings_for_project
+        self.should_reply_in_external_thread = should_reply_in_external_thread
 
     @staticmethod
     def reply_target_key(binding: BotBinding) -> str:
@@ -37,8 +49,7 @@ class BotTargetService:
     def remember_reply_target(self, binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
         if not message.external_thread_id and not message.message_id:
             return None
-        h = self.host
-        targets = h._load_bot_reply_targets()
+        targets = self.load_reply_targets()
         target = BotReplyTarget(
             thread_id=binding.thread_id,
             provider=binding.provider,
@@ -51,11 +62,11 @@ class BotTargetService:
         for external_id in {message.external_thread_id, message.message_id}:
             if external_id:
                 targets[self.external_target_key(binding.provider, binding.external_conversation_id, external_id)] = target
-        h._save_bot_reply_targets(targets)
+        self.save_reply_targets(targets)
         return target
 
     def reply_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
-        targets = self.host._load_bot_reply_targets()
+        targets = self.load_reply_targets()
         target = targets.get(self.reply_target_key(binding)) or targets.get(binding.thread_id)
         if not target:
             return None
@@ -64,7 +75,7 @@ class BotTargetService:
         return target
 
     def delivery_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
-        targets = self.host._load_bot_delivery_targets()
+        targets = self.load_delivery_targets()
         target = targets.get(self.reply_target_key(binding)) or targets.get(binding.thread_id)
         if not target:
             return None
@@ -73,7 +84,7 @@ class BotTargetService:
         return target
 
     def active_reply_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
-        active = self.host._load_active_turns().get(binding.thread_id)
+        active = self.load_active_turns().get(binding.thread_id)
         target = active.reply_target if active else None
         if not target:
             return None
@@ -82,7 +93,7 @@ class BotTargetService:
         return target
 
     def active_reply_target_for_thread_provider(self, thread_id: str, provider: str) -> BotReplyTarget | None:
-        active = self.host._load_active_turns().get(thread_id)
+        active = self.load_active_turns().get(thread_id)
         target = active.reply_target if active else None
         if target and target.provider == provider:
             return target
@@ -98,8 +109,8 @@ class BotTargetService:
             return None
         normalized_provider = provider.lower()
         for targets in (
-            self.host._load_bot_reply_targets(),
-            self.host._load_bot_delivery_targets(),
+            self.load_reply_targets(),
+            self.load_delivery_targets(),
         ):
             direct = targets.get(
                 self.external_target_key(normalized_provider, external_conversation_id, external_thread_id)
@@ -118,7 +129,7 @@ class BotTargetService:
         ts = response.get("ts")
         if not delivery.get("sent") or not ts:
             return
-        targets = self.host._load_bot_delivery_targets()
+        targets = self.load_delivery_targets()
         target = BotReplyTarget(
             thread_id=binding.thread_id,
             provider=binding.provider,
@@ -129,21 +140,20 @@ class BotTargetService:
         )
         targets[self.reply_target_key(binding)] = target
         targets[self.external_target_key(binding.provider, binding.external_conversation_id, str(ts))] = target
-        self.host._save_bot_delivery_targets(targets)
+        self.save_delivery_targets(targets)
 
     def master_reply_target_for_binding(self, binding: BotBinding) -> BotReplyTarget | None:
         if binding.is_master:
             return None
-        h = self.host
         candidates = [
             candidate
-            for candidate in h._bindings_for_project(binding.provider, binding.project_id)
+            for candidate in self.bindings_for_project(binding.provider, binding.project_id)
             if candidate.is_master and candidate.external_conversation_id == binding.external_conversation_id
         ]
         candidates.sort(key=lambda candidate: (candidate.updated_at, candidate.created_at), reverse=True)
-        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
-        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
-        delivery_for = self._compat("_delivery_target_for_binding", self.delivery_target_for_binding)
+        active_for = self.active_reply_target_for_binding
+        reply_for = self.reply_target_for_binding
+        delivery_for = self.delivery_target_for_binding
         for candidate in candidates:
             # Keep the host-level compatibility seam intact. Existing consumers
             # and tests can replace one target source without replacing the
@@ -158,11 +168,10 @@ class BotTargetService:
         binding: BotBinding,
         reply_in_thread: bool | None = None,
     ) -> tuple[BotReplyTarget | None, bool]:
-        h = self.host
-        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
-        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
-        master_for = self._compat("_master_reply_target_for_binding", self.master_reply_target_for_binding)
-        delivery_for = self._compat("_delivery_target_for_binding", self.delivery_target_for_binding)
+        active_for = self.active_reply_target_for_binding
+        reply_for = self.reply_target_for_binding
+        master_for = self.master_reply_target_for_binding
+        delivery_for = self.delivery_target_for_binding
 
         active_target = active_for(binding)
         if active_target:
@@ -170,7 +179,7 @@ class BotTargetService:
 
         own_target = reply_for(binding)
         if own_target:
-            should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            should_thread = self.should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             return own_target, should_thread
 
         master_target = master_for(binding)
@@ -179,21 +188,17 @@ class BotTargetService:
 
         delivery_target = delivery_for(binding)
         if delivery_target:
-            should_thread = h._should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            should_thread = self.should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
             if should_thread:
                 return delivery_target, True
 
         return None, False if reply_in_thread is None else reply_in_thread
 
     def outbound_bindings_for_thread(self, thread_id: str, bindings: list[BotBinding]) -> list[BotBinding]:
-        h = self.host
-        targets = h._load_bot_reply_targets()
-        active_provider_for = self._compat(
-            "_active_reply_target_for_thread_provider",
-            self.active_reply_target_for_thread_provider,
-        )
-        active_for = self._compat("_active_reply_target_for_binding", self.active_reply_target_for_binding)
-        reply_for = self._compat("_reply_target_for_binding", self.reply_target_for_binding)
+        targets = self.load_reply_targets()
+        active_provider_for = self.active_reply_target_for_thread_provider
+        active_for = self.active_reply_target_for_binding
+        reply_for = self.reply_target_for_binding
 
         def score(binding: BotBinding) -> tuple[int, float, int, float]:
             active_target = active_provider_for(binding.thread_id, binding.provider)
@@ -206,7 +211,7 @@ class BotTargetService:
                     binding.updated_at,
                 )
             target = targets.get(self.reply_target_key(binding))
-            target_score = target.updated_at if (target and h._should_reply_in_external_thread(binding)) else 0
+            target_score = target.updated_at if (target and self.should_reply_in_external_thread(binding)) else 0
             return (
                 1 if target_score else 0,
                 target_score,
@@ -239,8 +244,8 @@ class BotTargetService:
 
     def forget_reply_target(self, thread_id: str) -> None:
         for loader, saver in (
-            (self.host._load_bot_reply_targets, self.host._save_bot_reply_targets),
-            (self.host._load_bot_delivery_targets, self.host._save_bot_delivery_targets),
+            (self.load_reply_targets, self.save_reply_targets),
+            (self.load_delivery_targets, self.save_delivery_targets),
         ):
             targets = loader()
             removed = False
@@ -265,17 +270,35 @@ class BotTargetService:
                 rewritten[next_key] = target
             return rewritten
 
-        self.host._save_bot_reply_targets(rewrite(self.host._load_bot_reply_targets()))
-        self.host._save_bot_delivery_targets(rewrite(self.host._load_bot_delivery_targets()))
+        self.save_reply_targets(rewrite(self.load_reply_targets()))
+        self.save_delivery_targets(rewrite(self.load_delivery_targets()))
 
 
-def install_bot_target_service(app: Any, host: Any) -> BotTargetService:
-    existing = getattr(app.state, "bot_target_service", None)
-    if isinstance(existing, BotTargetService) and existing.host is host:
-        service = existing
-    else:
-        service = BotTargetService(host)
-        app.state.bot_target_service = service
+def install_bot_target_service(
+    app: Any,
+    host: Any,
+    *,
+    load_reply_targets: Callable[[], dict[str, BotReplyTarget]] | None = None,
+    save_reply_targets: Callable[[dict[str, BotReplyTarget]], None] | None = None,
+    load_delivery_targets: Callable[[], dict[str, BotReplyTarget]] | None = None,
+    save_delivery_targets: Callable[[dict[str, BotReplyTarget]], None] | None = None,
+    load_active_turns: Callable[[], dict[str, Any]] | None = None,
+    bindings_for_project: Callable[[str, str], list[BotBinding]] | None = None,
+    should_reply_in_external_thread: Callable[[BotBinding], bool] | None = None,
+) -> BotTargetService:
+    service = BotTargetService(
+        load_reply_targets=load_reply_targets or host._load_bot_reply_targets,
+        save_reply_targets=save_reply_targets or host._save_bot_reply_targets,
+        load_delivery_targets=load_delivery_targets or host._load_bot_delivery_targets,
+        save_delivery_targets=save_delivery_targets or host._save_bot_delivery_targets,
+        load_active_turns=load_active_turns or host._load_active_turns,
+        bindings_for_project=bindings_for_project or host._bindings_for_project,
+        should_reply_in_external_thread=(
+            should_reply_in_external_thread
+            or host._should_reply_in_external_thread
+        ),
+    )
+    app.state.bot_target_service = service
 
     host._reply_target_key = service.reply_target_key
     host._external_target_key = service.external_target_key
