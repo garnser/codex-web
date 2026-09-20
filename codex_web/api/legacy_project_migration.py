@@ -111,6 +111,35 @@ def build_legacy_project_migration_router(
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 
+    @router.delete(
+        "/api/projects/{project_id}/legacy-migration/path-compatibility"
+    )
+    async def revoke_path_compatibility(
+        project_id: str,
+        path: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            revoked = service.revoke_legacy_path(
+                project_id,
+                path,
+                actor=actor,
+            )
+            return {
+                "project_id": project_id,
+                "path": path,
+                "revoked": len(revoked),
+                "items": [
+                    item.model_dump(mode="json")
+                    for item in revoked
+                ],
+            }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        except LegacyProjectMigrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.get("/api/legacy-migration/path-compatibility")
     async def path_compatibility(
         path: str,
