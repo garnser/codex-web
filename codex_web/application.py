@@ -2467,8 +2467,8 @@ core._static_version = static_asset_version_service.version
 
 def _compat_daemon_health():
     compatibility_health = RuntimeHealthService(
-        codex=codex_runtime,
-        bot_runtime=bot_runtime,
+        codex=getattr(core, "codex", codex_runtime),
+        bot_runtime=getattr(core, "bot_runtime", bot_runtime),
         telemetry=bot_runtime_telemetry,
         load_bindings=bot_state.bindings.load,
         terminal_failures=getattr(
