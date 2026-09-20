@@ -565,6 +565,12 @@ class TurnExecutionService:
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and self._active_turn(thread_id) is not None)
 
+    def active_execution_id(self, thread_id: str | None) -> str | None:
+        if not thread_id:
+            return None
+        active = self._active_turn(thread_id)
+        return active.execution_id if active is not None else None
+
     def _bootstrap_binding_for_thread(self, thread_id: str):
         service = self.bootstrap_bindings
         actor = self.control_actor
