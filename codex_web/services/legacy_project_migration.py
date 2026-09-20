@@ -225,12 +225,15 @@ class LegacyProjectMigrationService:
                 )
         if settings.execution_profile_id != proposed_profile:
             material = True
+            approval = True
             summary.append(
                 f"Execution profile changes from "
                 f"{settings.execution_profile_id or 'legacy/unprofiled'} to "
                 f"{proposed_profile or 'none'}."
             )
         if settings.repository_resource_id is None and proposed_repository_key:
+            material = True
+            approval = True
             summary.append(
                 "Mutable repository authority becomes explicit and project-scoped."
             )
@@ -389,7 +392,11 @@ class LegacyProjectMigrationService:
                     ),
                 )
 
-        proposed_sandbox = current_sandbox or "workspace-write"
+        proposed_sandbox = (
+            "workspace-write"
+            if proposed_profile == "orchestration-only"
+            else (current_sandbox or "workspace-write")
+        )
         difference = self._authority_difference(
             settings,
             current_sandbox=current_sandbox,
