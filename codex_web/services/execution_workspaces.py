@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +15,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceEvent,
     ExecutionWorkspaceInspection,
     ExecutionWorkspaceKind,
+    ExecutionWorkspaceMember,
     ExecutionWorkspaceLease,
     ExecutionWorkspaceReference,
     ExecutionWorkspaceRelease,
@@ -29,7 +31,7 @@ from codex_web.execution_workspaces import (
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.models import Project
-from codex_web.resources import ResourceType
+from codex_web.resources import Resource, ResourceType
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
@@ -113,28 +115,101 @@ class ExecutionWorkspaceService:
         if workspace.owner_identity_id != actor.identity_id and not self._admin(actor):
             raise AuthorizationError("execution workspace owner or administrator required")
 
+    @staticmethod
+    def _repository_source_path(
+        resource: Resource,
+        project: Project,
+        *,
+        allow_project_fallback: bool,
+    ) -> Path:
+        project_root = Path(project.path).resolve(strict=True)
+        aliases = [
+            alias
+            for alias in resource.aliases
+            if alias.namespace.casefold()
+            in {"filesystem", "path", "repository-path", "legacy"}
+        ]
+        for alias in aliases:
+            raw = alias.value.strip()
+            if not raw or raw.startswith("~"):
+                continue
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                resolved = candidate.resolve(strict=True)
+            else:
+                resolved = (project_root / candidate).resolve(strict=True)
+                if not resolved.is_relative_to(project_root):
+                    raise ExecutionWorkspaceConflictError(
+                        "relative repository source escapes canonical project root"
+                    )
+            if resolved.is_dir():
+                return resolved
+        if allow_project_fallback:
+            return project_root
+        raise ExecutionWorkspaceConflictError(
+            f"repository resource {resource.id} has no canonical filesystem source alias"
+        )
+
     def _resource_set(
         self,
         request: ExecutionWorkspaceAcquire,
         actor: AuthenticationActor,
-    ):
-        resources = [self.resources.get(resource_id, actor) for resource_id in request.resource_ids]
+    ) -> tuple[list[Resource], str | None, tuple[str, ...]]:
+        resources = [
+            self.resources.get(resource_id, actor)
+            for resource_id in request.resource_ids
+        ]
+        by_id = {item.id: item for item in resources}
         repository_resource_id = request.repository_resource_id
-        repositories = [item for item in resources if item.resource_type == ResourceType.REPOSITORY]
+        repositories = [
+            item for item in resources
+            if item.resource_type == ResourceType.REPOSITORY
+        ]
         if repository_resource_id is None and len(repositories) == 1:
             repository_resource_id = repositories[0].id
         if repository_resource_id is not None:
-            repository = next(
-                (item for item in resources if item.id == repository_resource_id),
-                None,
-            )
+            repository = by_id.get(repository_resource_id)
             if repository is None:
-                raise ResourceNotFoundError("repository resource is outside requested resource set")
+                raise ResourceNotFoundError(
+                    "repository resource is outside requested resource set"
+                )
             if repository.resource_type != ResourceType.REPOSITORY:
                 raise ExecutionWorkspaceConflictError(
                     "repository_resource_id must reference a canonical repository resource"
                 )
-        return resources, repository_resource_id
+
+        read_only_repository_ids = tuple(request.read_only_repository_ids)
+        for resource_id in read_only_repository_ids:
+            resource = by_id.get(resource_id)
+            if resource is None:
+                raise ResourceNotFoundError(
+                    "read-only repository is outside requested resource set"
+                )
+            if resource.resource_type != ResourceType.REPOSITORY:
+                raise ExecutionWorkspaceConflictError(
+                    "read-only repository context must reference repository resources"
+                )
+            if resource_id == repository_resource_id:
+                raise ExecutionWorkspaceConflictError(
+                    "mutable repository cannot also be read-only context"
+                )
+        return resources, repository_resource_id, read_only_repository_ids
+
+    @staticmethod
+    def _readonly_member_workspace_id(
+        workspace_id: str,
+        resource_id: str,
+    ) -> str:
+        suffix = hashlib.sha256(resource_id.encode()).hexdigest()[:12]
+        return f"{workspace_id}-readonly-{suffix}"
+
+    @staticmethod
+    def _readonly_sandbox_path(resource_id: str) -> str:
+        safe = "".join(
+            character if character.isalnum() or character in "-._" else "-"
+            for character in resource_id
+        ).strip("-._")
+        return f"/mnt/codex-context/{safe or 'repository'}"
 
     def _existing(self, workspace_id: str, actor: AuthenticationActor) -> ExecutionWorkspace | None:
         item = next(
@@ -161,6 +236,7 @@ class ExecutionWorkspaceService:
             kind=workspace.kind,
             status=workspace.status,
             resource_ids=workspace.resource_ids,
+            repository_members=workspace.repository_members,
             path=workspace.path,
             branch_name=workspace.branch_name,
             base_revision=workspace.base_revision,
