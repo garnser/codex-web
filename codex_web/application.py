@@ -45,6 +45,7 @@ from codex_web.api.execution_workspaces import build_execution_workspaces_router
 from codex_web.api.execution_workers import build_execution_workers_router
 from codex_web.api.integrations import build_integrations_router
 from codex_web.api.incidents import build_incidents_router
+from codex_web.api.legacy_project_migration import build_legacy_project_migration_router
 from codex_web.api.goals import build_goals_router
 from codex_web.api.metrics import build_metrics_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
@@ -230,6 +231,7 @@ from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
+from codex_web.services.legacy_project_migration import LegacyProjectMigrationService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import (
     install_gitlab_compatibility,
@@ -367,6 +369,7 @@ from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.incidents import IncidentStore
+from codex_web.storage.legacy_project_migration import LegacyProjectMigrationStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -1899,6 +1902,21 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     ),
     binding_report_name=bot_presentation_service.binding_report_name,
     binding_prefix=bot_presentation_service.binding_prefix,
+)
+
+legacy_project_migration_store = LegacyProjectMigrationStore(state_store)
+legacy_project_migration_service = LegacyProjectMigrationService(
+    projects=project_service,
+    resources=resource_catalog_service,
+    thread_settings=thread_execution_settings_service,
+    load_threads=thread_index_repository.load,
+    load_bindings=bot_state.bindings.load,
+    store=legacy_project_migration_store,
+)
+app.state.legacy_project_migration_store = legacy_project_migration_store
+app.state.legacy_project_migration_service = legacy_project_migration_service
+app.include_router(
+    build_legacy_project_migration_router(legacy_project_migration_service)
 )
 
 turn_execution_service = install_turn_execution_service(

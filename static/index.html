@@ -264,6 +264,32 @@
                   <div id="resource-catalog-status" class="form-result" aria-live="polite">Open to load canonical resources.</div>
                   <div id="resource-catalog-list" class="comm-log"></div>
                 </div>
+                <div class="developer-card" id="legacy-project-migration-panel">
+                  <div class="section-title">
+                    <h2>Legacy Project Migration</h2>
+                    <button id="dry-run-legacy-migration" type="button" class="ghost-button">Dry run</button>
+                  </div>
+                  <div class="route-test">
+                    <label>Project <select id="legacy-migration-project"></select></label>
+                    <label>Compatibility window <select id="legacy-migration-window">
+                      <option value="0">None</option>
+                      <option value="86400">1 day</option>
+                      <option value="604800" selected>7 days</option>
+                      <option value="2592000">30 days</option>
+                    </select></label>
+                    <label><input id="legacy-migration-approve-authority" type="checkbox" /> Approve material authority changes</label>
+                    <button id="apply-legacy-migration" type="button" class="ghost-button" disabled>Apply plan</button>
+                  </div>
+                  <div id="legacy-migration-status" class="form-result" aria-live="polite">Run dry-run to inspect migration.</div>
+                  <div class="section-title"><span>Repository proposals</span></div>
+                  <div id="legacy-migration-repositories" class="comm-log"></div>
+                  <div class="section-title"><span>Thread/profile conversions</span></div>
+                  <div id="legacy-migration-threads" class="comm-log"></div>
+                  <details>
+                    <summary>Rollback / compatibility boundary</summary>
+                    <div id="legacy-migration-rollback" class="form-result"></div>
+                  </details>
+                </div>
                 <div class="developer-card">
                   <div class="section-title">
                     <h2>Identity & Sessions</h2>
@@ -1225,6 +1251,7 @@
     <script src="static/configuration_management.js" type="module"></script>
     <script src="static/execution_worker_admin.js" type="module"></script>
     <script src="static/control_plane_broker_admin.js" type="module"></script>
+    <script src="static/legacy_project_migration_admin.js" type="module"></script>
     <script src="static/execution_worker_management.js" type="module"></script>
     <script src="static/execution_workspace_admin.js" type="module"></script>
     <script src="static/artifact_evidence_admin.js" type="module"></script>
