@@ -604,27 +604,14 @@ class WorkItemService:
         )
 
     def schedule_task_source_writeback(self, state: Any) -> Any:
-        """Compatibility scheduler backed by provider-neutral write-back."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return state
-        snapshot = state.model_copy(deep=True) if hasattr(state, "model_copy") else state
+        """Coalesce authoritative-source writeback by external task identity."""
+        return self.task_source_writeback.schedule(
+            state,
+            event_sink=self.event_sink,
+        )
 
-        async def run() -> None:
-            try:
-                await self.task_source_writeback.sync(snapshot)
-            except Exception as exc:
-                self.event_sink(
-                    {
-                        "type": "task_source_writeback_failed",
-                        "ref": getattr(snapshot, "ref", None),
-                        "error": str(exc)[:500],
-                    }
-                )
-
-        loop.create_task(run())
-        return state
+    def task_source_writeback_status(self) -> dict[str, Any]:
+        return self.task_source_writeback.status()
 
     async def list(
         self,
