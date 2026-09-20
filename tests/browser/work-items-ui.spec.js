@@ -34,7 +34,7 @@ async function installCommonRoutes(page) {
   await page.route("**/api/secrets", async (route) => {
     await route.fulfill({ json: { items: [] } });
   });
-  await page.route("**/api/work-items/*/operator", async (route) => {
+  await page.route("**/api/work-items/**/operator", async (route) => {
     const ref = decodeURIComponent(route.request().url().split("/api/work-items/")[1].split("/operator")[0]);
     await route.fulfill({
       json: {
