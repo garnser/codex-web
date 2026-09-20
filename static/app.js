@@ -5,6 +5,7 @@ import{activateProject,initialProjectId}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
+import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
 
 const state = {
   projects: [],
@@ -920,28 +921,6 @@ function clearMessages() {
   state.activeAgentMessage = null;
 }
 
-function coerceMessageDate(value) {
-  if (!value) return null;
-  if (typeof value === "number") {
-    return new Date(value > 1_000_000_000_000 ? value : value * 1000);
-  }
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function messageTimestamp(...candidates) {
-  for (const candidate of candidates) {
-    const date = coerceMessageDate(candidate);
-    if (date) return date;
-  }
-  return new Date();
-}
-
-function formatMessageTimestamp(value) {
-  const date = coerceMessageDate(value) || new Date();
-  return date.toLocaleString();
-}
-
 function truncateCommandOutput(text, limit = 60000) {
   const value = String(text || "");
   if (value.length <= limit) return value;
@@ -954,7 +933,7 @@ function commandPreview(command) {
   return value.replace(/\s+/g, " ");
 }
 
-function itemTimestamp(item = {}, turn = {}) {
+, turn = {}) {
   return messageTimestamp(
     item.createdAt,
     item.created_at,
