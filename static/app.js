@@ -1,4 +1,4 @@
-import * as executionProfileControls from "./execution_profile_controls.js";
+import * as ep from "./execution_profile_controls.js";
 
 const state = {
   projects: [],
@@ -253,7 +253,7 @@ function currentRunSettings() {
   return {
     sandbox: saved.sandbox || project?.sandbox || "workspace-write",
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
-    executionProfileId: saved.executionProfileId || executionProfileControls.defaultId(),
+    executionProfileId: saved.executionProfileId || ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
@@ -331,9 +331,8 @@ function applyRunSettings() {
   const settings = currentRunSettings();
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
-  if ($("execution-profile")) $("execution-profile").value = settings.executionProfileId;
   if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
-  executionProfileControls.render(settings.executionProfileId, escapeHtml);
+  ep.render(settings.executionProfileId, escapeHtml);
 }
 
 function persistRunSettings() {
@@ -343,7 +342,7 @@ function persistRunSettings() {
   allSettings[project.id] = {
     sandbox: $("sandbox").value,
     approvalPolicy: $("approval-policy").value,
-    executionProfileId: $("execution-profile")?.value || executionProfileControls.defaultId(),
+    executionProfileId: $("execution-profile")?.value || ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
@@ -1183,7 +1182,7 @@ async function refresh() {
     const [projects, projectResources, _executionProfiles, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
       api("/api/projects"),
       api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
-      executionProfileControls.load(state.projectId),
+      ep.load(state.projectId),
       api("/api/bots/bindings"),
       api("/api/thread-settings"),
       api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
@@ -1447,7 +1446,7 @@ async function newThread() {
     approval_policy: settings.approvalPolicy,
   });
   qs.set("execution_profile_id", settings.executionProfileId);
-  if (settings.repositoryResourceId && !executionProfileControls.isScratch(settings.executionProfileId)) {
+  if (settings.repositoryResourceId && !ep.isScratch(settings.executionProfileId)) {
     qs.set("repository_resource_id", settings.repositoryResourceId);
   }
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
@@ -1502,7 +1501,7 @@ async function sendPrompt() {
     execution_profile_id: (
       selectedThreadSettings.execution_profile_id
       || runSettings.executionProfileId
-      || executionProfileControls.defaultId()
+      || ep.defaultId()
     ),
   };
   try {
@@ -2442,7 +2441,7 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
 }));
 $("execution-profile").addEventListener("change", () => {
   persistRunSettings();
-  executionProfileControls.render(currentRunSettings().executionProfileId, escapeHtml);
+  ep.render(currentRunSettings().executionProfileId, escapeHtml);
   renderRepositoryTargets();
 });
 $("repository-target").addEventListener("change", () => {
