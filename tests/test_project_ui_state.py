@@ -274,7 +274,7 @@ class ProjectUiStateTests(unittest.IsolatedAsyncioTestCase):
             100_000,
         )
         self.assertEqual(profiles.calls, 1)
-        self.assertIs(resources.last_actor.organization_id, "org-a")
+        self.assertEqual(resources.last_actor.organization_id, "org-a")
         self.assertEqual(payload["meta"]["contractVersion"], 1)
         self.assertIn("bindings", payload["meta"]["sectionVersions"])
         self.assertIn("threads", payload["meta"]["sectionVersions"])
