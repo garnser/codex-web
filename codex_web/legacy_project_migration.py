@@ -4,7 +4,7 @@ import time
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
 from codex_web.models import SandboxMode
@@ -97,24 +97,21 @@ class LegacyMigrationPlan(BaseModel):
     repositories: tuple[LegacyRepositoryProposal, ...] = ()
     threads: tuple[LegacyThreadProposal, ...] = ()
     blockers: tuple[str, ...] = ()
+    requires_approval: bool = False
+    summary: dict[str, int] = Field(default_factory=dict)
     rollback_boundary: str = (
         "Dry-run is fully reversible. After canonical Resources/bindings or thread "
         "execution settings are applied, rollback is compensating-only; native Codex "
         "thread history/IDs are never rewritten by this migration."
     )
 
-    @computed_field
-    @property
-    def requires_approval(self) -> bool:
-        return any(
+    @model_validator(mode="after")
+    def classify(self) -> "LegacyMigrationPlan":
+        requires_approval = any(
             item.disposition == MigrationDisposition.APPROVAL_REQUIRED
             for item in self.threads
         )
-
-    @computed_field
-    @property
-    def summary(self) -> dict[str, int]:
-        return {
+        summary = {
             "converted": sum(
                 item.disposition == MigrationDisposition.CONVERT
                 for item in self.threads
@@ -132,6 +129,9 @@ class LegacyMigrationPlan(BaseModel):
                 for item in self.threads
             ),
         }
+        object.__setattr__(self, "requires_approval", requires_approval)
+        object.__setattr__(self, "summary", summary)
+        return self
 
 
 class LegacyMigrationExecution(BaseModel):
