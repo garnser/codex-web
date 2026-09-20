@@ -27,11 +27,11 @@ Screenshots document UX; they are not security evidence.
 | Broker operations are tenant/project scoped and fenced | test_project_scope_stale_fence_and_revoked_identity_fail_closed |
 | Broker read/handoff uses canonical authority and audit | test_authorized_read_and_handoff_use_exact_role_authority |
 | No reusable administrator credential is exposed | test_no_reusable_broker_or_admin_credential_is_exposed plus reference-only binding tests |
-| Repository/task/model content cannot grant authority | security-boundary untrusted-task and model-self-authorization tests |
+| Repository/task/model content cannot grant authority | security-boundary untrusted-task/model tests plus test_preserved_thread_content_cannot_grant_migration_authority |
 | Legacy danger-full-access conversion is not silently equivalent | test_danger_full_access_requires_explicit_authority_approval |
 | Legacy thread and bot binding identities survive migration | test_orchestrator_preserves_thread_and_bot_binding_without_git_target |
 | Interrupted migration resumes without duplicate Resources | test_partial_apply_resumes_without_duplicate_resources |
-| Compatibility mappings expire truthfully | test_compatibility_mapping_expires_truthfully |
+| Compatibility mappings are observable, time-bounded, and removable | test_compatibility_mapping_expires_truthfully and test_compatibility_mapping_can_be_revoked_early_with_provenance |
 | Retained structural blockers survive reload | tests/test_execution_preflight.py::test_blocked_attempt_survives_store_and_service_reload |
 | Repeated retry clicks/replays do not duplicate execution | execution-preflight claim tests and TurnService retry tests |
 | Crash recovery does not redispatch an already-active retained execution | TurnService recovered-active execution retry test |
