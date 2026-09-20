@@ -336,6 +336,54 @@ class SQLiteStateStoreTests(unittest.TestCase):
                 "updated",
             )
 
+    def test_record_page_is_bounded_and_prefix_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteStateStore(Path(tmp) / "codex-web.db")
+            store.record_replace(
+                "targets",
+                {
+                    **{
+                        f"slack:C1:external:{index:04d}": {"value": index}
+                        for index in range(250)
+                    },
+                    **{
+                        f"slack:C2:external:{index:04d}": {"value": index}
+                        for index in range(25)
+                    },
+                },
+            )
+
+            first, cursor = store.record_page(
+                "targets",
+                key_prefix="slack:C1:external:",
+                limit=100,
+            )
+            self.assertEqual(len(first), 100)
+            self.assertIsNotNone(cursor)
+            self.assertTrue(
+                all(key.startswith("slack:C1:external:") for key in first)
+            )
+
+            second, second_cursor = store.record_page(
+                "targets",
+                key_prefix="slack:C1:external:",
+                after=cursor,
+                limit=100,
+            )
+            third, third_cursor = store.record_page(
+                "targets",
+                key_prefix="slack:C1:external:",
+                after=second_cursor,
+                limit=100,
+            )
+            self.assertEqual(len(second), 100)
+            self.assertEqual(len(third), 50)
+            self.assertIsNone(third_cursor)
+            self.assertEqual(
+                len(set(first) | set(second) | set(third)),
+                250,
+            )
+
     def test_keyed_mutation_and_mirror_metrics_are_separate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
