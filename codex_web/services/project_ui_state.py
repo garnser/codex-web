@@ -196,6 +196,39 @@ class ProjectUiStateService:
         truncated = len(ordered) > cls.MAX_CHANNELS
         return ordered[: cls.MAX_CHANNELS], truncated
 
+    def binding_state(
+        self,
+        project_id: str,
+        *,
+        actor: AuthenticationActor,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        project = self.projects.get(project_id, actor.tenant)
+        bindings, truncated = self._visible_bindings(
+            project.id,
+            {thread_id},
+        )
+        channels, channels_truncated = self._bounded_channels(
+            [],
+            bindings,
+        )
+        return {
+            "projectId": project.id,
+            "threadId": thread_id,
+            "bindings": {
+                "items": bindings,
+                "truncated": truncated,
+                "limit": self.MAX_BINDINGS,
+                "version": self._version(bindings),
+            },
+            "channels": {
+                "items": channels,
+                "truncated": channels_truncated,
+                "limit": self.MAX_CHANNELS,
+                "version": self._version(channels),
+            },
+        }
+
     async def state(
         self,
         project_id: str,
