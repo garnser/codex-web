@@ -434,6 +434,8 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
+        execution_profile_id: str | None = None,
+        execution_role_id: str | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -446,6 +448,27 @@ class TurnExecutionBindingService:
 
         project = self._project(project_id)
         effective_runtime_binding = runtime_binding or self.runtime_binding
+        execution_profile = self._execution_profile(
+            project,
+            execution_profile_id=execution_profile_id,
+            execution_role_id=execution_role_id,
+        )
+        scratch_profile = bool(
+            execution_profile is not None
+            and execution_profile.workspace_mode == "scratch"
+        )
+        if orchestration_only and not scratch_profile:
+            raise TurnExecutionBindingError(
+                "orchestration-only execution requires a canonical scratch profile"
+            )
+        if (
+            execution_profile is not None
+            and sandbox not in execution_profile.allowed_sandboxes
+        ):
+            raise TurnExecutionBindingError(
+                f"execution profile {execution_profile.profile_id} "
+                f"does not allow sandbox {sandbox}"
+            )
         repository_target = self._repository_target(
             project,
             explicit_repository_id=explicit_repository_id,
@@ -454,7 +477,8 @@ class TurnExecutionBindingService:
             work_item_ref=work_item_ref,
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
-            orchestration_only=orchestration_only,
+            orchestration_only=(orchestration_only or scratch_profile),
+            allow_no_mutable_repository=scratch_profile,
         )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
         if existing is not None:
@@ -468,36 +492,72 @@ class TurnExecutionBindingService:
                 execution_contract_version=execution_contract_version,
                 runtime_binding=effective_runtime_binding,
                 repository_target=repository_target,
+                execution_profile=execution_profile,
             )
 
-        repository = self.resources.get(
-            repository_target.mutable_repository_id,
-            self.control_actor,
-        )
         secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
             wall_seconds=session_seconds
         )
         deadline_at = self._clock() + session_seconds
-
-        workspace = self.workspaces.acquire(
-            ExecutionWorkspaceAcquire(
-                subject=subject,
-                execution_id=normalized_execution_id,
-                project_id=project.id,
-                resource_ids=(
-                    repository.id,
-                    *repository_target.read_only_repository_ids,
-                ),
-                repository_resource_id=repository.id,
-                read_only_repository_ids=repository_target.read_only_repository_ids,
-                lease_mode=lease_mode,
-                ttl_seconds=session_seconds,
-                requested_disk_bytes=effective_limits.disk_bytes,
-            ),
-            actor=self.control_actor,
+        required_capabilities = (
+            execution_profile.required_worker_capabilities
+            if execution_profile is not None
+            else (
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            )
         )
+        if execution_profile is not None:
+            try:
+                self.workers.require_compatible_worker(
+                    required_capabilities=required_capabilities,
+                    execution_contract_version=execution_contract_version,
+                    actor=self.control_actor,
+                )
+            except WorkerConflictError as exc:
+                raise TurnExecutionBindingError(
+                    f"execution profile preflight failed: {exc}"
+                ) from exc
+
+        repository = None
+        if scratch_profile:
+            workspace = self.workspaces.acquire(
+                ExecutionWorkspaceAcquire(
+                    subject=subject,
+                    execution_id=normalized_execution_id,
+                    project_id=project.id,
+                    resource_ids=(),
+                    scratch=True,
+                    lease_mode=LeaseMode.READ,
+                    ttl_seconds=session_seconds,
+                    requested_disk_bytes=effective_limits.disk_bytes,
+                ),
+                actor=self.control_actor,
+            )
+        else:
+            repository = self.resources.get(
+                repository_target.mutable_repository_id,
+                self.control_actor,
+            )
+            workspace = self.workspaces.acquire(
+                ExecutionWorkspaceAcquire(
+                    subject=subject,
+                    execution_id=normalized_execution_id,
+                    project_id=project.id,
+                    resource_ids=(
+                        repository.id,
+                        *repository_target.read_only_repository_ids,
+                    ),
+                    repository_resource_id=repository.id,
+                    read_only_repository_ids=repository_target.read_only_repository_ids,
+                    lease_mode=lease_mode,
+                    ttl_seconds=session_seconds,
+                    requested_disk_bytes=effective_limits.disk_bytes,
+                ),
+                actor=self.control_actor,
+            )
 
         assignment = self.workers.create_assignment(
             ExecutionAssignmentCreate(
@@ -507,10 +567,7 @@ class TurnExecutionBindingService:
                 resource_ids=workspace.resource_ids,
                 base_revision=workspace.base_revision,
                 execution_contract_version=execution_contract_version,
-                required_capabilities=(
-                    WorkerCapability.GIT,
-                    WorkerCapability.COMMAND_EXECUTION,
-                ),
+                required_capabilities=required_capabilities,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 network=NetworkPolicy(),
@@ -520,6 +577,7 @@ class TurnExecutionBindingService:
                 execution_workspace_id=workspace.id,
                 runtime_binding=effective_runtime_binding,
                 repository_target=repository_target,
+                execution_profile=execution_profile,
             ),
             actor=self.control_actor,
         )
@@ -532,8 +590,11 @@ class TurnExecutionBindingService:
             workspace_id=workspace.id,
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
-            repository_resource_id=repository.id,
+            repository_resource_id=(
+                repository.id if repository is not None else None
+            ),
             repository_target=repository_target,
+            execution_profile=execution_profile,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
