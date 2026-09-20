@@ -667,6 +667,7 @@ class AssignmentBoundAgentProcessSessionManager:
         session_factory: Callable[..., AssignmentBoundAgentProcessSession] = AssignmentBoundAgentProcessSession,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
@@ -674,6 +675,7 @@ class AssignmentBoundAgentProcessSessionManager:
         self.session_factory = session_factory
         self.watchdog_interval_seconds = watchdog_interval_seconds
         self.egress_endpoints_resolver = egress_endpoints_resolver
+        self.control_plane_broker_factory = control_plane_broker_factory
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
@@ -696,6 +698,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 runtime_factory=self.runtime_factory,
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
                 egress_endpoints_resolver=self.egress_endpoints_resolver,
+                control_plane_broker_factory=self.control_plane_broker_factory,
                 credential_provider=self.credential_provider,
                 runtime_binding=self.runtime_binding,
             )
