@@ -37,6 +37,10 @@ class ExecutionWorkspaceBackend(Protocol):
         base_revision: str | None,
     ) -> GitWorkspaceProvision: ...
 
+    def provision_scratch(self, workspace_id: str) -> Path: ...
+
+    def cleanup_scratch(self, workspace_path: Path) -> None: ...
+
     def cleanup_git(
         self,
         repository_path: Path,
@@ -152,6 +156,17 @@ class LocalGitWorkspaceBackend:
             base_revision=base,
             head_revision=head,
         )
+
+    def provision_scratch(self, workspace_id: str) -> Path:
+        target = (self.root / workspace_id).resolve()
+        if target.exists():
+            raise ExecutionWorkspaceBackendError("execution workspace path already exists")
+        target.mkdir(mode=0o700, parents=False, exist_ok=False)
+        return target
+
+    @staticmethod
+    def cleanup_scratch(workspace_path: Path) -> None:
+        shutil.rmtree(workspace_path.resolve(), ignore_errors=True)
 
     def cleanup_git(
         self,
