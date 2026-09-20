@@ -56,6 +56,16 @@ class ProjectUiStateService:
     def _enum_value(value: Any) -> str:
         return str(getattr(value, "value", value))
 
+    @staticmethod
+    def _version(value: Any) -> str:
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()[:20]
+
     @classmethod
     def _repository_resources(
         cls,
@@ -238,6 +248,27 @@ class ProjectUiStateService:
             bindings,
         )
 
+        section_versions = {
+            "resources": self._version(resources),
+            "threads": str(thread_page.get("revision") or ""),
+            "bindings": self._version(bindings),
+            "threadSettings": self._version(settings),
+            "channels": self._version(channels),
+        }
+        if include_static:
+            section_versions["project"] = self._version(
+                project.model_dump(mode="json")
+            )
+            section_versions["executionProfiles"] = self._version(
+                self.execution_profiles.public(project_id=project.id)
+            )
+
+        execution_profiles = (
+            self.execution_profiles.public(project_id=project.id)
+            if include_static
+            else None
+        )
+
         return {
             "project": (
                 project.model_dump(mode="json")
@@ -262,13 +293,7 @@ class ProjectUiStateService:
                 "limit": self.MAX_CHANNELS,
                 "discovery": self.channels.status(project.id),
             },
-            "executionProfiles": (
-                self.execution_profiles.public(
-                    project_id=project.id
-                )
-                if include_static
-                else None
-            ),
+            "executionProfiles": execution_profiles,
             "meta": {
                 "projectId": project.id,
                 "threadCount": len(thread_rows),
@@ -277,6 +302,8 @@ class ProjectUiStateService:
                 "channelCount": len(channels),
                 "resourceCount": len(resources),
                 "staticIncluded": include_static,
+                "contractVersion": 1,
+                "sectionVersions": section_versions,
             },
         }
 
