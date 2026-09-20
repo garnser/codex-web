@@ -149,19 +149,27 @@ class KeyedTaskCoordinator:
         work: _PendingWork,
     ) -> None:
         scope_semaphore = self._scope_semaphore(work.scope)
-        await self._global_semaphore.acquire()
-        if scope_semaphore is not None:
-            await scope_semaphore.acquire()
-
-        started = time.time()
-        self._last_started_at[key] = started
-        self._metrics["started"] += 1
-        self._running += 1
-        self._max_running = max(
-            self._max_running,
-            self._running,
-        )
+        global_acquired = False
+        scope_acquired = False
+        started: float | None = None
+        running_accounted = False
         try:
+            await self._global_semaphore.acquire()
+            global_acquired = True
+            if scope_semaphore is not None:
+                await scope_semaphore.acquire()
+                scope_acquired = True
+
+            started = time.time()
+            self._last_started_at[key] = started
+            self._metrics["started"] += 1
+            self._running += 1
+            running_accounted = True
+            self._max_running = max(
+                self._max_running,
+                self._running,
+            )
+
             coroutine = work.factory()
             timeout = work.timeout_seconds
             if timeout is not None and timeout > 0:
@@ -185,16 +193,19 @@ class KeyedTaskCoordinator:
             self._last_completed_revision[key] = work.revision
             self._last_error.pop(key, None)
         finally:
-            finished = time.time()
-            self._last_completed_at[key] = finished
-            self._last_duration[key] = max(
-                0.0,
-                finished - started,
-            )
-            self._running = max(0, self._running - 1)
-            if scope_semaphore is not None:
+            if started is not None:
+                finished = time.time()
+                self._last_completed_at[key] = finished
+                self._last_duration[key] = max(
+                    0.0,
+                    finished - started,
+                )
+            if running_accounted:
+                self._running = max(0, self._running - 1)
+            if scope_acquired and scope_semaphore is not None:
                 scope_semaphore.release()
-            self._global_semaphore.release()
+            if global_acquired:
+                self._global_semaphore.release()
 
     async def _run_key(self, key: str) -> None:
         while not self._stopping:
