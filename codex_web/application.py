@@ -2066,6 +2066,14 @@ thread_recovery_service = install_thread_recovery_service(
     terminal_failures=turn_execution_service.terminal_failures,
 )
 
+def _publish_binding_change(event: dict[str, object]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(event_hub.publish(event))
+
+
 bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
     app,
     core,
@@ -2078,6 +2086,7 @@ bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
     projects=project_runtime_service,
     runtime_request=codex_runtime.request,
     set_thread_name=thread_naming_service.set_name,
+    on_change=_publish_binding_change,
 )
 
 thread_bot_collaboration_service = ThreadBotCollaborationService(
