@@ -261,3 +261,62 @@ jobs:
 
           echo 'Container did not become live' >&2
           exit 1
+
+  podman-worker:
+    name: rootless-podman-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install rootless Podman prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+
+      - name: Verify Podman runs rootless
+        shell: bash
+        run: |
+          set -euo pipefail
+          podman info
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = "true"
+
+      - name: Build non-root Bubblewrap probe image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/Containerfile.codex-bwrap <<'EOF'
+          FROM debian:bookworm-slim
+          RUN apt-get update               && apt-get install -y --no-install-recommends bubblewrap               && useradd --uid 1000 --create-home --shell /bin/sh codex               && rm -rf /var/lib/apt/lists/*
+          USER codex
+          EOF
+          podman build             --file /tmp/Containerfile.codex-bwrap             --tag localhost/codex-bwrap-probe:test             /tmp
+
+      - name: Qualify documented Bubblewrap profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          podman run --rm             --security-opt seccomp=unconfined             --security-opt label=disable             localhost/codex-bwrap-probe:test             bwrap               --die-with-parent               --new-session               --unshare-user               --unshare-pid               --unshare-uts               --unshare-ipc               --unshare-net               --ro-bind /usr /usr               --symlink usr/bin /bin               --symlink usr/lib /lib               --proc /proc               --dev /dev               --tmpfs /tmp               -- /bin/true
+
+      - name: Verify incompatible namespace profile fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/deny-bwrap-seccomp.json <<'EOF'
+          {
+            "defaultAction": "SCMP_ACT_ALLOW",
+            "syscalls": [
+              {
+                "names": ["unshare", "mount", "clone", "clone3"],
+                "action": "SCMP_ACT_ERRNO"
+              }
+            ]
+          }
+          EOF
+          if podman run --rm             --security-opt seccomp=/tmp/deny-bwrap-seccomp.json             --security-opt label=disable             localhost/codex-bwrap-probe:test             bwrap               --die-with-parent               --new-session               --unshare-user               --unshare-pid               --unshare-uts               --unshare-ipc               --unshare-net               --ro-bind /usr /usr               --symlink usr/bin /bin               --symlink usr/lib /lib               --proc /proc               --dev /dev               --tmpfs /tmp               -- /bin/true; then
+            echo "Bubblewrap unexpectedly succeeded under the incompatible profile" >&2
+            exit 1
+          fi
+
