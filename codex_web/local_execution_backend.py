@@ -563,13 +563,17 @@ class BubblewrapExecutionBackend:
                 preexec_fn=self._limits_preexec(assignment.limits),
             )
             deadline = started + assignment.limits.wall_seconds
-            disk_bytes = (
-                self._execution_disk_usage(
-                workspace,
-                resolved_git_metadata,
+
+            def current_disk_bytes() -> int:
+                return (
+                    self._execution_disk_usage(
+                        workspace,
+                        resolved_git_metadata,
+                    )
+                    + max(0, int(additional_disk_bytes))
                 )
-                + max(0, int(additional_disk_bytes))
-            )
+
+            disk_bytes = current_disk_bytes()
             while process.poll() is None:
                 if poll_hook is not None:
                     poll_hook()
@@ -579,13 +583,7 @@ class BubblewrapExecutionBackend:
                     limit_breach = "wall_seconds"
                     self._kill_process_group(process)
                     break
-                disk_bytes = (
-                self._execution_disk_usage(
-                    workspace,
-                    resolved_git_metadata,
-                    )
-                + max(0, int(additional_disk_bytes))
-            )
+                disk_bytes = current_disk_bytes()
                 if disk_bytes > assignment.limits.disk_bytes:
                     limit_breach = "disk_bytes"
                     self._kill_process_group(process)
@@ -597,13 +595,7 @@ class BubblewrapExecutionBackend:
                     )
                 )
             exit_code = process.wait()
-            disk_bytes = (
-                self._execution_disk_usage(
-                workspace,
-                resolved_git_metadata,
-                )
-                + max(0, int(additional_disk_bytes))
-            )
+            disk_bytes = current_disk_bytes()
             if limit_breach is None and exit_code < 0:
                 signum = -exit_code
                 if signum == signal.SIGXCPU:
