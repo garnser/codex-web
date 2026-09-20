@@ -37,8 +37,18 @@ from codex_web.services.configuration import (
     ConfigurationService,
 )
 from codex_web.services.execution_profile_definitions import ExecutionProfileDefinitionService
-from codex_web.services.execution_workers import ExecutionWorkerService
-from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.services.execution_workers import (
+    ExecutionWorkerError,
+    ExecutionWorkerService,
+    WorkerConflictError,
+)
+from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceConflictError,
+    ExecutionWorkspaceError,
+    ExecutionWorkspaceLeaseError,
+    ExecutionWorkspaceQuotaError,
+    ExecutionWorkspaceService,
+)
 from codex_web.services.projects import ProjectService
 from codex_web.services.resources import (
     RepositoryTargetSelectionError,
@@ -209,7 +219,16 @@ class TurnExecutionBindingService:
         if self.execution_profiles is None:
             if profile_id:
                 raise TurnExecutionBindingError(
-                    "execution profile resolution is unavailable"
+                    "execution profile resolution is unavailable",
+                    code="execution_profile_incompatible",
+                    blocker={
+                        "code": "execution_profile_incompatible",
+                        "message": "execution profile resolution is unavailable",
+                        "retryable": False,
+                        "target_type": "execution_profile",
+                        "target_id": profile_id,
+                        "remediation_route": "/api/execution-profiles",
+                    },
                 )
             return None, None
         try:
@@ -220,8 +239,18 @@ class TurnExecutionBindingService:
                 project_id=project.id,
             )
         except Exception as exc:
+            target = profile_id or "default"
             raise TurnExecutionBindingError(
-                f"execution profile is unavailable: {profile_id or 'default'}"
+                f"execution profile is unavailable: {target}",
+                code="execution_profile_incompatible",
+                blocker={
+                    "code": "execution_profile_incompatible",
+                    "message": f"execution profile is unavailable: {target}",
+                    "retryable": False,
+                    "target_type": "execution_profile",
+                    "target_id": target,
+                    "remediation_route": "/api/execution-profiles",
+                },
             ) from exc
 
     def _repository_target(
@@ -249,10 +278,36 @@ class TurnExecutionBindingService:
                 orchestration_only=orchestration_only,
             )
         except RepositoryTargetSelectionError as exc:
-            raise TurnExecutionBindingError(f"{exc.code}: {exc}") from exc
+            raise TurnExecutionBindingError(
+                f"{exc.code}: {exc}",
+                code=exc.code,
+                blocker={
+                    "code": exc.code,
+                    "message": str(exc),
+                    "retryable": False,
+                    "target_type": "repository",
+                    "target_id": explicit_repository_id,
+                    "remediation_route": (
+                        f"/api/projects/{project.id}/resources"
+                    ),
+                },
+            ) from exc
         if target.mutable_repository_id is None and not orchestration_only:
             raise TurnExecutionBindingError(
-                "repository execution target requires a mutable repository"
+                "repository execution target requires a mutable repository",
+                code="repository_target_missing",
+                blocker={
+                    "code": "repository_target_missing",
+                    "message": (
+                        "repository execution target requires a mutable repository"
+                    ),
+                    "retryable": False,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": (
+                        f"/api/projects/{project.id}/resources"
+                    ),
+                },
             )
         return target
 
@@ -264,14 +319,41 @@ class TurnExecutionBindingService:
     ) -> str:
         if runtime_binding is None:
             raise TurnExecutionBindingError(
-                "agent runtime binding is required for worker credential selection"
+                "agent runtime binding is required for worker credential selection",
+                code="credential_reference_missing",
+                blocker={
+                    "code": "credential_reference_missing",
+                    "message": (
+                        "agent runtime binding is required for worker "
+                        "credential selection"
+                    ),
+                    "retryable": False,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": "/api/configuration",
+                },
             )
         config_key = self.runtime_credential_configs.get(
             (runtime_binding.provider_id, runtime_binding.runtime_id)
         )
         if not config_key:
             raise TurnExecutionBindingError(
-                "agent runtime has no worker credential reference configuration"
+                "agent runtime has no worker credential reference configuration",
+                code="credential_reference_missing",
+                blocker={
+                    "code": "credential_reference_missing",
+                    "message": (
+                        "agent runtime has no worker credential reference "
+                        "configuration"
+                    ),
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": (
+                        f"{runtime_binding.provider_id}/"
+                        f"{runtime_binding.runtime_id}"
+                    ),
+                    "remediation_route": "/api/configuration",
+                },
             )
         try:
             effective = self.configuration.resolve(
@@ -285,9 +367,24 @@ class TurnExecutionBindingService:
             )
             reference = ConfigurationSecretReference.model_validate(effective.value)
         except (ConfigurationError, ConfigurationNotFoundError, ValueError) as exc:
+            target = (
+                f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}"
+            )
             raise TurnExecutionBindingError(
                 "worker credential reference configuration is unavailable "
-                f"for {runtime_binding.provider_id}/{runtime_binding.runtime_id}"
+                f"for {target}",
+                code="credential_reference_missing",
+                blocker={
+                    "code": "credential_reference_missing",
+                    "message": (
+                        "worker credential reference configuration is "
+                        f"unavailable for {target}"
+                    ),
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": target,
+                    "remediation_route": "/api/configuration",
+                },
             ) from exc
         return reference.secret_id
 
@@ -297,7 +394,18 @@ class TurnExecutionBindingService:
             return LeaseMode.READ
         if sandbox in {"workspace-write", "danger-full-access"}:
             return LeaseMode.WRITE
-        raise TurnExecutionBindingError(f"unsupported sandbox mode: {sandbox}")
+        raise TurnExecutionBindingError(
+            f"unsupported sandbox mode: {sandbox}",
+            code="sandbox_profile_unsupported",
+            blocker={
+                "code": "sandbox_profile_unsupported",
+                "message": f"unsupported sandbox mode: {sandbox}",
+                "retryable": False,
+                "target_type": "sandbox_profile",
+                "target_id": str(sandbox),
+                "remediation_route": "/api/execution-profiles",
+            },
+        )
 
     def _existing_assignment(
         self,
@@ -571,70 +679,160 @@ class TurnExecutionBindingService:
         )
         deadline_at = self._clock() + session_seconds
 
-        if effective_orchestration_only:
-            workspace = self.workspaces.acquire(
-                ExecutionWorkspaceAcquire(
-                    subject=subject,
-                    execution_id=normalized_execution_id,
-                    project_id=project.id,
-                    resource_ids=(),
-                    scratch=True,
-                    lease_mode=lease_mode,
-                    ttl_seconds=session_seconds,
-                    requested_disk_bytes=effective_limits.disk_bytes,
-                ),
-                actor=self.control_actor,
-            )
-        else:
-            if repository_target.mutable_repository_id is None:
-                raise TurnExecutionBindingError(
-                    "repository execution profile requires a mutable repository target"
-                )
-            repository = self.resources.get(
-                repository_target.mutable_repository_id,
-                self.control_actor,
-            )
-            workspace = self.workspaces.acquire(
-                ExecutionWorkspaceAcquire(
-                    subject=subject,
-                    execution_id=normalized_execution_id,
-                    project_id=project.id,
-                    resource_ids=(
-                        repository.id,
-                        *repository_target.read_only_repository_ids,
+        try:
+            if effective_orchestration_only:
+                workspace = self.workspaces.acquire(
+                    ExecutionWorkspaceAcquire(
+                        subject=subject,
+                        execution_id=normalized_execution_id,
+                        project_id=project.id,
+                        resource_ids=(),
+                        scratch=True,
+                        lease_mode=lease_mode,
+                        ttl_seconds=session_seconds,
+                        requested_disk_bytes=effective_limits.disk_bytes,
                     ),
-                    repository_resource_id=repository.id,
-                    read_only_repository_ids=repository_target.read_only_repository_ids,
-                    lease_mode=lease_mode,
-                    ttl_seconds=session_seconds,
-                    requested_disk_bytes=effective_limits.disk_bytes,
+                    actor=self.control_actor,
+                )
+            else:
+                if repository_target.mutable_repository_id is None:
+                    raise TurnExecutionBindingError(
+                        "repository execution profile requires a mutable repository target",
+                        code="repository_target_missing",
+                        blocker={
+                            "code": "repository_target_missing",
+                            "message": (
+                                "repository execution profile requires a "
+                                "mutable repository target"
+                            ),
+                            "retryable": False,
+                            "target_type": "project",
+                            "target_id": project.id,
+                            "remediation_route": (
+                                f"/api/projects/{project.id}/resources"
+                            ),
+                        },
+                    )
+                repository = self.resources.get(
+                    repository_target.mutable_repository_id,
+                    self.control_actor,
+                )
+                workspace = self.workspaces.acquire(
+                    ExecutionWorkspaceAcquire(
+                        subject=subject,
+                        execution_id=normalized_execution_id,
+                        project_id=project.id,
+                        resource_ids=(
+                            repository.id,
+                            *repository_target.read_only_repository_ids,
+                        ),
+                        repository_resource_id=repository.id,
+                        read_only_repository_ids=(
+                            repository_target.read_only_repository_ids
+                        ),
+                        lease_mode=lease_mode,
+                        ttl_seconds=session_seconds,
+                        requested_disk_bytes=effective_limits.disk_bytes,
+                    ),
+                    actor=self.control_actor,
+                )
+        except TurnExecutionBindingError:
+            raise
+        except ExecutionWorkspaceQuotaError as exc:
+            raise TurnExecutionBindingError(
+                str(exc),
+                code="quota_or_capacity_blocked",
+                blocker={
+                    "code": "quota_or_capacity_blocked",
+                    "message": str(exc),
+                    "retryable": True,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": "/api/execution-workspaces",
+                },
+            ) from exc
+        except (ExecutionWorkspaceLeaseError, ExecutionWorkspaceConflictError) as exc:
+            detail = str(exc)
+            code = (
+                "lease_conflict"
+                if "lease" in detail.casefold()
+                else "workspace_provisioning_blocked"
+            )
+            raise TurnExecutionBindingError(
+                detail,
+                code=code,
+                blocker={
+                    "code": code,
+                    "message": detail,
+                    "retryable": code == "lease_conflict",
+                    "target_type": "repository",
+                    "target_id": repository_target.mutable_repository_id,
+                    "remediation_route": "/api/execution-workspaces",
+                },
+            ) from exc
+        except ExecutionWorkspaceError as exc:
+            raise TurnExecutionBindingError(
+                str(exc),
+                code="workspace_provisioning_blocked",
+                blocker={
+                    "code": "workspace_provisioning_blocked",
+                    "message": str(exc),
+                    "retryable": False,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": "/api/execution-workspaces",
+                },
+            ) from exc
+
+        try:
+            assignment = self.workers.create_assignment(
+                ExecutionAssignmentCreate(
+                    subject=subject,
+                    execution_id=normalized_execution_id,
+                    project_id=project.id,
+                    resource_ids=workspace.resource_ids,
+                    base_revision=workspace.base_revision,
+                    execution_contract_version=execution_contract_version,
+                    required_capabilities=required_capabilities,
+                    sandbox=sandbox,
+                    approval_policy=approval_policy,
+                    network=NetworkPolicy(),
+                    limits=effective_limits,
+                    secret_refs=(secret_ref,),
+                    deadline_at=deadline_at,
+                    execution_workspace_id=workspace.id,
+                    runtime_binding=effective_runtime_binding,
+                    repository_target=repository_target,
+                    execution_profile_id=effective_profile_id,
+                    execution_profile_definition=execution_profile_definition,
                 ),
                 actor=self.control_actor,
             )
+        except WorkerConflictError as exc:
+            raise TurnExecutionBindingError(
+                str(exc),
+                code="quota_or_capacity_blocked",
+                blocker={
+                    "code": "quota_or_capacity_blocked",
+                    "message": str(exc),
+                    "retryable": True,
+                    "target_type": "execution_worker",
+                    "remediation_route": "/api/execution-workers",
+                },
+            ) from exc
+        except ExecutionWorkerError as exc:
+            raise TurnExecutionBindingError(
+                str(exc),
+                code="worker_capability_missing",
+                blocker={
+                    "code": "worker_capability_missing",
+                    "message": str(exc),
+                    "retryable": False,
+                    "target_type": "execution_worker",
+                    "remediation_route": "/api/execution-workers/readiness",
+                },
+            ) from exc
 
-        assignment = self.workers.create_assignment(
-            ExecutionAssignmentCreate(
-                subject=subject,
-                execution_id=normalized_execution_id,
-                project_id=project.id,
-                resource_ids=workspace.resource_ids,
-                base_revision=workspace.base_revision,
-                execution_contract_version=execution_contract_version,
-                required_capabilities=required_capabilities,
-                sandbox=sandbox,
-                approval_policy=approval_policy,
-                network=NetworkPolicy(),
-                limits=effective_limits,
-                secret_refs=(secret_ref,),
-                deadline_at=deadline_at,
-                execution_workspace_id=workspace.id,
-                runtime_binding=effective_runtime_binding,
-                repository_target=repository_target,
-                execution_profile_id=effective_profile_id,
-                execution_profile_definition=execution_profile_definition,
-            ),
-            actor=self.control_actor,
-        )
 
         return TurnExecutionBinding(
             thread_id=thread_id,
