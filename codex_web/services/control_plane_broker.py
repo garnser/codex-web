@@ -152,6 +152,7 @@ class ControlPlaneBrokerService:
         authority: AuthorityRoleService,
         work_items: WorkItemService,
         audit: ControlPlaneBrokerAuditStore,
+        operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -159,7 +160,7 @@ class ControlPlaneBrokerService:
         self.identity = identity
         self.authority = authority
         self.work_items = work_items
-        self.operator = WorkItemOperatorService(work_items)
+        self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
