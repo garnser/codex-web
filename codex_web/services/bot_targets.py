@@ -417,7 +417,11 @@ class BotTargetService:
 
         delivery_target = delivery_for(binding, context)
         if delivery_target:
-            should_thread = self.should_reply_in_external_thread(binding) if reply_in_thread is None else reply_in_thread
+            should_thread = (
+                self.should_reply_in_external_thread(binding, context)
+                if reply_in_thread is None
+                else reply_in_thread
+            )
             if should_thread:
                 return delivery_target, True
 
@@ -535,6 +539,23 @@ def install_bot_target_service(
     bindings_for_project: Callable[[str, str], list[BotBinding]] | None = None,
     put_reply_target: Callable[[str, BotReplyTarget], Any] | None = None,
     put_delivery_target: Callable[[str, BotReplyTarget], Any] | None = None,
+    get_reply_target: Callable[
+        [str],
+        BotReplyTarget | None,
+    ] | None = None,
+    get_delivery_target: Callable[
+        [str],
+        BotReplyTarget | None,
+    ] | None = None,
+    get_active_turn: Callable[[str], Any | None] | None = None,
+    page_reply_targets: Callable[
+        ...,
+        tuple[dict[str, BotReplyTarget], str | None],
+    ] | None = None,
+    page_delivery_targets: Callable[
+        ...,
+        tuple[dict[str, BotReplyTarget], str | None],
+    ] | None = None,
 ) -> BotTargetService:
     service = BotTargetService(
         load_reply_targets=load_reply_targets or host._load_bot_reply_targets,
