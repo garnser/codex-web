@@ -2,6 +2,8 @@ import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,initialProjectId}from"./project_context.js";
+import{createLoggedApi}from"./frontend_api.js";
+import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 
 const state = {
   projects: [],
@@ -31,7 +33,8 @@ const state = {
   diagnostics: null,
   refreshTimer: null,
   refreshInFlight: null,
-  refreshQueued: false,
+  refreshController: null,
+  refreshGeneration: 0,
   searchTimer: null,
   commLogRenderPending: false,
   threadReplacements: new Map(),
@@ -164,32 +167,7 @@ function scheduleCommunicationLogRender() {
   });
 }
 
-async function api(path, options = {}) {
-  logEvent("api.request", { path, method: options.method || "GET" });
-  const response = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    logEvent("api.error", { path, status: response.status, text });
-    let detail = null;
-    try {
-      const payload = JSON.parse(text);
-      detail = payload?.detail || payload;
-    } catch {
-      detail = null;
-    }
-    const message = typeof detail === "string" ? detail : (detail?.code || text || response.statusText);
-    const error = new Error(message);
-    error.status = response.status;
-    error.detail = detail;
-    throw error;
-  }
-  const result = await response.json();
-  logEvent("api.response", { path, status: response.status });
-  return result;
-}
+const api=createLoggedApi(logEvent);
 
 const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
@@ -643,129 +621,136 @@ function renderProjects() {
 }
 
 function renderThreads() {
-  $("threads").innerHTML = "";
-  const rawThreads = state.threads?.data || state.threads?.threads || state.threads || [];
-  const primaryThreadIds = new Set(state.botBindings
-    .filter((binding) => binding.project_id === state.projectId && binding.is_master)
-    .map((binding) => binding.thread_id));
-  const threads = [...rawThreads].sort((left, right) => {
-    const primaryDelta = Number(primaryThreadIds.has(right.id)) - Number(primaryThreadIds.has(left.id));
-    if (primaryDelta) return primaryDelta;
-    return (right.updatedAt || 0) - (left.updatedAt || 0);
+  const startedAt=performance.now();
+  const container=$("threads");
+  container.innerHTML="";
+  const rawThreads=state.threads?.data||state.threads?.threads||state.threads||[];
+  const bindingsByThread=new Map();
+  for(const binding of state.botBindings){
+    if(binding.project_id!==state.projectId)continue;
+    const values=bindingsByThread.get(binding.thread_id)||[];
+    values.push(binding);
+    bindingsByThread.set(binding.thread_id,values);
+  }
+  const primaryThreadIds=new Set(
+    [...bindingsByThread.entries()]
+      .filter(([,values])=>values.some((binding)=>binding.is_master))
+      .map(([threadId])=>threadId)
+  );
+  const threads=[...rawThreads].sort((left,right)=>{
+    const primaryDelta=Number(primaryThreadIds.has(right.id))-Number(primaryThreadIds.has(left.id));
+    if(primaryDelta)return primaryDelta;
+    return (right.updatedAt||0)-(left.updatedAt||0);
   });
-  threads.forEach((thread) => {
-    const item = document.createElement("div");
-    const title = thread.name || thread.preview || "Untitled thread";
-    const updated = thread.updatedAt ? new Date(thread.updatedAt * 1000).toLocaleString() : "";
-    const expanded = isItemExpanded("thread", thread.id);
-    const slackIcon = slackIconForThread(thread.id);
-    const slackIconMarkup = slackIcon
-      ? `<span class="slack-thread-icon" title="${escapeHtml(`Slack icon ${slackIcon}`)}" aria-label="${escapeHtml(`Slack icon ${slackIcon}`)}">${escapeHtml(slackIconGlyph(slackIcon))}</span>`
-      : "";
-    const waiting = isThreadBusy(thread.id);
-    const depth = queuedDepth(thread.id);
-    const threadStatus = waiting
-      ? `<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
-      : (depth > 0 ? `<span class="thread-state queued">Queued ${depth}</span>` : "");
-    const isPrimary = primaryThreadIds.has(thread.id);
-    const settings = threadRunSettings(thread.id);
-    const selectedModel = settings.model || "";
-    const selectedReasoningEffort = settings.reasoning_effort || "";
-    const primaryChannel = state.botBindings.find((binding) => (
-      binding.project_id === state.projectId
-      && binding.thread_id === thread.id
-      && binding.is_primary_channel
-    ));
-    const channelOptions = state.botChannels
-      .map((channel) => `<option value="${escapeHtml(`${channel.provider}:${channel.id}`)}" ${primaryChannel?.provider === channel.provider && primaryChannel?.external_conversation_id === channel.id ? "selected" : ""}>${escapeHtml(channel.label || channel.id)}</option>`)
-      .join("");
-    item.className = `item ${thread.id === state.threadId ? "active" : ""} ${expanded ? "expanded" : ""}`;
-    item.innerHTML = `
+
+  threads.forEach((thread)=>{
+    const item=document.createElement("div");
+    const title=thread.name||thread.preview||"Untitled thread";
+    const updated=thread.updatedAt?new Date(thread.updatedAt*1000).toLocaleString():"";
+    const expanded=isItemExpanded("thread",thread.id);
+    const threadBindings=bindingsByThread.get(thread.id)||[];
+    const slackIcon=(threadBindings.find((binding)=>binding.provider==="slack")||threadBindings[0])?.slack_icon||"";
+    const slackIconMarkup=slackIcon
+      ?`<span class="slack-thread-icon" title="${escapeHtml(`Slack icon ${slackIcon}`)}" aria-label="${escapeHtml(`Slack icon ${slackIcon}`)}">${escapeHtml(slackIconGlyph(slackIcon))}</span>`
+      :"";
+    const waiting=isThreadBusy(thread.id);
+    const depth=queuedDepth(thread.id);
+    const threadStatus=waiting
+      ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
+      :(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
+
+    let actionMarkup="";
+    if(expanded){
+      const isPrimary=primaryThreadIds.has(thread.id);
+      const settings=threadRunSettings(thread.id);
+      const selectedModel=settings.model||"";
+      const selectedReasoningEffort=settings.reasoning_effort||"";
+      const primaryChannel=threadBindings.find((binding)=>binding.is_primary_channel);
+      const channelOptions=state.botChannels
+        .map((channel)=>`<option value="${escapeHtml(`${channel.provider}:${channel.id}`)}" ${primaryChannel?.provider===channel.provider&&primaryChannel?.external_conversation_id===channel.id?"selected":""}>${escapeHtml(channel.label||channel.id)}</option>`)
+        .join("");
+      actionMarkup=`
+        <div class="item-actions" aria-label="Thread actions">
+          <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
+          <label class="item-action-select">
+            <span>Model</span>
+            <select data-action="thread-model">${renderModelOptions(selectedModel)}</select>
+          </label>
+          <label class="item-action-select">
+            <span>Reasoning</span>
+            <select data-action="thread-reasoning">${renderReasoningOptions(selectedReasoningEffort)}</select>
+          </label>
+          <label class="item-action-check">
+            <input type="checkbox" data-action="primary" ${isPrimary?"checked":""} />
+            Primary catch-all
+          </label>
+          <label class="item-action-select">
+            <span>Primary channel</span>
+            <select data-action="primary-channel">
+              <option value="">Default</option>
+              ${channelOptions}
+            </select>
+          </label>
+        </div>`;
+    }
+    item.className=`item ${thread.id===state.threadId?"active":""} ${expanded?"expanded":""}`;
+    item.innerHTML=`
       <div class="item-header">
         <div class="item-main">
           <span class="thread-title-line">${slackIconMarkup}<strong>${escapeHtml(title)}</strong></span>
-          <span class="thread-meta-line"><span>${escapeHtml(updated || "No activity yet")}</span>${threadStatus}</span>
+          <span class="thread-meta-line"><span>${escapeHtml(updated||"No activity yet")}</span>${threadStatus}</span>
         </div>
-        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
+        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded?"Hide actions":"Show actions"}">Actions</button>
       </div>
-      <div class="item-actions" aria-label="Thread actions" ${expanded ? "" : "hidden"}>
-        <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
-        <label class="item-action-select">
-          <span>Model</span>
-          <select data-action="thread-model">
-            ${renderModelOptions(selectedModel)}
-          </select>
-        </label>
-        <label class="item-action-select">
-          <span>Reasoning</span>
-          <select data-action="thread-reasoning">
-            ${renderReasoningOptions(selectedReasoningEffort)}
-          </select>
-        </label>
-        <label class="item-action-check">
-          <input type="checkbox" data-action="primary" ${isPrimary ? "checked" : ""} />
-          Primary catch-all
-        </label>
-        <label class="item-action-select">
-          <span>Primary channel</span>
-          <select data-action="primary-channel">
-            <option value="">Default</option>
-            ${channelOptions}
-          </select>
-        </label>
-      </div>
+      ${actionMarkup}
     `;
-    item.querySelector(".item-main").addEventListener("click", () => loadThread(thread.id));
-    item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
+    item.querySelector(".item-main").addEventListener("click",()=>loadThread(thread.id));
+    item.querySelector('[data-action="expand"]').addEventListener("click",(event)=>{
       event.stopPropagation();
-      toggleItemExpanded("thread", thread.id);
+      toggleItemExpanded("thread",thread.id);
       renderThreads();
     });
-    item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
+    item.querySelector('[data-action="bot"]')?.addEventListener("click",(event)=>{
       event.stopPropagation();
-      openBotIntegration({
-        scope: "thread",
-        projectId: state.projectId,
-        threadId: thread.id,
-        title,
+      openBotIntegration({scope:"thread",projectId:state.projectId,threadId:thread.id,title});
+    });
+    item.querySelector('[data-action="thread-model"]')?.addEventListener("change",async(event)=>{
+      event.stopPropagation();
+      await updateThreadRunSettings(thread.id,{model:event.target.value});
+    });
+    item.querySelector('[data-action="thread-reasoning"]')?.addEventListener("change",async(event)=>{
+      event.stopPropagation();
+      await updateThreadRunSettings(thread.id,{reasoning_effort:event.target.value});
+    });
+    item.querySelector('[data-action="primary"]')?.addEventListener("change",async(event)=>{
+      event.stopPropagation();
+      const response=await api(`/api/threads/${thread.id}/primary`,{
+        method:"POST",
+        body:JSON.stringify({primary:event.target.checked,project_id:state.projectId}),
       });
-    });
-    item.querySelector('[data-action="thread-model"]').addEventListener("change", async (event) => {
-      event.stopPropagation();
-      await updateThreadRunSettings(thread.id, { model: event.target.value });
-    });
-    item.querySelector('[data-action="thread-reasoning"]').addEventListener("change", async (event) => {
-      event.stopPropagation();
-      await updateThreadRunSettings(thread.id, { reasoning_effort: event.target.value });
-    });
-    item.querySelector('[data-action="primary"]').addEventListener("change", async (event) => {
-      event.stopPropagation();
-      const response = await api(`/api/threads/${thread.id}/primary`, {
-        method: "POST",
-        body: JSON.stringify({
-          primary: event.target.checked,
-          project_id: state.projectId,
-        }),
-      });
-      state.botBindings = response.bindings || state.botBindings;
+      state.botBindings=response.bindings||state.botBindings;
       await refresh();
     });
-    item.querySelector('[data-action="primary-channel"]').addEventListener("change", async (event) => {
+    item.querySelector('[data-action="primary-channel"]')?.addEventListener("change",async(event)=>{
       event.stopPropagation();
-      const [provider, ...channelParts] = event.target.value.split(":");
-      const channelId = channelParts.join(":") || null;
-      const response = await api(`/api/threads/${thread.id}/primary-channel`, {
-        method: "POST",
-        body: JSON.stringify({
-          project_id: state.projectId,
-          provider: provider || "slack",
-          external_conversation_id: channelId,
+      const [provider,...channelParts]=event.target.value.split(":");
+      const channelId=channelParts.join(":")||null;
+      const response=await api(`/api/threads/${thread.id}/primary-channel`,{
+        method:"POST",
+        body:JSON.stringify({
+          project_id:state.projectId,
+          provider:provider||"slack",
+          external_conversation_id:channelId,
         }),
       });
-      state.botBindings = response.bindings || state.botBindings;
+      state.botBindings=response.bindings||state.botBindings;
       await refresh();
     });
-    $("threads").appendChild(item);
+    container.appendChild(item);
+  });
+  observeRender("threads",startedAt,{
+    rows:threads.length,
+    nodes:container.childElementCount,
   });
 }
 
@@ -1178,33 +1163,45 @@ function renderItem(item, turn = {}) {
 }
 
 async function refresh() {
-  if (state.refreshInFlight) {
-    state.refreshQueued = true;
-    return state.refreshInFlight;
-  }
-  const search = $("thread-search").value.trim();
-  state.refreshInFlight = (async () => {
-    const snapshot = await loadProjectUiState({
+  const generation=state.refreshGeneration+1;
+  state.refreshGeneration=generation;
+  state.refreshController?.abort();
+  const controller=new AbortController();
+  state.refreshController=controller;
+  const projectId=state.projectId;
+  const search=$("thread-search").value.trim();
+  const startedAt=performance.now();
+
+  const task=(async()=>{
+    const snapshot=await loadProjectUiState({
       api,
-      projectId: state.projectId,
+      projectId,
       search,
-      projects: state.projects,
-      models: state.models,
-      cachedStatic: state.projectUiStatic[state.projectId] || null,
-      onModelError: (error) => {
-        logEvent("models.error", { message: error.message });
+      projects:state.projects,
+      models:state.models,
+      cachedStatic:state.projectUiStatic[projectId]||null,
+      signal:controller.signal,
+      onModelError:(error)=>{
+        logEvent("models.error",{message:error.message});
       },
     });
-    state.projects = snapshot.projects;
-    state.models = snapshot.models;
-    state.projectResources = snapshot.resources;
-    state.botBindings = snapshot.bindings;
-    state.threadSettings = snapshot.threadSettings;
-    state.botChannels = snapshot.channels;
-    state.threads = snapshot.threads;
-    if (snapshot.staticState) {
-      state.projectUiStatic[state.projectId] = snapshot.staticState;
-      if (snapshot.staticState.executionProfiles) {
+    if(
+      controller.signal.aborted
+      || generation!==state.refreshGeneration
+      || projectId!==state.projectId
+      || search!==$("thread-search").value.trim()
+    )return;
+
+    state.projects=snapshot.projects;
+    state.models=snapshot.models;
+    state.projectResources=snapshot.resources;
+    state.botBindings=snapshot.bindings;
+    state.threadSettings=snapshot.threadSettings;
+    state.botChannels=snapshot.channels;
+    state.threads=snapshot.threads;
+    if(snapshot.staticState){
+      state.projectUiStatic[projectId]=snapshot.staticState;
+      if(snapshot.staticState.executionProfiles){
         ep.setCatalog(snapshot.staticState.executionProfiles);
       }
     }
@@ -1213,24 +1210,26 @@ async function refresh() {
     applyRunSettings();
     renderGitLabIntegration();
     renderAgentChannelPresence();
-    const threads = (
+    const threads=(
       state.threads?.data
-      || state.threads?.threads
-      || state.threads
-      || []
+      ||state.threads?.threads
+      ||state.threads
+      ||[]
     );
     hydrateThreadListActivity(threads);
     renderProjects();
     renderThreads();
+    markMilestone("project-useful",startedAt);
   })();
-  try {
-    await state.refreshInFlight;
-  } finally {
-    state.refreshInFlight = null;
-    if (state.refreshQueued) {
-      state.refreshQueued = false;
-      scheduleRefresh(100);
-    }
+
+  state.refreshInFlight=task;
+  try{
+    await task;
+  }catch(error){
+    if(error?.name!=="AbortError")throw error;
+  }finally{
+    if(state.refreshInFlight===task)state.refreshInFlight=null;
+    if(state.refreshController===controller)state.refreshController=null;
   }
 }
 
@@ -2467,6 +2466,7 @@ $("save-project").addEventListener("click", async (event) => {
 });
 
 activateProject(state,state.projectId);
+startLongTaskObserver();
 applyTheme(currentTheme());
 setupSidebarControls();
 applySidebarPreference();

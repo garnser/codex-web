@@ -1,4 +1,5 @@
 import { request } from './api_client.js';
+import { observeRender } from './frontend_perf.js';
 
 const PAGE_SIZE = 50;
 const ROW_WINDOW = 60;
@@ -386,6 +387,7 @@ async function syncSource() {
 }
 
 function renderItemList() {
+  const startedAt = performance.now();
   const list = document.querySelector('.work-items-list');
   if (!list) return;
   if (!state.items.length) {
@@ -451,6 +453,10 @@ function renderItemList() {
       state.windowStart = Math.max(0, state.items.length - ROW_WINDOW);
       renderItemList();
     }
+  });
+  observeRender('work-items', startedAt, {
+    rows: visible.length,
+    nodes: list.querySelectorAll('.work-item-row').length,
   });
 }
 
