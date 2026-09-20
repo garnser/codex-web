@@ -147,7 +147,10 @@ from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemet
 from codex_web.services.bot_targets import install_bot_target_service
 from codex_web.services.bot_webhook_security import install_bot_webhook_security_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
-from codex_web.services.bot_event_dispatch import BotEventDispatchService
+from codex_web.services.bot_event_dispatch import (
+    BotEventDispatchCompatibilityFacade,
+    BotEventDispatchService,
+)
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.conversation_channels import (
@@ -2084,6 +2087,13 @@ bot_event_dispatch_service = BotEventDispatchService(
     publish_event=event_hub.publish,
     binding_name=thread_recovery_service.logical_binding_name,
 )
+bot_event_dispatch_compatibility = (
+    BotEventDispatchCompatibilityFacade(core)
+)
+app.state.bot_event_dispatch_compatibility = (
+    bot_event_dispatch_compatibility
+)
+
 canonical_work_item_continuity_service = WorkItemContinuityService(
     policy=runtime_policy,
     get_state=work_item_state_machine._work_item_state,
@@ -2115,7 +2125,9 @@ core._binding_for_agent = agent_channel_preference_service.binding_for_agent
 core._replace_nonperforming_thread_if_needed = (
     bot_event_dispatch_service.replace_nonperforming_thread
 )
-core._dispatch_event_to_binding = bot_event_dispatch_service.dispatch
+core._dispatch_event_to_binding = (
+    bot_event_dispatch_compatibility.dispatch
+)
 core._work_item_dispatch_text = work_item_dispatch_prompt_policy.render
 core._thread_recently_active = bot_event_dispatch_service.thread_recently_active
 core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
