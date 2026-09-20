@@ -660,15 +660,6 @@ class AssignmentBoundControlPlaneBroker:
         causation_id = None
         counted = False
         try:
-            if self._active_requests >= self.limits.max_concurrent_requests:
-                raise ControlPlaneBrokerDeniedError(
-                    "control-plane broker concurrency limit exceeded"
-                )
-            self._active_requests += 1
-            counted = True
-            self._rate_limit()
-            assignment = self._validate_current()
-
             raw_headers = await asyncio.wait_for(
                 reader.readuntil(b"\r\n\r\n"),
                 timeout=10,
@@ -712,6 +703,14 @@ class AssignmentBoundControlPlaneBroker:
                 status = 400
                 raise ControlPlaneBrokerDeniedError("invalid content-length")
             content_length = int(raw_length)
+            if self._active_requests >= self.limits.max_concurrent_requests:
+                raise ControlPlaneBrokerDeniedError(
+                    "control-plane broker concurrency limit exceeded"
+                )
+            self._active_requests += 1
+            counted = True
+            self._rate_limit()
+            assignment = self._validate_current()
             if content_length > self.limits.max_request_bytes:
                 status = 413
                 raise ControlPlaneBrokerDeniedError(
