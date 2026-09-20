@@ -139,7 +139,7 @@ class BotService:
             ),
             "channelDiscovery": (
                 self.channels.status()
-                if self.channels is not None
+                if callable(getattr(self.channels, "status", None))
                 else {}
             ),
         }
