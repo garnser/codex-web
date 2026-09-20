@@ -14,6 +14,9 @@ from codex_web.models import (
     WorkItemProgressUpdate,
     WorkItemState,
 )
+from codex_web.services.work_item_dependencies import (
+    WorkItemRuntimeDependencies,
+)
 from codex_web.services.work_item_transitions import WorkItemTransitionService
 from codex_web.storage.state_store import StateStore
 
@@ -23,14 +26,21 @@ class WorkItemStateMachine:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         _legacy_provider: Any | None = None,
         *,
         store: StateStore | None = None,
+        dependencies: WorkItemRuntimeDependencies | None = None,
     ) -> None:
-        # The optional second argument is retained temporarily for constructor
-        # compatibility. Canonical state no longer owns provider transports.
-        self.host = host
+        # host is accepted only for historical direct construction.
+        # Production composition supplies the scoped dependency contract.
+        if dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "WorkItemStateMachine requires work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(host)
+        self.dependencies = dependencies
         self.store = store
         self.transitions = WorkItemTransitionService()
 
@@ -48,8 +58,8 @@ class WorkItemStateMachine:
             )
         # Keep the historical JSONL mirror for rollback/forensics. The shared
         # StateStore document above is authoritative in shared deployments.
-        self.host.DATA_DIR.mkdir(exist_ok=True)
-        with self.host.WORK_ITEM_EVENTS_FILE.open("a", encoding="utf-8") as handle:
+        self.dependencies.data_dir.mkdir(exist_ok=True)
+        with self.dependencies.events_file.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
     def _work_item_event(
@@ -145,11 +155,11 @@ class WorkItemStateMachine:
     def _ensure_work_item_lane_defaults(self, state: WorkItemState) -> WorkItemState:
         state.validation_owner = (
             self._coerce_owner(state.validation_owner)
-            or self.host.DEFAULT_VALIDATION_OWNER
+            or self.dependencies.default_validation_owner
         )
         state.release_owner = (
             self._coerce_owner(state.release_owner)
-            or self.host.DEFAULT_RELEASE_OWNER
+            or self.dependencies.default_release_owner
         )
         if not self._coerce_owner(state.implementation_owner):
             candidates = (
@@ -161,7 +171,7 @@ class WorkItemStateMachine:
                 owner = self._coerce_owner(candidate)
                 if (
                     owner
-                    and owner not in self.host.NON_IMPLEMENTATION_OWNERS
+                    and owner not in self.dependencies.non_implementation_owners
                     and owner
                     not in {
                         self._coerce_owner(state.validation_owner),
@@ -370,7 +380,7 @@ class WorkItemStateMachine:
         canonical_status = self._derived_status_label_for_work_item(state)
         current_owner = self._coerce_owner(state.current_owner)
         next_owner = self._coerce_owner(state.next_owner)
-        action_owner = self.host._leading_owner_cue_in_action(state.next_action)
+        action_owner = self.dependencies.leading_owner_cue_in_action(state.next_action)
         if canonical_status != state.status_label:
             findings.append(
                 f"status drift: canonical={canonical_status or 'none'} "
@@ -721,7 +731,7 @@ class WorkItemStateMachine:
         return state
 
     def _work_item_state(self, ref: str) -> WorkItemState:
-        states = self.host._load_work_item_states()
+        states = self.dependencies.load_states()
         state = states.get(ref)
         if state is None:
             raise HTTPException(status_code=404, detail="Work item state not found")
@@ -730,7 +740,7 @@ class WorkItemStateMachine:
     def _save_work_item_state(self, state: WorkItemState) -> WorkItemState:
         states = self.host._load_work_item_states()
         states[state.ref] = state
-        self.host._save_work_item_states(states)
+        self.dependencies.save_states(states)
         return state
 
     def bind_provenance(
@@ -1045,7 +1055,11 @@ def install_work_item_state_machine(
     existing = getattr(app.state, "work_item_state_machine", None)
     if existing is not None:
         return existing
-    machine = WorkItemStateMachine(host, store=store)
+    machine = WorkItemStateMachine(
+        host,
+        store=store,
+        dependencies=dependencies,
+    )
     app.state.work_item_state_machine = machine
     host._append_work_item_event = machine._append_work_item_event
     host._work_item_event = machine._work_item_event
