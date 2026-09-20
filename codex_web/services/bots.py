@@ -137,6 +137,11 @@ class BotService:
             "runtimeStatus": list(
                 self.telemetry.snapshot().values()
             ),
+            "channelDiscovery": (
+                self.channels.status()
+                if callable(getattr(self.channels, "status", None))
+                else {}
+            ),
         }
 
     def list_connections(self) -> list[dict[str, Any]]:

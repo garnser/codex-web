@@ -97,6 +97,27 @@ backfills the canonical alias so subsequent routing remains exact-key. Runtime
 diagnostics expose binding-index status plus target keyed-read and compatibility
 repair counters without serializing the target registries themselves.
 
+### Slack channel discovery fan-out
+
+Channel discovery snapshots local connection/binding state once per uncached
+request and groups Slack connections by credential identity before contacting
+the provider. Equivalent connections therefore share one
+`conversations.list` discovery operation. Names returned by that list are
+authoritative for the request and do not trigger redundant
+`conversations.info` calls.
+
+Only channels still lacking a usable name enter metadata fallback. Fallback is
+deduplicated by channel and relevant credential group, concurrency-bounded, and
+protected by short negative caches plus rate-limit cooldowns. A provider failure
+or missing/inaccessible channel cannot create an immediate retry storm.
+Explicit configuration invalidation clears those suppression caches.
+
+Bot status exposes the last per-Project discovery counters, including cache hit,
+credential groups, provider/list calls, metadata candidates/lookups, unresolved
+channels, negative-cache hits, cooldown skips, rate-limit events, failures, and
+duration. These counters describe provider discovery work rather than canonical
+channel state.
+
 ## Scaling principles
 
 The scaling architecture separates three responsibilities:
