@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from codex_web.models import (
     TaskSourceIdentity,
@@ -340,9 +341,9 @@ class TaskSourceWritebackCoalescingTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        with unittest.mock.patch(
+        with patch(
             "codex_web.services.task_source_runtime.asyncio.sleep",
-            new=unittest.mock.AsyncMock(),
+            new=AsyncMock(),
         ):
             service.schedule(_state(owner="retry"))
             tasks = list(service._tasks.values())
