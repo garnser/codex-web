@@ -93,6 +93,29 @@ class ModelMapRepository(Generic[T]):
         raw = self.store.record_get(self.namespace, key)
         return self.model.model_validate(raw) if raw is not None else None
 
+    def page(
+        self,
+        *,
+        key_prefix: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, T], str | None]:
+        self._ensure_records()
+        raw, cursor = self.store.record_page(
+            self.namespace,
+            key_prefix=key_prefix,
+            after=after,
+            limit=limit,
+        )
+        return (
+            {
+                key: self.model.model_validate(value)
+                for key, value in raw.items()
+                if self._included(key)
+            },
+            cursor,
+        )
+
     def put(self, key: str, value: T) -> T:
         key = str(key)
         if not self._included(key):
