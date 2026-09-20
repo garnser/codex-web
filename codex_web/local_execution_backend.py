@@ -260,10 +260,6 @@ class BubblewrapExecutionBackend:
             raise LocalExecutionUnavailableError(
                 status.reason or "local execution isolation is unavailable"
             )
-        if assignment.sandbox == "danger-full-access":
-            raise LocalExecutionPolicyError(
-                "danger-full-access is not allowed on the isolated local worker"
-            )
         self._validate_network(assignment.network)
         if WorkerCapability.COMMAND_EXECUTION not in assignment.required_capabilities:
             raise LocalExecutionPolicyError(
@@ -350,7 +346,7 @@ class BubblewrapExecutionBackend:
             raise LocalExecutionPolicyError("execution command is empty")
 
         workspace = workspace_path.resolve(strict=True)
-        mount_flag = "--bind" if assignment.sandbox == "workspace-write" else "--ro-bind"
+        mount_flag = "--ro-bind" if assignment.sandbox == "read-only" else "--bind"
         command = [
             self.executable,
             "--die-with-parent",
@@ -416,9 +412,9 @@ class BubblewrapExecutionBackend:
             # canonical repository/workspace lease is what authorizes mutation
             # of that target resource; unrelated control-plane paths stay absent.
             metadata_mount = (
-                "--bind"
-                if assignment.sandbox == "workspace-write"
-                else "--ro-bind"
+                "--ro-bind"
+                if assignment.sandbox == "read-only"
+                else "--bind"
             )
             command.extend((metadata_mount, str(metadata), str(metadata)))
 
