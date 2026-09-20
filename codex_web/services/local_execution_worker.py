@@ -161,9 +161,10 @@ class LocalExecutionWorkerRuntime:
             raise LocalExecutionWorkerRuntimeError(
                 "assignment resources exceed execution workspace lease"
             )
+        actual_disk_bytes = getattr(workspace, "actual_disk_bytes", None)
         if (
-            workspace.actual_disk_bytes is not None
-            and workspace.actual_disk_bytes > assignment.limits.disk_bytes
+            actual_disk_bytes is not None
+            and actual_disk_bytes > assignment.limits.disk_bytes
         ):
             raise LocalExecutionWorkerRuntimeError(
                 "execution workspace exceeds assignment disk limit"
@@ -190,7 +191,7 @@ class LocalExecutionWorkerRuntime:
             else set()
         )
         mounts: list[tuple[Path, Path]] = []
-        for member in workspace.repository_members:
+        for member in getattr(workspace, "repository_members", ()):
             if member.resource_id == workspace.repository_resource_id:
                 continue
             if member.resource_id not in authorized:
