@@ -1393,7 +1393,7 @@ work_item_service = WorkItemService(
     sync_health=gitlab_sync_health,
     event_sink=bot_runtime_telemetry.append,
     publish_event=core.hub.publish,
-    truncate_text=bot_presentation_service.truncate_text,
+    truncate_text=lambda value, limit: str(value)[:limit],
 )
 authority_policy_explorer_service = AuthorityPolicyExplorerService(
     authority_role_service,
