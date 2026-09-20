@@ -346,6 +346,8 @@ class ExecutionPreflightAttempt(BaseModel):
     id: str = Field(min_length=1)
     correlation_id: str = Field(min_length=1)
     execution_id: str = Field(min_length=1)
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
