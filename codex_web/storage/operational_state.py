@@ -330,6 +330,9 @@ def install_operational_state(app: Any, host: Any) -> OperationalStateRepositori
 
     host._load_turn_queues = repositories.turn_queues.load
     host._save_turn_queues = repositories.turn_queues.save
+    host._thread_queue_record = repositories.turn_queues.get
+    host._put_thread_queue_record = repositories.turn_queues.put
+    host._delete_thread_queue_record = repositories.turn_queues.delete
     host._load_bot_connections = repositories.bot_connections.load
     host._save_bot_connections = repositories.bot_connections.save
     host._load_bot_bindings = repositories.bot_bindings.load
