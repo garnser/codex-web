@@ -10,12 +10,12 @@ from codex_web.execution_profile_models import (
     EXECUTION_PROFILE_CATALOG_ID,
     EXECUTION_PROFILE_CATALOG_KIND,
     EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION,
-    ExecutionProfileBinding,
     ExecutionProfileCatalogDefinition,
     ExecutionProfileContract,
     validate_execution_profile_catalog,
 )
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
+from codex_web.execution_workers import ExecutionProfileBinding
 from codex_web.services.definitions import (
     DefinitionKindSchema,
     DefinitionRegistryService,
