@@ -457,10 +457,20 @@ class WorkItemService:
         project_id: str,
         scope: TenantScope,
     ) -> Any:
+        dependencies = getattr(self, "work_items", None)
+        if dependencies is not None:
+            projects = dependencies.load_projects()
+        else:
+            compatibility_host = getattr(self, "host", None)
+            projects = (
+                compatibility_host._load_projects()
+                if compatibility_host is not None
+                else []
+            )
         project = next(
             (
                 item
-                for item in self.work_items.load_projects()
+                for item in projects
                 if getattr(item, "id", None) == project_id
                 and getattr(item, "organization_id", None)
                 == scope.organization_id
