@@ -475,12 +475,17 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(len(self.backend.provisioned), 1)
 
     def test_missing_credential_configuration_fails_before_workspace_creation(self) -> None:
-        with self.assertRaisesRegex(
-            TurnExecutionBindingError,
-            "credential reference configuration is unavailable",
-        ):
+        with self.assertRaises(TurnExecutionBindingError) as caught:
             self._prepare()
 
+        self.assertEqual(
+            caught.exception.code,
+            "credential_reference_missing",
+        )
+        self.assertIn(
+            "credential reference configuration is unavailable",
+            str(caught.exception),
+        )
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
@@ -496,14 +501,85 @@ class TurnExecutionBindingTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        with self.assertRaisesRegex(
-            TurnExecutionBindingError,
-            "repository_target_ambiguous",
-        ):
+        with self.assertRaises(TurnExecutionBindingError) as caught:
             self._prepare()
 
+        self.assertEqual(
+            caught.exception.code,
+            "repository_target_ambiguous",
+        )
+        self.assertEqual(
+            caught.exception.public()["code"],
+            "repository_target_ambiguous",
+        )
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_unknown_execution_profile_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-profile",
+                execution_id="exec-profile",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="does-not-exist",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "execution_profile_incompatible",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_unsupported_sandbox_is_typed_before_workspace_creation(self) -> None:
+        self._publish_secret()
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-sandbox",
+                execution_id="exec-sandbox",
+                project_id=self.project.id,
+                sandbox="unsupported",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "sandbox_profile_unsupported",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_conflicting_write_lease_is_typed_and_creates_no_second_assignment(self) -> None:
+        self._publish_secret()
+        first = self.service.prepare(
+            thread_id="thread-first",
+            execution_id="exec-first",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-second",
+                execution_id="exec-second",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(len(self.workspaces.list(self.actor)), 1)
+        self.assertEqual(
+            self.workspaces.list(self.actor)[0].id,
+            first.workspace_id,
+        )
+        self.assertEqual(len(self.workers.list_assignments(self.actor)), 1)
 
     def test_explicit_repository_target_is_persisted(self) -> None:
         self._publish_secret()
