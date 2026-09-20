@@ -2176,11 +2176,52 @@ runtime_supervisor = install_runtime_supervisor(
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
 )
 
+def _diagnostic_queued_turn_public(queued):
+    preview = queued.message.replace("\n", " ")
+    if len(preview) > 180:
+        preview = f"{preview[:180]}..."
+    return {
+        "id": queued.id,
+        "threadId": queued.thread_id,
+        "projectId": queued.project_id,
+        "source": queued.source,
+        "attempts": queued.attempts,
+        "createdAt": queued.created_at,
+        "messagePreview": preview,
+        "replyTarget": (
+            queued.reply_target.model_dump()
+            if queued.reply_target
+            else None
+        ),
+    }
+
+
+def _diagnostic_binding_public(binding):
+    item = binding.model_dump()
+    item["prefix"] = bot_presentation_service.binding_prefix(binding)
+    item["report_name"] = bot_presentation_service.binding_report_name(
+        binding
+    )
+    item["active"] = turn_execution_service.thread_is_active(
+        binding.thread_id
+    )
+    item["queueDepth"] = turn_queue_policy.depth(binding.thread_id)
+    if binding.provider == "slack":
+        item["slack_icon"] = bot_presentation_service.slack_reply_icon(
+            binding
+        )
+        item["slack_username"] = (
+            bot_presentation_service.slack_reply_username(binding)
+        )
+    return item
+
+
 runtime_diagnostics_service = RuntimeDiagnosticsService(
     version=static_asset_version_service.version,
     health=runtime_health_service.health,
     codex=core.codex,
     bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
     runtime_policy=runtime_policy,
     supervisor=runtime_supervisor,
     thread_message_limit=thread_service.default_message_limit,
@@ -2190,11 +2231,16 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     load_thread_index=thread_index_repository.load,
     load_active_turns=runtime_state.active_turns.load,
     load_queues=turn_queue_repository.load,
+    queued_turn_public=_diagnostic_queued_turn_public,
     queue_tasks=turn_execution_service.queue_drain_tasks,
     load_connections=bot_state.connections.load,
     connection_public=bot_connection_service.public,
     load_bindings=bot_state.bindings.load,
-    load_agent_presence=lambda: core._load_agent_channel_presence_settings(),
+    binding_public=_diagnostic_binding_public,
+    load_agent_presence=(
+        app.state.configuration_state_repositories.agent_channel_presence.load
+    ),
+    agent_presence_public=lambda settings: settings.model_dump(),
     load_reply_targets=bot_state.reply_targets.load,
     load_delivery_targets=bot_state.delivery_targets.load,
     load_work_item_states=runtime_state.work_item_states.load,
