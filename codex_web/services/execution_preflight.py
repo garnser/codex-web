@@ -102,6 +102,24 @@ class ExecutionPreflightService:
         blockers = self._blockers(detail)
         attempt_id = self._attempt_id(execution_id)
         existing = self.store.get(attempt_id)
+        if existing is not None and (
+            existing.thread_id != thread_id
+            or existing.project_id != project_id
+            or existing.message != payload.message
+            or existing.organization_id != actor.organization_id
+            or existing.workspace_id != actor.workspace_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "execution_preflight_identity_conflict",
+                    "message": (
+                        "execution id is already bound to a different retained "
+                        "turn identity"
+                    ),
+                    "correlationId": execution_id,
+                },
+            )
         if existing is None:
             attempt = ExecutionPreflightAttempt(
                 id=attempt_id,
