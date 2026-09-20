@@ -150,6 +150,14 @@ class _HostRecoveryAdapter:
         return True
 
 
+class _BootstrapRecoveryScheduler:
+    """No-op only during application composition before recovery is attached."""
+
+    def schedule(self, *, reason: str = "manual") -> bool:
+        del reason
+        return False
+
+
 class WorkItemCompatibilityFacade:
     """Historical server-module entrypoints isolated from production services."""
 
@@ -296,11 +304,15 @@ class WorkItemService:
         )
         self.recovery = (
             recovery
-            or (_HostRecoveryAdapter(host) if host is not None else None)
+            or (
+                _HostRecoveryAdapter(host)
+                if host is not None
+                else _BootstrapRecoveryScheduler()
+            )
         )
-        if self.continuity is None or self.recovery is None:
+        if self.continuity is None:
             raise TypeError(
-                "WorkItemService requires continuity and recovery services"
+                "WorkItemService requires a continuity service"
             )
         self.sync_health = sync_health or GitLabSyncHealth()
         self.event_sink = event_sink or (
