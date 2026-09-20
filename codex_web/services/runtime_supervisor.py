@@ -651,6 +651,14 @@ class RuntimeSupervisor:
         if worker_sessions is not None:
             await worker_sessions.stop_all()
 
+        task_source_writeback = getattr(
+            self.app.state,
+            "task_source_writeback_service",
+            None,
+        )
+        if task_source_writeback is not None:
+            await task_source_writeback.stop()
+
         if self.bot_runtime is not None:
             await self.bot_runtime.stop()
         if self.codex is not None:
