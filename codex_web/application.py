@@ -93,6 +93,7 @@ from codex_web.paths import (
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
+    STATIC_DIR,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
@@ -231,6 +232,12 @@ from codex_web.services.upgrades import UpgradeService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.runtime_diagnostics import (
+    RuntimeDiagnosticsService,
+    RuntimeHealthService,
+    StaticAssetVersionService,
+)
+from codex_web.services.operator_ui import OperatorUiService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
@@ -2101,9 +2108,49 @@ bot_service = BotService(
 )
 app.state.bot_service = bot_service
 
+static_asset_version_service = StaticAssetVersionService(
+    STATIC_DIR,
+    DATA_DIR.parent,
+)
+runtime_health_service = RuntimeHealthService(
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
+    load_bindings=bot_state.bindings.load,
+    terminal_failures=turn_execution_service.terminal_failures,
+    terminal_recovery_tasks=turn_execution_service.terminal_recovery_tasks,
+    terminal_failure_window_seconds=(
+        turn_execution_service.terminal_failure_window_seconds
+    ),
+    load_queues=turn_queue_repository.load,
+    slack_provider_health=slack_provider_service.health,
+    gitlab_sync_status=lambda: {
+        "consecutive_failures": getattr(
+            core,
+            "GITLAB_SYNC_CONSECUTIVE_FAILURES",
+            0,
+        ),
+        "last_error": getattr(core, "GITLAB_SYNC_LAST_ERROR", None),
+        "last_error_at": getattr(
+            core,
+            "GITLAB_SYNC_LAST_ERROR_AT",
+            0.0,
+        ),
+        "last_success_at": getattr(
+            core,
+            "GITLAB_SYNC_LAST_SUCCESS_AT",
+            0.0,
+        ),
+    },
+)
+app.state.static_asset_version_service = static_asset_version_service
+app.state.runtime_health_service = runtime_health_service
+runtime_service.static_version = static_asset_version_service.version
+runtime_service.runtime_health = runtime_health_service.health
+
 # Replace the legacy core startup/shutdown callbacks after all runtime and
-# provider services have been composed. The supervisor keeps the historical
-# task globals populated for diagnostics while owning cancellation and shutdown.
+# provider services have been composed. The supervisor coordinates explicit
+# runtime owners and receives the extracted health evaluator directly.
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -2117,7 +2164,7 @@ runtime_supervisor = install_runtime_supervisor(
     event_sink=core._append_bot_event,
     truncate_text=core._truncate_text,
     sd_notify=core._sd_notify,
-    daemon_health=core._daemon_health,
+    daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
     compact_turn_queues=core._compact_turn_queues,
     dedupe_bot_integrations=core._dedupe_bot_integrations,
@@ -2128,6 +2175,52 @@ runtime_supervisor = install_runtime_supervisor(
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
 )
+
+runtime_diagnostics_service = RuntimeDiagnosticsService(
+    version=static_asset_version_service.version,
+    health=runtime_health_service.health,
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    runtime_policy=runtime_policy,
+    supervisor=runtime_supervisor,
+    thread_message_limit=thread_service.default_message_limit,
+    slack_provider_health=slack_provider_service.health,
+    project_lookup=project_runtime_service.get,
+    load_projects=project_repository.load,
+    load_thread_index=thread_index_repository.load,
+    load_active_turns=runtime_state.active_turns.load,
+    load_queues=turn_queue_repository.load,
+    queue_tasks=turn_execution_service.queue_drain_tasks,
+    load_connections=bot_state.connections.load,
+    connection_public=bot_connection_service.public,
+    load_bindings=bot_state.bindings.load,
+    load_agent_presence=lambda: core._load_agent_channel_presence_settings(),
+    load_reply_targets=bot_state.reply_targets.load,
+    load_delivery_targets=bot_state.delivery_targets.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    work_item_public=work_item_state_machine._work_item_state_public,
+    recent_events=bot_runtime_telemetry.recent,
+)
+operator_ui_service = OperatorUiService(
+    static_dir=STATIC_DIR,
+    version=static_asset_version_service.version,
+    health=runtime_health_service.health,
+    load_turn_queues=turn_queue_repository.load,
+    load_active_turns=runtime_state.active_turns.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    event_hub=core.hub,
+)
+app.state.runtime_diagnostics_service = runtime_diagnostics_service
+app.state.operator_ui_service = operator_ui_service
+
+# Output-only compatibility aliases. Implementations live in extracted
+# services; legacy_core only receives names for historical direct callers.
+core._static_version = static_asset_version_service.version
+core._daemon_health = runtime_health_service.health
+core._diagnostic_snapshot = runtime_diagnostics_service.snapshot
+core._preview_bot_route = bot_routing_service.preview
+core._devhealth_work_item_stats = operator_ui_service.work_item_stats
+core._recent_bot_events = bot_runtime_telemetry.recent
 
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
@@ -2257,13 +2350,18 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "ui": replace_routes(
         app,
-        build_ui_router(core),
+        build_ui_router(operator_ui_service),
         paths={"/", "/devstatus", "/devhealth", "/ws"},
         key="ui",
     ),
     "system": replace_routes(
         app,
-        build_system_router(core),
+        build_system_router(
+            static_asset_version_service,
+            runtime_health_service,
+            runtime_diagnostics_service,
+            bot_routing_service,
+        ),
         paths={
             "/api/livez",
             "/api/auth-verifier",
