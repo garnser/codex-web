@@ -20,7 +20,7 @@ The image has a Docker healthcheck against `/api/livez`. `/api/healthz` remains 
 
 ## Production release image
 
-Production releases are driven by the repository-level `.release-version` file. Changing that version on `main` triggers `.github/workflows/publish-release.yml`, which:
+Production releases are driven by the repository-level `.release-version` file. After the normal `tests` workflow succeeds for a `main` commit, `.github/workflows/publish-release.yml` checks out that exact tested SHA and publishes it only when the declared version has not already been tagged. The workflow:
 
 1. builds the final application image from the trusted `garnser/codex-web:base`;
 2. verifies the pinned Codex CLI version;
