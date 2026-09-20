@@ -296,3 +296,180 @@ class BotEventDispatchService:
             "threadId": binding.thread_id,
             "turn": turn,
         }
+
+
+class BotEventDispatchCompatibilityFacade:
+    """Dynamic historical dispatch seam for verified import-server callers."""
+
+    def __init__(self, host: Any) -> None:
+        self.host = host
+
+    async def dispatch(
+        self,
+        binding: BotBinding,
+        text: str,
+        source: str,
+    ) -> dict[str, Any]:
+        host = self.host
+        project = host._project(binding.project_id)
+        settings = host._thread_run_settings(binding.thread_id)
+        effective_model = settings.model or project.model
+        effective_reasoning_effort = settings.reasoning_effort
+        reply_target = host._conversation_target_for_binding(binding)
+
+        async def queue_binding_turn(
+            event_type: str,
+            reason: str | None = None,
+        ) -> dict[str, Any]:
+            duplicate = host._find_duplicate_queued_turn(
+                binding.thread_id,
+                message=text,
+                source=source,
+            )
+            if duplicate:
+                host._append_bot_event(
+                    {
+                        "type": "event_turn_duplicate_skipped",
+                        "source": source,
+                        "thread_id": binding.thread_id,
+                        "external_conversation_id": (
+                            binding.external_conversation_id
+                        ),
+                        "queued_id": duplicate.id,
+                        "queue_depth": host._thread_queue_depth(
+                            binding.thread_id
+                        ),
+                    }
+                )
+                await host._publish_queue_status(binding.thread_id)
+                return {
+                    "ok": True,
+                    "queued": True,
+                    "duplicate": True,
+                    "threadId": binding.thread_id,
+                    "queuedId": duplicate.id,
+                }
+
+            queued = host._enqueue_turn(
+                thread_id=binding.thread_id,
+                project_id=project.id,
+                message=text,
+                sandbox=binding.sandbox,
+                approval_policy=binding.approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                source=source,
+                reply_target=reply_target,
+            )
+            binding.updated_at = time.time()
+            host._upsert_bot_binding(binding)
+            payload: dict[str, Any] = {
+                "type": event_type,
+                "source": source,
+                "thread_id": binding.thread_id,
+                "external_conversation_id": (
+                    binding.external_conversation_id
+                ),
+                "queued_id": queued.id,
+                "queue_depth": host._thread_queue_depth(binding.thread_id),
+            }
+            if reason:
+                truncate = getattr(
+                    host,
+                    "_truncate_text",
+                    lambda value, limit: str(value)[:limit],
+                )
+                payload["reason"] = truncate(reason, 500)
+            host._append_bot_event(payload)
+            await host._publish_queue_status(binding.thread_id)
+            await host.hub.publish(
+                {
+                    "type": "bot.inbound",
+                    "provider": source,
+                    "externalConversationId": (
+                        binding.external_conversation_id
+                    ),
+                    "threadId": binding.thread_id,
+                    "queued": True,
+                    "queuedId": queued.id,
+                    "queueDepth": host._thread_queue_depth(
+                        binding.thread_id
+                    ),
+                }
+            )
+            return {
+                "ok": True,
+                "queued": True,
+                "threadId": binding.thread_id,
+                "queuedId": queued.id,
+            }
+
+        host._release_stale_active_turn(
+            binding.thread_id,
+            f"{source}:dispatch",
+        )
+        if (
+            host._thread_is_active(binding.thread_id)
+            or host._thread_queue_depth(binding.thread_id)
+        ):
+            return await queue_binding_turn("event_turn_queued")
+
+        try:
+            turn = await host._start_thread_turn_now(
+                binding.thread_id,
+                project=project,
+                message=text,
+                sandbox=binding.sandbox,
+                approval_policy=binding.approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                source=source,
+                reply_target=reply_target,
+            )
+        except Exception as exc:
+            if host._is_codex_timeout_error(exc):
+                return await queue_binding_turn(
+                    "event_turn_queued_after_timeout",
+                    str(getattr(exc, "detail", exc)),
+                )
+            if not host._is_stale_thread_error(exc):
+                raise
+            binding = await host._replace_stale_bot_thread(
+                binding,
+                str(exc),
+            )
+            project = host._project(binding.project_id)
+            settings = host._thread_run_settings(binding.thread_id)
+            effective_model = settings.model or project.model
+            effective_reasoning_effort = settings.reasoning_effort
+            reply_target = host._conversation_target_for_binding(binding)
+            turn = await host._start_thread_turn_now(
+                binding.thread_id,
+                project=project,
+                message=text,
+                sandbox=binding.sandbox,
+                approval_policy=binding.approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                source=source,
+                reply_target=reply_target,
+            )
+
+        binding.updated_at = time.time()
+        host._upsert_bot_binding(binding)
+        await host.hub.publish(
+            {
+                "type": "bot.inbound",
+                "provider": source,
+                "externalConversationId": (
+                    binding.external_conversation_id
+                ),
+                "threadId": binding.thread_id,
+            }
+        )
+        return {
+            "ok": True,
+            "queued": False,
+            "threadId": binding.thread_id,
+            "turn": turn,
+        }
