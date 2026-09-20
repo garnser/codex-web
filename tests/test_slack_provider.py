@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from fastapi import Request
@@ -99,6 +100,46 @@ class _Host:
         return None
 
 
+class _WebhookSecurity:
+    async def verify_slack(self, request, body) -> None:
+        return None
+
+
+def _service(host, slack, routing):
+    return SlackProviderService(
+        slack_client=slack,
+        routing_service=routing,
+        connections=SimpleNamespace(
+            load_connections=host._load_bot_connections,
+            for_conversation=host._bot_connection_for_conversation,
+            runtime_actor=lambda project_id: SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+            ),
+        ),
+        bindings=SimpleNamespace(
+            load_bindings=host._load_bot_bindings,
+            first_for_connection=host._first_binding_for_connection,
+        ),
+        targets=SimpleNamespace(
+            load_reply_targets=host._load_bot_reply_targets,
+            load_delivery_targets=host._load_bot_delivery_targets,
+            load_active_turns=host._load_active_turns,
+        ),
+        presentation=SimpleNamespace(
+            strip_slack_mentions=host._strip_slack_mentions,
+            ambiguous_route_message=host._ambiguous_route_message,
+            slack_reply_username=host._slack_reply_username,
+            slack_reply_icon=host._slack_reply_icon,
+        ),
+        telemetry=SimpleNamespace(
+            events_file=host.BOTS_EVENTS_FILE,
+            append=host._append_bot_event,
+        ),
+        webhook_security=_WebhookSecurity(),
+    )
+
+
 def _request(payload: dict) -> Request:
     body = json.dumps(payload).encode()
     sent = False
@@ -122,10 +163,10 @@ class SlackProviderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.host = _Host(Path(self.temp.name))
         self.routing = _Routing()
         self.slack = _Slack()
-        self.service = SlackProviderService(
+        self.service = _service(
             self.host,
-            slack_client=self.slack,
-            routing_service=self.routing,
+            self.slack,
+            self.routing,
         )
 
     def tearDown(self) -> None:
