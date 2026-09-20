@@ -343,6 +343,9 @@ class ResourceCatalogService:
             )
             source = RepositoryTargetSource.THREAD_PROFILE
             source_ref = selected_id
+        elif orchestration_only:
+            source = RepositoryTargetSource.ORCHESTRATION_ONLY
+            source_ref = "explicit"
         else:
             effective_routing = routing_repository_id
             if not effective_routing:
@@ -365,9 +368,6 @@ class ResourceCatalogService:
                 selected_id = require_bound(effective_routing, "routing")
                 source = RepositoryTargetSource.ROUTING_RULE
                 source_ref = selected_id
-            elif orchestration_only:
-                source = RepositoryTargetSource.ORCHESTRATION_ONLY
-                source_ref = "explicit"
             elif len(repositories) == 1:
                 selected_id = next(iter(repositories))
                 source = RepositoryTargetSource.SINGLE_REPOSITORY
