@@ -5,6 +5,7 @@ import contextlib
 import re
 import time
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 from codex_web.conversation_channels import ConversationProjectionOutcome
@@ -32,36 +33,101 @@ class BotRoutingService:
 
     def __init__(
         self,
+        host: Any | None = None,
         *,
         delivery: BotDeliveryService,
-        connections: BotConnectionService,
-        bindings: BotBindingSelectionService,
-        binding_lifecycle: BotBindingLifecycleService,
-        targets: BotTargetService,
-        presentation: BotPresentationService,
-        telemetry: BotRuntimeTelemetry,
-        projects: ProjectRuntimeService,
-        settings: ThreadExecutionSettingsService,
-        recovery: ThreadRecoveryService,
-        resume: ThreadResumeService,
-        queue_policy: TurnQueuePolicy,
-        execution: TurnExecutionService,
-        publish_event: Callable[[dict[str, Any]], Awaitable[object]],
+        connections: BotConnectionService | Any | None = None,
+        bindings: BotBindingSelectionService | Any | None = None,
+        binding_lifecycle: BotBindingLifecycleService | Any | None = None,
+        targets: BotTargetService | Any | None = None,
+        presentation: BotPresentationService | Any | None = None,
+        telemetry: BotRuntimeTelemetry | Any | None = None,
+        projects: ProjectRuntimeService | Any | None = None,
+        settings: ThreadExecutionSettingsService | Any | None = None,
+        recovery: ThreadRecoveryService | Any | None = None,
+        resume: ThreadResumeService | Any | None = None,
+        queue_policy: TurnQueuePolicy | Any | None = None,
+        execution: TurnExecutionService | Any | None = None,
+        publish_event: Callable[[dict[str, Any]], Awaitable[object]] | None = None,
     ) -> None:
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        if host is not None:
+            bindings = bindings or SimpleNamespace(
+                for_connection=getattr(
+                    host,
+                    "_bindings_for_connection",
+                    lambda _provider, _conversation: [],
+                ),
+                for_project=getattr(
+                    host,
+                    "_bindings_for_project",
+                    lambda _provider, _project_id: [],
+                ),
+            )
+            binding_lifecycle = binding_lifecycle or SimpleNamespace(
+                has_single_master_binding=getattr(
+                    host,
+                    "_has_single_master_binding",
+                    lambda _bindings: False,
+                ),
+                is_top_level_external_message=getattr(
+                    host,
+                    "_is_top_level_external_message",
+                    lambda _message: True,
+                ),
+                for_external_target=lambda *_args, **_kwargs: None,
+                resolve=getattr(
+                    host,
+                    "_resolve_bot_binding",
+                    lambda _bindings, message, **_kwargs: (
+                        None,
+                        message.text,
+                        True,
+                    ),
+                ),
+                cross_channel_for_message=getattr(
+                    host,
+                    "_cross_channel_binding_for_message",
+                    lambda _provider, _project_id, _bindings, message, **_kwargs: (
+                        None,
+                        message.text,
+                        False,
+                    ),
+                ),
+            )
+            presentation = presentation or SimpleNamespace(
+                binding_prefix=getattr(
+                    host,
+                    "_binding_prefix",
+                    lambda binding: (
+                        getattr(binding, "route_prefix", None)
+                        or getattr(binding, "thread_id", "")
+                    ),
+                )
+            )
+            telemetry = telemetry or SimpleNamespace(
+                append=getattr(host, "_append_bot_event", lambda _event: None)
+            )
+
         self.delivery = delivery
-        self.connections = connections
-        self.bindings = bindings
-        self.binding_lifecycle = binding_lifecycle
-        self.targets = targets
-        self.presentation = presentation
-        self.telemetry = telemetry
-        self.projects = projects
-        self.settings = settings
-        self.recovery = recovery
-        self.resume = resume
-        self.queue_policy = queue_policy
-        self.execution = execution
-        self.publish_event = publish_event
+        self.connections = connections or SimpleNamespace()
+        self.bindings = bindings or SimpleNamespace(
+            for_connection=lambda _provider, _conversation: [],
+            for_project=lambda _provider, _project_id: [],
+        )
+        self.binding_lifecycle = binding_lifecycle or SimpleNamespace()
+        self.targets = targets or SimpleNamespace()
+        self.presentation = presentation or SimpleNamespace()
+        self.telemetry = telemetry or SimpleNamespace(append=lambda _event: None)
+        self.projects = projects or SimpleNamespace()
+        self.settings = settings or SimpleNamespace()
+        self.recovery = recovery or SimpleNamespace()
+        self.resume = resume or SimpleNamespace()
+        self.queue_policy = queue_policy or SimpleNamespace()
+        self.execution = execution or SimpleNamespace()
+        self.publish_event = publish_event or _publish_noop
         self.conversation_channels: Any | None = None
 
     @staticmethod
@@ -580,24 +646,30 @@ def install_bot_routing_service(
     execution=None,
     publish_event=None,
 ) -> BotRoutingService:
-    service = BotRoutingService(
-        delivery=delivery,
-        connections=connections or app.state.bot_connection_service,
-        bindings=bindings or app.state.bot_binding_selection_service,
-        binding_lifecycle=(
-            binding_lifecycle or app.state.bot_binding_lifecycle_service
-        ),
-        targets=targets or app.state.bot_target_service,
-        presentation=presentation or app.state.bot_presentation_service,
-        telemetry=telemetry or app.state.bot_runtime_telemetry,
-        projects=projects or app.state.project_runtime_service,
-        settings=settings or app.state.thread_execution_settings_service,
-        recovery=recovery or app.state.thread_recovery_service,
-        resume=resume or app.state.thread_resume_service,
-        queue_policy=queue_policy or app.state.turn_queue_policy,
-        execution=execution or app.state.turn_execution_service,
-        publish_event=publish_event or host.hub.publish,
-    )
+    if (
+        connections is None
+        and not hasattr(app.state, "bot_connection_service")
+    ):
+        service = BotRoutingService(host, delivery=delivery)
+    else:
+        service = BotRoutingService(
+            delivery=delivery,
+            connections=connections or app.state.bot_connection_service,
+            bindings=bindings or app.state.bot_binding_selection_service,
+            binding_lifecycle=(
+                binding_lifecycle or app.state.bot_binding_lifecycle_service
+            ),
+            targets=targets or app.state.bot_target_service,
+            presentation=presentation or app.state.bot_presentation_service,
+            telemetry=telemetry or app.state.bot_runtime_telemetry,
+            projects=projects or app.state.project_runtime_service,
+            settings=settings or app.state.thread_execution_settings_service,
+            recovery=recovery or app.state.thread_recovery_service,
+            resume=resume or app.state.thread_resume_service,
+            queue_policy=queue_policy or app.state.turn_queue_policy,
+            execution=execution or app.state.turn_execution_service,
+            publish_event=publish_event or host.hub.publish,
+        )
     app.state.bot_routing_service = service
     host._handle_bot_inbound = service.handle_inbound
     return service
