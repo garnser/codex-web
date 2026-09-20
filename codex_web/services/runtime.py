@@ -47,6 +47,8 @@ class RuntimeService:
         instance_id: str = "local",
         compatibility_state_metrics: Callable[[], dict[str, Any]] | None = None,
         task_source_writeback_status: Callable[[], dict[str, Any]] | None = None,
+        native_recovery_status: Callable[[], dict[str, Any]] | None = None,
+        work_item_continuity_status: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if host is not None:
             codex = codex or getattr(host, "codex", None)
@@ -204,6 +206,12 @@ class RuntimeService:
         )
         self.task_source_writeback_status = (
             task_source_writeback_status or (lambda: {})
+        )
+        self.native_recovery_status = (
+            native_recovery_status or (lambda: {})
+        )
+        self.work_item_continuity_status = (
+            work_item_continuity_status or (lambda: {})
         )
 
         if host is not None:
@@ -364,6 +372,12 @@ class RuntimeService:
                     self.codex.pending_approvals
                 ),
                 "supervisorTasks": self.supervisor_status(),
+                "backgroundWork": {
+                    "nativeRecovery": self.native_recovery_status(),
+                    "workItemContinuity": (
+                        self.work_item_continuity_status()
+                    ),
+                },
             },
             "workItems": {
                 "open": len(open_states),
