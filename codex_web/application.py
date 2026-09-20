@@ -147,6 +147,7 @@ from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemet
 from codex_web.services.bot_targets import install_bot_target_service
 from codex_web.services.bot_webhook_security import install_bot_webhook_security_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
+from codex_web.services.bot_event_dispatch import BotEventDispatchService
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.conversation_channels import (
@@ -279,8 +280,12 @@ from codex_web.services.turn_execution_binding import TurnExecutionBindingServic
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_continuity import (
+    DeferredWorkItemContinuityService,
     WorkItemContinuityService,
     build_work_item_continuity_compatibility_service,
+)
+from codex_web.services.work_item_dispatch_prompt import (
+    WorkItemDispatchPromptPolicy,
 )
 from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
@@ -1382,76 +1387,9 @@ work_item_contract_service = install_work_item_contract_service(
 # before work-item services that need an explicit event sink.
 bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
 
-work_item_continuity_service = WorkItemContinuityService(
-    policy=runtime_policy,
-    get_state=work_item_state_machine._work_item_state,
-    coerce_owner=lambda owner: core._coerce_owner(owner),
-    binding_for_agent=lambda *args, **kwargs: core._binding_for_agent(
-        *args,
-        **kwargs,
-    ),
-    replace_nonperforming_thread=(
-        lambda binding, reason: core._replace_nonperforming_thread_if_needed(
-            binding,
-            reason,
-        )
-    ),
-    dispatch_event=lambda binding, text, source: core._dispatch_event_to_binding(
-        binding,
-        text,
-        source,
-    ),
-    dispatch_text=lambda state: core._work_item_dispatch_text(state),
-    append_event=bot_runtime_telemetry.append,
-    truncate_text=lambda value, limit: str(value)[:limit],
-    thread_is_active=lambda thread_id: core._thread_is_active(thread_id),
-    thread_queue_depth=lambda thread_id: core._thread_queue_depth(thread_id),
-    thread_recently_active=lambda thread_id: core._thread_recently_active(
-        thread_id
-    ),
-    watchdog_dispatch_allowed=(
-        lambda key: core._watchdog_dispatch_allowed(key)
-    ),
-    record_watchdog_dispatch=lambda key: core._record_watchdog_dispatch(key),
-    coordination_channel=core.HANDOFF_COORDINATION_CHANNEL,
-)
+work_item_continuity_service = DeferredWorkItemContinuityService()
 app.state.work_item_continuity_service = work_item_continuity_service
-work_item_continuity_compatibility = (
-    build_work_item_continuity_compatibility_service(core)
-)
-app.state.work_item_continuity_compatibility = (
-    work_item_continuity_compatibility
-)
 
-# Historical names are output-only compatibility aliases. They terminate in
-# the extracted compatibility service; legacy_core contains no implementation.
-core._schedule_structured_handoff_dispatch = (
-    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
-)
-core._schedule_handoff_continuity_check = (
-    work_item_continuity_compatibility.schedule_handoff_continuity_check
-)
-core._schedule_actionable_owner_dispatch = (
-    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
-)
-core._schedule_actionable_owner_continuity_check = (
-    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
-)
-core._dispatch_structured_handoff_to_recipient = (
-    work_item_continuity_compatibility.dispatch_structured_handoff
-)
-core._run_handoff_continuity_check = (
-    work_item_continuity_compatibility.run_handoff_continuity_check
-)
-core._actionable_owner_dispatch_stage = (
-    work_item_continuity_compatibility.actionable_owner_stage
-)
-core._dispatch_actionable_owner_to_responsible_thread = (
-    work_item_continuity_compatibility.dispatch_actionable_owner
-)
-core._run_actionable_owner_continuity_check = (
-    work_item_continuity_compatibility.run_actionable_owner_continuity_check
-)
 def _mirror_gitlab_sync_health(snapshot):
     core.GITLAB_SYNC_CONSECUTIVE_FAILURES = snapshot[
         "consecutive_failures"
@@ -2127,6 +2065,94 @@ agent_channel_preference_service = (
         same_logical_binding=thread_recovery_service.same_logical_binding,
     )
 )
+
+work_item_dispatch_prompt_policy = WorkItemDispatchPromptPolicy(
+    coerce_owner=work_item_state_machine._coerce_owner,
+    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+)
+bot_event_dispatch_service = BotEventDispatchService(
+    projects=project_runtime_service,
+    settings=thread_execution_settings_service,
+    targets=bot_target_service,
+    bindings=bot_binding_lifecycle_service,
+    execution=turn_execution_service,
+    queue_policy=turn_queue_policy,
+    recovery=thread_recovery_service,
+    resume=thread_resume_service,
+    telemetry=bot_runtime_telemetry,
+    publish_event=event_hub.publish,
+    binding_name=thread_recovery_service.logical_binding_name,
+)
+canonical_work_item_continuity_service = WorkItemContinuityService(
+    policy=runtime_policy,
+    get_state=work_item_state_machine._work_item_state,
+    coerce_owner=work_item_state_machine._coerce_owner,
+    binding_for_agent=agent_channel_preference_service.binding_for_agent,
+    replace_nonperforming_thread=(
+        bot_event_dispatch_service.replace_nonperforming_thread
+    ),
+    dispatch_event=bot_event_dispatch_service.dispatch,
+    dispatch_text=work_item_dispatch_prompt_policy.render,
+    append_event=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
+    thread_is_active=turn_execution_service.thread_is_active,
+    thread_queue_depth=turn_queue_policy.depth,
+    thread_recently_active=bot_event_dispatch_service.thread_recently_active,
+    watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
+    record_watchdog_dispatch=watchdog_dispatch_policy.record,
+    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+)
+work_item_continuity_service.bind(
+    canonical_work_item_continuity_service
+)
+app.state.canonical_work_item_continuity_service = (
+    canonical_work_item_continuity_service
+)
+
+# Historical direct callers resolve through this explicit compatibility edge.
+core._binding_for_agent = agent_channel_preference_service.binding_for_agent
+core._replace_nonperforming_thread_if_needed = (
+    bot_event_dispatch_service.replace_nonperforming_thread
+)
+core._dispatch_event_to_binding = bot_event_dispatch_service.dispatch
+core._work_item_dispatch_text = work_item_dispatch_prompt_policy.render
+core._thread_recently_active = bot_event_dispatch_service.thread_recently_active
+core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
+core._record_watchdog_dispatch = watchdog_dispatch_policy.record
+core.HANDOFF_COORDINATION_CHANNEL = HANDOFF_COORDINATION_CHANNEL
+work_item_continuity_compatibility = (
+    build_work_item_continuity_compatibility_service(core)
+)
+app.state.work_item_continuity_compatibility = (
+    work_item_continuity_compatibility
+)
+core._schedule_structured_handoff_dispatch = (
+    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
+)
+core._schedule_handoff_continuity_check = (
+    work_item_continuity_compatibility.schedule_handoff_continuity_check
+)
+core._schedule_actionable_owner_dispatch = (
+    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
+)
+core._schedule_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
+)
+core._dispatch_structured_handoff_to_recipient = (
+    work_item_continuity_compatibility.dispatch_structured_handoff
+)
+core._run_handoff_continuity_check = (
+    work_item_continuity_compatibility.run_handoff_continuity_check
+)
+core._actionable_owner_dispatch_stage = (
+    work_item_continuity_compatibility.actionable_owner_stage
+)
+core._dispatch_actionable_owner_to_responsible_thread = (
+    work_item_continuity_compatibility.dispatch_actionable_owner
+)
+core._run_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.run_actionable_owner_continuity_check
+)
 work_item_timing_policy = install_work_item_timing_policy(
     app,
     core,
@@ -2199,15 +2225,15 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     orchestrator_binding=bot_binding_selection_service.orchestrator,
     binding_prefix=bot_presentation_service.binding_prefix,
     replace_nonperforming_thread=(
-        core._replace_nonperforming_thread_if_needed
+        bot_event_dispatch_service.replace_nonperforming_thread
     ),
-    dispatch_event=core._dispatch_event_to_binding,
+    dispatch_event=bot_event_dispatch_service.dispatch,
     release_stale_active_turn=(
         thread_recovery_service.release_stale_active_turn
     ),
     thread_is_active=turn_execution_service.thread_is_active,
     thread_queue_depth=turn_queue_policy.depth,
-    thread_recently_active=core._thread_recently_active,
+    thread_recently_active=bot_event_dispatch_service.thread_recently_active,
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
     handoff_timeout_seconds=work_item_timing_policy.handoff_timeout_seconds,
@@ -2232,7 +2258,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     format_split_brain_watchdog_prompt=(
         work_item_watchdog_prompt_policy.format_split_brain_prompt
     ),
-    work_item_dispatch_text=core._work_item_dispatch_text,
+    work_item_dispatch_text=work_item_dispatch_prompt_policy.render,
 )
 app.state.autonomy_runtime_dependencies = autonomy_runtime_dependencies
 
@@ -2327,7 +2353,7 @@ gitlab_operational_dependencies = GitLabOperationalDependencies(
     append_event=bot_runtime_telemetry.append,
     publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
-    dispatch_event=core._dispatch_event_to_binding,
+    dispatch_event=bot_event_dispatch_service.dispatch,
     format_event_prompt=core._format_gitlab_event_prompt,
     send_event_notice=core._send_gitlab_event_notice,
     schedule_recovery=native_recovery_service.schedule,
