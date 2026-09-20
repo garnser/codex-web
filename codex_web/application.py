@@ -55,6 +55,7 @@ from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.organizational_memory import build_organizational_memory_router
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
+from codex_web.api.project_ui_state import build_project_ui_state_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
@@ -265,6 +266,7 @@ from codex_web.services.retrieval_embedding import (
     ModelGatewayEmbeddingIdentityValidator,
 )
 from codex_web.services.projects import ProjectService
+from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
     ProviderCapacityService,
@@ -1906,6 +1908,7 @@ bot_binding_selection_service = install_bot_binding_selection_service(
     indexed_for_connection=bot_binding_repository.for_connection,
     indexed_for_thread=bot_binding_repository.for_thread,
     indexed_for_project=bot_binding_repository.for_project,
+    indexed_for_project_all=bot_binding_repository.for_project_all,
     indexed_masters=bot_binding_repository.masters,
 )
 
@@ -2223,6 +2226,17 @@ bot_channel_discovery_service = install_bot_channel_discovery_service(
     slack_client=slack_client,
     secret_broker=secret_broker,
 )
+project_ui_state_service = ProjectUiStateService(
+    projects=project_service,
+    resources=resource_catalog_service,
+    threads=thread_service,
+    bindings=bot_binding_selection_service,
+    settings=thread_execution_settings_service,
+    channels=bot_channel_discovery_service,
+    execution_profiles=execution_profile_definition_service,
+    binding_public=_binding_public,
+)
+app.state.project_ui_state_service = project_ui_state_service
 agent_channel_preference_service = (
     install_agent_channel_preference_service(
         app,
@@ -2984,6 +2998,9 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "projects": _include_domain_router(
         build_projects_router(project_service)
+    ),
+    "project-ui": _include_domain_router(
+        build_project_ui_state_router(project_ui_state_service)
     ),
     "threads": _include_domain_router(
         build_threads_router(thread_service)
