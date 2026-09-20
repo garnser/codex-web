@@ -1,3 +1,43 @@
+export function connectProjectUiEventStream({
+  base = "",
+  reconciler,
+  onEvent,
+  logEvent,
+  onDisconnect,
+  reconnectDelay = 1000,
+}) {
+  const connect = () => {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(
+      `${scheme}://${location.host}${base}/ws`,
+    );
+    logEvent("ws.opening", { url: `${base}/ws` });
+    ws.onopen = () => logEvent("ws.open", {});
+    ws.onmessage = (message) => {
+      const payload = JSON.parse(message.data);
+      logEvent("ws.message", {
+        type: payload?.type,
+        method: payload?.message?.method,
+        threadId: (
+          payload?.threadId
+          || payload?.message?.params?.threadId
+          || payload?.message?.params?.turn?.threadId
+        ),
+      });
+      if (reconciler.accept(payload)) onEvent(payload);
+    };
+    ws.onerror = () => logEvent("ws.error", {});
+    ws.onclose = () => {
+      logEvent("ws.close", {});
+      reconciler.noteDisconnect();
+      onDisconnect();
+      setTimeout(connect, reconnectDelay);
+    };
+    return ws;
+  };
+  return connect();
+}
+
 export function createProjectUiEventReconciler({
   state,
   api,
