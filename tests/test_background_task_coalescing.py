@@ -138,6 +138,38 @@ class KeyedTaskCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         await asyncio.gather(*list(coordinator._tasks.values()))
 
+    async def test_shutdown_releases_global_permits_while_waiting_on_scope(self) -> None:
+        coordinator = KeyedTaskCoordinator(
+            max_concurrency=2,
+            per_scope_concurrency=1,
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def first() -> None:
+            started.set()
+            await release.wait()
+
+        async def waiting() -> None:
+            await release.wait()
+
+        coordinator.schedule("first", first, scope="project-a")
+        coordinator.schedule("second", waiting, scope="project-a")
+        coordinator.schedule("third", waiting, scope="project-b")
+        await started.wait()
+        for _ in range(10):
+            if coordinator._global_semaphore._value == 0:
+                break
+            await asyncio.sleep(0)
+
+        await coordinator.stop()
+
+        self.assertEqual(
+            coordinator._global_semaphore._value,
+            coordinator.max_concurrency,
+        )
+        self.assertEqual(coordinator.status()["activeTasks"], 0)
+
     async def test_timeout_exception_and_shutdown_are_observable(self) -> None:
         coordinator = KeyedTaskCoordinator(max_concurrency=2)
 
