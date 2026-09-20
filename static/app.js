@@ -1,4 +1,5 @@
 import*as ep from"./execution_profile_controls.js";
+import{loadProjectUiState}from"./project_ui_state.js";
 
 const state = {
   projects: [],
@@ -1177,69 +1178,30 @@ async function refresh() {
     return state.refreshInFlight;
   }
   const search = $("thread-search").value.trim();
-  const cachedStatic = state.projectUiStatic[state.projectId] || null;
-  const qs = new URLSearchParams({
-    thread_limit: "50",
-    include_static: cachedStatic ? "false" : "true",
-  });
-  if (search) qs.set("search", search);
-
   state.refreshInFlight = (async () => {
-    const [projects, workspace, modelsResponse] = await Promise.all([
-      state.projects.length
-        ? Promise.resolve(state.projects)
-        : api("/api/projects"),
-      api(
-        `/api/projects/${encodeURIComponent(state.projectId)}/ui-state?${qs}`,
-      ),
-      state.models.length
-        ? Promise.resolve(state.models)
-        : api("/api/models")
-          .then((response) => (
-            Array.isArray(response.data) ? response.data : []
-          ))
-          .catch((error) => {
-            logEvent("models.error", { message: error.message });
-            return [];
-          }),
-    ]);
-
-    state.projects = projects;
-    if (workspace.project) {
-      const projectIndex = state.projects.findIndex(
-        (project) => project.id === workspace.project.id,
-      );
-      if (projectIndex >= 0) {
-        state.projects[projectIndex] = workspace.project;
-      } else {
-        state.projects = [...state.projects, workspace.project];
+    const snapshot = await loadProjectUiState({
+      api,
+      projectId: state.projectId,
+      search,
+      projects: state.projects,
+      models: state.models,
+      cachedStatic: state.projectUiStatic[state.projectId] || null,
+      onModelError: (error) => {
+        logEvent("models.error", { message: error.message });
+      },
+    });
+    state.projects = snapshot.projects;
+    state.models = snapshot.models;
+    state.projectResources = snapshot.resources;
+    state.botBindings = snapshot.bindings;
+    state.threadSettings = snapshot.threadSettings;
+    state.botChannels = snapshot.channels;
+    state.threads = snapshot.threads;
+    if (snapshot.staticState) {
+      state.projectUiStatic[state.projectId] = snapshot.staticState;
+      if (snapshot.staticState.executionProfiles) {
+        ep.setCatalog(snapshot.staticState.executionProfiles);
       }
-    }
-
-    const staticState = workspace.project || workspace.executionProfiles
-      ? {
-          project: workspace.project || cachedStatic?.project || null,
-          executionProfiles: (
-            workspace.executionProfiles
-            || cachedStatic?.executionProfiles
-            || null
-          ),
-        }
-      : cachedStatic;
-    if (staticState) {
-      state.projectUiStatic[state.projectId] = staticState;
-      if (staticState.executionProfiles) {
-        ep.setCatalog(staticState.executionProfiles);
-      }
-    }
-
-    state.projectResources = workspace.resources?.items || [];
-    state.botBindings = workspace.bindings?.items || [];
-    state.threadSettings = workspace.threadSettings || {};
-    state.botChannels = workspace.channels?.items || [];
-    state.threads = workspace.threads || { data: [] };
-    if (!state.models.length) {
-      state.models = modelsResponse;
     }
 
     renderRepositoryTargets();
