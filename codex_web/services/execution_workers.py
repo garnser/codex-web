@@ -573,6 +573,12 @@ class ExecutionWorkerService:
                         if assignment.repository_target is not None
                         else None
                     ),
+                    "execution_profile_id": assignment.execution_profile_id,
+                    "execution_profile_revision": (
+                        assignment.execution_profile_definition.revision
+                        if assignment.execution_profile_definition is not None
+                        else None
+                    ),
                 },
             )
             created.append(assignment)
