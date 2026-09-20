@@ -1377,8 +1377,8 @@ work_item_continuity_service = WorkItemContinuityService(
         source,
     ),
     dispatch_text=lambda state: core._work_item_dispatch_text(state),
-    append_event=core._append_bot_event,
-    truncate_text=core._truncate_text,
+    append_event=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
     thread_is_active=lambda thread_id: core._thread_is_active(thread_id),
     thread_queue_depth=lambda thread_id: core._thread_queue_depth(thread_id),
     thread_recently_active=lambda thread_id: core._thread_recently_active(
@@ -1838,8 +1838,8 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     load_settings=runtime_state.thread_settings.load,
     save_settings=runtime_state.thread_settings.save,
     bindings=bot_binding_selection_service,
-    load_bindings=core._load_bot_bindings,
-    save_bindings=core._save_bot_bindings,
+    load_bindings=bot_state.bindings.load,
+    save_bindings=bot_state.bindings.save,
 )
 
 turn_execution_service = install_turn_execution_service(
@@ -1883,15 +1883,15 @@ async def _thread_recovery_runtime_request(method, params):
 thread_naming_service = ThreadNamingService(
     _existing_thread_runtime_request,
     thread_index_repository,
-    core._load_bot_bindings,
-    event_sink=core._append_bot_event,
+    bot_state.bindings.load,
+    event_sink=bot_runtime_telemetry.append,
 )
 thread_resume_service = ThreadResumeService(
     _existing_thread_runtime_request,
     thread_index_repository,
     bot_binding_selection_service,
-    event_sink=core._append_bot_event,
-    truncate_text=core._truncate_text,
+    event_sink=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
 )
 app.state.thread_naming_service = thread_naming_service
 app.state.thread_resume_service = thread_resume_service
@@ -1955,9 +1955,9 @@ bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
 thread_bot_collaboration_service = ThreadBotCollaborationService(
     project_runtime_service,
     _existing_thread_runtime_request,
-    load_bindings=core._load_bot_bindings,
-    save_bindings=core._save_bot_bindings,
-    load_connections=core._load_bot_connections,
+    load_bindings=bot_state.bindings.load,
+    save_bindings=bot_state.bindings.save,
+    load_connections=bot_state.connections.load,
     upsert_binding=bot_binding_lifecycle_service.upsert,
 )
 app.state.thread_bot_collaboration_service = thread_bot_collaboration_service
@@ -1988,9 +1988,9 @@ context_service = ContextCompactionService(
 )
 
 thread_service = ThreadService(
-    runtime_transport=core.codex,
+    runtime_transport=codex_runtime,
     runtime_request_for_thread=turn_execution_service.request_for_thread,
-    event_sink=core._append_bot_event,
+    event_sink=bot_runtime_telemetry.append,
     binding_service=turn_execution_binding_service,
     session_manager=assignment_bound_codex_session_manager,
     bootstrap_bindings=thread_bootstrap_binding_service,
@@ -2016,8 +2016,8 @@ turn_service = TurnService(
     bindings=bot_binding_selection_service,
     queue_policy=turn_queue_policy,
     execution=turn_execution_service,
-    event_sink=core._append_bot_event,
-    truncate_text=core._truncate_text,
+    event_sink=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
     binding_public=core._binding_public,
 )
 app.state.thread_service = thread_service
@@ -2078,7 +2078,7 @@ native_recovery_service = NativeRecoveryService(
         autonomy_service.run_work_item_sla_cycle,
         autonomy_service.run_orchestrator_cycle,
     ),
-    append_event=core._append_bot_event,
+    append_event=bot_runtime_telemetry.append,
 )
 app.state.native_recovery_service = native_recovery_service
 work_item_service.recovery = native_recovery_service
@@ -2267,7 +2267,7 @@ bot_service = BotService(
     telemetry=bot_runtime_telemetry,
     runtime=bot_runtime,
     routing_service=bot_routing_service,
-    load_gitlab_routing_settings=lambda: core._load_gitlab_routing_settings(),
+    load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
 )
 app.state.bot_service = bot_service
 
@@ -2276,7 +2276,7 @@ static_asset_version_service = StaticAssetVersionService(
     DATA_DIR.parent,
 )
 runtime_health_service = RuntimeHealthService(
-    codex=core.codex,
+    codex=codex_runtime,
     bot_runtime=bot_runtime,
     telemetry=bot_runtime_telemetry,
     load_bindings=bot_state.bindings.load,
@@ -2303,10 +2303,10 @@ runtime_supervisor = install_runtime_supervisor(
     gitlab=gitlab_service,
     native_recovery=native_recovery_service,
     continuity=work_item_continuity_service,
-    codex=core.codex,
+    codex=codex_runtime,
     bot_runtime=bot_runtime,
-    event_sink=core._append_bot_event,
-    truncate_text=core._truncate_text,
+    event_sink=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
     sd_notify=core._sd_notify,
     daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
@@ -2321,7 +2321,7 @@ runtime_supervisor = install_runtime_supervisor(
 )
 
 runtime_service = RuntimeService(
-    codex=core.codex,
+    codex=codex_runtime,
     static_version=static_asset_version_service.version,
     runtime_health=runtime_health_service.health,
     load_active_turns=runtime_state.active_turns.load,
@@ -2396,7 +2396,7 @@ def _diagnostic_binding_public(binding):
 runtime_diagnostics_service = RuntimeDiagnosticsService(
     version=static_asset_version_service.version,
     health=runtime_health_service.health,
-    codex=core.codex,
+    codex=codex_runtime,
     bot_runtime=bot_runtime,
     telemetry=bot_runtime_telemetry,
     runtime_policy=runtime_policy,
@@ -2440,8 +2440,8 @@ core._static_version = static_asset_version_service.version
 
 def _compat_daemon_health():
     compatibility_health = RuntimeHealthService(
-        codex=core.codex,
-        bot_runtime=core.bot_runtime,
+        codex=codex_runtime,
+        bot_runtime=bot_runtime,
         telemetry=bot_runtime_telemetry,
         load_bindings=bot_state.bindings.load,
         terminal_failures=getattr(
