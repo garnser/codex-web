@@ -13,7 +13,8 @@ from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurn
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
-from codex_web.models import ActiveThreadTurn, BotReplyTarget, Project, QueuedTurn
+from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, QueuedTurn
+from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.provider_capacity import ProviderCapacityWaitCreate
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_routing import AgentRoutingService
@@ -59,6 +60,7 @@ class TurnExecutionService:
         runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
         provider_capacity: ProviderCapacityService | None = None,
         ownership: ReplicatedOwnershipService | None = None,
+        bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -72,6 +74,10 @@ class TurnExecutionService:
         self.runtime_adapter_factory = runtime_adapter_factory
         self.provider_capacity = provider_capacity
         self.ownership = ownership
+        self.bindings_for_thread = (
+            bindings_for_thread
+            or getattr(host, "_bindings_for_thread", lambda _thread_id: [])
+        )
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -79,6 +85,29 @@ class TurnExecutionService:
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def with_relay_guard(message: str, source: str | None) -> str:
+        normalized_source = (source or "").lower()
+        if "slack" not in normalized_source:
+            return message
+        if SLACK_RELAY_NOTICE in message:
+            return message
+        return f"{SLACK_RELAY_NOTICE}\n\n{message}"
+
+    def turn_source_for_relay_guard(
+        self,
+        thread_id: str,
+        source: str | None,
+    ) -> str | None:
+        if "slack" in (source or "").lower():
+            return source
+        if any(
+            binding.provider == "slack"
+            for binding in self.bindings_for_thread(thread_id)
+        ):
+            return f"{source or 'web'}:slack-bound"
+        return source
 
     @staticmethod
     def _new_execution_id() -> str:
@@ -854,9 +883,9 @@ class TurnExecutionService:
                     effective_sandbox,
                     workspace_cwd,
                 )
-            params["input"][0]["text"] = h._with_relay_guard(
+            params["input"][0]["text"] = self.with_relay_guard(
                 params["input"][0]["text"],
-                h._turn_source_for_relay_guard(thread_id, source),
+                self.turn_source_for_relay_guard(thread_id, source),
             )
             runtime_turn_request = AgentRuntimeTurnRequest(
                 message=params["input"][0]["text"],
@@ -1331,6 +1360,7 @@ def install_turn_execution_service(
     runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
     provider_capacity: ProviderCapacityService | None = None,
     ownership: ReplicatedOwnershipService | None = None,
+    bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1349,6 +1379,8 @@ def install_turn_execution_service(
         )
         service.provider_capacity = provider_capacity or service.provider_capacity
         service.ownership = ownership or service.ownership
+        if bindings_for_thread is not None:
+            service.bindings_for_thread = bindings_for_thread
     else:
         service = TurnExecutionService(
             host,
@@ -1361,6 +1393,7 @@ def install_turn_execution_service(
             runtime_adapter_factory=runtime_adapter_factory,
             provider_capacity=provider_capacity,
             ownership=ownership,
+            bindings_for_thread=bindings_for_thread,
         )
         app.state.turn_execution_service = service
 
