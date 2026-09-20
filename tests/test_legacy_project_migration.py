@@ -411,6 +411,52 @@ class LegacyProjectMigrationTests(unittest.TestCase):
         self.assertIsNone(migrated.repository_resource_id)
         self.assertEqual(self.bindings[0].model_dump(), before_binding)
 
+    def test_compatibility_mapping_can_be_revoked_early_with_provenance(self) -> None:
+        repo = self._git_repo(self.root / "saas-app")
+        self.threads = [
+            IndexedThread(id="thread-dev", name="development", cwd=str(repo))
+        ]
+        plan = self.service.plan(self.project.id, actor=self.actor)
+        self.service.apply(
+            plan,
+            actor=self.actor,
+            compatibility_window_seconds=3600,
+        )
+
+        self.assertIsNotNone(
+            self.service.resolve_legacy_path(str(repo), actor=self.actor)
+        )
+        revoked = self.service.revoke_legacy_path(
+            self.project.id,
+            str(repo),
+            actor=self.actor,
+        )
+
+        self.assertEqual(len(revoked), 1)
+        self.assertEqual(revoked[0].revoked_by, self.actor.identity_id)
+        self.assertEqual(revoked[0].revoked_at, self.now)
+        self.assertIsNone(
+            self.service.resolve_legacy_path(str(repo), actor=self.actor)
+        )
+        status = self.service.status(
+            self.project.id,
+            actor=self.actor,
+        )[0]
+        stored = next(
+            item
+            for item in status.compatibility_mappings
+            if item.legacy_path == str(repo.resolve())
+        )
+        self.assertEqual(stored.revoked_by, self.actor.identity_id)
+        self.assertEqual(stored.revoked_at, self.now)
+
+        repeated = self.service.revoke_legacy_path(
+            self.project.id,
+            str(repo),
+            actor=self.actor,
+        )
+        self.assertEqual(repeated, ())
+
     def test_compatibility_mapping_expires_truthfully(self) -> None:
         repo = self._git_repo(self.root / "saas-app")
         self.threads = [
