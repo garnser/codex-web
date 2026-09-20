@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -12,12 +14,52 @@ from codex_web.services.conversation_channels import ConversationChannelService
 
 
 def build_telegram_router(
-    routing_service: BotRoutingService,
+    routing_or_host: BotRoutingService | Any,
+    routing_service: BotRoutingService | None = None,
     *,
-    connections: BotConnectionService,
-    webhook_security: BotWebhookSecurityService,
+    connections: BotConnectionService | Any | None = None,
+    webhook_security: BotWebhookSecurityService | Any | None = None,
     conversation_channels: ConversationChannelService | None = None,
 ) -> APIRouter:
+    if routing_service is None:
+        routing_service = routing_or_host
+    else:
+        host = routing_or_host
+        lookup = getattr(
+            host,
+            "_bot_connection_for_conversation",
+            lambda _provider, _conversation: None,
+        )
+        connections = connections or SimpleNamespace(
+            for_conversation=lookup,
+            runtime_actor=getattr(
+                host,
+                "_bot_runtime_actor",
+                lambda _project_id: None,
+            ),
+        )
+        legacy_verify = getattr(
+            host,
+            "_verify_telegram_secret",
+            lambda _request: None,
+        )
+
+        async def verify_telegram(request: Request) -> None:
+            result = legacy_verify(request)
+            if inspect.isawaitable(result):
+                await result
+
+        webhook_security = webhook_security or SimpleNamespace(
+            verify_telegram=verify_telegram
+        )
+
+    connections = connections or SimpleNamespace(
+        for_conversation=lambda _provider, _conversation: None,
+        runtime_actor=lambda _project_id: None,
+    )
+    if webhook_security is None:
+        raise TypeError("webhook_security is required")
+
     router = APIRouter(tags=["telegram"])
 
     @router.post("/bots/telegram/webhook")
