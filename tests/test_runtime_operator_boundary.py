@@ -35,17 +35,27 @@ class _RuntimeStub:
         return {"data": [], "includeHidden": include_hidden}
 
 
-class _SystemHostStub:
-    def _static_version(self):
+class _StaticAssetsStub:
+    @staticmethod
+    def version():
         return "test"
 
-    def _daemon_health(self):
+
+class _RuntimeHealthStub:
+    @staticmethod
+    def health():
         return {"ok": True}
 
-    def _diagnostic_snapshot(self, project_id):
+
+class _DiagnosticsStub:
+    @staticmethod
+    def snapshot(project_id):
         return {"projectId": project_id, "ok": True}
 
-    def _preview_bot_route(self, payload):
+
+class _RoutingStub:
+    @staticmethod
+    def preview(payload):
         return {
             "provider": payload.provider,
             "externalConversationId": payload.external_conversation_id,
@@ -71,7 +81,14 @@ class RuntimeOperatorBoundaryTests(unittest.TestCase):
             return await call_next(request)
 
         app.include_router(build_runtime_router(_RuntimeStub()))
-        app.include_router(build_system_router(_SystemHostStub()))
+        app.include_router(
+            build_system_router(
+                _StaticAssetsStub(),
+                _RuntimeHealthStub(),
+                _DiagnosticsStub(),
+                _RoutingStub(),
+            )
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
