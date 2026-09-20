@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import WorkItemEvent, WorkItemState
+from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.work_item_execution_models import (
     WorkItemCheckpointCreate,
     WorkItemExecutionCheckpoint,
@@ -22,8 +23,23 @@ class WorkItemExecutionLifecycleService:
     MAX_CHECKPOINT_HISTORY = 20
     MAX_HISTORY_LIMIT = 500
 
-    def __init__(self, host: Any, state_machine: Any) -> None:
-        self.host = host
+    def __init__(
+        self,
+        host: Any | None,
+        state_machine: Any,
+        *,
+        dependencies: WorkItemRuntimeDependencies | None = None,
+    ) -> None:
+        if dependencies is None:
+            dependencies = getattr(state_machine, "dependencies", None)
+        if dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "WorkItemExecutionLifecycleService requires "
+                    "work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(host)
+        self.dependencies = dependencies
         self.state_machine = state_machine
 
     def _state(self, ref: str) -> WorkItemState:
@@ -60,7 +76,7 @@ class WorkItemExecutionLifecycleService:
         self._state(ref)
         limit = max(1, min(int(limit), self.MAX_HISTORY_LIMIT))
         events: list[WorkItemEvent] = []
-        path = self.host.WORK_ITEM_EVENTS_FILE
+        path = self.dependencies.events_file
         if path.exists():
             try:
                 with path.open("r", encoding="utf-8") as handle:

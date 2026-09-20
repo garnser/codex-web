@@ -7,6 +7,7 @@ from typing import Any
 from codex_web.compatibility import ContractCompatibilityError, TASK_SOURCE_CONTRACT
 from codex_web.identity import TenantScope
 from codex_web.models import TaskSourceConfiguration, WorkItemState
+from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
@@ -198,17 +199,33 @@ class TaskSourceRegistry:
 class TaskSourceWritebackService:
     """Project canonical work state to its authoritative source through capabilities."""
 
-    def __init__(self, host: Any, registry: TaskSourceRegistry) -> None:
-        self.host = host
+    def __init__(
+        self,
+        host: Any | None,
+        registry: TaskSourceRegistry,
+        *,
+        dependencies: WorkItemRuntimeDependencies | None = None,
+    ) -> None:
+        if dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "TaskSourceWritebackService requires work-item dependencies"
+                )
+            dependencies = WorkItemRuntimeDependencies.from_host(host)
+        self.dependencies = dependencies
         self.registry = registry
 
-    def _save_snapshot(self, state: WorkItemState, snapshot: TaskSourceSnapshot) -> WorkItemState:
+    def _save_snapshot(
+        self,
+        state: WorkItemState,
+        snapshot: TaskSourceSnapshot,
+    ) -> WorkItemState:
         state.source_identity = snapshot.identity
         state.labels = list(snapshot.labels)
         state.updated_at = max(state.updated_at, time.time())
-        states = self.host._load_work_item_states()
+        states = self.dependencies.load_states()
         states[state.ref] = state
-        self.host._save_work_item_states(states)
+        self.dependencies.save_states(states)
         return state
 
     async def sync(self, state: WorkItemState) -> WorkItemState:
@@ -251,7 +268,12 @@ class TaskSourceWritebackService:
         return bool(source and source.capabilities.supports(capability))
 
 
-def install_task_source_runtime(app: Any, host: Any) -> tuple[TaskSourceRegistry, TaskSourceWritebackService]:
+def install_task_source_runtime(
+    app: Any,
+    host: Any,
+    *,
+    dependencies: WorkItemRuntimeDependencies | None = None,
+) -> tuple[TaskSourceRegistry, TaskSourceWritebackService]:
     existing_registry = getattr(app.state, "task_source_registry", None)
     existing_writeback = getattr(app.state, "task_source_writeback_service", None)
     if isinstance(existing_registry, TaskSourceRegistry) and isinstance(
@@ -260,7 +282,11 @@ def install_task_source_runtime(app: Any, host: Any) -> tuple[TaskSourceRegistry
         return existing_registry, existing_writeback
 
     registry = TaskSourceRegistry()
-    writeback = TaskSourceWritebackService(host, registry)
+    writeback = TaskSourceWritebackService(
+        host,
+        registry,
+        dependencies=dependencies,
+    )
     app.state.task_source_registry = registry
     app.state.task_source_writeback_service = writeback
     return registry, writeback

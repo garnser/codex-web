@@ -8,6 +8,21 @@ from typing import Any
 from codex_web.services.runtime_policy import RuntimePolicy
 
 
+class DeferredRecoveryScheduler:
+    """Explicitly bridge composition order without a legacy service locator."""
+
+    def __init__(self) -> None:
+        self._delegate: NativeRecoveryService | None = None
+
+    def bind(self, delegate: "NativeRecoveryService") -> None:
+        self._delegate = delegate
+
+    def schedule(self, *, reason: str = "manual") -> bool:
+        if self._delegate is None:
+            return False
+        return self._delegate.schedule(reason=reason)
+
+
 class NativeRecoveryService:
     """Own idempotent native recovery scheduling and cooldown state."""
 

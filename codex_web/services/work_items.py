@@ -13,6 +13,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
+from codex_web.services.gitlab_sync_health import GitLabSyncHealth
 from codex_web.services.builtin_task_source_runtime import install_builtin_task_source_runtime
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
@@ -32,6 +33,10 @@ from codex_web.services.task_sources import (
     TaskSourceCreateCapable,
     TaskSourceCreateRequest,
     TaskSourceEvent,
+)
+from codex_web.services.work_item_dependencies import (
+    GitLabWorkItemDependencies,
+    WorkItemRuntimeDependencies,
 )
 from codex_web.services.work_item_state import WorkItemStateMachine
 
@@ -145,12 +150,154 @@ class _HostRecoveryAdapter:
         return True
 
 
+class _BootstrapRecoveryScheduler:
+    """No-op only during application composition before recovery is attached."""
+
+    def schedule(self, *, reason: str = "manual") -> bool:
+        del reason
+        return False
+
+
+class WorkItemCompatibilityFacade:
+    """Historical server-module entrypoints isolated from production services."""
+
+    def __init__(self, host: Any, service: "WorkItemService") -> None:
+        self.host = host
+        self.service = service
+        self.continuity = _HostContinuityAdapter(host)
+        self.recovery = _HostRecoveryAdapter(host)
+
+    def resolve(self, name: str, fallback: Any) -> Any:
+        return getattr(self.host, name, fallback)
+
+    async def publish(self, event: dict[str, Any]) -> None:
+        hub = getattr(self.host, "hub", None)
+        publish = getattr(hub, "publish", None)
+        if publish is not None:
+            await publish(event)
+
+    def append_work_item_event(self, event: Any) -> None:
+        path = getattr(
+            self.host,
+            "WORK_ITEM_EVENTS_FILE",
+            self.service.work_items.events_file,
+        )
+        canonical_path = self.service.work_items.events_file
+        if path == canonical_path:
+            self.service.state_machine._append_work_item_event(event)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(event.model_dump_json())
+            handle.write("\n")
+
+    def project_gitlab_issue(
+        self,
+        issue: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        return self.service.project_gitlab_issue_compat(
+            issue,
+            project_id=project_id,
+        )
+
+    def project_gitlab_event(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+    ) -> Any:
+        return self.service.project_gitlab_event_compat(
+            payload,
+            project_id=project_id,
+            append_event=self.resolve(
+                "_append_work_item_event",
+                self.append_work_item_event,
+            ),
+            sync_writeback=self.resolve(
+                "_sync_gitlab_issue_labels_from_work_item",
+                self.service.schedule_task_source_writeback,
+            ),
+        )
+
+    async def handoff(
+        self,
+        ref: str,
+        payload: WorkItemHandoffCreate,
+    ) -> dict[str, Any]:
+        return await self.service._handoff_with(
+            ref,
+            payload,
+            continuity=self.continuity,
+            structured_handoff=self.resolve(
+                "_structured_handoff",
+                self.service.state_machine._structured_handoff,
+            ),
+            public_state=self.resolve(
+                "_work_item_state_public",
+                self.service.state_machine._work_item_state_public,
+            ),
+            publish_event=self.publish,
+        )
+
+    async def acknowledge(
+        self,
+        ref: str,
+        payload: WorkItemAckCreate,
+    ) -> dict[str, Any]:
+        return await self.service._acknowledge_with(
+            ref,
+            payload,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_ack=self.resolve(
+                "_structured_ack",
+                self.service.state_machine._structured_ack,
+            ),
+            public_state=self.resolve(
+                "_work_item_state_public",
+                self.service.state_machine._work_item_state_public,
+            ),
+            split_brain_findings=self.resolve(
+                "_work_item_split_brain_findings",
+                self.service.state_machine._work_item_split_brain_findings,
+            ),
+            publish_event=self.publish,
+        )
+
+    async def progress(
+        self,
+        ref: str,
+        payload: WorkItemProgressUpdate,
+    ) -> dict[str, Any]:
+        return await self.service._progress_with(
+            ref,
+            payload,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_progress=self.resolve(
+                "_structured_progress",
+                self.service.state_machine._structured_progress,
+            ),
+            public_state=self.resolve(
+                "_work_item_state_public",
+                self.service.state_machine._work_item_state_public,
+            ),
+            split_brain_findings=self.resolve(
+                "_work_item_split_brain_findings",
+                self.service.state_machine._work_item_split_brain_findings,
+            ),
+            publish_event=self.publish,
+        )
+
+
 class WorkItemService:
-    """Work-item API behavior backed by canonical state and TaskSource services."""
+    """Work-item API behavior over explicit canonical dependencies."""
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         gitlab: GitLabClient | None = None,
         state_machine: WorkItemStateMachine | None = None,
         task_source_projector: TaskSourceWorkItemProjector | None = None,
@@ -160,30 +307,120 @@ class WorkItemService:
         gitlab_artifact_events: GitLabArtifactEventProjector | None = None,
         continuity: Any | None = None,
         recovery: Any | None = None,
+        sync_health: GitLabSyncHealth | None = None,
+        event_sink: Any | None = None,
+        publish_event: Any | None = None,
+        truncate_text: Any | None = None,
+        work_item_dependencies: WorkItemRuntimeDependencies | None = None,
+        gitlab_dependencies: GitLabWorkItemDependencies | None = None,
+        identity_service: Any | None = None,
+        secret_broker: Any | None = None,
     ) -> None:
-        self.host = host
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        if work_item_dependencies is None:
+            work_item_dependencies = getattr(
+                state_machine,
+                "dependencies",
+                None,
+            )
+        if work_item_dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "WorkItemService requires work-item dependencies"
+                )
+            work_item_dependencies = (
+                WorkItemRuntimeDependencies.from_host(host)
+            )
+        if gitlab_dependencies is None:
+            if host is None:
+                raise TypeError(
+                    "WorkItemService requires GitLab dependencies"
+                )
+            gitlab_dependencies = GitLabWorkItemDependencies.from_host(host)
+
+        self.work_items = work_item_dependencies
+        self.gitlab_dependencies = gitlab_dependencies
         self.gitlab = gitlab or GitLabClient()
-        self.continuity = continuity or _HostContinuityAdapter(host)
-        self.recovery = recovery or _HostRecoveryAdapter(host)
-        self.compatibility_continuity = _HostContinuityAdapter(host)
-        self.compatibility_recovery = _HostRecoveryAdapter(host)
-        self.state_machine = state_machine or WorkItemStateMachine(host)
-        self.task_source_projector = task_source_projector or TaskSourceWorkItemProjector(
+        self.continuity = (
+            continuity
+            or (_HostContinuityAdapter(host) if host is not None else None)
+        )
+        self.recovery = (
+            recovery
+            or (
+                _HostRecoveryAdapter(host)
+                if host is not None
+                else _BootstrapRecoveryScheduler()
+            )
+        )
+        if self.continuity is None:
+            raise TypeError(
+                "WorkItemService requires a continuity service"
+            )
+        self.sync_health = sync_health or GitLabSyncHealth()
+        self.event_sink = event_sink or (
+            getattr(host, "_append_bot_event", None)
+            if host is not None
+            else None
+        ) or (lambda _event: None)
+        host_hub = getattr(host, "hub", None) if host is not None else None
+        self.publish_event = (
+            publish_event
+            or getattr(host_hub, "publish", None)
+            or _publish_noop
+        )
+        self.truncate_text = truncate_text or (
+            getattr(host, "_truncate_text", None)
+            if host is not None
+            else None
+        ) or (lambda value, limit: str(value)[:limit])
+
+        self.state_machine = state_machine or WorkItemStateMachine(
             host,
-            self.state_machine,
+            dependencies=self.work_items,
+        )
+        self.task_source_projector = (
+            task_source_projector
+            or TaskSourceWorkItemProjector(
+                host,
+                self.state_machine,
+                dependencies=self.work_items,
+            )
         )
         self.task_source_event_reconciler = (
             task_source_event_reconciler
-            or TaskSourceWorkItemEventReconciler(host, self.task_source_projector)
+            or TaskSourceWorkItemEventReconciler(
+                host,
+                self.task_source_projector,
+                dependencies=self.work_items,
+            )
         )
         if task_source_writeback is None:
             registry = task_source_registry or TaskSourceRegistry()
-            registry.register("gitlab", self._gitlab_source_for_state)
-            self.task_source_writeback = TaskSourceWritebackService(host, registry)
+            self.task_source_writeback = TaskSourceWritebackService(
+                host,
+                registry,
+                dependencies=self.work_items,
+            )
             self.task_source_registry = registry
         else:
             self.task_source_writeback = task_source_writeback
-            self.task_source_registry = task_source_registry or task_source_writeback.registry
+            self.task_source_registry = (
+                task_source_registry or task_source_writeback.registry
+            )
+
+        register_source = getattr(
+            self.task_source_registry,
+            "register",
+            None,
+        )
+        if callable(register_source):
+            register_source(
+                "gitlab",
+                self._gitlab_source_for_state,
+            )
         register_project = getattr(
             self.task_source_registry,
             "register_project",
@@ -194,46 +431,74 @@ class WorkItemService:
                 "gitlab",
                 self._gitlab_source_for_project,
             )
-        app_state = getattr(getattr(host, "app", None), "state", None)
-        identity_service = getattr(app_state, "identity_service", None)
-        secret_broker = getattr(app_state, "secret_broker", None)
+
+        if identity_service is None and host is not None:
+            app_state = getattr(getattr(host, "app", None), "state", None)
+            identity_service = getattr(
+                app_state,
+                "identity_service",
+                None,
+            )
+            secret_broker = secret_broker or getattr(
+                app_state,
+                "secret_broker",
+                None,
+            )
         self.builtin_task_source_runtime = None
         if identity_service is not None and secret_broker is not None:
-            self.builtin_task_source_runtime = install_builtin_task_source_runtime(
-                self.task_source_registry,
-                host,
-                identity_service,
-                secret_broker,
+            self.builtin_task_source_runtime = (
+                install_builtin_task_source_runtime(
+                    self.task_source_registry,
+                    host,
+                    identity_service,
+                    secret_broker,
+                    load_projects=self.work_items.load_projects,
+                )
             )
-        self.gitlab_artifact_events = gitlab_artifact_events or GitLabArtifactEventProjector(
-            host,
-            self.state_machine,
+
+        self.gitlab_artifact_events = (
+            gitlab_artifact_events
+            or GitLabArtifactEventProjector(
+                host,
+                self.state_machine,
+                work_item_dependencies=self.work_items,
+                gitlab_dependencies=self.gitlab_dependencies,
+            )
         )
 
-        # Preserve historical entrypoints at the integration edge. These aliases
-        # terminate at TaskSource/integration services, never provider code in
-        # the canonical state machine.
-        host.create_work_item_handoff = self.compatibility_handoff
-        host.ack_work_item_handoff = self.compatibility_acknowledge
-        host.update_work_item_progress = self.compatibility_progress
-        host._reconcile_task_source_event = self.reconcile_task_source_event
-        host._upsert_work_item_state_from_gitlab_issue = self.project_gitlab_issue_compat
-        host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
-        host._sync_gitlab_issue_labels_from_work_item = self.schedule_task_source_writeback
+        if host is not None:
+            compatibility = WorkItemCompatibilityFacade(host, self)
+            host.create_work_item_handoff = compatibility.handoff
+            host.ack_work_item_handoff = compatibility.acknowledge
+            host.update_work_item_progress = compatibility.progress
+            host._reconcile_task_source_event = (
+                self.reconcile_task_source_event
+            )
+            host._upsert_work_item_state_from_gitlab_issue = (
+                self.project_gitlab_issue_compat
+            )
+            host._upsert_work_item_state_from_gitlab_event = (
+                self.project_gitlab_event_compat
+            )
+            host._sync_gitlab_issue_labels_from_work_item = (
+                self.schedule_task_source_writeback
+            )
+            app_state = getattr(getattr(host, "app", None), "state", None)
+            if app_state is not None:
+                app_state.work_item_compatibility_service = compatibility
 
-    def _compat(self, name: str, fallback: Any) -> Any:
-        """Resolve a composed host seam while supporting lightweight hosts."""
-        return getattr(self.host, name, fallback)
-
-    def _gitlab_source_for_state(self, state: Any) -> TaskSource | None:
+    def _gitlab_source_for_state(
+        self,
+        state: Any,
+    ) -> TaskSource | None:
         project_id = getattr(state, "project_id", None)
         if not project_id:
             return None
-        token = self.host._gitlab_token_for_project(project_id)
+        token = self.gitlab_dependencies.token_for_project(project_id)
         if not token:
             return None
         return GitLabTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.gitlab_dependencies.api_base_url,
             token,
             client=self.gitlab,
         )
@@ -244,10 +509,10 @@ class WorkItemService:
         project_id: str,
         scope: TenantScope,
     ) -> TaskSource | None:
-        del scope  # tenant selection is enforced before registry resolution.
+        del scope
         if configuration.source_type.casefold() != "gitlab":
             return None
-        token = self.host._gitlab_token_for_project(project_id)
+        token = self.gitlab_dependencies.token_for_project(project_id)
         if not token:
             return None
         return GitLabTaskSource(
@@ -261,13 +526,25 @@ class WorkItemService:
         project_id: str,
         scope: TenantScope,
     ) -> Any:
+        dependencies = getattr(self, "work_items", None)
+        if dependencies is not None:
+            projects = dependencies.load_projects()
+        else:
+            compatibility_host = getattr(self, "host", None)
+            projects = (
+                compatibility_host._load_projects()
+                if compatibility_host is not None
+                else []
+            )
         project = next(
             (
                 item
-                for item in self.host._load_projects()
+                for item in projects
                 if getattr(item, "id", None) == project_id
-                and getattr(item, "organization_id", None) == scope.organization_id
-                and getattr(item, "workspace_id", None) == scope.workspace_id
+                and getattr(item, "organization_id", None)
+                == scope.organization_id
+                and getattr(item, "workspace_id", None)
+                == scope.workspace_id
             ),
             None,
         )
@@ -338,15 +615,13 @@ class WorkItemService:
             try:
                 await self.task_source_writeback.sync(snapshot)
             except Exception as exc:
-                append = getattr(self.host, "_append_bot_event", None)
-                if callable(append):
-                    append(
-                        {
-                            "type": "task_source_writeback_failed",
-                            "ref": getattr(snapshot, "ref", None),
-                            "error": str(exc)[:500],
-                        }
-                    )
+                self.event_sink(
+                    {
+                        "type": "task_source_writeback_failed",
+                        "ref": getattr(snapshot, "ref", None),
+                        "error": str(exc)[:500],
+                    }
+                )
 
         loop.create_task(run())
         return state
@@ -360,7 +635,7 @@ class WorkItemService:
         release_gate: bool | None,
         scope: TenantScope | None = None,
     ) -> dict[str, Any]:
-        states = list(self.host._load_work_item_states().values())
+        states = list(self.work_items.load_states().values())
         if scope is not None:
             states = [
                 state
@@ -397,12 +672,12 @@ class WorkItemService:
 
         synced = 0
         seen_refs: set[str] = set()
-        settings = self.host._load_gitlab_routing_settings()
+        settings = self.gitlab_dependencies.load_routing_settings()
         allowed_project_ids: set[str] | None = None
         if scope is not None:
             allowed_project_ids = {
                 project.id
-                for project in self.host._load_projects()
+                for project in self.work_items.load_projects()
                 if project.organization_id == scope.organization_id
                 and project.workspace_id == scope.workspace_id
             }
@@ -411,13 +686,13 @@ class WorkItemService:
                 continue
             if not project_settings.enabled:
                 continue
-            token = self.host._gitlab_token_for_project(project_id)
-            group = self.host._gitlab_group_path(project_settings)
+            token = self.gitlab_dependencies.token_for_project(project_id)
+            group = self.gitlab_dependencies.group_path(project_settings)
             if not token or not group:
                 continue
 
             source = GitLabTaskSource(
-                self.host.GITLAB_API_BASE,
+                self.gitlab_dependencies.api_base_url,
                 token,
                 client=self.gitlab,
             )
@@ -458,7 +733,7 @@ class WorkItemService:
         """Legacy issue-projection name backed by normalized TaskSource state."""
 
         source = GitLabWebhookTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.gitlab_dependencies.api_base_url,
             client=self.gitlab,
         )
         try:
@@ -476,8 +751,13 @@ class WorkItemService:
         state: Any,
         *,
         payload: dict[str, Any],
+        append_event: Any | None = None,
     ) -> None:
-        append = getattr(self.state_machine, "_append_work_item_event", None)
+        append = append_event or getattr(
+            self.state_machine,
+            "_append_work_item_event",
+            None,
+        )
         make_event = getattr(self.state_machine, "_work_item_event", None)
         if state is None or not callable(append) or not callable(make_event):
             return
@@ -495,7 +775,12 @@ class WorkItemService:
             )
         )
 
-    def _preserve_gitlab_closed_label_cleanup(self, state: Any) -> Any:
+    def _preserve_gitlab_closed_label_cleanup(
+        self,
+        state: Any,
+        *,
+        sync_writeback: Any | None = None,
+    ) -> Any:
         if state is None or getattr(state, "current_stage", None) != "closed":
             return state
         labels = list(getattr(state, "labels", None) or [])
@@ -503,12 +788,8 @@ class WorkItemService:
             str(label).startswith(("owner::", "status::")) for label in labels
         ):
             return state
-        sync = getattr(
-            self.host,
-            "_sync_gitlab_issue_labels_from_work_item",
-            self.schedule_task_source_writeback,
-        )
-        projected = sync(state) if callable(sync) else state
+        sync = sync_writeback or self.schedule_task_source_writeback
+        projected = sync(state)
         if projected is not None:
             state = projected
         save = getattr(self.state_machine, "_save_work_item_state", None)
@@ -521,11 +802,13 @@ class WorkItemService:
         payload: dict[str, Any],
         *,
         project_id: str,
+        append_event: Any | None = None,
+        sync_writeback: Any | None = None,
     ) -> Any:
         """Compatibility hook used by GitLabService during migration."""
 
         source = GitLabWebhookTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.gitlab_dependencies.api_base_url,
             client=self.gitlab,
         )
         event = source.normalize_event_sync(payload)
@@ -539,30 +822,37 @@ class WorkItemService:
         )
         state = result.state
         if result.decision.outcome.value == "stale":
-            self._append_legacy_gitlab_stale_event(state, payload=payload)
-        state = self._preserve_gitlab_closed_label_cleanup(state)
+            self._append_legacy_gitlab_stale_event(
+                state,
+                payload=payload,
+                append_event=append_event,
+            )
+        state = self._preserve_gitlab_closed_label_cleanup(
+            state,
+            sync_writeback=sync_writeback,
+        )
         return state
 
-    async def sync_from_gitlab(self, scope: TenantScope | None = None) -> dict[str, Any]:
+    async def sync_from_gitlab(
+        self,
+        scope: TenantScope | None = None,
+    ) -> dict[str, Any]:
         try:
             result = await self._sync_from_gitlab_async(scope)
         except Exception as exc:
-            self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
-            self.host.GITLAB_SYNC_LAST_ERROR = self.host._truncate_text(str(exc), 500)
-            self.host.GITLAB_SYNC_LAST_ERROR_AT = time.time()
-            self.host._append_bot_event(
+            error = self.truncate_text(str(exc), 500)
+            health = self.sync_health.record_failure(error)
+            self.event_sink(
                 {
                     "type": "gitlab_work_item_sync_failed",
-                    "failure_count": self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES,
-                    "error": self.host.GITLAB_SYNC_LAST_ERROR,
+                    "failure_count": health["consecutive_failures"],
+                    "error": health["last_error"],
                 }
             )
             raise
 
-        self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
-        self.host.GITLAB_SYNC_LAST_ERROR = None
-        self.host.GITLAB_SYNC_LAST_SUCCESS_AT = time.time()
-        await self.host.hub.publish({"type": "work-item.sync", **result})
+        self.sync_health.record_success()
+        await self.publish_event({"type": "work-item.sync", **result})
         return {"ok": True, **result}
 
     async def resume_provider_capacity_wait(
@@ -604,20 +894,16 @@ class WorkItemService:
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
+        *,
         continuity: Any,
+        structured_handoff: Any,
+        public_state: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_handoff = self._compat(
-            "_structured_handoff",
-            self.state_machine._structured_handoff,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
         state = structured_handoff(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.handoff", "ref": ref, "state": public}
         )
         continuity.schedule_structured_handoff_dispatch(
@@ -635,42 +921,38 @@ class WorkItemService:
         ref: str,
         payload: WorkItemHandoffCreate,
     ) -> dict[str, Any]:
-        return await self._handoff_with(ref, payload, self.continuity)
+        return await self._handoff_with(
+            ref,
+            payload,
+            continuity=self.continuity,
+            structured_handoff=self.state_machine._structured_handoff,
+            public_state=self.state_machine._work_item_state_public,
+            publish_event=self.publish_event,
+        )
 
     async def compatibility_handoff(
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
     ) -> dict[str, Any]:
-        return await self._handoff_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-        )
+        return await self.handoff(ref, payload)
 
     async def _acknowledge_with(
         self,
         ref: str,
         payload: WorkItemAckCreate,
+        *,
         continuity: Any,
         recovery: Any,
+        structured_ack: Any,
+        public_state: Any,
+        split_brain_findings: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_ack = self._compat(
-            "_structured_ack",
-            self.state_machine._structured_ack,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
-        split_brain_findings = self._compat(
-            "_work_item_split_brain_findings",
-            self.state_machine._work_item_split_brain_findings,
-        )
         state = structured_ack(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.ack", "ref": ref, "state": public}
         )
         continuity.schedule_actionable_owner_dispatch(
@@ -694,8 +976,14 @@ class WorkItemService:
         return await self._acknowledge_with(
             ref,
             payload,
-            self.continuity,
-            self.recovery,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_ack=self.state_machine._structured_ack,
+            public_state=self.state_machine._work_item_state_public,
+            split_brain_findings=(
+                self.state_machine._work_item_split_brain_findings
+            ),
+            publish_event=self.publish_event,
         )
 
     async def compatibility_acknowledge(
@@ -703,36 +991,24 @@ class WorkItemService:
         ref: str,
         payload: WorkItemAckCreate,
     ) -> dict[str, Any]:
-        return await self._acknowledge_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-            self.compatibility_recovery,
-        )
+        return await self.acknowledge(ref, payload)
 
     async def _progress_with(
         self,
         ref: str,
         payload: WorkItemProgressUpdate,
+        *,
         continuity: Any,
         recovery: Any,
+        structured_progress: Any,
+        public_state: Any,
+        split_brain_findings: Any,
+        publish_event: Any,
     ) -> dict[str, Any]:
-        structured_progress = self._compat(
-            "_structured_progress",
-            self.state_machine._structured_progress,
-        )
-        public_state = self._compat(
-            "_work_item_state_public",
-            self.state_machine._work_item_state_public,
-        )
-        split_brain_findings = self._compat(
-            "_work_item_split_brain_findings",
-            self.state_machine._work_item_split_brain_findings,
-        )
         state = structured_progress(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
-        await self.host.hub.publish(
+        await publish_event(
             {"type": "work-item.progress", "ref": ref, "state": public}
         )
         continuity.schedule_actionable_owner_dispatch(
@@ -756,8 +1032,14 @@ class WorkItemService:
         return await self._progress_with(
             ref,
             payload,
-            self.continuity,
-            self.recovery,
+            continuity=self.continuity,
+            recovery=self.recovery,
+            structured_progress=self.state_machine._structured_progress,
+            public_state=self.state_machine._work_item_state_public,
+            split_brain_findings=(
+                self.state_machine._work_item_split_brain_findings
+            ),
+            publish_event=self.publish_event,
         )
 
     async def compatibility_progress(
@@ -765,9 +1047,31 @@ class WorkItemService:
         ref: str,
         payload: WorkItemProgressUpdate,
     ) -> dict[str, Any]:
-        return await self._progress_with(
-            ref,
-            payload,
-            self.compatibility_continuity,
-            self.compatibility_recovery,
-        )
+        return await self.progress(ref, payload)
+
+
+
+def install_work_item_compatibility(
+    app: Any,
+    host: Any,
+    service: WorkItemService,
+) -> WorkItemCompatibilityFacade:
+    """Attach the verified historical work-item surface at the edge only."""
+
+    compatibility = WorkItemCompatibilityFacade(host, service)
+    app.state.work_item_compatibility_service = compatibility
+    host.create_work_item_handoff = compatibility.handoff
+    host.ack_work_item_handoff = compatibility.acknowledge
+    host.update_work_item_progress = compatibility.progress
+    host._reconcile_task_source_event = service.reconcile_task_source_event
+    host._append_work_item_event = compatibility.append_work_item_event
+    host._upsert_work_item_state_from_gitlab_issue = (
+        compatibility.project_gitlab_issue
+    )
+    host._upsert_work_item_state_from_gitlab_event = (
+        compatibility.project_gitlab_event
+    )
+    host._sync_gitlab_issue_labels_from_work_item = (
+        service.schedule_task_source_writeback
+    )
+    return compatibility

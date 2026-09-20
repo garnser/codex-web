@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import time
 from typing import Any
@@ -18,6 +19,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 
 
@@ -26,14 +28,21 @@ class AutonomyService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         action_execution: ActionExecutionService | None = None,
         action_intents: ActionIntentService | None = None,
         *,
         controller: AutonomyController | None = None,
         canonical_events: CanonicalEventIngestionService | None = None,
+        runtime: AutonomyRuntimeDependencies | None = None,
     ) -> None:
-        self.host = host
+        if runtime is None:
+            if host is None:
+                raise TypeError(
+                    "AutonomyService requires explicit runtime dependencies"
+                )
+            runtime = AutonomyRuntimeDependencies.from_host(host)
+        self.runtime = runtime
         self.action_execution = action_execution
         self.action_intents = action_intents
         self.controller = controller
@@ -70,7 +79,7 @@ class AutonomyService:
         """Route watchdog reasoning through canonical event + autonomy controls."""
 
         if self.controller is None or self.canonical_events is None:
-            return await self.host._dispatch_event_to_binding(binding, text, source)
+            return await self.runtime.dispatch_event(binding, text, source)
 
         normalized = json.dumps(
             payload,
@@ -97,7 +106,7 @@ class AutonomyService:
 
         async def reasoner(*_args) -> AutonomyReasoningResult:
             dispatched.update(
-                await self.host._dispatch_event_to_binding(binding, text, source)
+                await self.runtime.dispatch_event(binding, text, source)
             )
             return AutonomyReasoningResult(
                 summary=f"{source} dispatched through bounded autonomy"
@@ -167,18 +176,18 @@ class AutonomyService:
         )
 
     async def run_owner_work_cycle(self) -> None:
-        h = self.host
-        settings = h._load_gitlab_routing_settings()
+        d = self.runtime
+        settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
-        states = h._load_work_item_states()
+        states = d.load_work_item_states()
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            token = h._gitlab_token_for_project(project_id)
-            group = h._gitlab_group_path(project_settings)
+            token = d.gitlab_token_for_project(project_id)
+            group = d.gitlab_group_path(project_settings)
             if not token or not group:
-                h._append_bot_event(
+                d.append_bot_event(
                     {
                         "type": "owner_work_watchdog_skipped",
                         "project_id": project_id,
@@ -186,15 +195,21 @@ class AutonomyService:
                     }
                 )
                 continue
-            for owner in h.OWNER_QUEUE_AGENTS:
-                binding = h._binding_for_agent(
+            for owner in d.owner_queue_agents:
+                binding = d.binding_for_agent(
                     owner,
                     project_id,
-                    preferred_conversation_id=h.HANDOFF_COORDINATION_CHANNEL,
+                    preferred_conversation_id=d.handoff_coordination_channel,
                 )
                 if not binding:
                     continue
-                issues = h._gitlab_group_issues(project_id, project_settings, labels=[f"owner::{owner}"])
+                issues = d.gitlab_group_issues(
+                    project_id,
+                    project_settings,
+                    labels=[f"owner::{owner}"],
+                )
+                if inspect.isawaitable(issues):
+                    issues = await issues
                 if not issues:
                     continue
                 missing_state_refs = [
@@ -206,25 +221,25 @@ class AutonomyService:
                 ]
                 if not missing_state_refs:
                     continue
-                binding = await h._replace_nonperforming_thread_if_needed(binding, "owner-work-watchdog")
+                binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
                 dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
-                if not h._watchdog_dispatch_allowed(dispatch_key):
+                if not d.watchdog_dispatch_allowed(dispatch_key):
                     continue
-                h._release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
-                if h._thread_is_active(binding.thread_id) or h._thread_queue_depth(binding.thread_id):
+                d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
+                if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
                     continue
-                if h._thread_recently_active(binding.thread_id):
+                if d.thread_recently_active(binding.thread_id):
                     continue
                 refs = ", ".join(missing_state_refs[:8])
                 extra = f", plus {len(missing_state_refs) - 8} more" if len(missing_state_refs) > 8 else ""
-                agent_name = h._binding_prefix(binding) or binding.thread_name or owner
+                agent_name = d.binding_prefix(binding) or binding.thread_name or owner
                 text = (
                     f"{agent_name}: bounded event-path fallback triggered. "
                     f"GitLab shows owned open items with no canonical codex-web state yet: {refs}{extra}. "
                     "Reconcile those items through codex-web now, post the exact item and next action in the "
                     "configured handoff coordination channel, and keep working until completion or one concrete escalation."
                 )
-                h._record_watchdog_dispatch(dispatch_key)
+                d.record_watchdog_dispatch(dispatch_key)
                 result = await self._bounded_reasoning_dispatch(
                     binding,
                     text,
@@ -236,7 +251,7 @@ class AutonomyService:
                         "missing_state_refs": missing_state_refs[:8],
                     },
                 )
-                h._append_bot_event(
+                d.append_bot_event(
                     {
                         "type": "owner_work_watchdog_dispatched",
                         "project_id": project_id,
@@ -248,39 +263,45 @@ class AutonomyService:
                 )
 
     async def run_release_gate_cycle(self) -> None:
-        h = self.host
-        settings = h._load_gitlab_routing_settings()
+        d = self.runtime
+        settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
-        states = h._load_work_item_states()
+        states = d.load_work_item_states()
         now = time.time()
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = h._binding_for_agent("release manager", project_id)
+            binding = d.binding_for_agent("release manager", project_id)
             if not binding:
                 continue
-            p1_issues = h._gitlab_group_issues(project_id, project_settings, labels=["priority::P1"])
+            p1_issues = d.gitlab_group_issues(
+                project_id,
+                project_settings,
+                labels=["priority::P1"],
+            )
+            if inspect.isawaitable(p1_issues):
+                p1_issues = await p1_issues
             if p1_issues:
                 continue
             stale_release_states = [
                 state
                 for state in states.values()
                 if state.project_id == project_id
-                and h._coerce_owner(state.current_owner or state.next_owner) == "release manager"
+                and d.coerce_owner(state.current_owner or state.next_owner) == "release manager"
                 and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
-                and (now - h._owner_activity_timestamp(state)) >= h._release_validation_sla_seconds()
+                and (now - d.owner_activity_timestamp(state)) >= d.release_validation_sla_seconds()
             ]
             if not stale_release_states:
                 continue
-            binding = await h._replace_nonperforming_thread_if_needed(binding, "release-gate-watchdog")
+            binding = await d.replace_nonperforming_thread(binding, "release-gate-watchdog")
             dispatch_key = f"release-gate:{project_id}:{binding.thread_id}"
-            if not h._watchdog_dispatch_allowed(dispatch_key):
+            if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            h._release_stale_active_turn(binding.thread_id, "release-gate-watchdog")
-            if h._thread_is_active(binding.thread_id) or h._thread_queue_depth(binding.thread_id):
+            d.release_stale_active_turn(binding.thread_id, "release-gate-watchdog")
+            if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
                 continue
-            if h._thread_recently_active(binding.thread_id):
+            if d.thread_recently_active(binding.thread_id):
                 continue
             refs = ", ".join(state.ref for state in stale_release_states[:8])
             extra = f", plus {len(stale_release_states) - 8} more" if len(stale_release_states) > 8 else ""
@@ -290,7 +311,7 @@ class AutonomyService:
                 "Resume the exact deploy/verify/E2E next action or state one exact blocker in the configured "
                 "handoff coordination channel. Reconcile the affected work item in codex-web before ending the turn."
             )
-            h._record_watchdog_dispatch(dispatch_key)
+            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
                 text,
@@ -301,7 +322,7 @@ class AutonomyService:
                     "stale_refs": [state.ref for state in stale_release_states[:8]],
                 },
             )
-            h._append_bot_event(
+            d.append_bot_event(
                 {
                     "type": "release_gate_watchdog_dispatched",
                     "project_id": project_id,
@@ -311,29 +332,29 @@ class AutonomyService:
             )
 
     async def run_orchestrator_cycle(self) -> None:
-        h = self.host
-        settings = h._load_gitlab_routing_settings()
+        d = self.runtime
+        settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = h._orchestrator_binding(project_id)
+            binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = h._orchestrator_watchdog_candidates(project_id)
+            items = d.orchestrator_watchdog_candidates(project_id)
             if not items:
                 continue
-            binding = await h._replace_nonperforming_thread_if_needed(binding, "orchestrator-watchdog")
-            if h._thread_queue_depth(binding.thread_id) >= 3:
+            binding = await d.replace_nonperforming_thread(binding, "orchestrator-watchdog")
+            if d.thread_queue_depth(binding.thread_id) >= 3:
                 continue
             dispatch_key = f"orchestrator-watchdog:{project_id}:{binding.thread_id}"
-            if not h._watchdog_dispatch_allowed(dispatch_key):
+            if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            h._record_watchdog_dispatch(dispatch_key)
+            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
-                h._format_orchestrator_watchdog_prompt(project_id, items),
+                d.format_orchestrator_watchdog_prompt(project_id, items),
                 "orchestrator-watchdog",
                 cycle_key=dispatch_key,
                 payload={
@@ -341,7 +362,7 @@ class AutonomyService:
                     "item_refs": [state.ref for _, state, _ in items[:8]],
                 },
             )
-            h._append_bot_event(
+            d.append_bot_event(
                 {
                     "type": "orchestrator_watchdog_dispatched",
                     "project_id": project_id,
@@ -353,29 +374,29 @@ class AutonomyService:
             )
 
     async def run_split_brain_cycle(self) -> None:
-        h = self.host
-        settings = h._load_gitlab_routing_settings()
+        d = self.runtime
+        settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = h._orchestrator_binding(project_id)
+            binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = h._split_brain_watchdog_candidates(project_id)
+            items = d.split_brain_watchdog_candidates(project_id)
             if not items:
                 continue
-            binding = await h._replace_nonperforming_thread_if_needed(binding, "split-brain-watchdog")
-            if h._thread_queue_depth(binding.thread_id) >= 3 or h._thread_is_active(binding.thread_id):
+            binding = await d.replace_nonperforming_thread(binding, "split-brain-watchdog")
+            if d.thread_queue_depth(binding.thread_id) >= 3 or d.thread_is_active(binding.thread_id):
                 continue
             dispatch_key = f"split-brain-watchdog:{project_id}:{binding.thread_id}"
-            if not h._watchdog_dispatch_allowed(dispatch_key):
+            if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            h._record_watchdog_dispatch(dispatch_key)
+            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
-                h._format_split_brain_watchdog_prompt(project_id, items),
+                d.format_split_brain_watchdog_prompt(project_id, items),
                 "split-brain-watchdog",
                 cycle_key=dispatch_key,
                 payload={
@@ -383,7 +404,7 @@ class AutonomyService:
                     "item_refs": [state.ref for state, _ in items[:8]],
                 },
             )
-            h._append_bot_event(
+            d.append_bot_event(
                 {
                     "type": "split_brain_watchdog_dispatched",
                     "project_id": project_id,
@@ -395,8 +416,8 @@ class AutonomyService:
             )
 
     async def run_work_item_sla_cycle(self) -> None:
-        h = self.host
-        states = h._load_work_item_states()
+        d = self.runtime
+        states = d.load_work_item_states()
         if not states:
             return
         now = time.time()
@@ -410,10 +431,10 @@ class AutonomyService:
             if state.handoff and state.handoff.status == "pending":
                 handoff = state.handoff
                 pending_age = now - handoff.requested_at
-                recipient = h._coerce_owner(handoff.to_agent)
-                if pending_age >= h._work_item_handoff_timeout_seconds():
-                    sender = h._coerce_owner(handoff.from_agent)
-                    state = h._archive_active_handoff(
+                recipient = d.coerce_owner(handoff.to_agent)
+                if pending_age >= d.handoff_timeout_seconds():
+                    sender = d.coerce_owner(handoff.from_agent)
+                    state = d.archive_active_handoff(
                         state,
                         now=now,
                         status="superseded",
@@ -427,8 +448,8 @@ class AutonomyService:
                     state.updated_at = now
                     state.last_meaningful_update_at = now
                     states[ref] = state
-                    h._append_work_item_event(
-                        h._work_item_event(
+                    d.append_work_item_event(
+                        d.work_item_event(
                             ref,
                             "handoff_expired",
                             payload={
@@ -439,19 +460,19 @@ class AutonomyService:
                     )
                     changed = True
                 elif recipient:
-                    binding = h._binding_for_agent(
+                    binding = d.binding_for_agent(
                         recipient,
                         state.project_id,
-                        preferred_conversation_id=h.HANDOFF_COORDINATION_CHANNEL,
+                        preferred_conversation_id=d.handoff_coordination_channel,
                     )
-                    if binding and not h._thread_is_active(binding.thread_id) and not h._thread_queue_depth(binding.thread_id):
+                    if binding and not d.thread_is_active(binding.thread_id) and not d.thread_queue_depth(binding.thread_id):
                         dispatch_key = f"work-item-handoff:{ref}:{binding.thread_id}:{recipient}"
-                        if h._watchdog_dispatch_allowed(dispatch_key) and not h._thread_recently_active(binding.thread_id):
-                            binding = await h._replace_nonperforming_thread_if_needed(binding, "work-item-handoff")
-                            h._record_watchdog_dispatch(dispatch_key)
+                        if d.watchdog_dispatch_allowed(dispatch_key) and not d.thread_recently_active(binding.thread_id):
+                            binding = await d.replace_nonperforming_thread(binding, "work-item-handoff")
+                            d.record_watchdog_dispatch(dispatch_key)
                             result = await self._bounded_reasoning_dispatch(
                                 binding,
-                                h._work_item_dispatch_text(state),
+                                d.work_item_dispatch_text(state),
                                 "work-item-sla",
                                 cycle_key=dispatch_key,
                                 payload={
@@ -461,7 +482,7 @@ class AutonomyService:
                                     "handoff_status": "pending",
                                 },
                             )
-                            h._append_bot_event(
+                            d.append_bot_event(
                                 {
                                     "type": "work_item_handoff_watchdog_dispatched",
                                     "ref": ref,
@@ -472,30 +493,30 @@ class AutonomyService:
                             )
                 continue
 
-            owner = h._coerce_owner(state.current_owner or state.next_owner)
+            owner = d.coerce_owner(state.current_owner or state.next_owner)
             if not owner:
                 continue
-            age = now - h._owner_activity_timestamp(state)
-            threshold = h._work_item_sla_threshold_seconds(state)
+            age = now - d.owner_activity_timestamp(state)
+            threshold = d.work_item_sla_threshold_seconds(state)
             if age < threshold:
                 continue
-            binding = h._binding_for_agent(
+            binding = d.binding_for_agent(
                 owner,
                 state.project_id,
-                preferred_conversation_id=h.HANDOFF_COORDINATION_CHANNEL,
+                preferred_conversation_id=d.handoff_coordination_channel,
             )
             if not binding:
                 continue
-            if h._thread_is_active(binding.thread_id) or h._thread_queue_depth(binding.thread_id) or h._thread_recently_active(binding.thread_id):
+            if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id) or d.thread_recently_active(binding.thread_id):
                 continue
-            binding = await h._replace_nonperforming_thread_if_needed(binding, "work-item-sla")
+            binding = await d.replace_nonperforming_thread(binding, "work-item-sla")
             dispatch_key = f"work-item-sla:{ref}:{binding.thread_id}:{owner}:{state.current_stage}"
-            if not h._watchdog_dispatch_allowed(dispatch_key):
+            if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            h._record_watchdog_dispatch(dispatch_key)
+            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
-                h._work_item_dispatch_text(state),
+                d.work_item_dispatch_text(state),
                 "work-item-sla",
                 cycle_key=dispatch_key,
                 payload={
@@ -504,7 +525,7 @@ class AutonomyService:
                     "stage": state.current_stage,
                 },
             )
-            h._append_bot_event(
+            d.append_bot_event(
                 {
                     "type": "work_item_sla_dispatched",
                     "ref": ref,
@@ -516,7 +537,7 @@ class AutonomyService:
                 }
             )
         if changed:
-            h._save_work_item_states(states)
+            d.save_work_item_states(states)
 
 
 def install_autonomy_service(
@@ -527,12 +548,15 @@ def install_autonomy_service(
     *,
     controller: AutonomyController | None = None,
     canonical_events: CanonicalEventIngestionService | None = None,
+    runtime: AutonomyRuntimeDependencies | None = None,
 ) -> AutonomyService:
     """Install extracted autonomy cycle ownership before worker supervision."""
 
     existing = getattr(app.state, "autonomy_service", None)
-    if isinstance(existing, AutonomyService) and existing.host is host:
+    if isinstance(existing, AutonomyService):
         service = existing
+        if runtime is not None:
+            service.runtime = runtime
         if action_execution is not None:
             service.action_execution = action_execution
         if action_intents is not None:
@@ -548,6 +572,7 @@ def install_autonomy_service(
             action_intents=action_intents,
             controller=controller,
             canonical_events=canonical_events,
+            runtime=runtime,
         )
         app.state.autonomy_service = service
 

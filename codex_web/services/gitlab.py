@@ -21,9 +21,18 @@ from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import CodeHostCapability, CodeHostProviderBinding
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.services.canonical_events import CanonicalEventIngestionService
+from codex_web.services.gitlab_dependencies import (
+    GitLabOperationalDependencies,
+    GitLabRoutingDependencies,
+    GitLabWorkItemRuntimeDependencies,
+)
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+from codex_web.services.work_item_dependencies import (
+    gitlab_project_issue_ref,
+    gitlab_token_for_project,
+)
 from codex_web.models import GitLabProjectRoutingSettings, GitLabRoutingSettings, WorkItemState
 
 
@@ -32,18 +41,244 @@ class GitLabService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         gitlab: GitLabClient | None = None,
         *,
         canonical_events: CanonicalEventIngestionService | None = None,
         autonomy_controller: AutonomyController | None = None,
+        routing: GitLabRoutingDependencies | None = None,
+        work_items: GitLabWorkItemRuntimeDependencies | None = None,
+        operations: GitLabOperationalDependencies | None = None,
     ) -> None:
-        self.host = host
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        async def _dispatch_noop(
+            _binding: Any,
+            _text: str,
+            _source: str,
+        ) -> dict[str, Any]:
+            return {"ok": False, "queued": False}
+
+        async def _notice_noop(
+            _binding: Any,
+            _payload: dict[str, Any],
+            _agent: str | None,
+            _result: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"sent": False}
+
+        if routing is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires routing dependencies"
+                )
+            routing = GitLabRoutingDependencies(
+                load_settings=getattr(
+                    host,
+                    "_load_gitlab_routing_settings",
+                    lambda: GitLabRoutingSettings(),
+                ),
+                normalize_strings=getattr(
+                    host,
+                    "_normalize_string_list",
+                    lambda values: list(
+                        dict.fromkeys(
+                            str(value).strip()
+                            for value in (values or [])
+                            if str(value).strip()
+                        )
+                    ),
+                ),
+                binding_for_agent=getattr(
+                    host,
+                    "_binding_for_agent",
+                    lambda _agent, _project_id: None,
+                ),
+                preferred_agent_conversations=getattr(
+                    host,
+                    "_preferred_agent_conversations",
+                    lambda _agent, _project_id, channels: channels,
+                ),
+                clone_binding_to_known_channel=getattr(
+                    host,
+                    "_clone_binding_to_known_channel",
+                    lambda binding, _channel: binding,
+                ),
+                master_binding=getattr(
+                    host,
+                    "_master_binding",
+                    lambda _project_id: None,
+                ),
+            )
+        if work_items is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires work-item dependencies"
+                )
+            work_items = GitLabWorkItemRuntimeDependencies(
+                split_brain_findings=getattr(
+                    host,
+                    "_work_item_split_brain_findings",
+                    lambda _state: [],
+                ),
+                coerce_owner=getattr(
+                    host,
+                    "_coerce_owner",
+                    lambda owner: (
+                        str(owner).strip().lower()
+                        if owner
+                        else None
+                    ),
+                ),
+                project_event=getattr(
+                    host,
+                    "_upsert_work_item_state_from_gitlab_event",
+                    lambda _payload, **_kwargs: None,
+                ),
+                project_lookup=getattr(
+                    host,
+                    "_project",
+                    lambda _project_id: None,
+                ),
+                load_projects=getattr(
+                    host,
+                    "_load_projects",
+                    lambda: [],
+                ),
+            )
+        if operations is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires operational dependencies"
+                )
+            hub = getattr(host, "hub", None)
+            operations = GitLabOperationalDependencies(
+                api_base_url=getattr(
+                    host,
+                    "GITLAB_API_BASE",
+                    os.environ.get(
+                        "CODEX_WEB_GITLAB_API_BASE",
+                        "https://gitlab.example/api/v4",
+                    ),
+                ),
+                load_support_state=getattr(
+                    host,
+                    "_load_support_servicedesk_state",
+                    lambda: {"tickets": {}, "last_sweep_at": None},
+                ),
+                save_support_state=getattr(
+                    host,
+                    "_save_support_servicedesk_state",
+                    lambda _state: None,
+                ),
+                load_semantic_events=getattr(
+                    host,
+                    "_load_gitlab_semantic_events",
+                    lambda: {},
+                ),
+                save_semantic_events=getattr(
+                    host,
+                    "_save_gitlab_semantic_events",
+                    lambda _events: None,
+                ),
+                verify_webhook=getattr(
+                    host,
+                    "_verify_gitlab_webhook",
+                    lambda _request: None,
+                ),
+                append_event=getattr(
+                    host,
+                    "_append_bot_event",
+                    lambda _event: None,
+                ),
+                publish_event=getattr(
+                    hub,
+                    "publish",
+                    _publish_noop,
+                ),
+                truncate_text=getattr(
+                    host,
+                    "_truncate_text",
+                    lambda value, limit: str(value)[:limit],
+                ),
+                dispatch_event=getattr(
+                    host,
+                    "_dispatch_event_to_binding",
+                    _dispatch_noop,
+                ),
+                format_event_prompt=getattr(
+                    host,
+                    "_format_gitlab_event_prompt",
+                    lambda payload, agent: (
+                        f"GitLab event for {agent or 'orchestrator'}: "
+                        f"{payload.get('object_kind') or payload.get('event_name') or 'event'}"
+                    ),
+                ),
+                send_event_notice=getattr(
+                    host,
+                    "_send_gitlab_event_notice",
+                    _notice_noop,
+                ),
+                schedule_recovery=getattr(
+                    host,
+                    "_schedule_native_recovery_cycles",
+                    lambda **_kwargs: False,
+                ),
+            )
+
+        self.routing = routing
+        self.work_items = work_items
+        self.operations = operations
         self.gitlab = gitlab or GitLabClient()
         self.code_host = GitLabCodeHostProvider(self.gitlab)
         self.canonical_events = canonical_events
         self.autonomy_controller = autonomy_controller
         self._event_ids: dict[str, float] = {}
+        self._compat_event_id = (
+            getattr(host, "_gitlab_event_id", None)
+            if host is not None
+            else None
+        )
+        self._compat_remember_event = (
+            getattr(host, "_remember_gitlab_event", None)
+            if host is not None
+            else None
+        )
+        self._compat_api_token = (
+            getattr(host, "_gitlab_api_token", None)
+            if host is not None
+            else None
+        )
+        self._compat_api_base_url = (
+            getattr(host, "_gitlab_api_base_url", None)
+            if host is not None
+            else None
+        )
+        self._compat_servicedesk_project = (
+            getattr(host, "_support_servicedesk_sweep_project", None)
+            if host is not None
+            else None
+        )
+        self._compat_servicedesk_lookback = (
+            getattr(
+                host,
+                "_support_servicedesk_sweep_lookback_hours",
+                None,
+            )
+            if host is not None
+            else None
+        )
+        self._compat_issue_to_servicedesk_payload = (
+            getattr(host, "_issue_to_support_servicedesk_payload", None)
+            if host is not None
+            else None
+        )
+        self._compat_dispatch_servicedesk = (
+            getattr(host, "_dispatch_support_servicedesk_ticket", None)
+            if host is not None
+            else None
+        )
 
     def event_target_agents(
         self,
@@ -51,20 +286,19 @@ class GitLabService:
         project_settings: GitLabProjectRoutingSettings,
         projected_state: WorkItemState | None,
     ) -> list[str]:
-        h = self.host
         if projected_state:
-            findings = h._work_item_split_brain_findings(projected_state)
+            findings = self.work_items.split_brain_findings(projected_state)
             if findings:
                 return ["orchestrator"]
             if projected_state.handoff and projected_state.handoff.status == "pending":
-                recipient = h._coerce_owner(projected_state.handoff.to_agent)
+                recipient = self.work_items.coerce_owner(projected_state.handoff.to_agent)
                 if recipient:
                     return [recipient]
             if projected_state.current_stage == "failed_with_action_owner":
-                owner = h._coerce_owner(projected_state.current_owner or projected_state.next_owner)
+                owner = self.work_items.coerce_owner(projected_state.current_owner or projected_state.next_owner)
                 if owner:
                     return [owner]
-            owner = h._coerce_owner(projected_state.current_owner)
+            owner = self.work_items.coerce_owner(projected_state.current_owner)
             if owner and projected_state.current_stage in {
                 "implementation_active",
                 "ready_for_validation",
@@ -77,7 +311,7 @@ class GitLabService:
     def routing_enabled_for_project(self, project_id: str | None) -> bool:
         if not project_id:
             return False
-        settings = self.host._load_gitlab_routing_settings()
+        settings = self.routing.load_settings()
         if not settings.enabled:
             return False
         project_settings = settings.projects.get(project_id)
@@ -88,7 +322,7 @@ class GitLabService:
         payload: dict[str, Any],
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[str]:
-        explicit = self.host._normalize_string_list(project_settings.route_agents)
+        explicit = self.routing.normalize_strings(project_settings.route_agents)
         return explicit or self.owner_agents(payload, project_settings)
 
     def routing_bindings_for_agent(
@@ -97,31 +331,29 @@ class GitLabService:
         project_id: str,
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[Any]:
-        h = self.host
-        binding = h._binding_for_agent(agent, project_id)
+        binding = self.routing.binding_for_agent(agent, project_id)
         if not binding:
             return []
-        route_channels = h._normalize_string_list(project_settings.channel_ids)
+        route_channels = self.routing.normalize_strings(project_settings.channel_ids)
         if not route_channels:
             return [binding]
-        preferred_channels = h._preferred_agent_conversations(agent, project_id, route_channels)
+        preferred_channels = self.routing.preferred_agent_conversations(agent, project_id, route_channels)
         if not preferred_channels:
             return []
-        return [h._clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
+        return [self.routing.clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
 
     def routing_bindings_for_master(
         self,
         project_id: str,
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[Any]:
-        h = self.host
-        master = h._master_binding(project_id)
+        master = self.routing.master_binding(project_id)
         if not master:
             return []
         route_channels = h._normalize_string_list(project_settings.channel_ids)
         if not route_channels or master.provider != "slack":
             return [master]
-        return [h._clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
+        return [self.routing.clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
 
     def event_id(self, request: Request, payload: dict[str, Any]) -> str:
         for header in ("x-gitlab-event-uuid", "x-request-id"):
@@ -195,8 +427,7 @@ class GitLabService:
         ticket_key = self.support_servicedesk_ticket_key(payload)
         if not ticket_key:
             return False
-        h = self.host
-        state = h._load_support_servicedesk_state()
+        state = self.operations.load_support_state()
         tickets = state.setdefault("tickets", {})
         now = time.time()
         attrs = payload.get("object_attributes") or {}
@@ -204,7 +435,7 @@ class GitLabService:
         if ticket_key in tickets:
             tickets[ticket_key]["last_seen_at"] = now
             tickets[ticket_key]["last_source"] = source
-            h._save_support_servicedesk_state(state)
+            self.operations.save_support_state(state)
             return False
         tickets[ticket_key] = {
             "first_seen_at": now,
@@ -217,14 +448,17 @@ class GitLabService:
             "title": attrs.get("title"),
             "url": attrs.get("url") or attrs.get("web_url"),
         }
-        h._save_support_servicedesk_state(state)
+        self.operations.save_support_state(state)
         return True
 
     def support_servicedesk_ticket_seen(self, payload: dict[str, Any]) -> bool:
         ticket_key = self.support_servicedesk_ticket_key(payload)
         if not ticket_key:
             return False
-        return ticket_key in self.host._load_support_servicedesk_state().get("tickets", {})
+        return ticket_key in self.operations.load_support_state().get(
+            "tickets",
+            {},
+        )
 
     def format_support_servicedesk_prompt(self, payload: dict[str, Any], source: str, agent: str) -> str:
         attrs = payload.get("object_attributes") or {}
@@ -268,10 +502,12 @@ class GitLabService:
                 "ticketKey": self.support_servicedesk_ticket_key(payload),
             }
 
-        h = self.host
-        project_id, project_settings = h._gitlab_project_settings_for_payload(payload, settings)
+        project_id, project_settings = self.project_settings_for_payload(
+            payload,
+            settings,
+        )
         if not project_id or not project_settings or not project_settings.enabled:
-            h._append_bot_event(
+            self.operations.append_event(
                 {
                     "type": "support_servicedesk_ticket_ignored",
                     "source": source,
@@ -283,9 +519,12 @@ class GitLabService:
             return {"ok": True, "accepted": False, "reason": "no_enabled_gitlab_project_route"}
 
         agent = next(iter(self.owner_agents(payload, project_settings)), self.support_servicedesk_owner_agent())
-        binding = h._binding_for_agent(agent, project_id) or h._master_binding(project_id)
+        binding = (
+            self.routing.binding_for_agent(agent, project_id)
+            or self.routing.master_binding(project_id)
+        )
         if not binding:
-            h._append_bot_event(
+            self.operations.append_event(
                 {
                     "type": "support_servicedesk_ticket_ignored",
                     "source": source,
@@ -298,10 +537,14 @@ class GitLabService:
             return {"ok": False, "accepted": False, "reason": "no_matching_binding", "agent": agent}
 
         self.remember_support_servicedesk_ticket(payload, source, event_id)
-        result = await h._dispatch_event_to_binding(
+        result = await self.operations.dispatch_event(
             binding,
-            self.format_support_servicedesk_prompt(payload, source, agent),
-            source=f"gitlab:servicedesk:{source}",
+            self.format_support_servicedesk_prompt(
+                payload,
+                source,
+                agent,
+            ),
+            f"gitlab:servicedesk:{source}",
         )
         target = {
             "agent": agent,
@@ -309,7 +552,7 @@ class GitLabService:
             "queued": result.get("queued", False),
             "ok": result.get("ok", False),
         }
-        h._append_bot_event(
+        self.operations.append_event(
             {
                 "type": "support_servicedesk_ticket_dispatched",
                 "source": source,
@@ -319,7 +562,7 @@ class GitLabService:
                 "target": target,
             }
         )
-        await h.hub.publish(
+        await self.operations.publish_event(
             {
                 "type": "support.servicedesk.ticket",
                 "eventId": event_id,
@@ -403,17 +646,17 @@ class GitLabService:
         while True:
             try:
                 result = await self.sweep_support_servicedesk()
-                self.host._append_bot_event(
+                self.operations.append_event(
                     {
                         "type": "support_servicedesk_sweep_completed",
                         **{key: value for key, value in result.items() if key != "results"},
                     }
                 )
             except Exception as exc:
-                self.host._append_bot_event(
+                self.operations.append_event(
                     {
                         "type": "support_servicedesk_sweep_failed",
-                        "error": self.host._truncate_text(str(exc), 500),
+                        "error": self.operations.truncate_text(str(exc), 500),
                     }
                 )
             await asyncio.sleep(interval)
@@ -444,7 +687,7 @@ class GitLabService:
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def semantic_key(self, payload: dict[str, Any]) -> str | None:
-        ref = self.host._project_issue_ref(payload)
+        ref = gitlab_project_issue_ref(payload)
         if not ref:
             return None
         attrs = payload.get("object_attributes") or {}
@@ -460,17 +703,17 @@ class GitLabService:
     def remember_semantic_key(self, key: str | None, *, reason: str) -> bool:
         if not key:
             return True
-        h = self.host
         now = time.time()
         ttl = self.semantic_dedupe_seconds()
         events = {
             stored_key: seen_at
-            for stored_key, seen_at in h._load_gitlab_semantic_events().items()
+            for stored_key, seen_at
+            in self.operations.load_semantic_events().items()
             if now - seen_at <= max(ttl, 3600.0)
         }
         seen_at = events.get(key)
         if seen_at is not None and now - seen_at < ttl:
-            h._append_bot_event(
+            self.operations.append_event(
                 {
                     "type": "gitlab_semantic_duplicate_ignored",
                     "reason": reason,
@@ -478,10 +721,10 @@ class GitLabService:
                     "age_seconds": now - seen_at,
                 }
             )
-            h._save_gitlab_semantic_events(events)
+            self.operations.save_semantic_events(events)
             return False
         events[key] = now
-        h._save_gitlab_semantic_events(events)
+        self.operations.save_semantic_events(events)
         return True
 
     def remember_semantic_issue_state(
@@ -495,11 +738,10 @@ class GitLabService:
         key = self.semantic_key_for_state(ref, kind="issue", labels=labels, state=state)
         if not key:
             return
-        h = self.host
-        events = h._load_gitlab_semantic_events()
+        events = self.operations.load_semantic_events()
         events[key] = time.time()
-        h._save_gitlab_semantic_events(events)
-        h._append_bot_event({"type": "gitlab_semantic_state_recorded", "reason": reason, "ref": ref})
+        self.operations.save_semantic_events(events)
+        self.operations.append_event({"type": "gitlab_semantic_state_recorded", "reason": reason, "ref": ref})
 
     def label_names(self, payload: dict[str, Any]) -> list[str]:
         labels: list[str] = []
@@ -558,24 +800,10 @@ class GitLabService:
         return None
 
     def token_for_project(self, project_id: str) -> str | None:
-        env_token = (os.environ.get("CODEX_WEB_GITLAB_TOKEN") or "").strip()
-        if env_token:
-            return env_token
-        with contextlib.suppress(Exception):
-            secrets_path = Path(self.host._project(project_id).path) / "CODEX-SECRETS.md"
-            section = False
-            for line in secrets_path.read_text(encoding="utf-8").splitlines():
-                if line.startswith("### "):
-                    if line.strip() == "### GitLab codexops":
-                        section = True
-                        continue
-                    if section:
-                        break
-                if section and line.startswith("- Token: "):
-                    token = line.split(": ", 1)[1].strip()
-                    if token:
-                        return token
-        return None
+        return gitlab_token_for_project(
+            project_id,
+            project_lookup=self.work_items.project_lookup,
+        )
 
     def project_settings_for_payload(
         self,
@@ -583,7 +811,7 @@ class GitLabService:
         settings: GitLabRoutingSettings | None = None,
     ) -> tuple[str | None, GitLabProjectRoutingSettings | None]:
         project_path = ((payload.get("project") or {}).get("path_with_namespace") or "").lower()
-        settings = settings or self.host._load_gitlab_routing_settings()
+        settings = settings or self.routing.load_settings()
         for project_id, project_settings in settings.projects.items():
             if any(self.project_path_matches(project_path, path) for path in project_settings.project_paths):
                 return project_id, project_settings
@@ -604,28 +832,23 @@ class GitLabService:
         attrs = payload.get("object_attributes") or {}
         return attrs.get("url") or attrs.get("web_url") or (payload.get("project") or {}).get("web_url")
 
-    def _project_scope(self, project_id: str) -> tuple[str | None, str | None]:
+    def _project_scope(
+        self,
+        project_id: str,
+    ) -> tuple[str | None, str | None]:
         project = None
-        resolver = getattr(self.host, "_project", None)
-        if callable(resolver):
-            try:
-                project = resolver(project_id)
-            except Exception:
-                project = None
+        with contextlib.suppress(Exception):
+            project = self.work_items.project_lookup(project_id)
         if project is None:
-            loader = getattr(self.host, "_load_projects", None)
-            if callable(loader):
-                try:
-                    project = next(
-                        (
-                            item
-                            for item in loader()
-                            if getattr(item, "id", None) == project_id
-                        ),
-                        None,
-                    )
-                except Exception:
-                    project = None
+            with contextlib.suppress(Exception):
+                project = next(
+                    (
+                        item
+                        for item in self.work_items.load_projects()
+                        if getattr(item, "id", None) == project_id
+                    ),
+                    None,
+                )
         return (
             getattr(project, "organization_id", None),
             getattr(project, "workspace_id", None),
@@ -668,7 +891,7 @@ class GitLabService:
             return None
         organization_id, workspace_id = self._project_scope(project_id)
         task_source = GitLabWebhookTaskSource(
-            self.host.GITLAB_API_BASE,
+            self.operations.api_base_url,
             client=self.gitlab,
         )
         normalized = task_source.normalize_event_sync(payload)
@@ -689,8 +912,8 @@ class GitLabService:
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 provider_type="gitlab",
-                provider_instance=self.host.GITLAB_API_BASE.rstrip("/"),
-                base_url=f"{self.host.GITLAB_API_BASE.rstrip('/')}/api/v4",
+                provider_instance=self.operations.api_base_url.rstrip("/"),
+                base_url=f"{self.operations.api_base_url.rstrip('/')}/api/v4",
                 capabilities=(CodeHostCapability.WEBHOOK_NORMALIZE,),
             )
             fact = self.code_host.normalize_webhook(
@@ -731,7 +954,7 @@ class GitLabService:
         }
         return await self.canonical_events.ingest(
             event_type=self._canonical_gitlab_type(kind, payload),
-            source=f"gitlab:{self.host.GITLAB_API_BASE.rstrip('/')}",
+            source=f"gitlab:{self.operations.api_base_url.rstrip('/')}",
             idempotency_key=event_id,
             payload={key: value for key, value in minimal.items() if value is not None},
             tenant_id=organization_id,
@@ -739,58 +962,112 @@ class GitLabService:
         )
 
     async def handle_event(self, request: Request) -> dict[str, Any]:
-        h = self.host
-        h._verify_gitlab_webhook(request)
+        self.operations.verify_webhook(request)
         payload = await request.json()
-        settings = h._load_gitlab_routing_settings()
+        settings = self.routing.load_settings()
         if not settings.enabled:
-            return {"ok": True, "ignored": True, "reason": "gitlab_routing_disabled"}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "gitlab_routing_disabled",
+            }
 
-        kind = str(payload.get("object_kind") or payload.get("event_name") or "").lower()
+        kind = str(
+            payload.get("object_kind")
+            or payload.get("event_name")
+            or ""
+        ).lower()
         if kind in settings.ignored_event_kinds:
-            return {"ok": True, "ignored": True, "reason": "noisy_event_kind"}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "noisy_event_kind",
+            }
 
-        event_id = h._gitlab_event_id(request, payload)
-        if not h._remember_gitlab_event(event_id):
-            return {"ok": True, "ignored": True, "reason": "duplicate", "eventId": event_id}
+        event_id = (
+            self._compat_event_id(request, payload)
+            if callable(self._compat_event_id)
+            else self.event_id(request, payload)
+        )
+        remembered = (
+            self._compat_remember_event(event_id)
+            if callable(self._compat_remember_event)
+            else self.remember_event(event_id)
+        )
+        if not remembered:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "duplicate",
+                "eventId": event_id,
+            }
 
-        if h._is_support_servicedesk_ticket_payload(payload):
-            result = await h._dispatch_support_servicedesk_ticket(
+        if self.is_support_servicedesk_ticket_payload(payload):
+            result = await self.dispatch_support_servicedesk_ticket(
                 payload,
                 source="webhook",
                 event_id=event_id,
                 settings=settings,
             )
-            return {**result, "eventId": event_id, "serviceDesk": True}
+            return {
+                **result,
+                "eventId": event_id,
+                "serviceDesk": True,
+            }
 
-        project_id, project_settings = self.project_settings_for_payload(payload, settings)
+        project_id, project_settings = self.project_settings_for_payload(
+            payload,
+            settings,
+        )
         if not project_id or not project_settings:
-            h._append_bot_event(
+            self.operations.append_event(
                 {
                     "type": "gitlab_event_ignored",
                     "event_id": event_id,
                     "kind": kind,
                     "reason": "no_matching_project",
-                    "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+                    "project_path": (
+                        payload.get("project") or {}
+                    ).get("path_with_namespace"),
                 }
             )
-            return {"ok": True, "ignored": True, "reason": "no_matching_project", "eventId": event_id}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "no_matching_project",
+                "eventId": event_id,
+            }
         if not project_settings.enabled:
-            h._append_bot_event(
+            self.operations.append_event(
                 {
                     "type": "gitlab_event_ignored",
                     "event_id": event_id,
                     "kind": kind,
                     "reason": "project_routing_disabled",
                     "project_id": project_id,
-                    "project_path": (payload.get("project") or {}).get("path_with_namespace"),
+                    "project_path": (
+                        payload.get("project") or {}
+                    ).get("path_with_namespace"),
                 }
             )
-            return {"ok": True, "ignored": True, "reason": "project_routing_disabled", "eventId": event_id}
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "project_routing_disabled",
+                "eventId": event_id,
+            }
 
-        semantic_key = h._gitlab_semantic_key(payload)
-        if not h._remember_gitlab_semantic_key(semantic_key, reason="gitlab-webhook"):
-            return {"ok": True, "ignored": True, "reason": "semantic_duplicate", "eventId": event_id}
+        semantic_key = self.semantic_key(payload)
+        if not self.remember_semantic_key(
+            semantic_key,
+            reason="gitlab-webhook",
+        ):
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "semantic_duplicate",
+                "eventId": event_id,
+            }
 
         canonical_delivery = await self._ingest_canonical_event(
             payload,
@@ -798,40 +1075,72 @@ class GitLabService:
             event_id=event_id,
             kind=kind,
         )
-        if canonical_delivery is not None and not canonical_delivery.inserted:
+        if (
+            canonical_delivery is not None
+            and not canonical_delivery.inserted
+        ):
             return {
                 "ok": True,
                 "ignored": True,
                 "reason": "canonical_duplicate",
                 "eventId": event_id,
-                "canonicalEventId": canonical_delivery.event.event_id,
+                "canonicalEventId": (
+                    canonical_delivery.event.event_id
+                ),
             }
 
-        projected_state = h._upsert_work_item_state_from_gitlab_event(payload, project_id=project_id)
-        agents = h._gitlab_event_target_agents(payload, project_settings, projected_state)
+        projected_state = self.work_items.project_event(
+            payload,
+            project_id=project_id,
+        )
+        agents = self.event_target_agents(
+            payload,
+            project_settings,
+            projected_state,
+        )
         bindings: list[tuple[str | None, Any]] = []
         for agent in agents:
             bindings.extend(
                 (agent, binding)
-                for binding in h._gitlab_routing_bindings_for_agent(agent, project_id, project_settings)
+                for binding in self.routing_bindings_for_agent(
+                    agent,
+                    project_id,
+                    project_settings,
+                )
             )
         if not bindings:
-            master_bindings = h._gitlab_routing_bindings_for_master(project_id, project_settings)
+            master_bindings = self.routing_bindings_for_master(
+                project_id,
+                project_settings,
+            )
             if not master_bindings:
-                return {"ok": False, "accepted": False, "reason": "no_matching_binding", "eventId": event_id}
-            bindings.extend((None, binding) for binding in master_bindings)
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "reason": "no_matching_binding",
+                    "eventId": event_id,
+                }
+            bindings.extend(
+                (None, binding)
+                for binding in master_bindings
+            )
 
         results: list[dict[str, Any]] = []
 
-        async def dispatch_reasoning(*_args) -> AutonomyReasoningResult:
+        async def dispatch_reasoning(
+            *_args: Any,
+        ) -> AutonomyReasoningResult:
             for agent, binding in bindings:
-                prompt = h._format_gitlab_event_prompt(payload, agent)
-                result = await h._dispatch_event_to_binding(
+                prompt = self.operations.format_event_prompt(
+                    payload,
+                    agent,
+                )
+                result = await self.operations.dispatch_event(
                     binding,
                     prompt,
-                    source="gitlab",
+                    "gitlab",
                 )
-                notice = await h._send_gitlab_event_notice(
+                notice = await self.operations.send_event_notice(
                     binding,
                     payload,
                     agent,
@@ -843,51 +1152,75 @@ class GitLabService:
                         "threadId": result.get("threadId"),
                         "queued": result.get("queued", False),
                         "ok": result.get("ok", False),
-                        "slackNoticeSent": notice.get("sent", False),
+                        "slackNoticeSent": notice.get(
+                            "sent",
+                            False,
+                        ),
                     }
                 )
             return AutonomyReasoningResult(
-                summary="GitLab event routed through bounded autonomy"
+                summary=(
+                    "GitLab event routed through bounded autonomy"
+                )
             )
 
-        autonomy_cycle = None
-        if self.autonomy_controller is not None and canonical_delivery is not None:
+        if (
+            self.autonomy_controller is not None
+            and canonical_delivery is not None
+        ):
             autonomy_cycle = await self.autonomy_controller.process(
                 canonical_delivery.event,
                 AutonomyObservation(
                     deterministic_resolved=False,
                     reasoning_score=1.0,
-                    reason="configured GitLab routing requires agent reasoning",
+                    reason=(
+                        "configured GitLab routing requires "
+                        "agent reasoning"
+                    ),
                 ),
-                cycle_key=f"gitlab-route:{project_id}:{canonical_delivery.event.event_type}",
+                cycle_key=(
+                    f"gitlab-route:{project_id}:"
+                    f"{canonical_delivery.event.event_type}"
+                ),
                 reasoner=dispatch_reasoning,
             )
-            if autonomy_cycle.outcome != AutonomyCycleOutcome.COMPLETED:
+            if (
+                autonomy_cycle.outcome
+                != AutonomyCycleOutcome.COMPLETED
+            ):
                 return {
                     "ok": True,
                     "accepted": False,
                     "ignored": True,
-                    "reason": f"autonomy_{autonomy_cycle.outcome.value}",
+                    "reason": (
+                        f"autonomy_{autonomy_cycle.outcome.value}"
+                    ),
                     "autonomyReason": autonomy_cycle.reason,
                     "autonomyCycleId": autonomy_cycle.id,
                     "eventId": event_id,
-                    "canonicalEventId": canonical_delivery.event.event_id,
+                    "canonicalEventId": (
+                        canonical_delivery.event.event_id
+                    ),
                 }
         else:
             await dispatch_reasoning()
 
-        h._append_bot_event(
+        self.operations.append_event(
             {
                 "type": "gitlab_event_dispatched",
                 "event_id": event_id,
                 "kind": kind,
                 "project_id": project_id,
-                "work_item_ref": projected_state.ref if projected_state else None,
+                "work_item_ref": (
+                    projected_state.ref
+                    if projected_state
+                    else None
+                ),
                 "agents": agents,
                 "targets": results,
             }
         )
-        await h.hub.publish(
+        await self.operations.publish_event(
             {
                 "type": "gitlab.event",
                 "eventId": event_id,
@@ -896,21 +1229,45 @@ class GitLabService:
                 "targets": results,
             }
         )
-        h._schedule_native_recovery_cycles()
-        return {"ok": True, "accepted": True, "eventId": event_id, "targets": results}
+        self.operations.schedule_recovery()
+        return {
+            "ok": True,
+            "accepted": True,
+            "eventId": event_id,
+            "targets": results,
+        }
 
     async def sweep_support_servicedesk(self) -> dict[str, Any]:
-        token = self.host._gitlab_api_token()
+        token = (
+            self._compat_api_token()
+            if callable(self._compat_api_token)
+            else self.api_token()
+        )
         if not token:
-            raise RuntimeError("GitLab token is not configured for Support ServiceDesk sweep")
+            raise RuntimeError(
+                "GitLab token is not configured for Support ServiceDesk sweep"
+            )
 
-        project = self.host._support_servicedesk_sweep_project()
-        api_base = f"{self.host._gitlab_api_base_url().rstrip('/')}/api/v4"
+        project = (
+            self._compat_servicedesk_project()
+            if callable(self._compat_servicedesk_project)
+            else self.support_servicedesk_sweep_project()
+        )
+        base_url = (
+            self._compat_api_base_url()
+            if callable(self._compat_api_base_url)
+            else self.api_base_url()
+        )
+        api_base = f"{base_url.rstrip('/')}/api/v4"
         project_payload = await self.gitlab.project(api_base, project, token=token)
         project_path = str(project_payload.get("path_with_namespace") or project)
         project_id = project_payload.get("id") or project
 
-        lookback_hours = self.host._support_servicedesk_sweep_lookback_hours()
+        lookback_hours = (
+            self._compat_servicedesk_lookback()
+            if callable(self._compat_servicedesk_lookback)
+            else self.support_servicedesk_sweep_lookback_hours()
+        )
         created_after = None
         if lookback_hours:
             created_after = time.strftime(
@@ -929,17 +1286,38 @@ class GitLabService:
                 "per_page": 100,
             },
         )
-        payloads = [self.host._issue_to_support_servicedesk_payload(issue, project_path, project_id) for issue in issues]
+        payload_builder = (
+            self._compat_issue_to_servicedesk_payload
+            if callable(self._compat_issue_to_servicedesk_payload)
+            else self.issue_to_support_servicedesk_payload
+        )
+        payloads = [
+            payload_builder(
+                issue,
+                project_path,
+                project_id,
+            )
+            for issue in issues
+        ]
 
         results: list[dict[str, Any]] = []
-        settings = self.host._load_gitlab_routing_settings()
+        settings = self.routing.load_settings()
+        dispatch_servicedesk = (
+            self._compat_dispatch_servicedesk
+            if callable(self._compat_dispatch_servicedesk)
+            else self.dispatch_support_servicedesk_ticket
+        )
         for payload in payloads:
-            result = await self.host._dispatch_support_servicedesk_ticket(payload, source="sweep", settings=settings)
+            result = await dispatch_servicedesk(
+                payload,
+                source="sweep",
+                settings=settings,
+            )
             results.append(result)
 
-        state = await asyncio.to_thread(self.host._load_support_servicedesk_state)
+        state = await asyncio.to_thread(self.operations.load_support_state)
         state["last_sweep_at"] = time.time()
-        await asyncio.to_thread(self.host._save_support_servicedesk_state, state)
+        await asyncio.to_thread(self.operations.save_support_state, state)
         accepted = sum(1 for result in results if result.get("accepted"))
         duplicates = sum(1 for result in results if result.get("reason") == "duplicate_support_ticket")
         return {
@@ -953,69 +1331,139 @@ class GitLabService:
 
 def install_gitlab_service(
     app: Any,
-    host: Any,
+    host: Any | None = None,
     gitlab: GitLabClient | None = None,
     *,
     canonical_events: CanonicalEventIngestionService | None = None,
     autonomy_controller: AutonomyController | None = None,
+    routing: GitLabRoutingDependencies | None = None,
+    work_items: GitLabWorkItemRuntimeDependencies | None = None,
+    operations: GitLabOperationalDependencies | None = None,
 ) -> GitLabService:
-    """Install one GitLab domain service and preserve legacy host entrypoints."""
+    """Compose GitLab explicitly while preserving the historical installer."""
 
     existing = getattr(app.state, "gitlab_service", None)
-    if isinstance(existing, GitLabService) and existing.host is host:
+    if isinstance(existing, GitLabService):
         service = existing
+        if routing is not None:
+            service.routing = routing
+        if work_items is not None:
+            service.work_items = work_items
+        if operations is not None:
+            service.operations = operations
         if canonical_events is not None:
             service.canonical_events = canonical_events
         if autonomy_controller is not None:
             service.autonomy_controller = autonomy_controller
-    else:
-        service = GitLabService(
-            host,
-            gitlab,
-            canonical_events=canonical_events,
-            autonomy_controller=autonomy_controller,
-        )
-        app.state.gitlab_service = service
+        if host is not None:
+            install_gitlab_compatibility(host, service)
+        return service
+
+    service = GitLabService(
+        host,
+        gitlab,
+        canonical_events=canonical_events,
+        autonomy_controller=autonomy_controller,
+        routing=routing,
+        work_items=work_items,
+        operations=operations,
+    )
+    app.state.gitlab_service = service
+    if host is not None:
+        install_gitlab_compatibility(host, service)
+    return service
+
+def install_gitlab_compatibility(
+    host: Any,
+    service: GitLabService,
+) -> None:
+    """Expose the historical GitLab helper surface at the legacy edge only."""
 
     bindings = {
         "_gitlab_event_target_agents": service.event_target_agents,
-        "_gitlab_routing_enabled_for_project": service.routing_enabled_for_project,
+        "_gitlab_routing_enabled_for_project": (
+            service.routing_enabled_for_project
+        ),
         "_gitlab_routing_agents": service.routing_agents,
-        "_gitlab_routing_bindings_for_agent": service.routing_bindings_for_agent,
-        "_gitlab_routing_bindings_for_master": service.routing_bindings_for_master,
+        "_gitlab_routing_bindings_for_agent": (
+            service.routing_bindings_for_agent
+        ),
+        "_gitlab_routing_bindings_for_master": (
+            service.routing_bindings_for_master
+        ),
         "_gitlab_event_id": service.event_id,
         "_remember_gitlab_event": service.remember_event,
-        "_support_servicedesk_project_paths": service.support_servicedesk_project_paths,
-        "_support_servicedesk_owner_agent": service.support_servicedesk_owner_agent,
-        "_support_servicedesk_project_matches": service.support_servicedesk_project_matches,
-        "_support_servicedesk_ticket_key": service.support_servicedesk_ticket_key,
-        "_is_support_servicedesk_ticket_payload": service.is_support_servicedesk_ticket_payload,
-        "_remember_support_servicedesk_ticket": service.remember_support_servicedesk_ticket,
-        "_support_servicedesk_ticket_seen": service.support_servicedesk_ticket_seen,
-        "_format_support_servicedesk_prompt": service.format_support_servicedesk_prompt,
-        "_dispatch_support_servicedesk_ticket": service.dispatch_support_servicedesk_ticket,
+        "_support_servicedesk_project_paths": (
+            service.support_servicedesk_project_paths
+        ),
+        "_support_servicedesk_owner_agent": (
+            service.support_servicedesk_owner_agent
+        ),
+        "_support_servicedesk_project_matches": (
+            service.support_servicedesk_project_matches
+        ),
+        "_support_servicedesk_ticket_key": (
+            service.support_servicedesk_ticket_key
+        ),
+        "_is_support_servicedesk_ticket_payload": (
+            service.is_support_servicedesk_ticket_payload
+        ),
+        "_remember_support_servicedesk_ticket": (
+            service.remember_support_servicedesk_ticket
+        ),
+        "_support_servicedesk_ticket_seen": (
+            service.support_servicedesk_ticket_seen
+        ),
+        "_format_support_servicedesk_prompt": (
+            service.format_support_servicedesk_prompt
+        ),
+        "_dispatch_support_servicedesk_ticket": (
+            service.dispatch_support_servicedesk_ticket
+        ),
         "_gitlab_api_base_url": service.api_base_url,
         "_gitlab_api_token": service.api_token,
-        "_support_servicedesk_sweep_project": service.support_servicedesk_sweep_project,
-        "_support_servicedesk_sweep_interval": service.support_servicedesk_sweep_interval,
-        "_support_servicedesk_sweep_lookback_hours": service.support_servicedesk_sweep_lookback_hours,
-        "_issue_to_support_servicedesk_payload": service.issue_to_support_servicedesk_payload,
-        "_run_support_servicedesk_sweep_once": service.sweep_support_servicedesk,
-        "_support_servicedesk_sweep_loop": service.support_servicedesk_sweep_loop,
-        "_gitlab_semantic_dedupe_seconds": service.semantic_dedupe_seconds,
-        "_gitlab_semantic_key_for_state": service.semantic_key_for_state,
+        "_support_servicedesk_sweep_project": (
+            service.support_servicedesk_sweep_project
+        ),
+        "_support_servicedesk_sweep_interval": (
+            service.support_servicedesk_sweep_interval
+        ),
+        "_support_servicedesk_sweep_lookback_hours": (
+            service.support_servicedesk_sweep_lookback_hours
+        ),
+        "_issue_to_support_servicedesk_payload": (
+            service.issue_to_support_servicedesk_payload
+        ),
+        "_run_support_servicedesk_sweep_once": (
+            service.sweep_support_servicedesk
+        ),
+        "_support_servicedesk_sweep_loop": (
+            service.support_servicedesk_sweep_loop
+        ),
+        "_gitlab_semantic_dedupe_seconds": (
+            service.semantic_dedupe_seconds
+        ),
+        "_gitlab_semantic_key_for_state": (
+            service.semantic_key_for_state
+        ),
         "_gitlab_semantic_key": service.semantic_key,
-        "_remember_gitlab_semantic_key": service.remember_semantic_key,
-        "_remember_gitlab_semantic_issue_state": service.remember_semantic_issue_state,
+        "_remember_gitlab_semantic_key": (
+            service.remember_semantic_key
+        ),
+        "_remember_gitlab_semantic_issue_state": (
+            service.remember_semantic_issue_state
+        ),
         "_gitlab_label_names": service.label_names,
         "_gitlab_owner_agents": service.owner_agents,
         "_gitlab_project_path_matches": service.project_path_matches,
         "_gitlab_group_path": service.group_path,
         "_gitlab_token_for_project": service.token_for_project,
-        "_gitlab_project_settings_for_payload": service.project_settings_for_payload,
+        "_gitlab_project_settings_for_payload": (
+            service.project_settings_for_payload
+        ),
         "_gitlab_reference": service.reference,
         "_gitlab_url": service.url,
     }
     for name, value in bindings.items():
         setattr(host, name, value)
-    return service
+

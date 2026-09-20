@@ -81,43 +81,37 @@ Removed from legacy ownership:
 
 Canonical ownership now lives in `RuntimeHealthService`, `RuntimeDiagnosticsService`, `StaticAssetVersionService`, `OperatorUiService`, `BotRoutingService`, and `BotRuntimeTelemetry`. The UI/system routers consume these services directly. Historical `core._...` names are output-only aliases written during application composition.
 
-## Extraction candidates
 
-### Remaining bot routing and dispatch behavior
+### Explicit work-item and GitLab runtime dependencies
 
-Representative definitions:
-- `_binding_for_external_target`
-- `_clone_binding_for_conversation`
-- cross-channel route resolution helpers
-- `_dispatch_event_to_binding`
+Removed unrestricted legacy-host lookup from the production work-item/task-source path:
 
-Likely owner: extracted bot-routing service. Keep clone/external-target routing separate from dispatch/queue/recovery where practical.
+- `WorkItemStateMachine`
+- `WorkItemService`
+- `TaskSourceWorkItemProjector`
+- `TaskSourceWorkItemEventReconciler`
+- `TaskSourceWritebackService`
+- `GitLabArtifactEventProjector`
+- `BuiltInTaskSourceRuntime`
+- `GitLabService`
 
-### Work-item policy and projection helpers
+Canonical state/policy dependencies are carried by `WorkItemRuntimeDependencies`; GitLab projection uses `GitLabWorkItemDependencies`, while GitLab webhook/routing operations use the scoped dependency groups in `gitlab_dependencies.py`. Production application composition passes those contracts explicitly and does not retain the legacy module on these service instances.
 
-Representative definitions:
-- `_work_item_handoff_timeout_seconds`
-- `_work_item_progress_sla_seconds`
-- `_release_validation_sla_seconds`
-- `_accepted_handoff_owner_idle_seconds`
-- `_leading_owner_cue_in_action`
-- `_maybe_infer_pending_handoff_from_gitlab_projection`
-- work-item wakeup parsing/rendering helpers
+Historical direct-call behavior is isolated in `WorkItemCompatibilityFacade` and `install_gitlab_compatibility()`. Those edges exist only for the verified `import server` compatibility surface and are not used for production dependency lookup.
 
-Likely owner: work-item service/state machine, with environment-derived timing in a small configuration boundary.
+`GitLabSyncHealth`, native recovery scheduling, runtime telemetry, runtime state repositories, and task-source state now have explicit owners. Regression tests assert that the composed work-item/state/GitLab services do not expose a legacy `host`, and GitLab event-dedupe memory is isolated per service instance.
 
-### Runtime queue/recovery controls
+## Final cutover candidates for #446
 
-Representative definitions:
-- `_active_turn_stale_seconds`
-- `_queue_recovery_interval_seconds`
-- `_active_turn_is_stale`
-- `_release_stale_active_turn`
-- `_thread_queue`
-- `_thread_queue_depth`
-- steer/rate-limit helpers
+The remaining references are no longer generic service-locator dependencies. They are the historical application/runtime shell and a small set of narrow compatibility callbacks that must move during the final legacy deletion:
 
-Likely owner: runtime execution / worker supervisor. Preserve only true process-global runtime state in `legacy_core.py` during migration.
+- FastAPI construction, static mounting, EventHub ownership and WebSocket lifecycle.
+- CLI/`main()`, systemd notification, startup/shutdown supervision and route replacement.
+- legacy bot event dispatch / GitLab prompt+notice helpers still passed as explicit callbacks.
+- final queue-compaction, integration-deduplication and workflow compatibility callbacks.
+- `import server` compatibility aliases that are still verified by tests.
+
+These should be moved or deleted as one final cutover rather than wrapped in another generic host object. No new service should accept `legacy_core` or an unrestricted `host`.
 
 ## Runtime-owned items to review rather than automatically move
 
@@ -130,10 +124,10 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 3. ~~Consolidate thread run settings / execution-contract composition.~~ Completed.
 4. ~~Move deterministic binding lookup/primary selection.~~ Completed.
 5. ~~Move agent/channel preferences and preference-aware agent selection.~~ Completed.
-6. Move remaining external-target/cloning routing helpers.
-7. Move work-item policy/projection helpers into the work-item owner.
-8. Consolidate queue/recovery helpers under runtime execution/supervisors.
+6. ~~Move remaining external-target/channel preference selection ownership.~~ Completed.
+7. ~~Move work-item policy/projection and task-source state to explicit owners.~~ Completed.
+8. ~~Move mutable recovery/telemetry/GitLab sync state to explicit owners.~~ Completed.
 9. ~~Move diagnostics aggregation to observability/devhealth.~~ Completed.
-10. Re-inventory remaining globals and compatibility shims.
+10. Final lifecycle/EventHub/CLI cutover and delete `legacy_core.py` in #446.
 
 Each extraction should include focused compatibility tests and tighten the legacy-core no-return/size ratchet after duplicate definitions are physically removed.

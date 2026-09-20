@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from codex_web.models import WorkItemState
@@ -9,8 +10,19 @@ from codex_web.models import WorkItemState
 class WorkItemWatchdogPromptPolicy:
     """Own watchdog prompt rendering and human-readable age formatting."""
 
-    def __init__(self, host: Any) -> None:
-        self.host = host
+    def __init__(
+        self,
+        host: Any | None = None,
+        *,
+        project_lookup: Callable[[str], Any] | None = None,
+    ) -> None:
+        if project_lookup is None and host is not None:
+            project_lookup = host._project
+        if project_lookup is None:
+            raise TypeError(
+                "WorkItemWatchdogPromptPolicy requires a project lookup"
+            )
+        self.project_lookup = project_lookup
 
     def human_duration(self, seconds: float) -> str:
         total = max(0, int(seconds))
@@ -30,7 +42,7 @@ class WorkItemWatchdogPromptPolicy:
         project_id: str,
         items: list[tuple[str, WorkItemState, float]],
     ) -> str:
-        project = self.host._project(project_id)
+        project = self.project_lookup(project_id)
         lines = [
             "Orchestrator: autonomous follow-up sweep.",
             f"Project: {project.name} ({project.path})",
@@ -75,7 +87,7 @@ class WorkItemWatchdogPromptPolicy:
         project_id: str,
         items: list[tuple[WorkItemState, list[str]]],
     ) -> str:
-        project = self.host._project(project_id)
+        project = self.project_lookup(project_id)
         lines = [
             "Orchestrator: continuous split-brain monitor triggered.",
             f"Project: {project.name} ({project.path})",
@@ -101,12 +113,20 @@ class WorkItemWatchdogPromptPolicy:
         return "\n".join(lines)
 
 
-def install_work_item_watchdog_prompt_policy(app: Any, host: Any) -> WorkItemWatchdogPromptPolicy:
+def install_work_item_watchdog_prompt_policy(
+    app: Any,
+    host: Any,
+    *,
+    project_lookup: Callable[[str], Any] | None = None,
+) -> WorkItemWatchdogPromptPolicy:
     existing = getattr(app.state, "work_item_watchdog_prompt_policy", None)
-    if isinstance(existing, WorkItemWatchdogPromptPolicy) and existing.host is host:
+    if isinstance(existing, WorkItemWatchdogPromptPolicy):
         policy = existing
     else:
-        policy = WorkItemWatchdogPromptPolicy(host)
+        policy = WorkItemWatchdogPromptPolicy(
+            host,
+            project_lookup=project_lookup,
+        )
         app.state.work_item_watchdog_prompt_policy = policy
 
     host._human_duration = policy.human_duration
