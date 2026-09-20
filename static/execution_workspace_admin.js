@@ -125,7 +125,21 @@
       <small>Integration recorded by: ${escapeHtml(integration.recorded_by || "none")} · ${timeText(integration.recorded_at)}</small>`;
   }
 
-  function repositoryMembersHtml(workspace) {\n    const members = workspace.repository_members || [];\n    if (!members.length) return "<small>Repository members: legacy/single-repository projection.</small>";\n    return `<div class="comm-log">${members.map((member) => `<div class="comm-entry">\n      <strong>${escapeHtml(resourceNames([member.resource_id]))} · ${escapeHtml(member.access_mode)}</strong>\n      <small>Source: ${escapeHtml(member.source_path)} · workspace: ${escapeHtml(member.workspace_path)}</small>\n      <small>Sandbox path: ${escapeHtml(member.sandbox_path)} · branch: ${escapeHtml(member.branch_name || "detached/read-only")}</small>\n      <small>Revision: ${escapeHtml(member.base_revision)} → ${escapeHtml(member.head_revision)} · disk ${bytes(member.disk_bytes)}</small>\n    </div>`).join("")}</div>`;\n  }\n\n  function renderItem(item) {\n    const workspace = item.workspace;
+  function repositoryMembersHtml(workspace) {
+    const members = workspace.repository_members || [];
+    if (!members.length) {
+      return "<small>Repository members: legacy/single-repository projection.</small>";
+    }
+    return `<div class="comm-log">${members.map((member) => `<div class="comm-entry">
+      <strong>${escapeHtml(resourceNames([member.resource_id]))} · ${escapeHtml(member.access_mode)}</strong>
+      <small>Source: ${escapeHtml(member.source_path)} · workspace: ${escapeHtml(member.workspace_path)}</small>
+      <small>Sandbox path: ${escapeHtml(member.sandbox_path)} · branch: ${escapeHtml(member.branch_name || "detached/read-only")}</small>
+      <small>Revision: ${escapeHtml(member.base_revision)} → ${escapeHtml(member.head_revision)} · disk ${bytes(member.disk_bytes)}</small>
+    </div>`).join("")}</div>`;
+  }
+
+  function renderItem(item) {
+    const workspace = item.workspace;
     const lease = item.lease;
     const leaseState = lease
       ? item.lease_active ? "active" : item.lease_expired ? "expired-unrecovered" : lease.released_at ? "released" : "inactive"
