@@ -189,14 +189,7 @@ async function api(path, options = {}) {
   return result;
 }
 
-const uiEvents = createProjectUiEventReconciler({
-  state,
-  api,
-  renderThreads,
-  reconcileWorkspace: refresh,
-  logEvent,
-  getSearch: () => $("thread-search")?.value || "",
-});
+const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
 function threadHistoryController() {
   return window.codexThreadHistory || null;
@@ -1716,8 +1709,6 @@ function handleEvent(event) {
     updateWaitingFromState();
   } else if (message.method === "turn/failed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
-    updateWaitingFromState();
-  } else if (message.method === "thread/name/updated") {
     updateWaitingFromState();
   } else if (message.method === "thread/status/changed") {
     updateWaitingFromState();
