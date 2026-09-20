@@ -227,15 +227,22 @@ class BuiltInTaskSourceRuntime:
     def __init__(
         self,
         registry: TaskSourceRegistry,
-        host: Any,
+        host: Any | None,
         identity: IdentityService,
         secrets: SecretBroker,
         *,
+        load_projects: Callable[[], list[Any]] | None = None,
         jira_client: JiraClient | None = None,
         servicenow_client: ServiceNowClient | None = None,
     ) -> None:
+        if load_projects is None:
+            if host is None:
+                raise TypeError(
+                    "BuiltInTaskSourceRuntime requires a project loader"
+                )
+            load_projects = host._load_projects
         self.registry = registry
-        self.host = host
+        self.load_projects = load_projects
         self.identity = identity
         self.secrets = secrets
         self.jira_client = jira_client
@@ -367,7 +374,7 @@ class BuiltInTaskSourceRuntime:
         project = next(
             (
                 item
-                for item in self.host._load_projects()
+                for item in self.load_projects()
                 if getattr(item, "id", None) == project_id
                 and getattr(item, "organization_id", None) == scope.organization_id
                 and getattr(item, "workspace_id", None) == scope.workspace_id
@@ -425,10 +432,11 @@ class BuiltInTaskSourceRuntime:
 
 def install_builtin_task_source_runtime(
     registry: TaskSourceRegistry,
-    host: Any,
+    host: Any | None,
     identity: IdentityService,
     secrets: SecretBroker,
     *,
+    load_projects: Callable[[], list[Any]] | None = None,
     jira_client: JiraClient | None = None,
     servicenow_client: ServiceNowClient | None = None,
 ) -> BuiltInTaskSourceRuntime:
@@ -437,6 +445,7 @@ def install_builtin_task_source_runtime(
         host,
         identity,
         secrets,
+        load_projects=load_projects,
         jira_client=jira_client,
         servicenow_client=servicenow_client,
     ).install()
