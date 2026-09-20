@@ -921,6 +921,11 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
     version="local-v2",
     capabilities=local_execution_backend_status.capabilities,
+    supported_execution_contract_versions=(
+        "1.0",
+        "thread-turn/1.0",
+        "thread-bootstrap/1.0",
+    ),
     actor=identity_service.local_trusted_actor(),
 )
 app.include_router(
