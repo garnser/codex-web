@@ -302,6 +302,7 @@ from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.configuration_state import install_configuration_state
 from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
@@ -1600,6 +1601,7 @@ core._save_turn_queues = turn_queue_repository.save
 
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
+configuration_state = install_configuration_state(app, core)
 auxiliary_state = install_auxiliary_state(app, core)
 bot_presentation_service = install_bot_presentation_service(app, core)
 bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
@@ -2237,7 +2239,7 @@ runtime_diagnostics_service = RuntimeDiagnosticsService(
     connection_public=bot_connection_service.public,
     load_bindings=bot_state.bindings.load,
     binding_public=_diagnostic_binding_public,
-    load_agent_presence=core._load_agent_channel_presence_settings,
+    load_agent_presence=configuration_state.agent_channel_presence.load,
     agent_presence_public=lambda settings: settings.model_dump(),
     load_reply_targets=bot_state.reply_targets.load,
     load_delivery_targets=bot_state.delivery_targets.load,
