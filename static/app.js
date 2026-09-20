@@ -1,12 +1,13 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
+import{activateProject,initialProjectId}from"./project_context.js";
 
 const state = {
   projects: [],
   projectResources: [],
   projectUiStatic: {},
-  projectId: "home",
+  projectId: initialProjectId(),
   threads: [],
   threadId: null,
   activeAgentMessage: null,
@@ -43,6 +44,7 @@ const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
 const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "janice", "larry", "maya", "nora", "quinn", "riley", "sally", "tom"];
+
 const SLACK_ICON_MAP = {
   ":large_blue_circle:": "🔵",
   ":large_green_circle:": "🟢",
@@ -619,7 +621,7 @@ function renderProjects() {
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", async () => {
-      state.projectId = project.id;
+      activateProject(state,project.id);
       applyRunSettings();
       await refresh();
     });
@@ -2459,11 +2461,12 @@ $("save-project").addEventListener("click", async (event) => {
     project,
   ];
   delete state.projectUiStatic[project.id];
-  state.projectId = project.id;
+  activateProject(state,project.id);
   $("project-dialog").close();
   await refresh();
 });
 
+activateProject(state,state.projectId);
 applyTheme(currentTheme());
 setupSidebarControls();
 applySidebarPreference();
