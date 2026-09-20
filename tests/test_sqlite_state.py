@@ -165,6 +165,123 @@ class SQLiteStateStoreTests(unittest.TestCase):
 
             self.assertEqual(legacy.stat().st_mode & 0o777, 0o600)
 
+    def test_keyed_repository_migrates_document_and_preserves_logical_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SQLiteStateStore(root / "codex-web.db")
+            legacy = root / "thread_settings.json"
+            store.put(
+                "thread_settings",
+                {
+                    "thread-1": {"sandbox": "read-only"},
+                    "thread-2": {"model": "gpt-old"},
+                },
+            )
+            repository = ModelMapRepository(
+                store,
+                namespace="thread_settings",
+                legacy_path=legacy,
+                model=ThreadRunSettings,
+            )
+
+            repository.put(
+                "thread-2",
+                ThreadRunSettings(
+                    sandbox="workspace-write",
+                    model="gpt-new",
+                ),
+            )
+
+            self.assertTrue(store.record_collection_exists("thread_settings"))
+            self.assertEqual(
+                repository.get("thread-2").model,
+                "gpt-new",
+            )
+            self.assertEqual(
+                store.get("thread_settings")["thread-1"]["sandbox"],
+                "read-only",
+            )
+            self.assertEqual(
+                store.documents()["thread_settings"]["thread-2"]["model"],
+                "gpt-new",
+            )
+
+            connection = sqlite3.connect(root / "codex-web.db")
+            try:
+                direct = connection.execute(
+                    "SELECT 1 FROM state_documents WHERE namespace = ?",
+                    ("thread_settings",),
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertIsNone(direct)
+
+    def test_keyed_hot_path_defers_full_legacy_json_rewrite_until_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "thread_settings.json"
+            legacy.write_text(
+                json.dumps(
+                    {"thread-1": {"sandbox": "read-only"}},
+                    sort_keys=True,
+                )
+            )
+            repository = ModelMapRepository(
+                SQLiteStateStore(root / "codex-web.db"),
+                namespace="thread_settings",
+                legacy_path=legacy,
+                model=ThreadRunSettings,
+            )
+
+            repository.put(
+                "thread-1",
+                ThreadRunSettings(sandbox="workspace-write"),
+            )
+
+            self.assertEqual(
+                json.loads(legacy.read_text())["thread-1"]["sandbox"],
+                "read-only",
+            )
+            repository.flush_legacy_mirror()
+            self.assertEqual(
+                json.loads(legacy.read_text())["thread-1"]["sandbox"],
+                "workspace-write",
+            )
+
+    def test_update_many_keeps_keyed_namespace_record_backed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteStateStore(Path(tmp) / "codex-web.db")
+            store.record_replace(
+                "thread_settings",
+                {"thread-1": {"sandbox": "read-only"}},
+            )
+            store.put("other", {"value": 1})
+
+            updated = store.update_many(
+                {
+                    "thread_settings": {},
+                    "other": {},
+                },
+                lambda current: {
+                    "thread_settings": {
+                        **current["thread_settings"],
+                        "thread-2": {"model": "gpt-test"},
+                    },
+                    "other": {"value": current["other"]["value"] + 1},
+                },
+            )
+
+            self.assertEqual(updated["other"]["value"], 2)
+            self.assertTrue(store.record_collection_exists("thread_settings"))
+            self.assertEqual(
+                store.record_get("thread_settings", "thread-2")["model"],
+                "gpt-test",
+            )
+            self.assertEqual(
+                store.get("thread_settings")["thread-1"]["sandbox"],
+                "read-only",
+            )
+
     def test_every_store_connection_is_closed_after_use(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = _TrackingStore(Path(tmp) / "codex-web.db")
