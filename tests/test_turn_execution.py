@@ -48,6 +48,15 @@ class _Host:
     def _thread_queue_record(self, thread_id):
         return list(self.queues.get(thread_id, []))
 
+    def _update_thread_queue_record(self, thread_id, updater):
+        current = list(self.queues.get(thread_id, []))
+        updated = list(updater(current))
+        if updated:
+            self.queues[thread_id] = updated
+        else:
+            self.queues.pop(thread_id, None)
+        return updated
+
     def _put_thread_queue_record(self, thread_id, items):
         self.queues[thread_id] = list(items)
 
