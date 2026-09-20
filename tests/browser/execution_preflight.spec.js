@@ -8,6 +8,11 @@ test('retained execution preflight renders blocker and authorized retry', async 
   await expect(page.locator('.message.tool')).toContainText('worker_capability_missing');
   await expect(page.locator('.message.tool')).toContainText('Restore a qualified worker.');
   await expect(page.locator('.message.tool')).toContainText('Correlation: thread-turn-1');
+  await expect(page.locator('.message.tool')).toContainText('Profile: repository-write');
+  await expect(page.locator('.message.tool')).toContainText('Repository: repo-app');
+  await expect(page.locator('.message.tool')).toContainText('Read-only repositories: repo-docs');
+  await expect(page.locator('.message.tool')).toContainText('Sandbox: workspace-write');
+  await expect(page.locator('.message.tool')).toContainText('Approval: on-request');
 
   const retry = page.getByRole('button', { name: 'Retry' });
   await expect(retry).toBeVisible();
