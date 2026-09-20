@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -156,3 +157,5 @@ class EventHub:
                 dead.append(websocket)
         for websocket in dead:
             self.disconnect(websocket)
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1013)
