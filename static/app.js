@@ -4,7 +4,7 @@ import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project
 import{activateProject,initialProjectId}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
-import{loadExecutionPreflightAttempts,renderExecutionPreflightAttempts}from"./execution_preflight_ui.js";
+import{createExecutionPreflightUi}from"./execution_preflight_ui.js";
 
 const state = {
   projects: [],
@@ -17,7 +17,6 @@ const state = {
   approvals: new Map(),
   activeTurnsByThread: new Map(),
   queuedDepthByThread: new Map(),
-  preflightAttemptsByThread: new Map(),
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
@@ -170,6 +169,7 @@ function scheduleCommunicationLogRender() {
 }
 
 const api=createLoggedApi(logEvent);
+const preflightUi=createExecutionPreflightUi({api,addMessage,loadThread,scheduleRefresh,logEvent});
 
 const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
@@ -1140,14 +1140,7 @@ function renderThread(thread) {
   turns.forEach((turn) => {
     (turn.items || []).forEach((item) => renderItem(item, turn));
   });
-  renderExecutionPreflightAttempts({
-    attempts:state.preflightAttemptsByThread.get(thread.id)||[],
-    threadId:thread.id,
-    addMessage,
-    api,
-    loadThread,
-    scheduleRefresh,
-  });
+  preflightUi.render(thread.id);
 }
 
 function renderNewThreadShell(thread) {
@@ -1441,12 +1434,11 @@ async function loadThread(threadId) {
   const messageLimit = history?.messageLimit?.(threadId);
   if (messageLimit) readQs.set("message_limit", String(messageLimit));
   const query = readQs.toString();
-  const [data, preflightAttempts] = await Promise.all([
+  const [data] = await Promise.all([
     api(`/api/threads/${threadId}${query ? `?${query}` : ""}`),
-    loadExecutionPreflightAttempts({api,threadId,logEvent}),
+    preflightUi.load(threadId),
   ]);
   const thread = data.thread || data;
-  state.preflightAttemptsByThread.set(threadId,preflightAttempts);
   history?.recordThread?.(threadId, thread);
   hydrateThreadActivity(thread);
   await refreshQueueStatus(threadId);
@@ -1549,11 +1541,8 @@ async function sendPrompt() {
     } else {
       clearThreadBusy(threadId);
     }
-    if (error?.detail?.code === "execution_preflight_blocked") {
-      await loadThread(threadId);
-      scheduleRefresh(0);
-    } else {
-      addMessage("Error", error.message, "tool", new Date());
+    if (!(await preflightUi.handleError(error,threadId))) {
+      addMessage("Error",error.message,"tool",new Date());
     }
   }
 }
