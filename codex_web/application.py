@@ -303,7 +303,10 @@ from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
-from codex_web.storage.configuration_state import install_configuration_state
+from codex_web.storage.configuration_state import (
+    install_configuration_state,
+    normalize_string_list,
+)
 from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
@@ -2024,7 +2027,6 @@ slack_client = SlackClient()
 telegram_client = TelegramClient()
 app.state.slack_client = slack_client
 app.state.telegram_client = telegram_client
-agent_channel_preference_service = install_agent_channel_preference_service(app, core)
 bot_webhook_security_service = install_bot_webhook_security_service(
     app,
     core,
@@ -2039,6 +2041,19 @@ bot_channel_discovery_service = install_bot_channel_discovery_service(
     projects=project_runtime_service,
     slack_client=slack_client,
     secret_broker=secret_broker,
+)
+agent_channel_preference_service = (
+    install_agent_channel_preference_service(
+        app,
+        core,
+        load_settings=configuration_state.agent_channel_presence.load,
+        normalize_strings=normalize_string_list,
+        known_channels=bot_channel_discovery_service.known,
+        clone_binding=bot_binding_lifecycle_service.clone_to_conversation,
+        load_bindings=bot_state.bindings.load,
+        binding_prefix=bot_presentation_service.binding_prefix,
+        same_logical_binding=thread_recovery_service.same_logical_binding,
+    )
 )
 bot_delivery_service = install_bot_delivery_service(
     app,
