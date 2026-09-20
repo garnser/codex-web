@@ -29,7 +29,7 @@ class WorkItemContractService:
         host: Any | None,
         base_formatter: Callable[[WorkItemState], str],
         execution_roles: ExecutionRoleDefinitionService,
-        execution_profiles: ExecutionProfileDefinitionService,
+        execution_profiles: ExecutionProfileDefinitionService | None = None,
         *,
         split_brain_findings: Callable[
             [WorkItemState], list[str]
@@ -78,8 +78,8 @@ class WorkItemContractService:
         list[str],
         ExecutionRoleCatalogDefinition,
         DefinitionReference,
-        ExecutionProfileContract,
-        DefinitionReference,
+        ExecutionProfileContract | None,
+        DefinitionReference | None,
     ]:
         findings: list[str] = []
         try:
@@ -98,10 +98,14 @@ class WorkItemContractService:
             split_brain=bool(findings),
             catalog=catalog,
         )
-        profile, profile_ref = self.execution_profiles.resolve(
-            role.execution_profile_id,
-            project_id=state.project_id,
-        )
+        if self.execution_profiles is None:
+            profile = None
+            profile_ref = None
+        else:
+            profile, profile_ref = self.execution_profiles.resolve(
+                role.execution_profile_id,
+                project_id=state.project_id,
+            )
         return role, findings, catalog, definition_ref, profile, profile_ref
 
     def role_for_state(self, state: WorkItemState) -> ExecutionRoleContract:
@@ -123,7 +127,11 @@ class WorkItemContractService:
             state,
             role,
             split_brain_findings=findings,
-            definition_refs=(definition_ref, profile_ref),
+            definition_refs=(
+                (definition_ref, profile_ref)
+                if profile_ref is not None
+                else (definition_ref,)
+            ),
             execution_profile=profile,
             execution_profile_definition=profile_ref,
         )
@@ -177,12 +185,21 @@ class WorkItemContractService:
             profile,
             profile_ref,
         ) = self._resolution(state)
-        self._pin_definitions(state, (definition_ref, profile_ref))
+        definition_refs = (
+            (definition_ref, profile_ref)
+            if profile_ref is not None
+            else (definition_ref,)
+        )
+        self._pin_definitions(state, definition_refs)
         contract = execution_contract_for_work_item(
             state,
             role,
             split_brain_findings=findings,
-            definition_refs=(definition_ref, profile_ref),
+            definition_refs=(
+                (definition_ref, profile_ref)
+                if profile_ref is not None
+                else (definition_ref,)
+            ),
             execution_profile=profile,
             execution_profile_definition=profile_ref,
         )
@@ -192,12 +209,19 @@ class WorkItemContractService:
             f"CANONICAL EXECUTION CONTRACT (schema {contract.schema_version})\n"
             "This work item was populated/reconciled from its authoritative task source and codex-web state remains "
             "authoritative for owner, stage, handoff and next action. The versioned execution contract and its exact "
-            f"Definition Registry revisions ({definition_ref.definition_id}@{definition_ref.revision}, "
-            f"{profile_ref.definition_id}@{profile_ref.revision}) were validated before dispatch. "
-            f"Execution profile: {profile.id}; workspace mode: {profile.workspace_mode}; "
-            f"repository access: {profile.repository_access}; required worker capabilities: "
-            f"{', '.join(profile.required_worker_capabilities)}. "
-            "The execution profile constrains the environment; it does not grant operational authority. "
+            (
+                f"Definition Registry revisions ({definition_ref.definition_id}@{definition_ref.revision}, "
+                f"{profile_ref.definition_id}@{profile_ref.revision}) were validated before dispatch. "
+                f"Execution profile: {profile.id}; workspace mode: {profile.workspace_mode}; "
+                f"repository access: {profile.repository_access}; required worker capabilities: "
+                f"{', '.join(profile.required_worker_capabilities)}. "
+                "The execution profile constrains the environment; it does not grant operational authority. "
+                if profile is not None and profile_ref is not None
+                else (
+                    f"Definition Registry revision ({definition_ref.definition_id}@"
+                    f"{definition_ref.revision}) was validated before dispatch. "
+                )
+            )
             "Apply the resolved role below; do not create parallel ownership, definition or permission state.\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
@@ -207,7 +231,7 @@ def install_work_item_contract_service(
     app: Any,
     host: Any | None,
     execution_roles: ExecutionRoleDefinitionService,
-    execution_profiles: ExecutionProfileDefinitionService,
+    execution_profiles: ExecutionProfileDefinitionService | None = None,
     *,
     base_formatter: Callable[[WorkItemState], str] | None = None,
     split_brain_findings: Callable[
