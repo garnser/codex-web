@@ -2077,7 +2077,30 @@ app.state.bot_service = bot_service
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor keeps the historical
 # task globals populated for diagnostics while owning cancellation and shutdown.
-runtime_supervisor = install_runtime_supervisor(app, core)
+runtime_supervisor = install_runtime_supervisor(
+    app,
+    core,
+    policy=runtime_policy,
+    autonomy=autonomy_service,
+    gitlab=gitlab_service,
+    native_recovery=native_recovery_service,
+    continuity=work_item_continuity_service,
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    event_sink=core._append_bot_event,
+    truncate_text=core._truncate_text,
+    sd_notify=core._sd_notify,
+    daemon_health=core._daemon_health,
+    load_projects=project_repository.load,
+    compact_turn_queues=core._compact_turn_queues,
+    dedupe_bot_integrations=core._dedupe_bot_integrations,
+    restore_thread_names=thread_naming_service.restore_all,
+    resume_active_threads=turn_execution_service.resume_active_threads_after_startup,
+    load_turn_queues=turn_queue_repository.load,
+    thread_is_active=turn_execution_service.thread_is_active,
+    release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
+    schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+)
 
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
