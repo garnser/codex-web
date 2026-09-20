@@ -1,6 +1,6 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
-import{createProjectUiEventReconciler}from"./project_ui_events.js";
+import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 
 const state = {
   projects: [],
@@ -1577,26 +1577,6 @@ async function renameThread() {
   uiEvents.patchThread(threadId,{name:name.trim(),updatedAt:Date.now()/1000});
 }
 
-function connectEvents(){
-  const scheme=location.protocol==="https:"?"wss":"ws";
-  const ws=new WebSocket(`${scheme}://${location.host}${BASE}/ws`);
-  logEvent("ws.opening",{url:`${BASE}/ws`});
-  ws.onopen=()=>logEvent("ws.open",{});
-  ws.onmessage=(event)=>{
-    const payload=JSON.parse(event.data);
-    logEvent("ws.message",eventLogPayload(payload));
-    if(uiEvents.accept(payload))handleEvent(payload);
-  };
-  ws.onerror=()=>logEvent("ws.error",{});
-  ws.onclose=()=>{
-    logEvent("ws.close",{});
-    state.activeTurnsByThread.clear();
-    setWaiting(false);
-    uiEvents.noteDisconnect();
-    setTimeout(connectEvents,1000);
-  };
-}
-
 function handleEvent(event) {
   if(event.type==="binding.updated"){uiEvents.handleBindingEvent(event);return;}
   if (event.type === "bot.thread.replaced") {
@@ -2489,7 +2469,7 @@ setupSidebarControls();
 applySidebarPreference();
 state.tokenUsageByThread = loadTokenUsageCache();
 renderTokenUsage();
-connectEvents();
+connectProjectUiEventStream({base:BASE,reconciler:uiEvents,onEvent:handleEvent,logEvent,onDisconnect:()=>{state.activeTurnsByThread.clear();setWaiting(false);}});
 refreshTokenUsage();
 refresh().catch((error) => {
   addMessage("Error", error.message, "tool", new Date());
