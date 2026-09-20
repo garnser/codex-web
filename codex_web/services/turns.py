@@ -45,6 +45,8 @@ class TurnExecutionRuntime(Protocol):
 
     def thread_is_active(self, thread_id: str | None) -> bool: ...
 
+    def active_execution_id(self, thread_id: str | None) -> str | None: ...
+
     async def start_thread_turn_now(
         self,
         thread_id: str,
@@ -522,6 +524,22 @@ class TurnService:
                 status_code=404,
                 detail="preflight attempt not found",
             )
+        if (
+            self.execution.active_execution_id(thread_id)
+            == attempt.execution_id
+        ):
+            attempt = self.preflight.mark_started(
+                attempt.id,
+                actor=actor,
+                claim_id=claim_id,
+            )
+            return {
+                "ok": True,
+                "alreadyStarted": True,
+                "recoveredActiveExecution": True,
+                "threadId": thread_id,
+                "attempt": self.preflight.public(attempt, actor=actor),
+            }
         if attempt.status == "started":
             return {
                 "ok": True,
