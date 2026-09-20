@@ -2735,7 +2735,7 @@ def _compat_daemon_health():
 
 
 async def _compat_healthz():
-    health = runtime_health_service.health()
+    health = core._daemon_health()
     if not health["ok"]:
         from fastapi import HTTPException
 
