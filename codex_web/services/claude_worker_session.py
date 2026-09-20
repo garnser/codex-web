@@ -95,4 +95,5 @@ class AssignmentBoundClaudeSessionManager(AssignmentBoundAgentProcessSessionMana
             egress_endpoints_resolver=egress_endpoints_resolver,
             credential_provider=credential_provider,
             runtime_binding=runtime_binding,
+            control_plane_broker_factory=control_plane_broker_factory,
         )
