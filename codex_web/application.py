@@ -92,6 +92,7 @@ from codex_web.paths import (
     STATE_DB_FILE,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
+    TURN_QUEUE_FILE,
     WORK_ITEM_STATES_FILE,
 )
 from codex_web.runtime import core
@@ -297,6 +298,7 @@ from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.thread_index import install_thread_index_repository
+from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
 
 
@@ -1458,6 +1460,14 @@ core._save_bot_connections = bot_state.connections.save
 core._load_bot_bindings = bot_state.bindings.load
 core._save_bot_bindings = bot_state.bindings.save
 
+turn_queue_repository = TurnQueueRepository(
+    state_store,
+    TURN_QUEUE_FILE,
+)
+app.state.turn_queue_repository = turn_queue_repository
+core._load_turn_queues = turn_queue_repository.load
+core._save_turn_queues = turn_queue_repository.save
+
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
@@ -1677,7 +1687,11 @@ core._set_thread_primary_channel = (
     thread_bot_collaboration_service.set_primary_channel
 )
 
-turn_queue_policy = install_turn_queue_policy(app, core)
+turn_queue_policy = install_turn_queue_policy(
+    app,
+    core,
+    load_queues=turn_queue_repository.load,
+)
 
 thread_service = ThreadService(
     runtime_transport=core.codex,
