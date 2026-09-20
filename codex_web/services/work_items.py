@@ -36,6 +36,79 @@ from codex_web.services.task_sources import (
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
+class _HostContinuityAdapter:
+    """Compatibility edge for lightweight direct WorkItemService consumers."""
+
+    def __init__(self, host: Any) -> None:
+        self.schedule_structured_handoff_dispatch = getattr(
+            host,
+            "_schedule_structured_handoff_dispatch",
+            lambda *_args, **_kwargs: None,
+        )
+        self.schedule_handoff_continuity_check = getattr(
+            host,
+            "_schedule_handoff_continuity_check",
+            lambda *_args, **_kwargs: None,
+        )
+        self.schedule_actionable_owner_dispatch = getattr(
+            host,
+            "_schedule_actionable_owner_dispatch",
+            lambda *_args, **_kwargs: None,
+        )
+        self.schedule_actionable_owner_continuity_check = getattr(
+            host,
+            "_schedule_actionable_owner_continuity_check",
+            lambda *_args, **_kwargs: None,
+        )
+        self._binding_for_agent = getattr(
+            host,
+            "_binding_for_agent",
+            lambda *_args, **_kwargs: None,
+        )
+        self.dispatch_text = getattr(
+            host,
+            "_work_item_dispatch_text",
+            lambda state: state.ref,
+        )
+        self._coerce_owner = getattr(
+            host,
+            "_coerce_owner",
+            lambda owner: owner,
+        )
+        self._coordination_channel = getattr(
+            host,
+            "HANDOFF_COORDINATION_CHANNEL",
+            "",
+        )
+
+    def responsible_binding(self, state: Any) -> Any | None:
+        owner = self._coerce_owner(
+            getattr(state, "current_owner", None)
+            or getattr(state, "next_owner", None)
+        )
+        project_id = getattr(state, "project_id", None)
+        if not owner or not project_id:
+            return None
+        return self._binding_for_agent(
+            owner,
+            project_id,
+            preferred_conversation_id=self._coordination_channel,
+        )
+
+
+class _HostRecoveryAdapter:
+    def __init__(self, host: Any) -> None:
+        self._schedule = getattr(
+            host,
+            "_schedule_native_recovery_cycles",
+            lambda **_kwargs: None,
+        )
+
+    def schedule(self, *, reason: str = "manual") -> bool:
+        self._schedule(reason=reason)
+        return True
+
+
 class WorkItemService:
     """Work-item API behavior backed by canonical state and TaskSource services."""
 
@@ -49,9 +122,13 @@ class WorkItemService:
         task_source_registry: TaskSourceRegistry | None = None,
         task_source_writeback: TaskSourceWritebackService | None = None,
         gitlab_artifact_events: GitLabArtifactEventProjector | None = None,
+        continuity: Any | None = None,
+        recovery: Any | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
+        self.continuity = continuity or _HostContinuityAdapter(host)
+        self.recovery = recovery or _HostRecoveryAdapter(host)
         self.state_machine = state_machine or WorkItemStateMachine(host)
         self.task_source_projector = task_source_projector or TaskSourceWorkItemProjector(
             host,
@@ -450,6 +527,31 @@ class WorkItemService:
         await self.host.hub.publish({"type": "work-item.sync", **result})
         return {"ok": True, **result}
 
+    async def resume_provider_capacity_wait(
+        self,
+        wait: Any,
+        execution: Any,
+    ) -> bool:
+        """Resume a capacity wait through canonical work-item state/continuity."""
+        if not getattr(wait, "work_item_ref", None):
+            return False
+        try:
+            state = self.state_machine._work_item_state(wait.work_item_ref)
+        except Exception:
+            return False
+        binding = self.continuity.responsible_binding(state)
+        if binding is None or not state.project_id:
+            return False
+        execution.enqueue_turn(
+            thread_id=binding.thread_id,
+            project_id=state.project_id,
+            message=self.continuity.dispatch_text(state),
+            source=f"provider-capacity-resume:{wait.id}",
+            execution_id=wait.execution_id,
+        )
+        execution.schedule_queue_drain(binding.thread_id)
+        return True
+
     async def get(self, ref: str) -> dict[str, Any]:
         return self.state_machine._work_item_state_public(
             self.state_machine._work_item_state(ref)
@@ -479,11 +581,11 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.handoff", "ref": ref, "state": public}
         )
-        self.host._schedule_structured_handoff_dispatch(
+        self.continuity.schedule_structured_handoff_dispatch(
             state,
             source="work-item-handoff",
         )
-        self.host._schedule_handoff_continuity_check(
+        self.continuity.schedule_handoff_continuity_check(
             state,
             source="work-item-handoff-continuity",
         )
@@ -512,17 +614,17 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.ack", "ref": ref, "state": public}
         )
-        self.host._schedule_actionable_owner_dispatch(
+        self.continuity.schedule_actionable_owner_dispatch(
             state,
             source="work-item-ack",
             actor=payload.actor,
         )
-        self.host._schedule_actionable_owner_continuity_check(
+        self.continuity.schedule_actionable_owner_continuity_check(
             state,
             source="work-item-ack-continuity",
         )
         if split_brain_findings(state):
-            self.host._schedule_native_recovery_cycles(
+            self.recovery.schedule(
                 reason="work-item-ack-routing-drift"
             )
         return {"ok": True, "item": public}
@@ -550,17 +652,17 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.progress", "ref": ref, "state": public}
         )
-        self.host._schedule_actionable_owner_dispatch(
+        self.continuity.schedule_actionable_owner_dispatch(
             state,
             source="work-item-progress",
             actor=payload.actor,
         )
-        self.host._schedule_actionable_owner_continuity_check(
+        self.continuity.schedule_actionable_owner_continuity_check(
             state,
             source="work-item-progress-continuity",
         )
         if split_brain_findings(state):
-            self.host._schedule_native_recovery_cycles(
+            self.recovery.schedule(
                 reason="work-item-progress-routing-drift"
             )
         return {"ok": True, "item": public}
