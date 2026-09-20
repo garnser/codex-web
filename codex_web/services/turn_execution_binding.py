@@ -217,11 +217,9 @@ class TurnExecutionBindingService:
     def _lease_mode(sandbox: SandboxMode) -> LeaseMode:
         if sandbox == "read-only":
             return LeaseMode.READ
-        if sandbox == "workspace-write":
+        if sandbox in {"workspace-write", "danger-full-access"}:
             return LeaseMode.WRITE
-        raise TurnExecutionBindingError(
-            "danger-full-access cannot be prepared for isolated local Codex execution"
-        )
+        raise TurnExecutionBindingError(f"unsupported sandbox mode: {sandbox}")
 
     def _existing_assignment(
         self,
