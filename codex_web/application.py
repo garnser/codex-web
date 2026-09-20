@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from codex_web.api.action_intents import build_action_intents_router
@@ -80,6 +81,15 @@ from codex_web.integrations.webhook_security import (
     install_webhook_security,
     verify_gitlab_token,
 )
+from codex_web.devhealth import (
+    build_context as build_devhealth_context,
+    render_html as render_devhealth_html,
+)
+from codex_web.devstatus import (
+    build_context as build_devstatus_context,
+    render_html as render_devstatus_html,
+)
+from codex_web.models import GitLabProjectRoutingSettings
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
@@ -401,6 +411,7 @@ core.WORK_ITEM_STATES_FILE = WORK_ITEM_STATES_FILE
 core.WORK_ITEM_EVENTS_FILE = WORK_ITEM_EVENTS_FILE
 core.BOTS_EVENTS_FILE = BOTS_EVENTS_FILE
 core.GITLAB_SEMANTIC_EVENTS_FILE = GITLAB_SEMANTIC_EVENTS_FILE
+core.GitLabProjectRoutingSettings = GitLabProjectRoutingSettings
 
 runtime_policy = RuntimePolicy(DATA_DIR)
 app.state.runtime_policy = runtime_policy
@@ -2756,6 +2767,46 @@ core._thread_recent_activity_age_seconds = (
 core._thread_recent_event_count = (
     bot_runtime_telemetry.thread_recent_event_count
 )
+
+# Verified historical operator-UI compatibility. These wrappers deliberately
+# resolve names from the compatibility namespace at call time so direct tests
+# can patch them without changing the canonical UI/router implementation.
+core.build_devstatus_context = build_devstatus_context
+core.render_devstatus_html = render_devstatus_html
+core.build_devhealth_context = build_devhealth_context
+core.render_devhealth_html = render_devhealth_html
+
+
+async def _compat_devstatus():
+    return HTMLResponse(
+        core.render_devstatus_html(
+            core.build_devstatus_context()
+        )
+    )
+
+
+async def _compat_devhealth(request):
+    force_refresh = request.query_params.get("refresh") in {
+        "1",
+        "true",
+        "yes",
+    }
+    queues = core._load_turn_queues()
+    context = core.build_devhealth_context(
+        core._daemon_health(),
+        active_turns=len(core._load_active_turns()),
+        queued_turns=sum(len(items) for items in queues.values()),
+        status_context=core.build_devstatus_context(
+            force_refresh=force_refresh
+        ),
+        work_item_stats=core._devhealth_work_item_stats(),
+        refresh_url="/devhealth?refresh=1",
+    )
+    return HTMLResponse(core.render_devhealth_html(context))
+
+
+core.devstatus = _compat_devstatus
+core.devhealth = _compat_devhealth
 
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
