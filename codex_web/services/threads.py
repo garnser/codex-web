@@ -4,6 +4,7 @@ import base64
 import contextlib
 import json
 import os
+import time
 import uuid
 from typing import Any, Callable, Mapping
 
@@ -460,12 +461,14 @@ class ThreadService:
             archived=archived,
         )
 
-    def _active_turn_for_list(self, thread_id: str) -> Any | None:
+    def _active_turn_for_list(
+        self,
+        thread_id: str,
+        fallback: dict[str, Any] | None = None,
+    ) -> Any | None:
         if self.active_turn_getter is not None:
             return self.active_turn_getter(thread_id)
-        if self.active_turn_loader is None:
-            return None
-        return self.active_turn_loader().get(thread_id)
+        return (fallback or {}).get(thread_id)
 
     async def list(
         self,
@@ -575,10 +578,19 @@ class ThreadService:
             limit=page_size,
         )
 
+        fallback_active_turns = (
+            self.active_turn_loader()
+            if self.active_turn_getter is None
+            and self.active_turn_loader is not None
+            else {}
+        )
         rows: list[dict[str, Any]] = []
         for indexed in indexed_page:
             runtime_item = runtime_rows.get(indexed.id)
-            active = self._active_turn_for_list(indexed.id)
+            active = self._active_turn_for_list(
+                indexed.id,
+                fallback_active_turns,
+            )
             runtime_status = (
                 runtime_item.get("status")
                 if isinstance(runtime_item, dict)
@@ -894,6 +906,30 @@ class ThreadService:
             }
         if canonical_session is not None:
             response = {**response, "agentSessionId": canonical_session.id}
+        thread_payload = (
+            response.get("thread")
+            if isinstance(response.get("thread"), dict)
+            else response
+        )
+        if isinstance(thread_payload, dict):
+            indexed = self._compact_runtime_thread(
+                {
+                    **thread_payload,
+                    "updatedAt": (
+                        thread_payload.get("updatedAt")
+                        or time.time()
+                    ),
+                    "model": (
+                        thread_payload.get("model")
+                        or model
+                        or getattr(project, "model", None)
+                    ),
+                },
+                project_id=project.id,
+                archived=False,
+            )
+            if indexed is not None:
+                self._index().upsert(indexed)
         return response
 
     async def read(
@@ -990,14 +1026,36 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        return (
+        response = (
             await self._codex_adapter(thread_id).close_session(thread_id)
         ).payload
+        indexed = self._index().get(thread_id)
+        if indexed is not None:
+            self._index().upsert(
+                indexed.model_copy(
+                    update={
+                        "archived": True,
+                        "updatedAt": time.time(),
+                    }
+                )
+            )
+        return response
 
     async def unarchive(self, thread_id: str) -> dict[str, Any]:
-        return (
+        response = (
             await self._codex_adapter(thread_id).restore_session(thread_id)
         ).payload
+        indexed = self._index().get(thread_id)
+        if indexed is not None:
+            self._index().upsert(
+                indexed.model_copy(
+                    update={
+                        "archived": False,
+                        "updatedAt": time.time(),
+                    }
+                )
+            )
+        return response
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
         return (
