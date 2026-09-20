@@ -194,6 +194,7 @@ class ProjectUiStateService:
         search: str | None = None,
         thread_limit: int | None = None,
         thread_cursor: str | None = None,
+        include_static: bool = True,
     ) -> dict[str, Any]:
         project = self.projects.get(project_id, actor.tenant)
         limit = max(
@@ -238,7 +239,11 @@ class ProjectUiStateService:
         )
 
         return {
-            "project": project.model_dump(mode="json"),
+            "project": (
+                project.model_dump(mode="json")
+                if include_static
+                else None
+            ),
             "resources": {
                 "items": resources,
                 "truncated": resources_truncated,
@@ -257,8 +262,12 @@ class ProjectUiStateService:
                 "limit": self.MAX_CHANNELS,
                 "discovery": self.channels.status(project.id),
             },
-            "executionProfiles": self.execution_profiles.public(
-                project_id=project.id
+            "executionProfiles": (
+                self.execution_profiles.public(
+                    project_id=project.id
+                )
+                if include_static
+                else None
             ),
             "meta": {
                 "projectId": project.id,
@@ -267,6 +276,7 @@ class ProjectUiStateService:
                 "settingCount": len(settings),
                 "channelCount": len(channels),
                 "resourceCount": len(resources),
+                "staticIncluded": include_static,
             },
         }
 
