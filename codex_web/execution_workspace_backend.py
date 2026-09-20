@@ -37,6 +37,10 @@ class ExecutionWorkspaceBackend(Protocol):
         base_revision: str | None,
     ) -> GitWorkspaceProvision: ...
 
+    def provision_scratch(self, workspace_id: str) -> Path: ...
+
+    def cleanup_scratch(self, workspace_path: Path) -> None: ...
+
     def cleanup_git(
         self,
         repository_path: Path,
@@ -73,6 +77,32 @@ class LocalGitWorkspaceBackend:
             raise ExecutionWorkspaceBackendError(str(detail).strip()) from exc
         return completed.stdout.strip()
 
+    def _workspace_target(self, workspace_id: str) -> Path:
+        target = (self.root / workspace_id).resolve()
+        root = self.root.resolve()
+        if not target.is_relative_to(root) or target == root:
+            raise ExecutionWorkspaceBackendError(
+                "execution workspace path escapes backend root"
+            )
+        return target
+
+    def provision_scratch(self, workspace_id: str) -> Path:
+        target = self._workspace_target(workspace_id)
+        if target.exists():
+            raise ExecutionWorkspaceBackendError("execution workspace path already exists")
+        target.mkdir(parents=True, mode=0o700)
+        os.chmod(target, 0o700)
+        return target
+
+    def cleanup_scratch(self, workspace_path: Path) -> None:
+        target = workspace_path.resolve()
+        root = self.root.resolve()
+        if not target.is_relative_to(root) or target == root:
+            raise ExecutionWorkspaceBackendError(
+                "scratch cleanup path escapes backend root"
+            )
+        shutil.rmtree(target)
+
     def provision_git(
         self,
         repository_path: Path,
@@ -90,7 +120,7 @@ class LocalGitWorkspaceBackend:
             base_revision or "HEAD",
             cwd=repository_path,
         )
-        target = (self.root / workspace_id).resolve()
+        target = self._workspace_target(workspace_id)
         if target.exists():
             raise ExecutionWorkspaceBackendError("execution workspace path already exists")
         try:
@@ -130,7 +160,7 @@ class LocalGitWorkspaceBackend:
             base_revision or "HEAD",
             cwd=repository_path,
         )
-        target = (self.root / workspace_id).resolve()
+        target = self._workspace_target(workspace_id)
         if target.exists():
             raise ExecutionWorkspaceBackendError("execution workspace path already exists")
         try:
