@@ -7,6 +7,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import (
     ExecutionSubject,
     normalize_execution_subject,
@@ -17,8 +18,8 @@ from codex_web.resources import RepositoryExecutionTarget
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 
 
@@ -152,6 +153,8 @@ class ExecutionAssignmentCreate(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    execution_profile_id: str | None = None
+    execution_profile_definition: DefinitionReference | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -164,8 +167,14 @@ class ExecutionAssignmentCreate(BaseModel):
             sorted(set(self.required_capabilities), key=lambda value: value.value)
         )
         self.secret_refs = tuple(dict.fromkeys(item for item in self.secret_refs if item))
-        if not self.resource_ids:
-            raise ValueError("assignment requires at least one resource")
+        if not self.resource_ids and not self.execution_profile_id:
+            raise ValueError(
+                "resource-free assignment requires an explicit execution profile"
+            )
+        if bool(self.execution_profile_id) != bool(self.execution_profile_definition):
+            raise ValueError(
+                "execution profile id and definition reference must be supplied together"
+            )
         if not self.required_capabilities:
             raise ValueError("assignment requires at least one worker capability")
         if self.network.enabled and WorkerCapability.NETWORK not in self.required_capabilities:
@@ -223,6 +232,8 @@ class ExecutionAssignment(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    execution_profile_id: str | None = None
+    execution_profile_definition: DefinitionReference | None = None
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None
