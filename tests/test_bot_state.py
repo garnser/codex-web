@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 from codex_web.models import BotBinding, BotConnection
-from codex_web.storage.bot_state import BotStateRepositories
+from codex_web.storage.bot_state import (
+    BotStateRepositories,
+    IndexedBotBindingRepository,
+)
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -49,6 +52,93 @@ class BotStateRepositoriesTests(unittest.TestCase):
         self.assertEqual(self.state.bindings.load(), [binding])
         self.assertTrue(self.state.connections.legacy_path.exists())
         self.assertTrue(self.state.bindings.legacy_path.exists())
+
+    def test_indexed_bindings_build_once_and_cover_routing_dimensions(self) -> None:
+        bindings = [
+            BotBinding(
+                id=f"binding-{index}",
+                provider="slack" if index % 2 == 0 else "telegram",
+                external_conversation_id=f"C{index % 25}",
+                thread_id=f"thread-{index % 100}",
+                project_id=f"project-{index % 10}",
+                is_master=index % 97 == 0,
+                created_at=float(index),
+                updated_at=float(index),
+            )
+            for index in range(1000)
+        ]
+        self.state.bindings.save(bindings)
+        indexed = IndexedBotBindingRepository(self.state.bindings)
+
+        original_raw = self.state.bindings._raw
+        reads = 0
+
+        def counted_raw():
+            nonlocal reads
+            reads += 1
+            return original_raw()
+
+        self.state.bindings._raw = counted_raw
+
+        self.assertEqual(indexed.by_id("binding-500").id, "binding-500")
+        self.assertTrue(indexed.for_thread("thread-1"))
+        self.assertTrue(indexed.for_project("slack", "project-0"))
+        self.assertTrue(indexed.for_connection("slack", "C0"))
+        indexed.masters("project-0")
+        self.assertEqual(reads, 1)
+
+        # Repeated routing lookups validate the revision without rebuilding the
+        # thousand-binding index.
+        indexed.for_thread("thread-1")
+        indexed.for_project("slack", "project-0")
+        self.assertEqual(reads, 1)
+
+    def test_indexed_bindings_invalidate_after_local_and_external_mutation(self) -> None:
+        first = BotBinding(
+            id="binding-a",
+            provider="slack",
+            external_conversation_id="C1",
+            thread_id="thread-a",
+            project_id="p1",
+            created_at=1.0,
+            updated_at=1.0,
+        )
+        self.state.bindings.save([first])
+        indexed = IndexedBotBindingRepository(self.state.bindings)
+        self.assertEqual(indexed.for_thread("thread-a")[0].id, "binding-a")
+
+        local = indexed.load()
+        local.append(
+            BotBinding(
+                id="binding-b",
+                provider="slack",
+                external_conversation_id="C2",
+                thread_id="thread-b",
+                project_id="p1",
+                created_at=2.0,
+                updated_at=2.0,
+            )
+        )
+        indexed.save(local)
+        self.assertEqual(indexed.for_thread("thread-b")[0].id, "binding-b")
+
+        # Simulate another process writing the canonical namespace without
+        # touching this process's in-memory index.
+        external = self.state.bindings.load()
+        external.append(
+            BotBinding(
+                id="binding-c",
+                provider="telegram",
+                external_conversation_id="chat-c",
+                thread_id="thread-c",
+                project_id="p2",
+                created_at=3.0,
+                updated_at=3.0,
+            )
+        )
+        self.state.bindings.save(external)
+
+        self.assertEqual(indexed.for_thread("thread-c")[0].id, "binding-c")
 
     def test_concurrent_binding_updates_merge_by_id(self) -> None:
         first = BotBinding(
