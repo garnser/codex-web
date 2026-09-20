@@ -29,11 +29,27 @@ class WorkItemRuntimeDependencies:
 
     @classmethod
     def from_host(cls, host: Any) -> "WorkItemRuntimeDependencies":
+        data_dir = Path(getattr(host, "DATA_DIR", "."))
+        events_file = Path(
+            getattr(
+                host,
+                "WORK_ITEM_EVENTS_FILE",
+                data_dir / "work_item_events.jsonl",
+            )
+        )
         return cls(
-            data_dir=host.DATA_DIR,
-            events_file=host.WORK_ITEM_EVENTS_FILE,
-            load_states=host._load_work_item_states,
-            save_states=host._save_work_item_states,
+            data_dir=data_dir,
+            events_file=events_file,
+            load_states=getattr(
+                host,
+                "_load_work_item_states",
+                lambda: {},
+            ),
+            save_states=getattr(
+                host,
+                "_save_work_item_states",
+                lambda _states: None,
+            ),
             load_projects=getattr(host, "_load_projects", lambda: []),
             resource_ids_for_project=getattr(
                 host,
@@ -45,10 +61,26 @@ class WorkItemRuntimeDependencies:
                 "_leading_owner_cue_in_action",
                 lambda _next_action: None,
             ),
-            default_validation_owner=host.DEFAULT_VALIDATION_OWNER,
-            default_release_owner=host.DEFAULT_RELEASE_OWNER,
+            default_validation_owner=getattr(
+                host,
+                "DEFAULT_VALIDATION_OWNER",
+                "quinn",
+            ),
+            default_release_owner=getattr(
+                host,
+                "DEFAULT_RELEASE_OWNER",
+                "release manager",
+            ),
             non_implementation_owners=frozenset(
-                host.NON_IMPLEMENTATION_OWNERS
+                getattr(
+                    host,
+                    "NON_IMPLEMENTATION_OWNERS",
+                    {
+                        "quinn",
+                        "release manager",
+                        "orchestrator",
+                    },
+                )
             ),
         )
 
@@ -72,16 +104,61 @@ class GitLabWorkItemDependencies:
 
     @classmethod
     def from_host(cls, host: Any) -> "GitLabWorkItemDependencies":
+        def default_group_path(
+            settings: GitLabProjectRoutingSettings,
+        ) -> str | None:
+            for path in settings.project_paths:
+                normalized = (path or "").strip().strip("/")
+                if normalized:
+                    return normalized.split("/", 1)[0]
+            return None
+
         return cls(
-            api_base_url=host.GITLAB_API_BASE,
-            token_for_project=host._gitlab_token_for_project,
-            group_path=host._gitlab_group_path,
-            load_routing_settings=host._load_gitlab_routing_settings,
-            project_issue_ref=host._project_issue_ref,
-            label_names=host._gitlab_label_names,
-            owner_agents=host._gitlab_owner_agents,
-            url=host._gitlab_url,
-            mr_refs_from_payload=host._mr_refs_from_payload,
+            api_base_url=getattr(
+                host,
+                "GITLAB_API_BASE",
+                "https://gitlab.example/api/v4",
+            ),
+            token_for_project=getattr(
+                host,
+                "_gitlab_token_for_project",
+                lambda _project_id: None,
+            ),
+            group_path=getattr(
+                host,
+                "_gitlab_group_path",
+                default_group_path,
+            ),
+            load_routing_settings=getattr(
+                host,
+                "_load_gitlab_routing_settings",
+                lambda: GitLabRoutingSettings(),
+            ),
+            project_issue_ref=getattr(
+                host,
+                "_project_issue_ref",
+                lambda _payload: None,
+            ),
+            label_names=getattr(
+                host,
+                "_gitlab_label_names",
+                lambda _payload: [],
+            ),
+            owner_agents=getattr(
+                host,
+                "_gitlab_owner_agents",
+                lambda _payload, _settings: [],
+            ),
+            url=getattr(
+                host,
+                "_gitlab_url",
+                lambda _payload: None,
+            ),
+            mr_refs_from_payload=getattr(
+                host,
+                "_mr_refs_from_payload",
+                lambda _payload: [],
+            ),
         )
 
 
