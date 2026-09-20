@@ -17,6 +17,7 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
     WorkerLifecycleUpdate,
 )
+from codex_web.services.control_plane_broker import DeferredControlPlaneBrokerFactory
 from codex_web.services.execution_workers import (
     AssignmentNotFoundError,
     ExecutionWorkerError,
@@ -41,10 +42,27 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def _operator_assignment(item) -> dict[str, Any]:
+def _operator_assignment(
+    item,
+    control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
+) -> dict[str, Any]:
     payload = item.model_dump(mode="json")
     if payload.get("lease"):
         payload["lease"]["lease_token"] = "[redacted]"
+    service = (
+        control_plane_broker_factory.service
+        if control_plane_broker_factory is not None
+        else None
+    )
+    payload["brokered_control_plane"] = (
+        service.public_assignment_capability(item)
+        if service is not None
+        else {
+            "enabled": False,
+            "operations": [],
+            "credential_exposed": False,
+        }
+    )
     return payload
 
 
@@ -56,7 +74,11 @@ def _control_actor(request: Request):
     return actor
 
 
-def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter:
+def build_execution_workers_router(
+    service: ExecutionWorkerService,
+    *,
+    control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/execution-workers", tags=["execution-workers"])
 
     @router.get("")
@@ -177,7 +199,12 @@ def build_execution_workers_router(service: ExecutionWorkerService) -> APIRouter
                 request_actor(request),
                 worker_id=worker_id,
             )
-            return {"items": [_operator_assignment(item) for item in items]}
+            return {
+                "items": [
+                    _operator_assignment(item, control_plane_broker_factory)
+                    for item in items
+                ]
+            }
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
