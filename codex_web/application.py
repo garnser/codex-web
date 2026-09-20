@@ -1386,6 +1386,7 @@ work_item_contract_service = install_work_item_contract_service(
 # Telemetry has no dependency on bot repositories/runtime tasks, so compose it
 # before work-item services that need an explicit event sink.
 bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
+watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
 
 work_item_continuity_service = DeferredWorkItemContinuityService()
 app.state.work_item_continuity_service = work_item_continuity_service
@@ -2180,9 +2181,6 @@ work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(
     core,
     project_lookup=project_runtime_service.get,
 )
-watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
-
-
 async def _autonomy_gitlab_group_issues(
     project_id,
     project_settings,
