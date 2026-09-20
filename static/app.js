@@ -1,4 +1,4 @@
-import * as ep from "./execution_profile_controls.js";
+import*as ep from"./execution_profile_controls.js";
 
 const state = {
   projects: [],
@@ -2427,9 +2427,7 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
-$("execution-profile").addEventListener("change", () => {
-  persistRunSettings(); ep.render(currentRunSettings().executionProfileId, escapeHtml); renderRepositoryTargets();
-});
+$("execution-profile").addEventListener("change",()=>{persistRunSettings();ep.render(currentRunSettings().executionProfileId,escapeHtml);renderRepositoryTargets();});
 $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
