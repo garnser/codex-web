@@ -326,7 +326,15 @@ class SQLiteStateStore:
         with self._connection() as connection:
             integrity_row = connection.execute("PRAGMA quick_check").fetchone()
             journal_row = connection.execute("PRAGMA journal_mode").fetchone()
-            document_count = connection.execute("SELECT COUNT(*) FROM state_documents").fetchone()[0]
+            document_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM state_documents
+                WHERE namespace NOT LIKE ?
+                   OR namespace LIKE ?
+                """,
+                ("__codex_records__/%", "__codex_records__/%/__meta__"),
+            ).fetchone()[0]
             updated_row = connection.execute("SELECT MAX(updated_at) FROM state_documents").fetchone()
         integrity = str(integrity_row[0]) if integrity_row else "unknown"
         return {
