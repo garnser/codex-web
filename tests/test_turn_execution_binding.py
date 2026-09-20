@@ -32,6 +32,10 @@ from codex_web.services.codex_worker_configuration import (
     install_codex_worker_configuration,
 )
 from codex_web.services.configuration import ConfigurationService
+from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.execution_profile_definitions import (
+    install_execution_profile_definitions,
+)
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.identity import IdentityService
@@ -44,6 +48,7 @@ from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingService,
 )
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -94,6 +99,15 @@ class _FakeGitBackend:
             base_revision=base,
             head_revision=base,
         )
+
+    def provision_scratch(self, workspace_id):
+        path = self.root / workspace_id
+        path.mkdir(parents=True, exist_ok=False)
+        self.provisioned.append((workspace_id, "scratch", None))
+        return path
+
+    def cleanup_scratch(self, workspace_path):
+        return None
 
     def cleanup_git(self, repository_path, workspace_path, branch_name, *, discard_branch):
         return None
@@ -158,6 +172,9 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ExecutionWorkerStore(self.sqlite),
             workspaces=self.workspaces,
         )
+        self.execution_profiles = install_execution_profile_definitions(
+            DefinitionRegistryService(DefinitionRegistryStore(self.sqlite))
+        )
         self.clock = 1_800_000_000.0
         self.service = TurnExecutionBindingService(
             self.configuration,
@@ -175,6 +192,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
                 ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
                 ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
             },
+            execution_profiles=self.execution_profiles,
             clock=lambda: self.clock,
         )
 
@@ -244,6 +262,45 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertFalse(assignment.network.enabled)
         self.assertEqual(binding.deadline_at, self.clock + 900)
         self.assertEqual(len(self.backend.provisioned), 1)
+
+    def test_orchestration_profile_uses_scratch_without_repository_or_git_authority(self) -> None:
+        self._publish_secret()
+
+        binding = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-orchestration",
+            execution_id="bootstrap-orchestration-exec",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_profile_id="orchestration-only",
+        )
+        workspace = self.workspaces.get(binding.workspace_id, self.actor)
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+
+        self.assertEqual(binding.execution_profile_id, "orchestration-only")
+        self.assertIsNotNone(binding.execution_profile_definition)
+        self.assertEqual(binding.repository_target.source.value, "orchestration_only")
+        self.assertIsNone(binding.repository_resource_id)
+        self.assertEqual(binding.resource_ids, ())
+        self.assertEqual(workspace.kind.value, "scratch")
+        self.assertEqual(workspace.resource_ids, ())
+        self.assertIsNone(workspace.repository_resource_id)
+        self.assertIsNotNone(workspace.path)
+        self.assertEqual(
+            set(assignment.required_capabilities),
+            {WorkerCapability.COMMAND_EXECUTION},
+        )
+        self.assertNotIn(WorkerCapability.GIT, assignment.required_capabilities)
+        self.assertFalse(assignment.network.enabled)
+        self.assertEqual(assignment.execution_profile_id, "orchestration-only")
+        self.assertEqual(
+            assignment.execution_profile_definition,
+            binding.execution_profile_definition,
+        )
 
     def test_danger_full_access_uses_write_workspace_and_canonical_assignment(self) -> None:
         self._publish_secret()
