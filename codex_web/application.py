@@ -69,7 +69,6 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
 from codex_web.canonical_events import CanonicalEventType
-from codex_web.composition import replace_routes
 from codex_web.configuration import ConfigurationContext
 from codex_web.events import EventHub
 from codex_web.executive_integration import install_executive_integrated
@@ -2741,157 +2740,92 @@ if previous_context_service is not None:
 event_hub.subscribe(context_service.observe)
 app.state.context_compaction_service = context_service
 
+def _include_domain_router(router) -> int:
+    route_count = len(router.routes)
+    app.include_router(router)
+    return route_count
+
+
 EXTRACTED_ROUTE_COUNTS = {
-    "definitions": replace_routes(
-        app,
-        build_definitions_router(definition_registry_service, project_service),
-        paths=set(),
-        key="definitions",
+    "definitions": _include_domain_router(
+        build_definitions_router(
+            definition_registry_service,
+            project_service,
+        )
     ),
-    "configuration": replace_routes(
-        app,
-        build_configuration_router(configuration_service, project_service, resource_catalog_service),
-        paths=set(),
-        key="configuration",
+    "configuration": _include_domain_router(
+        build_configuration_router(
+            configuration_service,
+            project_service,
+            resource_catalog_service,
+        )
     ),
-    "projects": replace_routes(
-        app,
-        build_projects_router(project_service),
-        paths={"/api/projects", "/api/projects/{project_id}"},
-        key="projects",
+    "projects": _include_domain_router(
+        build_projects_router(project_service)
     ),
-    "threads": replace_routes(
-        app,
-        build_threads_router(thread_service),
-        paths={
-            "/api/threads",
-            "/api/threads/{thread_id}",
-            "/api/threads/{thread_id}/name",
-            "/api/threads/{thread_id}/settings",
-            "/api/thread-settings",
-            "/api/threads/{thread_id}/primary",
-            "/api/threads/{thread_id}/primary-channel",
-            "/api/threads/{thread_id}/archive",
-            "/api/threads/{thread_id}/unarchive",
-            "/api/turns/interrupt",
-        },
-        key="threads",
+    "threads": _include_domain_router(
+        build_threads_router(thread_service)
     ),
-    "turns": replace_routes(
-        app,
-        build_turns_router(turn_service),
-        paths={
-            "/api/threads/{thread_id}/resume",
-            "/api/threads/{thread_id}/replace",
-            "/api/threads/{thread_id}/turns",
-            "/api/threads/{thread_id}/queue",
-            "/api/threads/{thread_id}/queue/steer",
-            "/api/threads/{thread_id}/queue/{queued_id}/steer",
-        },
-        key="turns",
+    "turns": _include_domain_router(
+        build_turns_router(turn_service)
     ),
-    "context": replace_routes(
-        app,
-        build_context_router(context_service),
-        paths={
-            "/api/threads/{thread_id}/context",
-            "/api/threads/{thread_id}/compact",
-        },
-        key="context",
+    "context": _include_domain_router(
+        build_context_router(context_service)
     ),
-    "runtime": replace_routes(
-        app,
-        build_runtime_router(runtime_service),
-        paths={
-            "/api/status",
-            "/api/healthz",
-            "/api/operations",
-            "/api/recovery/resume",
-            "/api/account/rate-limits",
-            "/api/models",
-        },
-        key="runtime",
+    "runtime": _include_domain_router(
+        build_runtime_router(runtime_service)
     ),
-    "approvals": replace_routes(
-        app,
-        build_approvals_router(approval_service),
-        paths={"/api/approvals", "/api/approvals/{request_id}"},
-        key="approvals",
+    "approvals": _include_domain_router(
+        build_approvals_router(approval_service)
     ),
-    "bots": replace_routes(
-        app,
-        build_bots_router(bot_service),
-        paths={
-            "/api/bots",
-            "/api/bots/connections",
-            "/api/bots/bindings",
-            "/api/bots/channels",
-            "/api/bots/inbound",
-        },
-        key="bots",
+    "bots": _include_domain_router(
+        build_bots_router(bot_service)
     ),
-    "slack": replace_routes(
-        app,
-        build_slack_router(slack_provider_service),
-        paths={"/bots/slack/events"},
-        key="slack",
+    "slack": _include_domain_router(
+        build_slack_router(slack_provider_service)
     ),
-    "telegram": replace_routes(
-        app,
+    "telegram": _include_domain_router(
         build_telegram_router(
             bot_routing_service,
             connections=bot_connection_service,
             webhook_security=bot_webhook_security_service,
             conversation_channels=conversation_channel_service,
-        ),
-        paths={"/bots/telegram/webhook"},
-        key="telegram",
+        )
     ),
-    "work-items": replace_routes(
-        app,
-        build_work_items_router(work_item_service),
-        paths={
-            "/api/work-items",
-            "/api/work-items/sync-from-gitlab",
-            "/api/work-items/{ref:path}",
-            "/api/work-items/{ref:path}/handoff",
-            "/api/work-items/{ref:path}/ack",
-            "/api/work-items/{ref:path}/progress",
-        },
-        key="work-items",
+    "work-items": _include_domain_router(
+        build_work_items_router(work_item_service)
     ),
-    "ui": replace_routes(
-        app,
-        build_ui_router(operator_ui_service),
-        paths={"/", "/devstatus", "/devhealth", "/ws"},
-        key="ui",
+    "ui": _include_domain_router(
+        build_ui_router(operator_ui_service)
     ),
-    "system": replace_routes(
-        app,
+    "system": _include_domain_router(
         build_system_router(
             static_asset_version_service,
             runtime_health_service,
             runtime_diagnostics_service,
             bot_routing_service,
-        ),
-        paths={
-            "/api/livez",
-            "/api/auth-verifier",
-            "/api/diagnostics",
-            "/api/diagnostics/route-test",
-        },
-        key="system",
+        )
     ),
-    "integrations": replace_routes(
-        app,
-        build_integrations_router(core, gitlab_service),
-        paths={
-            "/api/integrations/agent-presence",
-            "/api/integrations/gitlab",
-            "/api/integrations/gitlab/support-servicedesk/sweep",
-            "/bots/gitlab/events",
-        },
-        key="integrations",
+    "integrations": _include_domain_router(
+        build_integrations_router(
+            None,
+            gitlab_service,
+            load_agent_presence=(
+                configuration_state.agent_channel_presence.load
+            ),
+            save_agent_presence=(
+                configuration_state.agent_channel_presence.save
+            ),
+            load_gitlab_routing=(
+                configuration_state.gitlab_routing.load
+            ),
+            save_gitlab_routing=(
+                configuration_state.gitlab_routing.save
+            ),
+            event_sink=bot_runtime_telemetry.append,
+            publish_event=event_hub.publish,
+            truncate_text=lambda value, limit: str(value)[:limit],
+        )
     ),
 }
 app.state.extracted_route_counts = EXTRACTED_ROUTE_COUNTS
