@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections import deque
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import Request
@@ -798,5 +799,30 @@ def install_slack_provider_service(
     host._slack_backfill_cooldown_remaining_seconds = (
         service.cooldown_remaining_seconds
     )
-    host._slack_backfill_thread_targets = service._thread_targets
+    def _compat_slack_backfill_thread_targets():
+        compatibility = SlackProviderService(
+            slack_client=service.slack,
+            routing_service=service.routing,
+            connections=SimpleNamespace(
+                load_connections=host._load_bot_connections,
+            ),
+            bindings=SimpleNamespace(
+                load_bindings=host._load_bot_bindings,
+            ),
+            targets=SimpleNamespace(
+                load_reply_targets=host._load_bot_reply_targets,
+                load_delivery_targets=host._load_bot_delivery_targets,
+                load_active_turns=host._load_active_turns,
+            ),
+            presentation=service.presentation,
+            telemetry=service.telemetry,
+            webhook_security=service.webhook_security,
+            secret_broker=service.secret_broker,
+            conversation_channels=service.conversation_channels,
+        )
+        return compatibility._thread_targets()
+
+    host._slack_backfill_thread_targets = (
+        _compat_slack_backfill_thread_targets
+    )
     return service
