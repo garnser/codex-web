@@ -19,7 +19,13 @@ from codex_web.compatibility import (
 )
 from codex_web.identity import PrincipalKind
 from codex_web.models import BotRouteTest
+from codex_web.services.bot_routing import BotRoutingService
 from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.runtime_diagnostics import (
+    RuntimeDiagnosticsService,
+    RuntimeHealthService,
+    StaticAssetVersionService,
+)
 
 
 def _codex_verifier_credentials() -> tuple[str, str] | None:
@@ -46,7 +52,12 @@ def _basic_auth_credentials(header_value: str | None) -> tuple[str, str] | None:
     return username, password
 
 
-def build_system_router(host: Any) -> APIRouter:
+def build_system_router(
+    static_assets: StaticAssetVersionService,
+    runtime_health: RuntimeHealthService,
+    diagnostics_service: RuntimeDiagnosticsService,
+    routing_service: BotRoutingService,
+) -> APIRouter:
     router = APIRouter(tags=["system"])
 
     def require_runtime_reader(request: Request) -> None:
@@ -71,7 +82,7 @@ def build_system_router(host: Any) -> APIRouter:
         return {
             "ok": True,
             "status": "alive",
-            "version": host._static_version(),
+            "version": static_assets.version(),
             "time": time.time(),
         }
 
@@ -113,12 +124,12 @@ def build_system_router(host: Any) -> APIRouter:
                 detail="authentication required",
                 headers={"WWW-Authenticate": 'Basic realm="VeridataOps codex-web verifier"'},
             )
-        health = host._daemon_health()
+        health = runtime_health.health()
         return {
             "ok": health["ok"],
             "verified": True,
             "mode": "basic-auth-verifier",
-            "version": host._static_version(),
+            "version": static_assets.version(),
         }
 
     @router.get("/api/diagnostics")
@@ -127,7 +138,7 @@ def build_system_router(host: Any) -> APIRouter:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         require_runtime_reader(request)
-        return host._diagnostic_snapshot(project_id)
+        return diagnostics_service.snapshot(project_id)
 
     @router.post("/api/diagnostics/route-test")
     async def diagnostics_route_test(
@@ -135,6 +146,6 @@ def build_system_router(host: Any) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         require_runtime_reader(request)
-        return host._preview_bot_route(payload)
+        return routing_service.preview(payload)
 
     return router

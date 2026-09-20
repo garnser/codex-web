@@ -93,6 +93,7 @@ from codex_web.paths import (
     PROJECTS_FILE,
     SECRET_MATERIAL_DIR,
     STATE_DB_FILE,
+    STATIC_DIR,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
     TURN_QUEUE_FILE,
@@ -231,6 +232,12 @@ from codex_web.services.upgrades import UpgradeService
 from codex_web.services.identity import IdentityService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.runtime import RuntimeService
+from codex_web.services.runtime_diagnostics import (
+    RuntimeDiagnosticsService,
+    RuntimeHealthService,
+    StaticAssetVersionService,
+)
+from codex_web.services.operator_ui import OperatorUiService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
@@ -295,6 +302,7 @@ from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
+from codex_web.storage.configuration_state import install_configuration_state
 from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.decisions import DecisionStore
@@ -1593,6 +1601,7 @@ core._save_turn_queues = turn_queue_repository.save
 
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
+configuration_state = install_configuration_state(app, core)
 auxiliary_state = install_auxiliary_state(app, core)
 bot_presentation_service = install_bot_presentation_service(app, core)
 bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
@@ -2101,9 +2110,49 @@ bot_service = BotService(
 )
 app.state.bot_service = bot_service
 
+static_asset_version_service = StaticAssetVersionService(
+    STATIC_DIR,
+    DATA_DIR.parent,
+)
+runtime_health_service = RuntimeHealthService(
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
+    load_bindings=bot_state.bindings.load,
+    terminal_failures=turn_execution_service.terminal_failures,
+    terminal_recovery_tasks=turn_execution_service.terminal_recovery_tasks,
+    terminal_failure_window_seconds=(
+        turn_execution_service.terminal_failure_window_seconds
+    ),
+    load_queues=turn_queue_repository.load,
+    slack_provider_health=slack_provider_service.health,
+    gitlab_sync_status=lambda: {
+        "consecutive_failures": getattr(
+            core,
+            "GITLAB_SYNC_CONSECUTIVE_FAILURES",
+            0,
+        ),
+        "last_error": getattr(core, "GITLAB_SYNC_LAST_ERROR", None),
+        "last_error_at": getattr(
+            core,
+            "GITLAB_SYNC_LAST_ERROR_AT",
+            0.0,
+        ),
+        "last_success_at": getattr(
+            core,
+            "GITLAB_SYNC_LAST_SUCCESS_AT",
+            0.0,
+        ),
+    },
+)
+app.state.static_asset_version_service = static_asset_version_service
+app.state.runtime_health_service = runtime_health_service
+runtime_service.static_version = static_asset_version_service.version
+runtime_service.runtime_health = runtime_health_service.health
+
 # Replace the legacy core startup/shutdown callbacks after all runtime and
-# provider services have been composed. The supervisor keeps the historical
-# task globals populated for diagnostics while owning cancellation and shutdown.
+# provider services have been composed. The supervisor coordinates explicit
+# runtime owners and receives the extracted health evaluator directly.
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -2117,7 +2166,7 @@ runtime_supervisor = install_runtime_supervisor(
     event_sink=core._append_bot_event,
     truncate_text=core._truncate_text,
     sd_notify=core._sd_notify,
-    daemon_health=core._daemon_health,
+    daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
     compact_turn_queues=core._compact_turn_queues,
     dedupe_bot_integrations=core._dedupe_bot_integrations,
@@ -2127,6 +2176,166 @@ runtime_supervisor = install_runtime_supervisor(
     thread_is_active=turn_execution_service.thread_is_active,
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+)
+
+def _diagnostic_queued_turn_public(queued):
+    preview = queued.message.replace("\n", " ")
+    if len(preview) > 180:
+        preview = f"{preview[:180]}..."
+    return {
+        "id": queued.id,
+        "threadId": queued.thread_id,
+        "projectId": queued.project_id,
+        "source": queued.source,
+        "attempts": queued.attempts,
+        "createdAt": queued.created_at,
+        "messagePreview": preview,
+        "replyTarget": (
+            queued.reply_target.model_dump()
+            if queued.reply_target
+            else None
+        ),
+    }
+
+
+def _diagnostic_binding_public(binding):
+    item = binding.model_dump()
+    item["prefix"] = bot_presentation_service.binding_prefix(binding)
+    item["report_name"] = bot_presentation_service.binding_report_name(
+        binding
+    )
+    item["active"] = turn_execution_service.thread_is_active(
+        binding.thread_id
+    )
+    item["queueDepth"] = turn_queue_policy.depth(binding.thread_id)
+    if binding.provider == "slack":
+        item["slack_icon"] = bot_presentation_service.slack_reply_icon(
+            binding
+        )
+        item["slack_username"] = (
+            bot_presentation_service.slack_reply_username(binding)
+        )
+    return item
+
+
+runtime_diagnostics_service = RuntimeDiagnosticsService(
+    version=static_asset_version_service.version,
+    health=runtime_health_service.health,
+    codex=core.codex,
+    bot_runtime=bot_runtime,
+    telemetry=bot_runtime_telemetry,
+    runtime_policy=runtime_policy,
+    supervisor=runtime_supervisor,
+    thread_message_limit=thread_service.default_message_limit,
+    slack_provider_health=slack_provider_service.health,
+    project_lookup=project_runtime_service.get,
+    load_projects=project_repository.load,
+    load_thread_index=thread_index_repository.load,
+    load_active_turns=runtime_state.active_turns.load,
+    load_queues=turn_queue_repository.load,
+    queued_turn_public=_diagnostic_queued_turn_public,
+    queue_tasks=turn_execution_service.queue_drain_tasks,
+    load_connections=bot_state.connections.load,
+    connection_public=bot_connection_service.public,
+    load_bindings=bot_state.bindings.load,
+    binding_public=_diagnostic_binding_public,
+    load_agent_presence=configuration_state.agent_channel_presence.load,
+    agent_presence_public=lambda settings: settings.model_dump(),
+    load_reply_targets=bot_state.reply_targets.load,
+    load_delivery_targets=bot_state.delivery_targets.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    work_item_public=work_item_state_machine._work_item_state_public,
+    recent_events=bot_runtime_telemetry.recent,
+)
+operator_ui_service = OperatorUiService(
+    static_dir=STATIC_DIR,
+    version=static_asset_version_service.version,
+    health=runtime_health_service.health,
+    load_turn_queues=turn_queue_repository.load,
+    load_active_turns=runtime_state.active_turns.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    event_hub=core.hub,
+)
+app.state.runtime_diagnostics_service = runtime_diagnostics_service
+app.state.operator_ui_service = operator_ui_service
+
+# Output-only compatibility aliases. Implementations live in extracted
+# services; legacy_core only receives names for historical direct callers.
+core._static_version = static_asset_version_service.version
+
+def _compat_daemon_health():
+    compatibility_health = RuntimeHealthService(
+        codex=core.codex,
+        bot_runtime=core.bot_runtime,
+        telemetry=bot_runtime_telemetry,
+        load_bindings=bot_state.bindings.load,
+        terminal_failures=getattr(
+            core,
+            "THREAD_TERMINAL_FAILURES",
+            turn_execution_service.terminal_failures,
+        ),
+        terminal_recovery_tasks=getattr(
+            core,
+            "TERMINAL_RECOVERY_TASKS",
+            turn_execution_service.terminal_recovery_tasks,
+        ),
+        terminal_failure_window_seconds=(
+            turn_execution_service.terminal_failure_window_seconds
+        ),
+        load_queues=turn_queue_repository.load,
+        slack_provider_health=slack_provider_service.health,
+        gitlab_sync_status=lambda: {
+            "consecutive_failures": getattr(
+                core,
+                "GITLAB_SYNC_CONSECUTIVE_FAILURES",
+                0,
+            ),
+            "last_error": getattr(
+                core,
+                "GITLAB_SYNC_LAST_ERROR",
+                None,
+            ),
+            "last_error_at": getattr(
+                core,
+                "GITLAB_SYNC_LAST_ERROR_AT",
+                0.0,
+            ),
+            "last_success_at": getattr(
+                core,
+                "GITLAB_SYNC_LAST_SUCCESS_AT",
+                0.0,
+            ),
+        },
+    )
+    # Historical tests may replace the public runtime-status dictionary.
+    compatibility_health.telemetry.status = getattr(
+        core,
+        "BOT_RUNTIME_STATUS",
+        bot_runtime_telemetry.status,
+    )
+    return compatibility_health.health()
+
+
+async def _compat_healthz():
+    health = core._daemon_health()
+    if not health["ok"]:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=503, detail=health)
+    return health
+
+
+core._daemon_health = _compat_daemon_health
+core.healthz = _compat_healthz
+core._diagnostic_snapshot = runtime_diagnostics_service.snapshot
+core._preview_bot_route = bot_routing_service.preview
+core._devhealth_work_item_stats = operator_ui_service.work_item_stats
+core._recent_bot_events = bot_runtime_telemetry.recent
+core._thread_recent_activity_age_seconds = (
+    bot_runtime_telemetry.thread_recent_activity_age_seconds
+)
+core._thread_recent_event_count = (
+    bot_runtime_telemetry.thread_recent_event_count
 )
 
 install_webhook_security(core, secret_broker)
@@ -2257,13 +2466,18 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "ui": replace_routes(
         app,
-        build_ui_router(core),
+        build_ui_router(operator_ui_service),
         paths={"/", "/devstatus", "/devhealth", "/ws"},
         key="ui",
     ),
     "system": replace_routes(
         app,
-        build_system_router(core),
+        build_system_router(
+            static_asset_version_service,
+            runtime_health_service,
+            runtime_diagnostics_service,
+            bot_routing_service,
+        ),
         paths={
             "/api/livez",
             "/api/auth-verifier",

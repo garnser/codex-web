@@ -1,6 +1,6 @@
 # Legacy core inventory
 
-`codex_web/runtime/legacy_core.py` is still the migration boundary for a mixture of compatibility state, runtime orchestration, storage helpers, bot routing, work-item policy and diagnostics. This inventory is intentionally ownership-focused: each group should either move to an existing owner, become a thin compatibility alias, or remain only when the runtime layer is the correct owner.
+`codex_web/runtime/legacy_core.py` is still the migration boundary for a mixture of compatibility state, runtime orchestration, storage helpers, bot routing, and work-item policy. This inventory is intentionally ownership-focused: each group should either move to an existing owner, become a thin compatibility alias, or remain only when the runtime layer is the correct owner.
 
 ## Completed cleanup blocks
 
@@ -68,6 +68,19 @@ Moved out of legacy ownership into `codex_web/services/agent_channel_preferences
 
 `AgentChannelPreferenceService` now owns persisted/environment channel preference resolution, preference-aware agent selection, known-channel clone naming and logical-binding grouping. The lower-level clone implementation and routing/dispatch behavior remain unchanged.
 
+### Runtime health, diagnostics, and operator UI
+
+Removed from legacy ownership:
+
+- `_daemon_health`
+- `_diagnostic_snapshot`
+- `_static_version`
+- `_devhealth_work_item_stats`
+- `_preview_bot_route`
+- `_recent_bot_events`
+
+Canonical ownership now lives in `RuntimeHealthService`, `RuntimeDiagnosticsService`, `StaticAssetVersionService`, `OperatorUiService`, `BotRoutingService`, and `BotRuntimeTelemetry`. The UI/system routers consume these services directly. Historical `core._...` names are output-only aliases written during application composition.
+
 ## Extraction candidates
 
 ### Remaining bot routing and dispatch behavior
@@ -106,13 +119,6 @@ Representative definitions:
 
 Likely owner: runtime execution / worker supervisor. Preserve only true process-global runtime state in `legacy_core.py` during migration.
 
-### Diagnostics aggregation
-
-Representative definition:
-- `_devhealth_work_item_stats`
-
-Likely owner: devhealth/observability adapter, consuming work-item repository/service state instead of reaching through legacy globals.
-
 ## Runtime-owned items to review rather than automatically move
 
 The process-global task handles, active queue/drain task maps, terminal recovery maps, Codex start lock, shutdown flag and similar live in-memory coordination may legitimately remain in the runtime layer until their owning supervisors have absorbed them. They should be classified separately from persistence and domain-policy helpers so cleanup does not merely move globals for cosmetic reasons.
@@ -127,7 +133,7 @@ The process-global task handles, active queue/drain task maps, terminal recovery
 6. Move remaining external-target/cloning routing helpers.
 7. Move work-item policy/projection helpers into the work-item owner.
 8. Consolidate queue/recovery helpers under runtime execution/supervisors.
-9. Move diagnostics aggregation to observability/devhealth.
+9. ~~Move diagnostics aggregation to observability/devhealth.~~ Completed.
 10. Re-inventory remaining globals and compatibility shims.
 
 Each extraction should include focused compatibility tests and tighten the legacy-core no-return/size ratchet after duplicate definitions are physically removed.

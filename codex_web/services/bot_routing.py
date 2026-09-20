@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from codex_web.conversation_channels import ConversationProjectionOutcome
-from codex_web.models import BotInboundMessage
+from codex_web.models import BotInboundMessage, BotRouteTest
 from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.runtime.execution import TurnExecutionService
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
@@ -154,6 +154,155 @@ class BotRoutingService:
         if SLACK_RELAY_NOTICE in message:
             return message
         return f"{SLACK_RELAY_NOTICE}\n\n{message}"
+
+    def preview(self, payload: BotRouteTest) -> dict[str, Any]:
+        message = BotInboundMessage(**payload.model_dump())
+        provider = message.provider.lower()
+        if provider not in {"slack", "telegram"}:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=400,
+                detail="Provider must be slack or telegram",
+            )
+        bindings = self.bindings.for_connection(
+            provider,
+            message.external_conversation_id,
+        )
+        project_id = message.project_id or (
+            bindings[0].project_id if bindings else "home"
+        )
+        self.projects.get(project_id)
+        steer_now, route_message = self._steer_route_message(message)
+        binding = None
+        routed_text = route_message.text
+        route_error = False
+        route_source = "none"
+        would_clone = False
+        master_catch_all = (
+            not steer_now
+            and self.binding_lifecycle.has_single_master_binding(bindings)
+        )
+        prefer_external_thread = (
+            not steer_now
+            and not master_catch_all
+            and not self.binding_lifecycle.is_top_level_external_message(
+                message
+            )
+        )
+        exact_binding = (
+            None
+            if not prefer_external_thread
+            else self.binding_lifecycle.for_external_target(
+                provider,
+                project_id,
+                message.external_conversation_id,
+                message.external_thread_id,
+            )
+        )
+        if exact_binding is not None:
+            binding = exact_binding
+            would_clone = (
+                exact_binding.external_conversation_id
+                != message.external_conversation_id
+            )
+            route_source = "external-thread"
+        else:
+            binding, routed_text, route_error = (
+                self.binding_lifecycle.resolve(
+                    bindings,
+                    route_message,
+                    prefer_external_thread=prefer_external_thread,
+                    allow_master_fallback=not steer_now,
+                    allow_bare_prefix=steer_now,
+                )
+            )
+            if binding:
+                route_source = "connection-prefix-or-primary"
+
+        if binding is None:
+            cross_binding, cross_text, cross_ambiguous = (
+                self.binding_lifecycle.cross_channel_for_message(
+                    provider,
+                    project_id,
+                    bindings,
+                    route_message,
+                    allow_bare_prefix=steer_now,
+                )
+            )
+            if cross_binding is not None:
+                binding = cross_binding
+                routed_text = cross_text
+                route_error = False
+                would_clone = (
+                    cross_binding.external_conversation_id
+                    != message.external_conversation_id
+                )
+                route_source = "cross-channel-prefix-or-primary"
+            elif cross_ambiguous:
+                route_error = True
+
+        available_prefixes = [
+            self.presentation.binding_prefix(item)
+            for item in bindings
+            if self.presentation.binding_prefix(item)
+        ]
+        if not available_prefixes:
+            available_prefixes = [
+                self.presentation.binding_prefix(item)
+                for item in self.bindings.for_project(provider, project_id)
+                if self.presentation.binding_prefix(item)
+            ]
+
+        if route_error:
+            return {
+                "ok": False,
+                "ambiguous": True,
+                "projectId": project_id,
+                "provider": provider,
+                "externalConversationId": (
+                    message.external_conversation_id
+                ),
+                "availablePrefixes": sorted(set(available_prefixes)),
+                "steer": steer_now,
+            }
+
+        if binding is None:
+            return {
+                "ok": True,
+                "wouldCreateThread": True,
+                "projectId": project_id,
+                "provider": provider,
+                "externalConversationId": (
+                    message.external_conversation_id
+                ),
+                "routedText": routed_text,
+                "routeSource": route_source,
+                "steer": steer_now,
+            }
+
+        active = self.execution.thread_is_active(binding.thread_id)
+        queue_depth = self.queue_policy.depth(binding.thread_id)
+        return {
+            "ok": True,
+            "wouldCreateThread": False,
+            "wouldCloneBinding": would_clone,
+            "projectId": binding.project_id,
+            "provider": provider,
+            "externalConversationId": message.external_conversation_id,
+            "bindingId": binding.id,
+            "threadId": binding.thread_id,
+            "threadName": binding.thread_name,
+            "prefix": self.presentation.binding_prefix(binding),
+            "routedText": routed_text,
+            "routeSource": route_source,
+            "steer": steer_now,
+            "active": active,
+            "queueDepth": queue_depth,
+            "wouldQueue": (
+                not steer_now and (active or queue_depth > 0)
+            ),
+        }
 
     async def handle_inbound(
         self,
