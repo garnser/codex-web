@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Execution preflight UI fixture</title></head>
+<body>
+  <div id="messages"></div>
+  <script type="module">
+    import { createExecutionPreflightUi } from "../../static/execution_preflight_ui.js";
+
+    window.__apiCalls = [];
+    window.__reloadCalls = [];
+    window.__refreshCalls = [];
+    window.__messages = [];
+
+    function addMessage(title, text, kind, date) {
+      const card = document.createElement("div");
+      card.className = `message ${kind}`;
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = text;
+      card.append(heading, body);
+      document.getElementById("messages").appendChild(card);
+      window.__messages.push({ title, text, kind, date: date?.toISOString?.() || null });
+      return card;
+    }
+
+    const attempts = [{
+      id: "preflight-thread-turn-1",
+      correlation_id: "thread-turn-1",
+      execution_id: "thread-turn-1",
+      thread_id: "thread-1",
+      message: "make the requested change",
+      status: "blocked",
+      attempt_number: 2,
+      can_retry: true,
+      retry_href: "/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/retry",
+      created_at: 1800000000,
+      updated_at: 1800000010,
+      blockers: [{
+        code: "worker_capability_missing",
+        message: "command execution is unavailable",
+        remediation: "Restore a qualified worker.",
+      }],
+    }];
+
+    const api = async (path, options = {}) => {
+      window.__apiCalls.push({ path, method: options.method || "GET" });
+      if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.endsWith("/retry")) return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    };
+
+    window.__ui = createExecutionPreflightUi({
+      api,
+      addMessage,
+      loadThread: async (threadId) => window.__reloadCalls.push(threadId),
+      scheduleRefresh: (delay) => window.__refreshCalls.push(delay),
+      logEvent: () => {},
+    });
+    await window.__ui.load("thread-1");
+    window.__ui.render("thread-1");
+    window.__ready = true;
+  </script>
+</body>
+</html>
