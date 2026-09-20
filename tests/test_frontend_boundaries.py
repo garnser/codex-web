@@ -281,6 +281,24 @@ class FrontendBoundaryTests(unittest.TestCase):
             css,
         )
 
+    def test_execution_profile_controls_are_focused_and_explain_authority(self) -> None:
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        module_path = STATIC / "execution_profile_controls.js"
+        module = module_path.read_text(encoding="utf-8")
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        work_items = (STATIC / "work_items_ui.js").read_text(encoding="utf-8")
+
+        self.assertLessEqual(module_path.stat().st_size, 6_000)
+        self.assertIn("api_client.js", module)
+        self.assertIn("apiRequest", module)
+        self.assertNotIn("fetch(", module)
+        self.assertIn('id="execution-profile"', html)
+        self.assertIn('id="execution-profile-summary"', html)
+        self.assertIn("No mutable Git worktree is created", module)
+        self.assertIn("execution_profile_id", app)
+        self.assertIn("contract.execution_profile?.id", work_items)
+        self.assertIn("required_worker_capabilities", work_items)
+
     def test_repository_target_controls_are_exposed_for_thread_bootstrap(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
         app = (STATIC / "app.js").read_text(encoding="utf-8")
