@@ -6,6 +6,7 @@ export async function loadProjectUiState({
   models = [],
   cachedStatic = null,
   onModelError = () => {},
+  signal = null,
 }) {
   const query = new URLSearchParams({
     thread_limit: "50",
@@ -14,17 +15,19 @@ export async function loadProjectUiState({
   if (search) query.set("search", search);
 
   const [projectList, workspace, modelList] = await Promise.all([
-    projects.length ? Promise.resolve(projects) : api("/api/projects"),
+    projects.length ? Promise.resolve(projects) : api("/api/projects", { signal }),
     api(
       `/api/projects/${encodeURIComponent(projectId)}/ui-state?${query}`,
+      { signal },
     ),
     models.length
       ? Promise.resolve(models)
-      : api("/api/models")
+      : api("/api/models", { signal })
         .then((response) => (
           Array.isArray(response.data) ? response.data : []
         ))
         .catch((error) => {
+          if (error?.name === "AbortError") throw error;
           onModelError(error);
           return [];
         }),
