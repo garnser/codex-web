@@ -70,6 +70,14 @@ class StateStore(Protocol):
         upserts: dict[str, Any],
         deletes: tuple[str, ...] = (),
     ) -> None: ...
+    def record_update(
+        self,
+        namespace: str,
+        key: str,
+        updater: Callable[[Any], Any],
+        *,
+        default: Any,
+    ) -> Any: ...
     def record_replace(
         self,
         namespace: str,
