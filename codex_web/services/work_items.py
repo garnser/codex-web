@@ -176,7 +176,15 @@ class WorkItemService:
             "_append_bot_event",
             lambda _event: None,
         )
-        self.publish_event = publish_event or host.hub.publish
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        host_hub = getattr(host, "hub", None)
+        self.publish_event = (
+            publish_event
+            or getattr(host_hub, "publish", None)
+            or _publish_noop
+        )
         self.truncate_text = truncate_text or getattr(
             host,
             "_truncate_text",
