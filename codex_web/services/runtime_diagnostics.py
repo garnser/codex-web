@@ -223,6 +223,8 @@ class RuntimeDiagnosticsService:
         load_work_item_states: Callable[[], dict[str, Any]],
         work_item_public: Callable[[Any], dict[str, Any]],
         recent_events: Callable[[int], list[dict[str, Any]]],
+        bot_routing_metrics: Callable[[], dict[str, Any]] | None = None,
+        bot_binding_index_status: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.version = version
         self.health = health
@@ -251,6 +253,10 @@ class RuntimeDiagnosticsService:
         self.load_work_item_states = load_work_item_states
         self.work_item_public = work_item_public
         self.recent_events = recent_events
+        self.bot_routing_metrics = bot_routing_metrics or (lambda: {})
+        self.bot_binding_index_status = (
+            bot_binding_index_status or (lambda: {})
+        )
 
     def snapshot(self, project_id: str | None = None) -> dict[str, Any]:
         bindings = self.load_bindings()
@@ -389,5 +395,9 @@ class RuntimeDiagnosticsService:
                 )[:200]
                 if not project_id or state.project_id == project_id
             ],
+            "botRouting": {
+                "targets": self.bot_routing_metrics(),
+                "bindings": self.bot_binding_index_status(),
+            },
             "recentBotEvents": self.recent_events(80),
         }
