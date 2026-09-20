@@ -82,6 +82,8 @@ from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapabilit
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     ARTIFACT_CONTENT_DIR,
+    BOTS_BINDINGS_FILE,
+    BOTS_CONNECTIONS_FILE,
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
@@ -90,6 +92,7 @@ from codex_web.paths import (
     STATE_DB_FILE,
     THREAD_INDEX_FILE,
     THREAD_SETTINGS_FILE,
+    TURN_QUEUE_FILE,
     WORK_ITEM_STATES_FILE,
 )
 from codex_web.runtime import core
@@ -205,6 +208,7 @@ from codex_web.services.retrieval_embedding import (
     ModelGatewayEmbeddingIdentityValidator,
 )
 from codex_web.services.projects import ProjectService
+from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
     ProviderCapacityService,
     install_provider_capacity_event_bridge,
@@ -225,6 +229,10 @@ from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.task_source_action_provider import TaskSourceActionProvider
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
+from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.services.thread_naming import ThreadNamingService
+from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
+from codex_web.services.thread_compatibility import install_thread_compatibility_facade
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
 )
@@ -278,6 +286,7 @@ from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
 from codex_web.storage.business_data_sources import BusinessDataSourceStore
 from codex_web.storage.business_kpis import BusinessKPIStore
+from codex_web.storage.bot_state import BotStateRepositories
 from codex_web.storage.json_files import atomic_write_text, state_file_lock
 from codex_web.storage.projects import ProjectRepository
 from codex_web.storage.provider_capacity import ProviderCapacityStore
@@ -290,6 +299,7 @@ from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.thread_index import install_thread_index_repository
+from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
 
 
@@ -606,6 +616,14 @@ thread_index_repository = install_thread_index_repository(
     legacy_path=THREAD_INDEX_FILE,
 )
 project_service = ProjectService(project_repository)
+project_runtime_service = ProjectRuntimeService(project_service)
+app.state.project_runtime_service = project_runtime_service
+# Compatibility names now resolve to the extracted project runtime owner.
+core._project = project_runtime_service.get
+core._project_for_cwd = project_runtime_service.find_by_cwd
+core._project_params = project_runtime_service.params
+core._sandbox_policy = project_runtime_service.sandbox_policy
+
 resource_catalog_store = ResourceCatalogStore(state_store)
 resource_catalog_service = ResourceCatalogService(resource_catalog_store)
 app.include_router(build_resources_router(resource_catalog_service, project_service))
@@ -1216,17 +1234,6 @@ assignment_session_managers = {
     ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
 }
 
-thread_service = ThreadService(
-    core,
-    binding_service=turn_execution_binding_service,
-    session_manager=assignment_bound_codex_session_manager,
-    bootstrap_bindings=thread_bootstrap_binding_service,
-    control_actor=identity_service.local_trusted_actor(),
-    agent_sessions=agent_session_service,
-    routing_service=agent_routing_service,
-    session_managers=assignment_session_managers,
-    runtime_adapter_factory=_assignment_runtime_adapter,
-)
 context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(
@@ -1440,6 +1447,28 @@ core._load_active_turns = runtime_state.active_turns.load
 core._save_active_turns = runtime_state.active_turns.save
 core._load_work_item_states = runtime_state.work_item_states.load
 core._save_work_item_states = runtime_state.work_item_states.save
+
+bot_state = BotStateRepositories(
+    state_store,
+    connections_file=BOTS_CONNECTIONS_FILE,
+    bindings_file=BOTS_BINDINGS_FILE,
+)
+app.state.bot_state_repositories = bot_state
+# Transitional aliases for unextracted bot services. The authoritative mutable
+# state lives in BotStateRepositories rather than legacy_core.
+core._load_bot_connections = bot_state.connections.load
+core._save_bot_connections = bot_state.connections.save
+core._load_bot_bindings = bot_state.bindings.load
+core._save_bot_bindings = bot_state.bindings.save
+
+turn_queue_repository = TurnQueueRepository(
+    state_store,
+    TURN_QUEUE_FILE,
+)
+app.state.turn_queue_repository = turn_queue_repository
+core._load_turn_queues = turn_queue_repository.load
+core._save_turn_queues = turn_queue_repository.save
+
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
@@ -1546,7 +1575,25 @@ app.state.claude_agent_runtime_adapter = agent_runtime_registry.get(
     "claude-code",
 )
 agent_runtime_telemetry_service.subscribe(app.state.claude_agent_runtime_adapter)
-thread_execution_settings_service = install_thread_execution_settings_service(app, core)
+# Bot connection/binding lookup is needed by thread settings and collaboration.
+bot_connection_service = install_bot_connection_service(
+    app,
+    core,
+    secret_broker=secret_broker,
+    identity_service=identity_service,
+)
+bot_binding_selection_service = install_bot_binding_selection_service(app, core)
+
+thread_execution_settings_service = install_thread_execution_settings_service(
+    app,
+    core,
+    load_settings=runtime_state.thread_settings.load,
+    save_settings=runtime_state.thread_settings.save,
+    bindings=bot_binding_selection_service,
+    load_bindings=core._load_bot_bindings,
+    save_bindings=core._save_bot_bindings,
+)
+
 turn_execution_service = install_turn_execution_service(
     app,
     core,
@@ -1560,6 +1607,141 @@ turn_execution_service = install_turn_execution_service(
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
 )
+
+async def _existing_thread_runtime_request(method, params):
+    values = dict(params or {})
+    thread_id = str(values.get("threadId") or "").strip()
+    if not thread_id:
+        raise RuntimeError(f"{method} requires threadId")
+    return await turn_execution_service.request_for_thread(
+        thread_id,
+        method,
+        values,
+    )
+
+
+async def _thread_recovery_runtime_request(method, params):
+    values = dict(params or {})
+    thread_id = str(values.get("threadId") or "").strip()
+    if method != "thread/start" and thread_id:
+        return await turn_execution_service.request_for_thread(
+            thread_id,
+            method,
+            values,
+        )
+    return await core.codex.request(method, values)
+
+
+thread_naming_service = ThreadNamingService(
+    _existing_thread_runtime_request,
+    thread_index_repository,
+    core._load_bot_bindings,
+    event_sink=core._append_bot_event,
+)
+thread_resume_service = ThreadResumeService(
+    _existing_thread_runtime_request,
+    thread_index_repository,
+    bot_binding_selection_service,
+    event_sink=core._append_bot_event,
+    truncate_text=core._truncate_text,
+)
+app.state.thread_naming_service = thread_naming_service
+app.state.thread_resume_service = thread_resume_service
+
+# Historical helper names are compatibility aliases to extracted owners.
+core._set_thread_name = thread_naming_service.set_name
+core._canonical_bot_thread_names = thread_naming_service.canonical_bot_names
+core._restore_bot_thread_name = thread_naming_service.restore
+core._restore_bot_thread_names = thread_naming_service.restore_all
+core._is_codex_timeout_error = thread_resume_service.is_timeout_error
+core._is_stale_thread_error = thread_resume_service.is_stale_thread_error
+core._thread_read_timeout_response = thread_resume_service.read_timeout_response
+core._web_thread_resume_handoff_timeout = thread_resume_service.handoff_timeout
+core._thread_resume_retry_delay = thread_resume_service.retry_delay
+core._web_thread_resume_task = thread_resume_service.schedule
+core.WEB_THREAD_RESUME_TASKS = thread_resume_service.tasks
+
+thread_recovery_service = install_thread_recovery_service(
+    app,
+    core,
+    projects=project_runtime_service,
+    settings=thread_execution_settings_service,
+    naming=thread_naming_service,
+    thread_index=thread_index_repository,
+    runtime_request=_thread_recovery_runtime_request,
+)
+
+thread_bot_collaboration_service = ThreadBotCollaborationService(
+    project_runtime_service,
+    _existing_thread_runtime_request,
+    load_bindings=core._load_bot_bindings,
+    save_bindings=core._save_bot_bindings,
+    load_connections=core._load_bot_connections,
+    upsert_binding=core._upsert_bot_binding,
+)
+app.state.thread_bot_collaboration_service = thread_bot_collaboration_service
+core._project_scoped_bindings_for_thread = (
+    thread_bot_collaboration_service.project_scoped_bindings_for_thread
+)
+core._set_thread_primary = thread_bot_collaboration_service.set_primary
+core._set_thread_primary_channel = (
+    thread_bot_collaboration_service.set_primary_channel
+)
+
+turn_queue_policy = install_turn_queue_policy(
+    app,
+    core,
+    load_queues=turn_queue_repository.load,
+)
+
+thread_service = ThreadService(
+    runtime_transport=core.codex,
+    runtime_request_for_thread=turn_execution_service.request_for_thread,
+    event_sink=core._append_bot_event,
+    binding_service=turn_execution_binding_service,
+    session_manager=assignment_bound_codex_session_manager,
+    bootstrap_bindings=thread_bootstrap_binding_service,
+    control_actor=identity_service.local_trusted_actor(),
+    agent_sessions=agent_session_service,
+    routing_service=agent_routing_service,
+    session_managers=assignment_session_managers,
+    runtime_adapter_factory=_assignment_runtime_adapter,
+    project_runtime=project_runtime_service,
+    settings=thread_execution_settings_service,
+    recovery=thread_recovery_service,
+    resume_runtime=thread_resume_service,
+    naming=thread_naming_service,
+    collaboration=thread_bot_collaboration_service,
+    thread_index=thread_index_repository,
+    active_turn_loader=runtime_state.active_turns.load,
+)
+turn_service = TurnService(
+    projects=project_runtime_service,
+    settings=thread_execution_settings_service,
+    recovery=thread_recovery_service,
+    resume_runtime=thread_resume_service,
+    bindings=bot_binding_selection_service,
+    queue_policy=turn_queue_policy,
+    execution=turn_execution_service,
+    event_sink=core._append_bot_event,
+    truncate_text=core._truncate_text,
+    binding_public=core._binding_public,
+)
+app.state.thread_service = thread_service
+app.state.turn_service = turn_service
+
+# Preserve the small historical direct-import surface through dynamic
+# compatibility proxies. Production routers continue to use thread_service and
+# turn_service above and do not depend on the legacy host.
+core._default_thread_message_limit = thread_service.default_message_limit
+core._coerce_thread_message_limit = thread_service.coerce_message_limit
+core._trim_thread_messages = thread_service.trim_messages
+install_thread_compatibility_facade(
+    app,
+    core,
+    canonical_settings=thread_execution_settings_service,
+)
+
 async def _resume_provider_capacity_wait(wait):
     if wait.thread_id:
         turn_execution_service.schedule_queue_drain(wait.thread_id)
@@ -1610,32 +1792,13 @@ autonomy_service = install_autonomy_service(
     controller=autonomy_controller,
     canonical_events=canonical_event_ingestion,
 )
-turn_queue_policy = install_turn_queue_policy(app, core)
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
-turn_service = TurnService(core)
-
-# Preserve the small historical function surface still used by direct
-# `import server` callers while the actual implementations live in services.
-# These are aliases to extracted owners, not duplicate legacy implementations.
-core._default_thread_message_limit = thread_service.default_message_limit
-core._coerce_thread_message_limit = thread_service.coerce_message_limit
-core._trim_thread_messages = thread_service.trim_messages
-core.read_thread = thread_service.read
-core.resume_thread = turn_service.resume
-core.start_turn = turn_service.start
 
 # Bot routing/delivery share the same async provider clients used by management
-# and long-lived runtime paths. Rebind the historical host entrypoints before
-# routers or provider workers can receive traffic.
+# and long-lived runtime paths. Connection and binding selection were composed
+# above because thread collaboration consumes them directly.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
-bot_connection_service = install_bot_connection_service(
-    app,
-    core,
-    secret_broker=secret_broker,
-    identity_service=identity_service,
-)
-bot_binding_selection_service = install_bot_binding_selection_service(app, core)
 agent_channel_preference_service = install_agent_channel_preference_service(app, core)
 bot_runtime = install_bot_runtime(
     app,
@@ -1650,7 +1813,6 @@ bot_delivery_service = install_bot_delivery_service(
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
-thread_recovery_service = install_thread_recovery_service(app, core)
 bot_routing_service = install_bot_routing_service(app, core, bot_delivery_service)
 
 conversation_channel_store = ConversationChannelStore(state_store)

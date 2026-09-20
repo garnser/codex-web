@@ -15,9 +15,8 @@ class TurnQueuePolicyTests(unittest.TestCase):
         self.queues = {"thread-1": [object(), object()]}
         self.host = SimpleNamespace(
             _load_turn_queues=lambda: self.queues,
-            THREAD_STEER_TIMES={},
         )
-        self.policy = TurnQueuePolicy(self.host)
+        self.policy = TurnQueuePolicy(self.host._load_turn_queues)
 
     def test_queue_and_depth_handle_missing_thread_ids(self) -> None:
         self.assertEqual(self.policy.queue(None), [])
@@ -88,11 +87,11 @@ class TurnQueuePolicyTests(unittest.TestCase):
             self.assertEqual(raised.exception.detail["retryAfterSeconds"], 40)
 
             self.policy.record_steer("thread-1", now=161.0)
-            self.assertEqual(list(self.host.THREAD_STEER_TIMES["thread-1"]), [110.0, 161.0])
+            self.assertEqual(list(self.policy.steer_times["thread-1"]), [110.0, 161.0])
 
     def test_installer_rebinds_historical_queue_policy_names(self) -> None:
         app = SimpleNamespace(state=SimpleNamespace())
-        host = SimpleNamespace(_load_turn_queues=lambda: {}, THREAD_STEER_TIMES={})
+        host = SimpleNamespace(_load_turn_queues=lambda: {})
         policy = install_turn_queue_policy(app, host)
 
         self.assertIs(app.state.turn_queue_policy, policy)

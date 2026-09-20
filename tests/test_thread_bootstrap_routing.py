@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.models import Project
+from codex_web.models import Project, ThreadRunSettings
 from codex_web.services.threads import ThreadService
 
 
@@ -48,6 +48,49 @@ class _Host:
 
     def _append_bot_event(self, event):
         self.events.append(event)
+
+
+class _ProjectRuntime:
+    def __init__(self, host: _Host) -> None:
+        self.host = host
+
+    def get(self, project_id):
+        return self.host._project(project_id)
+
+    def find_by_cwd(self, cwd):
+        return self.host.project if cwd == self.host.project.path else None
+
+    def params(self, project, values=None):
+        return self.host._project_params(project, values or {})
+
+    def sandbox_policy(self, sandbox, cwd):
+        return self.host._sandbox_policy(sandbox, cwd)
+
+
+class _Settings:
+    def __init__(self, host: _Host) -> None:
+        self.host = host
+
+    def get(self, thread_id):
+        return ThreadRunSettings()
+
+    def remember(self, thread_id, **kwargs):
+        self.host._remember_thread_run_settings(thread_id, **kwargs)
+        return ThreadRunSettings(**kwargs)
+
+
+def _thread_service(host: _Host, **kwargs):
+    async def request_for_thread(thread_id, method, params=None):
+        return await host.codex.request(method, params or {})
+
+    return ThreadService(
+        runtime_transport=host.codex,
+        runtime_request_for_thread=request_for_thread,
+        event_sink=host._append_bot_event,
+        project_runtime=_ProjectRuntime(host),
+        settings=_Settings(host),
+        **kwargs,
+    )
 
 
 class _BindingService:
@@ -159,7 +202,7 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         manager = _SessionManager(session)
         bindings = bindings or _BootstrapBindings()
         actor = SimpleNamespace(identity_id="control")
-        service = ThreadService(
+        service = _thread_service(
             host,
             binding_service=binding_service,
             session_manager=manager,
@@ -249,7 +292,7 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         )
         routing = _RoutingService(selected)
 
-        service = ThreadService(
+        service = _thread_service(
             host,
             binding_service=planner,
             session_manager=default_manager,
@@ -301,7 +344,7 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
             adapters.append(adapter)
             return adapter
 
-        service = ThreadService(
+        service = _thread_service(
             host,
             binding_service=planner,
             session_manager=default_manager,

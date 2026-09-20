@@ -3,23 +3,27 @@ from __future__ import annotations
 import os
 import time
 from collections import deque
-from typing import Any
+from collections.abc import Callable
 
 from fastapi import HTTPException
 
 from codex_web.models import QueuedTurn
 
 
+TurnQueueLoader = Callable[[], dict[str, list[QueuedTurn]]]
+
+
 class TurnQueuePolicy:
     """Own queue visibility, depth limits, and steering-rate policy."""
 
-    def __init__(self, host: Any) -> None:
-        self.host = host
+    def __init__(self, load_queues: TurnQueueLoader) -> None:
+        self.load_queues = load_queues
+        self.steer_times: dict[str, deque[float]] = {}
 
     def queue(self, thread_id: str | None) -> list[QueuedTurn]:
         if not thread_id:
             return []
-        return self.host._load_turn_queues().get(thread_id, [])
+        return self.load_queues().get(thread_id, [])
 
     def depth(self, thread_id: str | None) -> int:
         return len(self.queue(thread_id))
@@ -51,7 +55,7 @@ class TurnQueuePolicy:
     def record_steer(self, thread_id: str, *, now: float | None = None) -> None:
         timestamp = time.time() if now is None else now
         window = self.steer_window_seconds()
-        recent = self.host.THREAD_STEER_TIMES.setdefault(thread_id, deque())
+        recent = self.steer_times.setdefault(thread_id, deque())
         while recent and timestamp - recent[0] >= window:
             recent.popleft()
         if len(recent) >= self.max_steers_per_window():
@@ -67,14 +71,25 @@ class TurnQueuePolicy:
         recent.append(timestamp)
 
 
-def install_turn_queue_policy(app: Any, host: Any) -> TurnQueuePolicy:
+def install_turn_queue_policy(
+    app,
+    host,
+    *,
+    load_queues: TurnQueueLoader | None = None,
+) -> TurnQueuePolicy:
     existing = getattr(app.state, "turn_queue_policy", None)
-    if isinstance(existing, TurnQueuePolicy) and existing.host is host:
+    load_queues = load_queues or host._load_turn_queues
+    if (
+        isinstance(existing, TurnQueuePolicy)
+        and existing.load_queues == load_queues
+    ):
         policy = existing
     else:
-        policy = TurnQueuePolicy(host)
+        policy = TurnQueuePolicy(load_queues)
         app.state.turn_queue_policy = policy
 
+    # Compatibility aliases for direct import-server callers. Internal services
+    # receive the policy object explicitly.
     host._thread_queue = policy.queue
     host._thread_queue_depth = policy.depth
     host._max_thread_queue_depth = policy.max_depth

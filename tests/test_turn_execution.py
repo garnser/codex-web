@@ -632,18 +632,10 @@ class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
             sandbox="workspace-write",
             approval_policy="on-request",
         )
-        host._raise_if_thread_replaced = lambda _thread_id: None
-        host._project = lambda _project_id: project
-        host._remember_thread_run_settings = lambda *_args, **_kwargs: ThreadRunSettings()
-        host._release_stale_active_turn = lambda *_args, **_kwargs: None
         host._truncate_text = lambda value, limit: str(value)[:limit]
-        host._is_codex_timeout_error = lambda _exc: False
-        host._is_stale_thread_error = lambda _exc: False
         queue_owner = TurnExecutionService(host)
-        host._enqueue_turn = queue_owner.enqueue_turn
-        host._publish_queue_status = AsyncMock()
-        host._thread_is_active = lambda _thread_id: False
-        host._start_thread_turn_now = AsyncMock(
+        queue_owner.publish_queue_status = AsyncMock()
+        queue_owner.start_thread_turn_now = AsyncMock(
             side_effect=HTTPException(
                 status_code=409,
                 detail={
@@ -652,8 +644,42 @@ class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
         )
-        host._schedule_queue_drain = lambda _thread_id: None
-        service = TurnService(host)
+        queue_owner.schedule_queue_drain = lambda _thread_id: None
+
+        projects = SimpleNamespace(
+            get=lambda _project_id: project,
+            params=lambda _project, values=None: values or {},
+        )
+        settings = SimpleNamespace(
+            get=lambda _thread_id: ThreadRunSettings(),
+            remember=lambda *_args, **kwargs: ThreadRunSettings(**kwargs),
+        )
+        recovery = SimpleNamespace(
+            raise_if_thread_replaced=lambda _thread_id: None,
+            release_stale_active_turn=lambda *_args: None,
+        )
+        resume_runtime = SimpleNamespace(
+            is_timeout_error=lambda _exc: False,
+            is_stale_thread_error=lambda _exc: False,
+        )
+        bindings = SimpleNamespace(for_thread=lambda _thread_id: [])
+        queue_policy = SimpleNamespace(
+            depth=lambda thread_id: len(host._thread_queue(thread_id)),
+            queue=lambda thread_id: host._thread_queue(thread_id),
+            record_steer=lambda _thread_id: None,
+        )
+        service = TurnService(
+            projects=projects,
+            settings=settings,
+            recovery=recovery,
+            resume_runtime=resume_runtime,
+            bindings=bindings,
+            queue_policy=queue_policy,
+            execution=queue_owner,
+            event_sink=host._append_bot_event,
+            truncate_text=host._truncate_text,
+            binding_public=lambda binding: binding.model_dump(),
+        )
 
         result = await service.start(
             "t1",

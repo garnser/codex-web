@@ -43,6 +43,21 @@ class Host:
         return binding.route_prefix
 
 
+
+def service_for(host: Host) -> ThreadExecutionSettingsService:
+    bindings = SimpleNamespace(for_thread=host._bindings_for_thread)
+    return ThreadExecutionSettingsService(
+        load_settings=host._load_thread_settings,
+        save_settings=host._save_thread_settings,
+        bindings=bindings,
+        load_bindings=host._load_bot_bindings,
+        save_bindings=host._save_bot_bindings,
+        gitlab_routing_enabled_for_project=host._gitlab_routing_enabled_for_project,
+        binding_report_name=host._binding_report_name,
+        binding_prefix=host._binding_prefix,
+    )
+
+
 def binding(*, is_master: bool = False) -> BotBinding:
     return BotBinding(
         id="b1",
@@ -64,7 +79,7 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
     def test_get_falls_back_to_binding_execution_settings(self) -> None:
         host = Host()
         host.bindings = [binding()]
-        service = ThreadExecutionSettingsService(host)
+        service = service_for(host)
 
         settings = service.get("t1")
 
@@ -74,7 +89,7 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
     def test_remember_persists_settings_and_syncs_binding(self) -> None:
         host = Host()
         host.bindings = [binding()]
-        service = ThreadExecutionSettingsService(host)
+        service = service_for(host)
 
         settings = service.remember(
             "t1",
@@ -92,7 +107,7 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
     def test_effective_instructions_add_contract_once_and_base_strips_it(self) -> None:
         host = Host()
         host.bindings = [binding(is_master=True)]
-        service = ThreadExecutionSettingsService(host)
+        service = service_for(host)
 
         contract = service.work_item_contract_instructions("t1")
         self.assertIsNotNone(contract)
@@ -112,7 +127,7 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
         host = Host()
         host.bindings = [binding()]
         host.gitlab_enabled = False
-        service = ThreadExecutionSettingsService(host)
+        service = service_for(host)
 
         self.assertIsNone(service.work_item_contract_instructions("t1"))
         effective = service.effective_developer_instructions("t1", "Only custom")
@@ -127,7 +142,16 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
         host = Host()
         app = SimpleNamespace(state=SimpleNamespace())
 
-        service = install_thread_execution_settings_service(app, host)
+        bindings = SimpleNamespace(for_thread=host._bindings_for_thread)
+        service = install_thread_execution_settings_service(
+            app,
+            host,
+            load_settings=host._load_thread_settings,
+            save_settings=host._save_thread_settings,
+            bindings=bindings,
+            load_bindings=host._load_bot_bindings,
+            save_bindings=host._save_bot_bindings,
+        )
 
         self.assertIs(app.state.thread_execution_settings_service, service)
         self.assertIs(host._thread_run_settings.__self__, service)

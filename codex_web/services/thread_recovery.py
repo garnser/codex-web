@@ -3,11 +3,16 @@ from __future__ import annotations
 import contextlib
 import os
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
 
 from codex_web.models import BotBinding, IndexedThread, Project
+from codex_web.services.project_runtime import ProjectRuntimeService
+from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
+from codex_web.services.thread_naming import ThreadNamingService
+from codex_web.storage.thread_index import ThreadIndexRepository
 
 
 class ThreadRecoveryService:
@@ -19,8 +24,29 @@ class ThreadRecoveryService:
     remain delegated through their host compatibility entrypoints.
     """
 
-    def __init__(self, host: Any) -> None:
+    def __init__(
+        self,
+        host: Any,
+        *,
+        projects: ProjectRuntimeService,
+        settings: ThreadExecutionSettingsService,
+        naming: ThreadNamingService,
+        thread_index: ThreadIndexRepository,
+        runtime_request: Callable[
+            [str, dict[str, Any]],
+            Awaitable[dict[str, Any]],
+        ],
+        event_sink: Callable[[dict[str, Any]], None],
+        truncate_text: Callable[[str, int], str],
+    ) -> None:
         self.host = host
+        self.projects = projects
+        self.settings = settings
+        self.naming = naming
+        self.thread_index = thread_index
+        self.runtime_request = runtime_request
+        self.event_sink = event_sink
+        self.truncate_text = truncate_text
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
@@ -67,13 +93,7 @@ class ThreadRecoveryService:
         return self.preferred_binding_for_replacement(source, changed)
 
     def retarget_thread_settings(self, old_thread_id: str, new_thread_id: str) -> None:
-        h = self.host
-        settings = h._load_thread_settings()
-        old_settings = settings.pop(old_thread_id, None)
-        if old_settings and new_thread_id not in settings:
-            settings[new_thread_id] = old_settings
-        if old_settings:
-            h._save_thread_settings(settings)
+        self.settings.retarget(old_thread_id, new_thread_id)
 
     def retarget_active_turn(self, old_thread_id: str, new_thread_id: str) -> None:
         del new_thread_id
@@ -117,20 +137,20 @@ class ThreadRecoveryService:
 
     async def archive_replaced_bot_thread(self, old_thread_id: str, new_thread_id: str) -> bool:
         h = self.host
-        h._remove_indexed_thread(old_thread_id)
+        self.thread_index.remove(old_thread_id)
         try:
-            await h.codex.request("thread/archive", {"threadId": old_thread_id})
+            await self.runtime_request("thread/archive", {"threadId": old_thread_id})
         except Exception as exc:
-            h._append_bot_event(
+            self.event_sink(
                 {
                     "type": "stale_bot_thread_archive_failed",
                     "old_thread_id": old_thread_id,
                     "new_thread_id": new_thread_id,
-                    "error": h._truncate_text(str(exc), 500),
+                    "error": self.truncate_text(str(exc), 500),
                 }
             )
             return False
-        h._append_bot_event(
+        self.event_sink(
             {
                 "type": "stale_bot_thread_archived",
                 "old_thread_id": old_thread_id,
@@ -150,13 +170,13 @@ class ThreadRecoveryService:
     async def replace_stale_bot_thread(self, binding: BotBinding, error: str) -> BotBinding:
         h = self.host
         old_thread_id = binding.thread_id
-        project = h._project(binding.project_id)
-        settings = h._thread_run_settings(old_thread_id)
+        project = self.projects.get(binding.project_id)
+        settings = self.settings.get(old_thread_id)
         sandbox = binding.sandbox or settings.sandbox or project.sandbox
         approval_policy = binding.approval_policy or settings.approval_policy or project.approval_policy
         thread_name = binding.thread_name or binding.route_prefix or h._binding_prefix(binding)
 
-        replacement_params = h._project_params(
+        replacement_params = self.projects.params(
             project,
             {
                 "sandbox": sandbox,
@@ -165,12 +185,12 @@ class ThreadRecoveryService:
             },
         )
         try:
-            response = await h.codex.request("thread/start", replacement_params)
+            response = await self.runtime_request("thread/start", replacement_params)
         except Exception as exc:
             text = str(exc).lower()
             if "unknown variant `bot-thread-replacement`" not in text and "sessionstartsource" not in text:
                 raise
-            replacement_params = h._project_params(
+            replacement_params = self.projects.params(
                 project,
                 {
                     "sandbox": sandbox,
@@ -178,10 +198,10 @@ class ThreadRecoveryService:
                     "sessionStartSource": "startup",
                 },
             )
-            response = await h.codex.request("thread/start", replacement_params)
+            response = await self.runtime_request("thread/start", replacement_params)
 
         new_thread_id = response["thread"]["id"]
-        h._remember_thread_run_settings(
+        self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
             approval_policy=approval_policy,
@@ -191,8 +211,8 @@ class ThreadRecoveryService:
         )
         if thread_name:
             with contextlib.suppress(Exception):
-                await h._set_thread_name(new_thread_id, thread_name)
-            h._upsert_indexed_thread(
+                await self.naming.set_name(new_thread_id, thread_name)
+            self.thread_index.upsert(
                 IndexedThread(
                     id=new_thread_id,
                     name=thread_name,
@@ -211,7 +231,7 @@ class ThreadRecoveryService:
         self._remember_replacement(old_thread_id, new_thread_id)
         h._retarget_bot_thread_state(old_thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(old_thread_id, new_thread_id)
-        h._append_bot_event(
+        self.event_sink(
             {
                 "type": "stale_bot_thread_replaced",
                 "provider": binding.provider,
@@ -220,7 +240,7 @@ class ThreadRecoveryService:
                 "old_thread_id": old_thread_id,
                 "new_thread_id": new_thread_id,
                 "archived_old_thread": archived_old_thread,
-                "error": h._truncate_text(error, 500),
+                "error": self.truncate_text(error, 500),
             }
         )
         await h.hub.publish(
@@ -237,10 +257,10 @@ class ThreadRecoveryService:
 
     async def replace_stale_web_thread(self, thread_id: str, project: Project, error: str) -> str:
         h = self.host
-        settings = h._thread_run_settings(thread_id)
-        response = await h.codex.request(
+        settings = self.settings.get(thread_id)
+        response = await self.runtime_request(
             "thread/start",
-            h._project_params(
+            self.projects.params(
                 project,
                 {
                     "sandbox": settings.sandbox or project.sandbox,
@@ -250,7 +270,7 @@ class ThreadRecoveryService:
             ),
         )
         new_thread_id = response["thread"]["id"]
-        h._remember_thread_run_settings(
+        self.settings.remember(
             new_thread_id,
             sandbox=settings.sandbox or project.sandbox,
             approval_policy=settings.approval_policy or project.approval_policy,
@@ -258,12 +278,12 @@ class ThreadRecoveryService:
             reasoning_effort=settings.reasoning_effort,
             developer_instructions=settings.developer_instructions,
         )
-        indexed = next((item for item in h._load_thread_index() if item.id == thread_id), None)
+        indexed = next((item for item in self.thread_index.load() if item.id == thread_id), None)
         thread_name = indexed.name if indexed else None
         if thread_name:
             with contextlib.suppress(Exception):
-                await h._set_thread_name(new_thread_id, thread_name)
-            h._upsert_indexed_thread(
+                await self.naming.set_name(new_thread_id, thread_name)
+            self.thread_index.upsert(
                 IndexedThread(
                     id=new_thread_id,
                     name=thread_name,
@@ -275,14 +295,14 @@ class ThreadRecoveryService:
         self._remember_replacement(thread_id, new_thread_id)
         h._retarget_bot_thread_state(thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(thread_id, new_thread_id)
-        h._append_bot_event(
+        self.event_sink(
             {
                 "type": "stale_web_thread_replaced",
                 "project_id": project.id,
                 "old_thread_id": thread_id,
                 "new_thread_id": new_thread_id,
                 "archived_old_thread": archived_old_thread,
-                "error": h._truncate_text(error, 500),
+                "error": self.truncate_text(error, 500),
             }
         )
         await h.hub.publish(
@@ -345,13 +365,32 @@ class ThreadRecoveryService:
         )
 
 
-def install_thread_recovery_service(app: Any, host: Any) -> ThreadRecoveryService:
-    existing = getattr(app.state, "thread_recovery_service", None)
-    if isinstance(existing, ThreadRecoveryService) and existing.host is host:
-        return existing
-
-    service = ThreadRecoveryService(host)
+def install_thread_recovery_service(
+    app: Any,
+    host: Any,
+    *,
+    projects: ProjectRuntimeService,
+    settings: ThreadExecutionSettingsService,
+    naming: ThreadNamingService,
+    thread_index: ThreadIndexRepository,
+    runtime_request: Callable[
+        [str, dict[str, Any]],
+        Awaitable[dict[str, Any]],
+    ],
+) -> ThreadRecoveryService:
+    service = ThreadRecoveryService(
+        host,
+        projects=projects,
+        settings=settings,
+        naming=naming,
+        thread_index=thread_index,
+        runtime_request=runtime_request,
+        event_sink=host._append_bot_event,
+        truncate_text=host._truncate_text,
+    )
     app.state.thread_recovery_service = service
+
+    # Compatibility aliases for direct import-server callers.
     host._logical_binding_name = service.logical_binding_name
     host._same_logical_binding = service.same_logical_binding
     host._preferred_binding_for_replacement = service.preferred_binding_for_replacement
