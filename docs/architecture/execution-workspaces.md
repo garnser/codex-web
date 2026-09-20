@@ -42,7 +42,7 @@ Normal terminal turn events clear only the active-turn record for a bootstrap-bo
 
 If the process/session disappears, the durable binding remains evidence that the thread belongs to an isolated bootstrap execution. Requests fail explicitly rather than starting a fresh private CODEX_HOME or falling back to the control-plane Codex runtime. Safe process restart/resume of that private CODEX_HOME is intentionally outside this contract.
 
-## Repository target provenance
+## Repository target provenance and multi-repository members
 
 The execution binding resolves a canonical repository target before workspace
 acquisition. The resulting assignment records the exact
@@ -50,11 +50,26 @@ acquisition. The resulting assignment records the exact
 distinguish Work Item, explicit, thread-profile, routing-rule, and single-repo
 selection.
 
-The current workspace implementation still provisions the selected mutable
-repository only. Read-only sibling repository IDs may be authorized and recorded
-on the target contract, but their isolated checkout/snapshot provisioning is a
-separate multi-repository workspace capability. They are not implicitly mounted
-from the host Project root.
+A filesystem ExecutionWorkspace records each repository as an
+`ExecutionWorkspaceMember` with canonical Resource ID, source path, access
+mode, isolated worktree path, sandbox-visible path, base/head revisions, branch
+identity where mutable, and disk usage. Exactly the selected repository is
+writable by default. Authorized sibling repositories are provisioned as detached
+worktrees and exposed to the local worker through read-only Bubblewrap mounts
+under `/mnt/codex-context/<resource-id>`; the Project root itself is never
+mounted as a compatibility shortcut.
+
+The workspace keeps one fenced canonical lease but records a per-resource mode.
+Conflict detection is resource-specific: read/read overlap is permitted, while
+any overlapping write lease fails closed. Existing single-repository workspaces
+retain the legacy top-level path/branch/base/head projection and gain one
+equivalent member record.
+
+Repository filesystem sources come from canonical Resource filesystem/path
+aliases. Relative aliases are resolved beneath the canonical Project root and
+are rejected if symlink resolution escapes that root. The selected primary
+repository retains the historical Project-path fallback for compatibility;
+read-only sibling repositories require an explicit canonical filesystem source.
 
 ## Resource leases
 
