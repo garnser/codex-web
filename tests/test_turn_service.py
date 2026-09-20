@@ -168,6 +168,9 @@ class _Execution:
     def thread_is_active(self, thread_id):
         return self.active
 
+    def active_execution_id(self, thread_id):
+        return getattr(self, "active_execution", None)
+
     async def start_thread_turn_now(self, thread_id, **kwargs):
         return {"turn": {"id": "turn-1"}}
 
@@ -380,6 +383,56 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(duplicate["alreadyStarted"])
         self.assertEqual(len(execution.start_calls), 2)
+
+    async def test_retry_recovers_same_active_execution_without_duplicate_dispatch(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        queue = _QueuePolicy()
+        queue.queued = []
+        execution = _PreflightBlockingExecution(queue)
+        preflight = ExecutionPreflightService(
+            ExecutionPreflightStore(
+                SQLiteStateStore(Path(temp.name) / "state.sqlite3")
+            )
+        )
+        service = TurnService(
+            projects=_Projects(),
+            settings=_Settings(),
+            recovery=_Recovery(),
+            resume_runtime=_Resume(),
+            bindings=_Bindings(),
+            queue_policy=queue,
+            execution=execution,
+            event_sink=lambda _event: None,
+            truncate_text=lambda value, limit: str(value)[:limit],
+            binding_public=lambda binding: binding.model_dump(),
+            preflight=preflight,
+        )
+        actor = _admin_actor()
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start(
+                "thread-1",
+                TurnCreate(message="apply fix", project_id="home"),
+                actor=actor,
+                execution_id="thread-turn-recovered",
+            )
+        attempt_id = caught.exception.detail["attemptId"]
+        self.assertEqual(len(execution.start_calls), 1)
+
+        execution.active = True
+        execution.active_execution = "thread-turn-recovered"
+        result = await service.retry_preflight(
+            "thread-1",
+            attempt_id,
+            actor=actor,
+        )
+
+        self.assertTrue(result["alreadyStarted"])
+        self.assertTrue(result["recoveredActiveExecution"])
+        self.assertEqual(result["attempt"]["status"], "started")
+        self.assertEqual(len(execution.start_calls), 1)
+        self.assertEqual(queue.queued, [])
 
     def test_preflight_routes_are_owned_by_turn_domain(self) -> None:
         self.assertIn(
