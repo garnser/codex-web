@@ -133,8 +133,11 @@ Administrators should inspect:
 A worker that cannot satisfy the exact execution contract must reject the
 assignment rather than guess compatibility.
 
-See [Execution worker boundary](../architecture/execution-worker-boundary.md)
-and [Execution workspaces](../architecture/execution-workspaces.md).
+For multi-repository Projects, administrators must make repository authority explicit: one mutable repository target per mutating execution, optional read-only sibling Resources, and no Project-root compatibility mount. Repository ambiguity is a blocker, not a prompt for a model or UI heuristic. The orchestration-only profile uses scratch execution and receives no Git authority.
+
+`danger-full-access` remains bounded by the assigned worker/workspace. It does not make read-only sibling repositories writable and does not bypass tenant scope, leases/fencing, worker readiness, network policy, SecretReferences, approvals, or broker allowlists.
+
+See [Execution worker boundary](../architecture/execution-worker-boundary.md), [Execution workspaces](../architecture/execution-workspaces.md), and [Multi-repository Projects](../operations/multi-repository-projects.md).
 
 ## Extensions and plugins
 
