@@ -3,6 +3,7 @@ import*as ep from"./execution_profile_controls.js";
 const state = {
   projects: [],
   projectResources: [],
+  projectUiStatic: {},
   projectId: "home",
   threads: [],
   threadId: null,
@@ -1176,40 +1177,81 @@ async function refresh() {
     return state.refreshInFlight;
   }
   const search = $("thread-search").value.trim();
-  const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
+  const cachedStatic = state.projectUiStatic[state.projectId] || null;
+  const qs = new URLSearchParams({
+    thread_limit: "50",
+    include_static: cachedStatic ? "false" : "true",
+  });
   if (search) qs.set("search", search);
+
   state.refreshInFlight = (async () => {
-    const [projects, projectResources, _ep, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
-      api("/api/projects"),
-      api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
-      ep.load(state.projectId),
-      api("/api/bots/bindings"),
-      api("/api/thread-settings"),
-      api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
-      api(`/api/threads?${qs}`),
+    const [projects, workspace, modelsResponse] = await Promise.all([
+      state.projects.length
+        ? Promise.resolve(state.projects)
+        : api("/api/projects"),
+      api(
+        `/api/projects/${encodeURIComponent(state.projectId)}/ui-state?${qs}`,
+      ),
       state.models.length
         ? Promise.resolve(state.models)
         : api("/api/models")
-          .then((response) => (Array.isArray(response.data) ? response.data : []))
+          .then((response) => (
+            Array.isArray(response.data) ? response.data : []
+          ))
           .catch((error) => {
             logEvent("models.error", { message: error.message });
             return [];
           }),
     ]);
+
     state.projects = projects;
-    state.projectResources = projectResources.items || [];
-    state.botBindings = botBindings;
-    state.threadSettings = threadSettings;
-    state.botChannels = botChannels;
-    state.threads = threadsResponse;
+    if (workspace.project) {
+      const projectIndex = state.projects.findIndex(
+        (project) => project.id === workspace.project.id,
+      );
+      if (projectIndex >= 0) {
+        state.projects[projectIndex] = workspace.project;
+      } else {
+        state.projects = [...state.projects, workspace.project];
+      }
+    }
+
+    const staticState = workspace.project || workspace.executionProfiles
+      ? {
+          project: workspace.project || cachedStatic?.project || null,
+          executionProfiles: (
+            workspace.executionProfiles
+            || cachedStatic?.executionProfiles
+            || null
+          ),
+        }
+      : cachedStatic;
+    if (staticState) {
+      state.projectUiStatic[state.projectId] = staticState;
+      if (staticState.executionProfiles) {
+        ep.setCatalog(staticState.executionProfiles);
+      }
+    }
+
+    state.projectResources = workspace.resources?.items || [];
+    state.botBindings = workspace.bindings?.items || [];
+    state.threadSettings = workspace.threadSettings || {};
+    state.botChannels = workspace.channels?.items || [];
+    state.threads = workspace.threads || { data: [] };
     if (!state.models.length) {
       state.models = modelsResponse;
     }
+
     renderRepositoryTargets();
     applyRunSettings();
     renderGitLabIntegration();
     renderAgentChannelPresence();
-    const threads = state.threads?.data || state.threads?.threads || state.threads || [];
+    const threads = (
+      state.threads?.data
+      || state.threads?.threads
+      || state.threads
+      || []
+    );
     hydrateThreadListActivity(threads);
     renderProjects();
     renderThreads();
@@ -2469,6 +2511,11 @@ $("save-project").addEventListener("click", async (event) => {
     model: $("project-model").value || null,
   };
   const project = await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
+  state.projects = [
+    ...state.projects.filter((item) => item.id !== project.id),
+    project,
+  ];
+  delete state.projectUiStatic[project.id];
   state.projectId = project.id;
   $("project-dialog").close();
   await refresh();
