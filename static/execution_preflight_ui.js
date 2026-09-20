@@ -46,14 +46,33 @@ export function createExecutionPreflightUi({
           );
         }
 
+        const context = [
+          attempt?.execution_profile_id
+            ? `Profile: ${attempt.execution_profile_id}`
+            : "",
+          attempt?.repository_resource_id
+            ? `Repository: ${attempt.repository_resource_id}`
+            : "",
+          attempt?.read_only_repository_resource_ids?.length
+            ? `Read-only repositories: ${attempt.read_only_repository_resource_ids.join(", ")}`
+            : "",
+          attempt?.sandbox ? `Sandbox: ${attempt.sandbox}` : "",
+          attempt?.approval_policy
+            ? `Approval: ${attempt.approval_policy}`
+            : "",
+        ].filter(Boolean);
         const lines = [
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
           correlation ? `Correlation: ${correlation}` : "",
+          ...context,
           ...blockers.map((blocker) => {
+            const target = blocker?.target_type
+              ? ` Target: ${blocker.target_type}${blocker?.target_id ? `/${blocker.target_id}` : ""}.`
+              : "";
             const remediation = blocker?.remediation
               ? ` Remediation: ${blocker.remediation}`
               : "";
-            return `${blocker?.code || "execution_preflight_blocked"}: ${blocker?.message || "Execution could not start."}${remediation}`;
+            return `${blocker?.code || "execution_preflight_blocked"}: ${blocker?.message || "Execution could not start."}${target}${remediation}`;
           }),
         ].filter(Boolean);
 
