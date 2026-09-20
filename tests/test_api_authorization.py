@@ -121,6 +121,18 @@ class ApiAuthorizationTests(unittest.TestCase):
                 ),
             )
 
+    def test_retained_execution_retry_requires_admin_mfa(self):
+        policy = policy_for_operation(
+            "POST",
+            "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry",
+        )
+        self.assertEqual(policy.access, ApiAccessMode.ADMIN)
+        self.assertEqual(policy.capability, "execution.retry")
+        self.assertEqual(
+            policy.required_assurance,
+            AuthenticationAssurance.MFA,
+        )
+
     def test_work_item_retry_uses_operational_authority(self):
         app = FastAPI()
 
