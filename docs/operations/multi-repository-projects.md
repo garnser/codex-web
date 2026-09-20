@@ -119,7 +119,7 @@ Use the legacy Project migration workflow rather than hand-editing Resources or 
 
 Migration preserves native thread identity/history and bot bindings. Migrated repository/thread content cannot grant repository, sandbox, broker, credential, or administrative authority.
 
-Compatibility path mappings are scoped migration metadata. They expire at a concrete time and do not bypass canonical execution checks.
+Compatibility path mappings are scoped migration metadata. They expire at a concrete time, may be revoked early by an administrator through the Project-scoped compatibility endpoint, retain revocation provenance, and do not bypass canonical execution checks.
 
 See [Legacy Project migration](legacy-project-migration.md).
 
