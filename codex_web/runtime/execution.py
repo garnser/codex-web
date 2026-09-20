@@ -298,6 +298,23 @@ class TurnExecutionService:
             queues.pop(thread_id, None)
         self.host._save_turn_queues(queues)
 
+    def _update_thread_queue(
+        self,
+        thread_id: str,
+        updater: Callable[[list[QueuedTurn]], list[QueuedTurn]],
+    ) -> list[QueuedTurn]:
+        update_record = getattr(
+            self.host,
+            "_update_thread_queue_record",
+            None,
+        )
+        if callable(update_record):
+            return list(update_record(thread_id, updater))
+        items = self._thread_queue(thread_id)
+        updated = list(updater(items))
+        self._save_thread_queue(thread_id, updated)
+        return updated
+
     def _active_turn(self, thread_id: str) -> ActiveThreadTurn | None:
         loader = getattr(self.host, "_get_active_turn_record", None)
         if callable(loader):
@@ -352,63 +369,94 @@ class TurnExecutionService:
         execution_profile_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
-        items = self._thread_queue(thread_id)
-        for existing in items:
-            if existing.source == source and existing.message == message:
-                return existing
-        incoming_entries = h._work_item_wakeup_entries(message) if reply_target is None else []
-        if incoming_entries:
-            wakeup_items = [
-                existing
-                for existing in items
-                if existing.reply_target is None and h._work_item_wakeup_entries(existing.message)
-            ]
-            if wakeup_items:
-                representative = wakeup_items[0]
-                entries = [
-                    entry
-                    for existing in wakeup_items
-                    for entry in h._work_item_wakeup_entries(existing.message)
-                ]
-                representative.message = h._render_work_item_wakeup_batch(entries + incoming_entries)
-                wakeup_ids = {id(existing) for existing in wakeup_items[1:]}
-                items = [
+        selected: dict[str, QueuedTurn] = {}
+
+        def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
+            for existing in items:
+                if (
+                    existing.source == source
+                    and existing.message == message
+                ):
+                    selected["item"] = existing
+                    return items
+
+            incoming_entries = (
+                h._work_item_wakeup_entries(message)
+                if reply_target is None
+                else []
+            )
+            if incoming_entries:
+                wakeup_items = [
                     existing
                     for existing in items
-                    if id(existing) not in wakeup_ids
+                    if existing.reply_target is None
+                    and h._work_item_wakeup_entries(existing.message)
                 ]
-                self._save_thread_queue(thread_id, items)
-                return representative
-        if len(items) >= h._max_thread_queue_depth():
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "thread_queue_full",
-                    "threadId": thread_id,
-                    "queueDepth": len(items),
-                    "maxQueueDepth": h._max_thread_queue_depth(),
-                },
+                if wakeup_items:
+                    representative = wakeup_items[0]
+                    entries = [
+                        entry
+                        for existing in wakeup_items
+                        for entry in h._work_item_wakeup_entries(
+                            existing.message
+                        )
+                    ]
+                    representative.message = (
+                        h._render_work_item_wakeup_batch(
+                            entries + incoming_entries
+                        )
+                    )
+                    wakeup_ids = {
+                        id(existing)
+                        for existing in wakeup_items[1:]
+                    }
+                    selected["item"] = representative
+                    return [
+                        existing
+                        for existing in items
+                        if id(existing) not in wakeup_ids
+                    ]
+
+            if len(items) >= h._max_thread_queue_depth():
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "thread_queue_full",
+                        "threadId": thread_id,
+                        "queueDepth": len(items),
+                        "maxQueueDepth": h._max_thread_queue_depth(),
+                    },
+                )
+
+            queued = QueuedTurn(
+                id=(
+                    h.uuid.uuid4().hex[:12]
+                    if hasattr(h, "uuid")
+                    else __import__("uuid").uuid4().hex[:12]
+                ),
+                thread_id=thread_id,
+                project_id=project_id,
+                message=message,
+                execution_id=execution_id or self._new_execution_id(),
+                sandbox=sandbox,
+                approval_policy=approval_policy,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                repository_resource_id=repository_resource_id,
+                read_only_repository_resource_ids=(
+                    read_only_repository_resource_ids
+                ),
+                execution_profile_id=execution_profile_id,
+                source=source,
+                reply_target=reply_target,
+                created_at=time.time(),
             )
-        queued = QueuedTurn(
-            id=h.uuid.uuid4().hex[:12] if hasattr(h, "uuid") else __import__("uuid").uuid4().hex[:12],
-            thread_id=thread_id,
-            project_id=project_id,
-            message=message,
-            execution_id=execution_id or self._new_execution_id(),
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            repository_resource_id=repository_resource_id,
-            read_only_repository_resource_ids=read_only_repository_resource_ids,
-            execution_profile_id=execution_profile_id,
-            source=source,
-            reply_target=reply_target,
-            created_at=time.time(),
-        )
-        items.append(queued)
-        self._save_thread_queue(thread_id, items)
-        return queued
+            items.append(queued)
+            selected["item"] = queued
+            return items
+
+        self._update_thread_queue(thread_id, mutate)
+        return selected["item"]
 
     def find_duplicate_queued_turn(self, thread_id: str, *, message: str, source: str) -> QueuedTurn | None:
         for queued in self.host._thread_queue(thread_id):
@@ -416,36 +464,62 @@ class TurnExecutionService:
                 return queued
         return None
 
-    def pop_next_queued_turn(self, thread_id: str) -> QueuedTurn | None:
-        items = self._thread_queue(thread_id)
-        if not items:
-            return None
-        queued = items.pop(0)
-        self._save_thread_queue(thread_id, items)
-        return queued
+    def pop_next_queued_turn(
+        self,
+        thread_id: str,
+    ) -> QueuedTurn | None:
+        selected: dict[str, QueuedTurn] = {}
 
-    def pop_latest_queued_turn(self, thread_id: str) -> QueuedTurn | None:
-        items = self._thread_queue(thread_id)
-        if not items:
-            return None
-        queued = items.pop()
-        self._save_thread_queue(thread_id, items)
-        return queued
+        def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
+            if not items:
+                return items
+            selected["item"] = items.pop(0)
+            return items
 
-    def pop_queued_turn(self, thread_id: str, queued_id: str) -> QueuedTurn | None:
-        items = self._thread_queue(thread_id)
-        for index, queued in enumerate(items):
-            if queued.id != queued_id:
-                continue
-            items.pop(index)
-            self._save_thread_queue(thread_id, items)
-            return queued
-        return None
+        self._update_thread_queue(thread_id, mutate)
+        return selected.get("item")
+
+    def pop_latest_queued_turn(
+        self,
+        thread_id: str,
+    ) -> QueuedTurn | None:
+        selected: dict[str, QueuedTurn] = {}
+
+        def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
+            if not items:
+                return items
+            selected["item"] = items.pop()
+            return items
+
+        self._update_thread_queue(thread_id, mutate)
+        return selected.get("item")
+
+    def pop_queued_turn(
+        self,
+        thread_id: str,
+        queued_id: str,
+    ) -> QueuedTurn | None:
+        selected: dict[str, QueuedTurn] = {}
+
+        def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
+            for index, queued in enumerate(items):
+                if queued.id != queued_id:
+                    continue
+                selected["item"] = items.pop(index)
+                break
+            return items
+
+        self._update_thread_queue(thread_id, mutate)
+        return selected.get("item")
 
     def requeue_turn_front(self, queued: QueuedTurn) -> None:
-        items = self._thread_queue(queued.thread_id)
-        items.insert(0, queued)
-        self._save_thread_queue(queued.thread_id, items)
+        def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
+            if any(item.id == queued.id for item in items):
+                return items
+            items.insert(0, queued)
+            return items
+
+        self._update_thread_queue(queued.thread_id, mutate)
 
     def thread_is_active(self, thread_id: str | None) -> bool:
         return bool(thread_id and self._active_turn(thread_id) is not None)
