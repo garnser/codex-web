@@ -92,6 +92,7 @@ from codex_web.paths import (
     BOT_REPLY_TARGETS_FILE,
     BOTS_BINDINGS_FILE,
     BOTS_CONNECTIONS_FILE,
+    BOTS_EVENTS_FILE,
     EXECUTION_WORKSPACE_DIR,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
@@ -1405,7 +1406,11 @@ work_item_contract_service = install_work_item_contract_service(
 )
 # Telemetry has no dependency on bot repositories/runtime tasks, so compose it
 # before work-item services that need an explicit event sink.
-bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
+bot_runtime_telemetry = install_bot_runtime_telemetry(
+    app,
+    core,
+    events_file=BOTS_EVENTS_FILE,
+)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
 
 work_item_continuity_service = DeferredWorkItemContinuityService()
