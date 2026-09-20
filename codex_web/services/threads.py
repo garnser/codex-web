@@ -928,8 +928,8 @@ class ThreadService:
                 project_id=project.id,
                 archived=False,
             )
-            if indexed is not None:
-                self._index().upsert(indexed)
+            if indexed is not None and self.thread_index is not None:
+                self.thread_index.upsert(indexed)
         return response
 
     async def read(
