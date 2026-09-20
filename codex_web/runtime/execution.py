@@ -731,6 +731,7 @@ class TurnExecutionService:
                 )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             canonical_repository_resource_id: str | None = None
+            canonical_execution_profile_id: str | None = None
             if bootstrap is not None:
                 session_manager, session = self._session_for_assignment(
                     bootstrap.assignment_id
@@ -767,6 +768,27 @@ class TurnExecutionService:
                         ),
                     )
                 target = getattr(assignment, "repository_target", None)
+                profile = getattr(assignment, "execution_profile", None)
+                requested_profile = effective_execution_profile_id
+                if requested_profile and (
+                    profile is None or profile.profile_id != requested_profile
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "thread_execution_profile_immutable",
+                            "threadId": thread_id,
+                            "requestedExecutionProfileId": requested_profile,
+                            "effectiveExecutionProfileId": (
+                                profile.profile_id if profile is not None else None
+                            ),
+                        },
+                    )
+                canonical_execution_profile_id = (
+                    profile.profile_id
+                    if profile is not None
+                    else settings.execution_profile_id
+                )
                 requested_repository = (
                     repository_resource_id or settings.repository_resource_id
                 )
@@ -828,6 +850,7 @@ class TurnExecutionService:
                         read_only_repository_resource_ids
                         or settings.read_only_repository_resource_ids
                     ),
+                    execution_profile_id=effective_execution_profile_id,
                 )
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
@@ -835,6 +858,11 @@ class TurnExecutionService:
                     binding,
                     "repository_resource_id",
                     repository_resource_id or settings.repository_resource_id,
+                )
+                canonical_execution_profile_id = (
+                    binding.execution_profile.profile_id
+                    if getattr(binding, "execution_profile", None) is not None
+                    else effective_execution_profile_id
                 )
                 assignment_id = binding.assignment_id
                 workspace_id = binding.workspace_id
