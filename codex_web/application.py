@@ -253,7 +253,10 @@ from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
-from codex_web.services.work_item_continuity import WorkItemContinuityService
+from codex_web.services.work_item_continuity import (
+    WorkItemContinuityService,
+    build_work_item_continuity_compatibility_service,
+)
 from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
 from codex_web.services.work_item_watchdog_candidates import install_work_item_watchdog_candidate_policy
@@ -1317,35 +1320,41 @@ work_item_continuity_service = WorkItemContinuityService(
     coordination_channel=core.HANDOFF_COORDINATION_CHANNEL,
 )
 app.state.work_item_continuity_service = work_item_continuity_service
+work_item_continuity_compatibility = (
+    build_work_item_continuity_compatibility_service(core)
+)
+app.state.work_item_continuity_compatibility = (
+    work_item_continuity_compatibility
+)
+
+# Historical names are output-only compatibility aliases. They terminate in
+# the extracted compatibility service; legacy_core contains no implementation.
 core._schedule_structured_handoff_dispatch = (
-    work_item_continuity_service.schedule_structured_handoff_dispatch
+    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
 )
 core._schedule_handoff_continuity_check = (
-    work_item_continuity_service.schedule_handoff_continuity_check
+    work_item_continuity_compatibility.schedule_handoff_continuity_check
 )
 core._schedule_actionable_owner_dispatch = (
-    work_item_continuity_service.schedule_actionable_owner_dispatch
+    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
 )
 core._schedule_actionable_owner_continuity_check = (
-    work_item_continuity_service.schedule_actionable_owner_continuity_check
+    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
 )
-# Historical direct-call names remain output-only aliases while downstream
-# tests/integrations migrate. Their implementations live in the extracted
-# continuity service rather than legacy_core.
 core._dispatch_structured_handoff_to_recipient = (
-    work_item_continuity_service.dispatch_structured_handoff
+    work_item_continuity_compatibility.dispatch_structured_handoff
 )
 core._run_handoff_continuity_check = (
-    work_item_continuity_service.run_handoff_continuity_check
+    work_item_continuity_compatibility.run_handoff_continuity_check
 )
 core._actionable_owner_dispatch_stage = (
-    work_item_continuity_service.actionable_owner_stage
+    work_item_continuity_compatibility.actionable_owner_stage
 )
 core._dispatch_actionable_owner_to_responsible_thread = (
-    work_item_continuity_service.dispatch_actionable_owner
+    work_item_continuity_compatibility.dispatch_actionable_owner
 )
 core._run_actionable_owner_continuity_check = (
-    work_item_continuity_service.run_actionable_owner_continuity_check
+    work_item_continuity_compatibility.run_actionable_owner_continuity_check
 )
 work_item_service = WorkItemService(
     core,
