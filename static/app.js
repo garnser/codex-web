@@ -1,5 +1,6 @@
 const state = {
   projects: [],
+  projectResources: [],
   projectId: "home",
   threads: [],
   threadId: null,
@@ -250,7 +251,35 @@ function currentRunSettings() {
   return {
     sandbox: saved.sandbox || project?.sandbox || "workspace-write",
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
+    repositoryResourceId: saved.repositoryResourceId || "",
+    readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
+      ? saved.readOnlyRepositoryResourceIds
+      : [],
   };
+}
+
+function renderRepositoryTargets() {
+  const mutable = $("repository-target");
+  const readOnly = $("repository-read-context");
+  if (!mutable || !readOnly) return;
+  const settings = currentRunSettings();
+  const repositories = (state.projectResources || []).filter((item) => (
+    item.resource_type === "repository" && item.lifecycle === "active"
+  ));
+  mutable.innerHTML = [
+    '<option value="">Auto</option>',
+    ...repositories.map((item) => (
+      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`
+    )),
+  ].join("");
+  mutable.value = settings.repositoryResourceId;
+  const selected = new Set(settings.readOnlyRepositoryResourceIds);
+  readOnly.innerHTML = repositories
+    .filter((item) => item.id !== settings.repositoryResourceId)
+    .map((item) => (
+      `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
+    ))
+    .join("");
 }
 
 function threadRunSettings(threadId = state.threadId) {
@@ -299,6 +328,7 @@ function applyRunSettings() {
   const settings = currentRunSettings();
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
+  if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
 }
 
 function persistRunSettings() {
@@ -308,6 +338,11 @@ function persistRunSettings() {
   allSettings[project.id] = {
     sandbox: $("sandbox").value,
     approvalPolicy: $("approval-policy").value,
+    repositoryResourceId: $("repository-target")?.value || "",
+    readOnlyRepositoryResourceIds: Array.from(
+      $("repository-read-context")?.selectedOptions || [],
+      (option) => option.value,
+    ),
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(allSettings));
 }
@@ -1139,8 +1174,9 @@ async function refresh() {
   const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
   if (search) qs.set("search", search);
   state.refreshInFlight = (async () => {
-    const [projects, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
+    const [projects, projectResources, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
       api("/api/projects"),
+      api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
       api("/api/bots/bindings"),
       api("/api/thread-settings"),
       api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
@@ -1155,6 +1191,7 @@ async function refresh() {
           }),
     ]);
     state.projects = projects;
+    state.projectResources = projectResources.items || [];
     state.botBindings = botBindings;
     state.threadSettings = threadSettings;
     state.botChannels = botChannels;
@@ -1162,6 +1199,7 @@ async function refresh() {
     if (!state.models.length) {
       state.models = modelsResponse;
     }
+    renderRepositoryTargets();
     applyRunSettings();
     renderGitLabIntegration();
     renderAgentChannelPresence();
@@ -1401,6 +1439,12 @@ async function newThread() {
     sandbox: settings.sandbox,
     approval_policy: settings.approvalPolicy,
   });
+  if (settings.repositoryResourceId) {
+    qs.set("repository_resource_id", settings.repositoryResourceId);
+  }
+  settings.readOnlyRepositoryResourceIds.forEach((id) => {
+    qs.append("read_only_repository_resource_id", id);
+  });
   const data = await api(`/api/threads?${qs}`, { method: "POST" });
   const thread = data.thread || data;
   state.threadId = thread.id;
@@ -1428,13 +1472,25 @@ async function sendPrompt() {
     markThreadBusy(threadId);
   }
   const threadOptions = selectedThreadTurnOptions(threadId);
+  const runSettings = currentRunSettings();
+  const selectedThreadSettings = threadRunSettings(threadId);
   const turnPayload = {
     message: prompt,
     project_id: state.projectId,
-    sandbox: currentRunSettings().sandbox,
-    approval_policy: currentRunSettings().approvalPolicy,
+    sandbox: runSettings.sandbox,
+    approval_policy: runSettings.approvalPolicy,
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
+    repository_resource_id: (
+      selectedThreadSettings.repository_resource_id
+      || runSettings.repositoryResourceId
+      || null
+    ),
+    read_only_repository_resource_ids: (
+      selectedThreadSettings.read_only_repository_resource_ids
+      || runSettings.readOnlyRepositoryResourceIds
+      || []
+    ),
   };
   try {
     let targetThreadId = threadId;
@@ -2371,6 +2427,11 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
+$("repository-target").addEventListener("change", () => {
+  persistRunSettings();
+  renderRepositoryTargets();
+});
+$("repository-read-context").addEventListener("change", persistRunSettings);
 $("sandbox").addEventListener("change", () => {
   persistRunSettings();
   syncThreadRunSettings().catch(console.error);
