@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from codex_web.models import BotBinding, BotInboundMessage
+from codex_web.models import BotBinding, BotInboundMessage, BotThreadDetail
 
 
 SLACK_ICONS: tuple[str, ...] = (
@@ -149,6 +149,149 @@ class BotPresentationService:
         assignments[binding.thread_id] = candidate
         self.save_slack_icons(assignments)
         return candidate
+
+    @staticmethod
+    def is_details_command(text: str) -> bool:
+        return text.strip().lower() in {"details", "detail"}
+
+    @staticmethod
+    def truncate_text(text: str, limit: int = 28000) -> str:
+        if len(text) <= limit:
+            return text
+        omitted = len(text) - limit
+        return f"{text[:limit]}\n\n... truncated {omitted} chars"
+
+    @staticmethod
+    def format_code_block(text: str, language: str = "") -> str:
+        sanitized = text.replace("```", "'''")
+        return f"```{language}\n{sanitized}\n```"
+
+    def format_detail_response(self, detail: BotThreadDetail) -> str:
+        return (
+            f"{detail.title}\n"
+            f"{self.format_code_block(self.truncate_text(detail.text))}"
+        )
+
+    @staticmethod
+    def format_detail_item(
+        item: dict[str, Any],
+    ) -> dict[str, str] | None:
+        item_type = item.get("type")
+        if item_type == "commandExecution":
+            command = (item.get("command") or "").strip()
+            output = (item.get("aggregatedOutput") or "").strip()
+            if not command and not output:
+                return None
+            body = []
+            if command:
+                body.append(f"$ {command}")
+            body.append(output or "No command output.")
+            return {
+                "title": "Command details",
+                "text": "\n\n".join(body),
+            }
+
+        if item_type == "fileChange":
+            changes = (
+                item.get("changes")
+                if isinstance(item.get("changes"), list)
+                else []
+            )
+            if not changes:
+                return None
+            parts = []
+            for change in changes:
+                path = change.get("path") or "unknown path"
+                kind = change.get("kind") or "change"
+                diff = (change.get("diff") or "").strip()
+                parts.append(f"# {kind}: {path}\n{diff}".strip())
+            summary = (
+                "File details"
+                if len(changes) == 1
+                else f"File details ({len(changes)} files)"
+            )
+            return {"title": summary, "text": "\n\n".join(parts)}
+        return None
+
+    def format_outbound_item(
+        self,
+        item: dict[str, Any],
+        prefix: str | None,
+    ) -> str | None:
+        item_type = item.get("type")
+        if item_type == "agentMessage":
+            normalized = (item.get("text") or "").strip()
+            sender = (prefix or "").strip()
+            if sender:
+                stripped = self.strip_prefix(normalized, sender)
+                if stripped:
+                    normalized = stripped
+            return normalized or None
+
+        if item_type == "commandExecution":
+            command = (item.get("command") or "").strip()
+            output = (item.get("aggregatedOutput") or "").strip()
+            if not command and not output:
+                return None
+            parts = ["Command result"]
+            if command:
+                parts.append(
+                    self.format_code_block(
+                        self.truncate_text(command, 3000),
+                        "sh",
+                    )
+                )
+            if output:
+                parts.append(
+                    self.format_code_block(self.truncate_text(output))
+                )
+            else:
+                parts.append("_No command output._")
+            return "\n".join(parts)
+
+        if item_type == "fileChange":
+            changes = (
+                item.get("changes")
+                if isinstance(item.get("changes"), list)
+                else []
+            )
+            if not changes:
+                return None
+            summary = (
+                f"{len(changes)} file changed"
+                if len(changes) == 1
+                else f"{len(changes)} files changed"
+            )
+            parts = [summary]
+            remaining = 26000
+            for change in changes[:5]:
+                path = change.get("path") or "unknown path"
+                kind = change.get("kind") or "change"
+                diff = (change.get("diff") or "").strip()
+                header = (
+                    f"*{self.slack_escape(kind)}*: "
+                    f"`{self.slack_escape(path)}`"
+                )
+                if diff:
+                    snippet = self.truncate_text(
+                        diff,
+                        max(1000, remaining),
+                    )
+                    remaining -= len(snippet)
+                    parts.append(
+                        f"{header}\n"
+                        f"{self.format_code_block(snippet, 'diff')}"
+                    )
+                else:
+                    parts.append(header)
+                if remaining <= 0:
+                    break
+            if len(changes) > 5:
+                parts.append(
+                    f"... plus {len(changes) - 5} more file changes"
+                )
+            return "\n".join(parts)
+        return None
 
     @staticmethod
     def slack_escape(value: Any) -> str:
@@ -294,6 +437,12 @@ def install_bot_presentation_service(app: Any, host: Any) -> BotPresentationServ
     host._strip_slack_mentions = service.strip_slack_mentions
     host._ambiguous_route_message = service.ambiguous_route_message
     host._format_bot_prompt = service.format_prompt
+    host._is_details_command = service.is_details_command
+    host._truncate_text = service.truncate_text
+    host._format_code_block = service.format_code_block
+    host._format_bot_detail_response = service.format_detail_response
+    host._format_bot_detail_item = service.format_detail_item
+    host._format_bot_outbound_item = service.format_outbound_item
     host._slack_reply_username = service.slack_reply_username
     host._slack_reply_icon = service.slack_reply_icon
     host._slack_escape = service.slack_escape
