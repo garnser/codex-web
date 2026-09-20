@@ -129,6 +129,8 @@ from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_polic
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
 from codex_web.services.bot_connections import install_bot_connection_service
+from codex_web.services.bot_presentation import install_bot_presentation_service
+from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemetry
 from codex_web.services.bot_delivery import install_bot_delivery_service
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
@@ -1472,6 +1474,8 @@ core._save_turn_queues = turn_queue_repository.save
 app.state.sqlite_state_store = state_store
 app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
+bot_presentation_service = install_bot_presentation_service(app, core)
+bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
 execution_worker_service.mark_stale_workers_offline(
@@ -1579,10 +1583,22 @@ agent_runtime_telemetry_service.subscribe(app.state.claude_agent_runtime_adapter
 bot_connection_service = install_bot_connection_service(
     app,
     core,
+    projects=project_runtime_service,
+    load_connections=bot_state.connections.load,
+    save_connections=bot_state.connections.save,
+    load_bindings=bot_state.bindings.load,
+    save_bindings=bot_state.bindings.save,
+    binding_prefix=bot_presentation_service.binding_prefix,
     secret_broker=secret_broker,
     identity_service=identity_service,
 )
-bot_binding_selection_service = install_bot_binding_selection_service(app, core)
+bot_binding_selection_service = install_bot_binding_selection_service(
+    app,
+    core,
+    load_bindings=bot_state.bindings.load,
+    binding_report_name=bot_presentation_service.binding_report_name,
+    binding_prefix=bot_presentation_service.binding_prefix,
+)
 
 thread_execution_settings_service = install_thread_execution_settings_service(
     app,
