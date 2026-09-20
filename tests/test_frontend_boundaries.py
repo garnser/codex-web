@@ -332,12 +332,24 @@ class FrontendBoundaryTests(unittest.TestCase):
     def test_repository_target_controls_are_exposed_for_thread_bootstrap(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
         app = (STATIC / "app.js").read_text(encoding="utf-8")
+        project_state = (STATIC / "project_ui_state.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="repository-target"', html)
         self.assertIn('id="repository-read-context"', html)
         self.assertIn("repository_resource_id", app)
         self.assertIn("read_only_repository_resource_id", app)
-        self.assertIn("/resources", app)
+        self.assertIn("/ui-state", project_state)
+        self.assertNotIn("/api/bots/bindings", project_state)
+        self.assertNotIn("/api/thread-settings", project_state)
+
+    def test_project_ui_state_loader_has_focused_budget(self) -> None:
+        source_path = STATIC / "project_ui_state.js"
+        source = source_path.read_text(encoding="utf-8")
+        self.assertLessEqual(source_path.stat().st_size, 8_000)
+        self.assertIn("/ui-state", source)
+        self.assertNotIn("fetch(", source)
 
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()

@@ -172,19 +172,29 @@ class BotChannelDiscoveryService:
             key=lambda item: (item["provider"], item["label"]),
         )
 
+    def _project_bindings(self, project_id: str) -> list[Any]:
+        scoped = getattr(self.bindings, "for_project_all", None)
+        if callable(scoped):
+            return scoped(project_id)
+        return [
+            binding
+            for binding in self.bindings.load_bindings()
+            if binding.project_id == project_id
+        ]
+
     def known(self, project_id: str) -> list[dict[str, str]]:
         self.projects.get(project_id)
         return self._known_from(
             project_id,
             self.connections.load_connections(),
-            self.bindings.load_bindings(),
+            self._project_bindings(project_id),
         )
 
     async def refresh(self, project_id: str) -> list[dict[str, str]]:
         self.projects.get(project_id)
         started = time.perf_counter()
         connections = self.connections.load_connections()
-        bindings = self.bindings.load_bindings()
+        bindings = self._project_bindings(project_id)
         channels = {
             (item["provider"], item["id"]): item
             for item in self._known_from(

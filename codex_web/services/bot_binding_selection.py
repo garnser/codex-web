@@ -24,6 +24,10 @@ class BotBindingSelectionService:
             [str, str],
             list[BotBinding],
         ] | None = None,
+        indexed_for_project_all: Callable[
+            [str],
+            list[BotBinding],
+        ] | None = None,
         indexed_masters: Callable[[str], list[BotBinding]] | None = None,
     ) -> None:
         self.load_bindings = load_bindings
@@ -33,6 +37,7 @@ class BotBindingSelectionService:
         self.indexed_for_connection = indexed_for_connection
         self.indexed_for_thread = indexed_for_thread
         self.indexed_for_project = indexed_for_project
+        self.indexed_for_project_all = indexed_for_project_all
         self.indexed_masters = indexed_masters
 
     def by_id(self, binding_id: str) -> BotBinding | None:
@@ -95,6 +100,15 @@ class BotBindingSelectionService:
             binding
             for binding in self.load_bindings()
             if binding.provider == normalized_provider and binding.project_id == project_id
+        ]
+
+    def for_project_all(self, project_id: str) -> list[BotBinding]:
+        if self.indexed_for_project_all is not None:
+            return self.indexed_for_project_all(project_id)
+        return [
+            binding
+            for binding in self.load_bindings()
+            if binding.project_id == project_id
         ]
 
     def master(self, project_id: str) -> BotBinding | None:
@@ -190,6 +204,10 @@ def install_bot_binding_selection_service(
         [str, str],
         list[BotBinding],
     ] | None = None,
+    indexed_for_project_all: Callable[
+        [str],
+        list[BotBinding],
+    ] | None = None,
     indexed_masters: Callable[[str], list[BotBinding]] | None = None,
 ) -> BotBindingSelectionService:
     service = BotBindingSelectionService(
@@ -200,6 +218,7 @@ def install_bot_binding_selection_service(
         indexed_for_connection=indexed_for_connection,
         indexed_for_thread=indexed_for_thread,
         indexed_for_project=indexed_for_project,
+        indexed_for_project_all=indexed_for_project_all,
         indexed_masters=indexed_masters,
     )
     app.state.bot_binding_selection_service = service
@@ -210,6 +229,7 @@ def install_bot_binding_selection_service(
     host._bindings_for_connection = service.for_connection
     host._bindings_for_thread = service.for_thread
     host._bindings_for_project = service.for_project
+    host._all_bindings_for_project = service.for_project_all
     host._master_binding = service.master
     host._orchestrator_binding = service.orchestrator
     host._primary_binding_for_project = service.primary_for_project

@@ -1,8 +1,10 @@
 import*as ep from"./execution_profile_controls.js";
+import{loadProjectUiState}from"./project_ui_state.js";
 
 const state = {
   projects: [],
   projectResources: [],
+  projectUiStatic: {},
   projectId: "home",
   threads: [],
   threadId: null,
@@ -1176,40 +1178,42 @@ async function refresh() {
     return state.refreshInFlight;
   }
   const search = $("thread-search").value.trim();
-  const qs = new URLSearchParams({ project_id: state.projectId, archived: "false" });
-  if (search) qs.set("search", search);
   state.refreshInFlight = (async () => {
-    const [projects, projectResources, _ep, botBindings, threadSettings, botChannels, threadsResponse, modelsResponse] = await Promise.all([
-      api("/api/projects"),
-      api(`/api/projects/${encodeURIComponent(state.projectId)}/resources`).catch(() => ({ items: [] })),
-      ep.load(state.projectId),
-      api("/api/bots/bindings"),
-      api("/api/thread-settings"),
-      api(`/api/bots/channels?project_id=${encodeURIComponent(state.projectId)}`),
-      api(`/api/threads?${qs}`),
-      state.models.length
-        ? Promise.resolve(state.models)
-        : api("/api/models")
-          .then((response) => (Array.isArray(response.data) ? response.data : []))
-          .catch((error) => {
-            logEvent("models.error", { message: error.message });
-            return [];
-          }),
-    ]);
-    state.projects = projects;
-    state.projectResources = projectResources.items || [];
-    state.botBindings = botBindings;
-    state.threadSettings = threadSettings;
-    state.botChannels = botChannels;
-    state.threads = threadsResponse;
-    if (!state.models.length) {
-      state.models = modelsResponse;
+    const snapshot = await loadProjectUiState({
+      api,
+      projectId: state.projectId,
+      search,
+      projects: state.projects,
+      models: state.models,
+      cachedStatic: state.projectUiStatic[state.projectId] || null,
+      onModelError: (error) => {
+        logEvent("models.error", { message: error.message });
+      },
+    });
+    state.projects = snapshot.projects;
+    state.models = snapshot.models;
+    state.projectResources = snapshot.resources;
+    state.botBindings = snapshot.bindings;
+    state.threadSettings = snapshot.threadSettings;
+    state.botChannels = snapshot.channels;
+    state.threads = snapshot.threads;
+    if (snapshot.staticState) {
+      state.projectUiStatic[state.projectId] = snapshot.staticState;
+      if (snapshot.staticState.executionProfiles) {
+        ep.setCatalog(snapshot.staticState.executionProfiles);
+      }
     }
+
     renderRepositoryTargets();
     applyRunSettings();
     renderGitLabIntegration();
     renderAgentChannelPresence();
-    const threads = state.threads?.data || state.threads?.threads || state.threads || [];
+    const threads = (
+      state.threads?.data
+      || state.threads?.threads
+      || state.threads
+      || []
+    );
     hydrateThreadListActivity(threads);
     renderProjects();
     renderThreads();
@@ -2469,6 +2473,11 @@ $("save-project").addEventListener("click", async (event) => {
     model: $("project-model").value || null,
   };
   const project = await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
+  state.projects = [
+    ...state.projects.filter((item) => item.id !== project.id),
+    project,
+  ];
+  delete state.projectUiStatic[project.id];
   state.projectId = project.id;
   $("project-dialog").close();
   await refresh();
