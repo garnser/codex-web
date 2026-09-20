@@ -1329,6 +1329,24 @@ core._schedule_actionable_owner_dispatch = (
 core._schedule_actionable_owner_continuity_check = (
     work_item_continuity_service.schedule_actionable_owner_continuity_check
 )
+# Historical direct-call names remain output-only aliases while downstream
+# tests/integrations migrate. Their implementations live in the extracted
+# continuity service rather than legacy_core.
+core._dispatch_structured_handoff_to_recipient = (
+    work_item_continuity_service.dispatch_structured_handoff
+)
+core._run_handoff_continuity_check = (
+    work_item_continuity_service.run_handoff_continuity_check
+)
+core._actionable_owner_dispatch_stage = (
+    work_item_continuity_service.actionable_owner_stage
+)
+core._dispatch_actionable_owner_to_responsible_thread = (
+    work_item_continuity_service.dispatch_actionable_owner
+)
+core._run_actionable_owner_continuity_check = (
+    work_item_continuity_service.run_actionable_owner_continuity_check
+)
 work_item_service = WorkItemService(
     core,
     gitlab_client,
