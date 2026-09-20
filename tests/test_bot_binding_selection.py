@@ -109,6 +109,68 @@ class BotBindingSelectionServiceTests(unittest.TestCase):
         self.assertEqual(service.primary_for_project("slack", "p1", "C2").id, "same-channel")
         self.assertEqual(service.primary_for_project("slack", "p1", "missing").id, "master")
 
+    def test_indexed_callbacks_avoid_full_binding_loads(self) -> None:
+        rows = [
+            binding(
+                "master",
+                project="p1",
+                thread="t-master",
+                master=True,
+                updated=5,
+            ),
+            binding(
+                "agent",
+                project="p1",
+                thread="t-agent",
+                conversation="C2",
+            ),
+        ]
+        loads = 0
+
+        def load_bindings():
+            nonlocal loads
+            loads += 1
+            raise AssertionError("indexed routing must not load all bindings")
+
+        by_id = {item.id: item for item in rows}
+        by_thread = {
+            "t-master": [rows[0]],
+            "t-agent": [rows[1]],
+        }
+        by_project = {("slack", "p1"): rows}
+        by_connection = {
+            ("slack", "C1"): [rows[0]],
+            ("slack", "C2"): [rows[1]],
+        }
+        service = BotBindingSelectionService(
+            load_bindings,
+            binding_report_name=lambda item: item.thread_name,
+            binding_prefix=lambda item: item.route_prefix,
+            lookup_by_id=by_id.get,
+            indexed_for_connection=lambda provider, conversation: list(
+                by_connection.get((provider, conversation), [])
+            ),
+            indexed_for_thread=lambda thread_id: list(
+                by_thread.get(thread_id, [])
+            ),
+            indexed_for_project=lambda provider, project_id: list(
+                by_project.get((provider, project_id), [])
+            ),
+            indexed_masters=lambda project_id: [
+                item
+                for item in rows
+                if item.project_id == project_id and item.is_master
+            ],
+        )
+
+        self.assertEqual(service.by_id("agent").id, "agent")
+        self.assertEqual(service.for_thread("t-agent")[0].id, "agent")
+        self.assertEqual(service.for_connection("SLACK", "C2")[0].id, "agent")
+        self.assertEqual(service.for_project("SLACK", "p1")[0].id, "master")
+        self.assertEqual(service.master("p1").id, "master")
+        self.assertEqual(service.primary_for_project("slack", "p1").id, "master")
+        self.assertEqual(loads, 0)
+
     def test_installer_rebinds_historical_lookup_surface(self) -> None:
         host = Host()
         app = SimpleNamespace(state=SimpleNamespace())
