@@ -738,7 +738,7 @@ class WorkItemStateMachine:
         return state
 
     def _save_work_item_state(self, state: WorkItemState) -> WorkItemState:
-        states = self.host._load_work_item_states()
+        states = self.dependencies.load_states()
         states[state.ref] = state
         self.dependencies.save_states(states)
         return state
@@ -1051,6 +1051,7 @@ def install_work_item_state_machine(
     _legacy_provider: Any | None = None,
     *,
     store: StateStore | None = None,
+    dependencies: WorkItemRuntimeDependencies | None = None,
 ) -> WorkItemStateMachine:
     existing = getattr(app.state, "work_item_state_machine", None)
     if existing is not None:
