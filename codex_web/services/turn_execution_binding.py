@@ -336,13 +336,18 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different repository target"
             )
-        if (
-            execution_profile_id is not None
-            and (
-                assignment.execution_profile_id != execution_profile_id
-                or assignment.execution_profile_definition
-                != execution_profile_definition
-            )
+        if assignment.execution_profile_id is None:
+            if (
+                execution_profile_id not in {None, "repository-write"}
+                or repository_target.mutable_repository_id is None
+            ):
+                raise TurnExecutionBindingError(
+                    "legacy unprofiled execution cannot change execution profile"
+                )
+        elif (
+            assignment.execution_profile_id != execution_profile_id
+            or assignment.execution_profile_definition
+            != execution_profile_definition
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different execution profile"
@@ -403,13 +408,8 @@ class TurnExecutionBindingService:
             secret_ref=assignment.secret_refs[0],
             deadline_at=assignment.deadline_at,
             runtime_binding=assignment.runtime_binding,
-            execution_profile_id=(
-                assignment.execution_profile_id or execution_profile_id
-            ),
-            execution_profile_definition=(
-                assignment.execution_profile_definition
-                or execution_profile_definition
-            ),
+            execution_profile_id=assignment.execution_profile_id,
+            execution_profile_definition=assignment.execution_profile_definition,
         )
 
     def _prepare_subject(
