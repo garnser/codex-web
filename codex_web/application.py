@@ -28,6 +28,7 @@ from codex_web.api.conversation_channels import build_conversation_channels_rout
 from codex_web.api.capacity import build_capacity_router
 from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
+from codex_web.api.control_plane_broker import build_control_plane_broker_router
 from codex_web.api.definitions import build_definitions_router
 from codex_web.api.data_governance import build_data_governance_router
 from codex_web.api.business_context import build_business_context_router
@@ -201,6 +202,10 @@ from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionM
 from codex_web.services.code_hosts import CodeHostRegistry, CodeHostService
 from codex_web.services.claude_worker_session import AssignmentBoundClaudeSessionManager
 from codex_web.services.context import ContextCompactionService
+from codex_web.services.control_plane_broker import (
+    ControlPlaneBrokerService,
+    DeferredControlPlaneBrokerFactory,
+)
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
@@ -367,6 +372,7 @@ from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
 from codex_web.storage.capacity import CapacityStore
 from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.configuration_state import (
@@ -875,6 +881,7 @@ app.state.execution_workspace_state_store = execution_workspace_state_store
 app.state.execution_workspace_backend = execution_workspace_backend
 app.state.execution_workspace_service = execution_workspace_service
 
+control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)
 execution_worker_service = ExecutionWorkerService(
     execution_worker_store,
@@ -895,9 +902,15 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
     capabilities=local_execution_backend_status.capabilities,
     actor=identity_service.local_trusted_actor(),
 )
-app.include_router(build_execution_workers_router(execution_worker_service))
+app.include_router(
+    build_execution_workers_router(
+        execution_worker_service,
+        control_plane_broker_factory=control_plane_broker_factory,
+    )
+)
 app.state.execution_worker_store = execution_worker_store
 app.state.execution_worker_service = execution_worker_service
+app.state.control_plane_broker_factory = control_plane_broker_factory
 app.state.local_execution_worker = local_execution_worker
 app.state.local_execution_backend = local_execution_backend
 app.state.local_execution_backend_status = local_execution_backend_status
@@ -1124,6 +1137,7 @@ assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
     core,
     egress_endpoints_resolver=_codex_model_egress_endpoints,
     runtime_binding=codex_execution_runtime_binding,
+    control_plane_broker_factory=control_plane_broker_factory,
 )
 app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
@@ -1151,6 +1165,7 @@ assignment_bound_claude_session_manager = AssignmentBoundClaudeSessionManager(
     egress_endpoints_resolver=_claude_model_egress_endpoints,
     credential_provider=anthropic_auth_delegation_service,
     runtime_binding=claude_execution_runtime_binding,
+    control_plane_broker_factory=control_plane_broker_factory,
 )
 app.state.assignment_bound_claude_session_manager = assignment_bound_claude_session_manager
 
@@ -1486,6 +1501,18 @@ work_item_compatibility_service = install_work_item_compatibility(
     work_item_service,
 )
 app.state.work_item_service = work_item_service
+
+control_plane_broker_audit_store = ControlPlaneBrokerAuditStore(state_store)
+control_plane_broker_service = ControlPlaneBrokerService(
+    identity=identity_service,
+    authority=authority_role_service,
+    work_items=work_item_service,
+    audit=control_plane_broker_audit_store,
+)
+control_plane_broker_factory.configure(control_plane_broker_service)
+app.state.control_plane_broker_audit_store = control_plane_broker_audit_store
+app.state.control_plane_broker_service = control_plane_broker_service
+app.include_router(build_control_plane_broker_router(control_plane_broker_service))
 
 authority_policy_explorer_service = AuthorityPolicyExplorerService(
     authority_role_service,
