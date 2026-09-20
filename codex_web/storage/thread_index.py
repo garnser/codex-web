@@ -66,13 +66,33 @@ class ThreadIndexRepository:
         )
 
     def _ensure_migrated(self) -> None:
-        if self.store.record_collection_exists(self.GLOBAL_NAMESPACE):
+        global_exists = self.store.record_collection_exists(
+            self.GLOBAL_NAMESPACE
+        )
+        project_exists = self.store.record_collection_exists(
+            self.PROJECT_NAMESPACE
+        )
+        lookup_exists = self.store.record_collection_exists(
+            self.LOOKUP_NAMESPACE
+        )
+        if global_exists and project_exists and lookup_exists:
             return
-        legacy = self._legacy_repository.load()
+
+        if global_exists:
+            source = [
+                IndexedThread.model_validate(payload)
+                for payload in self.store.record_items(
+                    self.GLOBAL_NAMESPACE
+                ).values()
+                if isinstance(payload, dict)
+            ]
+        else:
+            source = self._legacy_repository.load()
+
         global_rows: dict[str, Any] = {}
         project_rows: dict[str, Any] = {}
         lookups: dict[str, Any] = {}
-        for thread in legacy:
+        for thread in source:
             global_key = self._global_key(thread)
             project_key = self._project_key(thread)
             payload = thread.model_dump(mode="json")
@@ -82,9 +102,21 @@ class ThreadIndexRepository:
                 "globalKey": global_key,
                 "projectKey": project_key,
             }
-        self.store.record_replace(self.GLOBAL_NAMESPACE, global_rows)
-        self.store.record_replace(self.PROJECT_NAMESPACE, project_rows)
-        self.store.record_replace(self.LOOKUP_NAMESPACE, lookups)
+        if not global_exists:
+            self.store.record_replace(
+                self.GLOBAL_NAMESPACE,
+                global_rows,
+            )
+        if not project_exists:
+            self.store.record_replace(
+                self.PROJECT_NAMESPACE,
+                project_rows,
+            )
+        if not lookup_exists:
+            self.store.record_replace(
+                self.LOOKUP_NAMESPACE,
+                lookups,
+            )
 
     def _compatibility_upsert(self, thread: IndexedThread) -> None:
         threads = self._legacy_repository.load()
