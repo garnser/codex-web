@@ -1381,6 +1381,10 @@ gitlab_sync_health = GitLabSyncHealth(
 _mirror_gitlab_sync_health(gitlab_sync_health.snapshot())
 app.state.gitlab_sync_health = gitlab_sync_health
 
+# Telemetry has no dependency on bot repositories/runtime tasks, so compose it
+# before work-item services that need an explicit event sink.
+bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
+
 work_item_service = WorkItemService(
     core,
     gitlab_client,
@@ -1625,7 +1629,6 @@ app.state.runtime_state_repositories = runtime_state
 configuration_state = install_configuration_state(app, core)
 auxiliary_state = install_auxiliary_state(app, core)
 bot_presentation_service = install_bot_presentation_service(app, core)
-bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
 bot_detail_service = install_bot_detail_service(
     app,
     core,
