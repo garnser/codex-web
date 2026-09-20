@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from codex_web.definitions import DefinitionReference
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_contracts import ExecutionRoleContract
+from codex_web.execution_profiles import ExecutionProfileContract
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
 from codex_web.models import ArtifactState, HandoffStatus, WorkItemStage, WorkItemState
 
@@ -24,6 +25,19 @@ class ExecutionTargetV1(BaseModel):
     repository: str | None = None
     branch: str | None = None
     environment: str | None = None
+
+
+class ExecutionProfileV1(BaseModel):
+    """Exact Definition-backed execution environment resolved for this work."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    workspace_mode: Literal["repository", "scratch"]
+    repository_access: Literal["mutable", "read-only", "none"]
+    required_worker_capabilities: tuple[str, ...]
+    control_plane_operations: tuple[str, ...] = ()
+    definition: DefinitionReference
 
 
 class ExecutionPermissionsV1(BaseModel):
@@ -89,6 +103,7 @@ class ExecutionContractV1(BaseModel):
     agent_id: str | None = None
     definition_refs: tuple[DefinitionReference, ...] = ()
     target: ExecutionTargetV1
+    execution_profile: ExecutionProfileV1 | None = None
     permissions: ExecutionPermissionsV1 = Field(default_factory=ExecutionPermissionsV1)
     inputs: CanonicalWorkItemInputV1
     accounting: ExecutionAccountingV1
@@ -113,6 +128,8 @@ def execution_contract_for_work_item(
     *,
     split_brain_findings: list[str] | tuple[str, ...] = (),
     definition_refs: tuple[DefinitionReference, ...] = (),
+    execution_profile: ExecutionProfileContract | None = None,
+    execution_profile_definition: DefinitionReference | None = None,
 ) -> ExecutionContractV1:
     """Build and validate the canonical v1 contract before work is dispatched."""
 
@@ -136,6 +153,19 @@ def execution_contract_for_work_item(
             resource_ids=tuple(dict.fromkeys(state.resource_ids)),
             workspace=lifecycle.workspace,
             repository=state.project_path,
+        ),
+        execution_profile=(
+            ExecutionProfileV1(
+                id=execution_profile.id,
+                workspace_mode=execution_profile.workspace_mode,
+                repository_access=execution_profile.repository_access,
+                required_worker_capabilities=execution_profile.required_worker_capabilities,
+                control_plane_operations=execution_profile.control_plane_operations,
+                definition=execution_profile_definition,
+            )
+            if execution_profile is not None
+            and execution_profile_definition is not None
+            else None
         ),
         inputs=CanonicalWorkItemInputV1(
             current_stage=state.current_stage,
