@@ -408,6 +408,7 @@ project_repository = ProjectRepository(
     PROJECTS_FILE,
     store=state_store,
 )
+app.state.runtime_state_repositories = runtime_state
 event_transport = build_event_transport(
     os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
     redis_url=os.environ.get("CODEX_WEB_REDIS_URL"),
@@ -544,7 +545,7 @@ core._execution_role_definition_service = execution_role_definition_service
 def _work_item_definition_usage(reference):
     items = []
     try:
-        states = core._load_work_item_states()
+        states = runtime_state.work_item_states.load()
     except Exception:
         return items
     for state in states.values():
@@ -940,7 +941,7 @@ def _runtime_usage_attribution(session):
     work_state = None
     if work_item_ref:
         try:
-            work_state = core._load_work_item_states().get(work_item_ref)
+            work_state = runtime_state.work_item_states.load().get(work_item_ref)
         except Exception:
             work_state = None
     return {
@@ -1688,7 +1689,6 @@ app.state.turn_queue_repository = turn_queue_repository
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 
-app.state.runtime_state_repositories = runtime_state
 auxiliary_state = install_auxiliary_state(app, core)
 bot_presentation_service = install_bot_presentation_service(app, core)
 bot_detail_service = install_bot_detail_service(
