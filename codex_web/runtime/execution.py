@@ -272,6 +272,57 @@ class TurnExecutionService:
             )
         return self.runtime_adapter_factory(binding, session)
 
+    def _thread_queue(self, thread_id: str) -> list[QueuedTurn]:
+        loader = getattr(self.host, "_thread_queue_record", None)
+        if callable(loader):
+            return list(loader(thread_id))
+        return list(self.host._load_turn_queues().get(thread_id) or [])
+
+    def _save_thread_queue(
+        self,
+        thread_id: str,
+        items: list[QueuedTurn],
+    ) -> None:
+        saver = getattr(self.host, "_put_thread_queue_record", None)
+        deleter = getattr(self.host, "_delete_thread_queue_record", None)
+        if items and callable(saver):
+            saver(thread_id, items)
+            return
+        if not items and callable(deleter):
+            deleter(thread_id)
+            return
+        queues = self.host._load_turn_queues()
+        if items:
+            queues[thread_id] = items
+        else:
+            queues.pop(thread_id, None)
+        self.host._save_turn_queues(queues)
+
+    def _active_turn(self, thread_id: str) -> ActiveThreadTurn | None:
+        loader = getattr(self.host, "_get_active_turn_record", None)
+        if callable(loader):
+            return loader(thread_id)
+        return self.host._load_active_turns().get(thread_id)
+
+    def _save_active_turn(self, active: ActiveThreadTurn) -> None:
+        saver = getattr(self.host, "_put_active_turn_record", None)
+        if callable(saver):
+            saver(active.thread_id, active)
+            return
+        active_turns = self.host._load_active_turns()
+        active_turns[active.thread_id] = active
+        self.host._save_active_turns(active_turns)
+
+    def _delete_active_turn(self, thread_id: str) -> bool:
+        deleter = getattr(self.host, "_delete_active_turn_record", None)
+        if callable(deleter):
+            return bool(deleter(thread_id))
+        active_turns = self.host._load_active_turns()
+        removed = active_turns.pop(thread_id, None) is not None
+        if removed:
+            self.host._save_active_turns(active_turns)
+        return removed
+
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
         await h.hub.publish(
@@ -301,8 +352,7 @@ class TurnExecutionService:
         execution_profile_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
-        queues = h._load_turn_queues()
-        items = queues.setdefault(thread_id, [])
+        items = self._thread_queue(thread_id)
         for existing in items:
             if existing.source == source and existing.message == message:
                 return existing
@@ -322,8 +372,12 @@ class TurnExecutionService:
                 ]
                 representative.message = h._render_work_item_wakeup_batch(entries + incoming_entries)
                 wakeup_ids = {id(existing) for existing in wakeup_items[1:]}
-                queues[thread_id] = [existing for existing in items if id(existing) not in wakeup_ids]
-                h._save_turn_queues(queues)
+                items = [
+                    existing
+                    for existing in items
+                    if id(existing) not in wakeup_ids
+                ]
+                self._save_thread_queue(thread_id, items)
                 return representative
         if len(items) >= h._max_thread_queue_depth():
             raise HTTPException(
@@ -353,7 +407,7 @@ class TurnExecutionService:
             created_at=time.time(),
         )
         items.append(queued)
-        h._save_turn_queues(queues)
+        self._save_thread_queue(thread_id, items)
         return queued
 
     def find_duplicate_queued_turn(self, thread_id: str, *, message: str, source: str) -> QueuedTurn | None:
@@ -363,57 +417,38 @@ class TurnExecutionService:
         return None
 
     def pop_next_queued_turn(self, thread_id: str) -> QueuedTurn | None:
-        h = self.host
-        queues = h._load_turn_queues()
-        items = queues.get(thread_id) or []
+        items = self._thread_queue(thread_id)
         if not items:
             return None
         queued = items.pop(0)
-        if items:
-            queues[thread_id] = items
-        else:
-            queues.pop(thread_id, None)
-        h._save_turn_queues(queues)
+        self._save_thread_queue(thread_id, items)
         return queued
 
     def pop_latest_queued_turn(self, thread_id: str) -> QueuedTurn | None:
-        h = self.host
-        queues = h._load_turn_queues()
-        items = queues.get(thread_id) or []
+        items = self._thread_queue(thread_id)
         if not items:
             return None
         queued = items.pop()
-        if items:
-            queues[thread_id] = items
-        else:
-            queues.pop(thread_id, None)
-        h._save_turn_queues(queues)
+        self._save_thread_queue(thread_id, items)
         return queued
 
     def pop_queued_turn(self, thread_id: str, queued_id: str) -> QueuedTurn | None:
-        h = self.host
-        queues = h._load_turn_queues()
-        items = queues.get(thread_id) or []
+        items = self._thread_queue(thread_id)
         for index, queued in enumerate(items):
             if queued.id != queued_id:
                 continue
             items.pop(index)
-            if items:
-                queues[thread_id] = items
-            else:
-                queues.pop(thread_id, None)
-            h._save_turn_queues(queues)
+            self._save_thread_queue(thread_id, items)
             return queued
         return None
 
     def requeue_turn_front(self, queued: QueuedTurn) -> None:
-        h = self.host
-        queues = h._load_turn_queues()
-        queues.setdefault(queued.thread_id, []).insert(0, queued)
-        h._save_turn_queues(queues)
+        items = self._thread_queue(queued.thread_id)
+        items.insert(0, queued)
+        self._save_thread_queue(queued.thread_id, items)
 
     def thread_is_active(self, thread_id: str | None) -> bool:
-        return bool(thread_id and thread_id in self.host._load_active_turns())
+        return bool(thread_id and self._active_turn(thread_id) is not None)
 
     def _bootstrap_binding_for_thread(self, thread_id: str):
         service = self.bootstrap_bindings
@@ -426,7 +461,7 @@ class TurnExecutionService:
             return None
 
     def _assignment_session_for_thread(self, thread_id: str):
-        active = self.host._load_active_turns().get(thread_id)
+        active = self._active_turn(thread_id)
         assignment_id = active.assignment_id if active is not None else None
         bootstrap = None
         if not assignment_id:
@@ -518,10 +553,9 @@ class TurnExecutionService:
             return
         h = self.host
         now = time.time()
-        active_turns = h._load_active_turns()
-        current = active_turns.get(thread_id)
+        current = self._active_turn(thread_id)
         settings = h._thread_run_settings(thread_id)
-        active_turns[thread_id] = ActiveThreadTurn(
+        active = ActiveThreadTurn(
             thread_id=thread_id,
             turn_id=turn_id or (current.turn_id if current else None),
             project_id=project_id or (current.project_id if current else None),
@@ -558,19 +592,16 @@ class TurnExecutionService:
             resume_attempts=current.resume_attempts if current else 0,
             last_resume_at=current.last_resume_at if current else None,
         )
-        h._save_active_turns(active_turns)
+        self._save_active_turn(active)
 
     def clear_thread_active(self, thread_id: str | None, turn_id: str | None = None) -> None:
         if not thread_id:
             return
         h = self.host
-        active_turns = h._load_active_turns()
-        active = active_turns.get(thread_id)
+        active = self._active_turn(thread_id)
         if active and turn_id and active.turn_id and active.turn_id != turn_id:
             return
-        if active:
-            active_turns.pop(thread_id, None)
-            h._save_active_turns(active_turns)
+        if active and self._delete_active_turn(thread_id):
             if not h.IS_SHUTTING_DOWN and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
 
