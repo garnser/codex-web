@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import os
 import time
+from collections import Counter, deque
+from dataclasses import dataclass
 from typing import Any
 
 import websockets
@@ -19,6 +23,14 @@ from codex_web.services.bot_presentation import BotPresentationService
 from codex_web.services.bot_routing import BotRoutingService
 from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
 from codex_web.services.secrets import SecretBroker
+
+
+@dataclass(slots=True)
+class SlackPayloadWork:
+    payload: dict[str, Any]
+    enqueued_at: float
+    ordering_key: str
+    dedupe_key: str | None = None
 
 
 class BotRuntime:
@@ -53,7 +65,17 @@ class BotRuntime:
         self.conversation_channels: Any | None = None
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.fingerprints: dict[str, tuple[Any, ...]] = {}
-        self.slack_payload_locks: dict[str, asyncio.Lock] = {}
+        self.slack_payload_queues: dict[
+            str,
+            list[asyncio.Queue[SlackPayloadWork]],
+        ] = {}
+        self.slack_payload_workers: dict[
+            str,
+            list[asyncio.Task[None]],
+        ] = {}
+        self.slack_payload_seen: dict[str, set[str]] = {}
+        self.slack_payload_seen_order: dict[str, deque[str]] = {}
+        self.slack_payload_stats: dict[str, dict[str, Any]] = {}
         self.lock = asyncio.Lock()
 
     async def sync(self) -> None:
@@ -109,6 +131,445 @@ class BotRuntime:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+    @staticmethod
+    def slack_payload_worker_count() -> int:
+        try:
+            value = int(
+                os.environ.get("CODEX_WEB_SLACK_PAYLOAD_WORKERS") or "4"
+            )
+        except ValueError:
+            value = 4
+        return max(1, min(value, 32))
+
+    @staticmethod
+    def slack_payload_queue_size() -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_PAYLOAD_QUEUE_PER_WORKER"
+                )
+                or "256"
+            )
+        except ValueError:
+            value = 256
+        return max(1, min(value, 10000))
+
+    @staticmethod
+    def slack_payload_dedupe_limit() -> int:
+        try:
+            value = int(
+                os.environ.get("CODEX_WEB_SLACK_PAYLOAD_DEDUPE_LIMIT")
+                or "50000"
+            )
+        except ValueError:
+            value = 50000
+        return max(1000, min(value, 200000))
+
+    @staticmethod
+    def slack_payload_drain_timeout() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_PAYLOAD_DRAIN_TIMEOUT_SECONDS"
+                )
+                or "5"
+            )
+        except ValueError:
+            value = 5.0
+        return max(0.0, min(value, 60.0))
+
+    @staticmethod
+    def _slack_payload_ordering_key(
+        connection: BotConnection,
+        payload: dict[str, Any],
+    ) -> str:
+        event = payload.get("event") or {}
+        if not isinstance(event, dict):
+            event = {}
+        item = event.get("item") or {}
+        if not isinstance(item, dict):
+            item = {}
+        channel_payload = payload.get("channel") or {}
+        if not isinstance(channel_payload, dict):
+            channel_payload = {}
+        container = payload.get("container") or {}
+        if not isinstance(container, dict):
+            container = {}
+        channel = (
+            event.get("channel")
+            or item.get("channel")
+            or channel_payload.get("id")
+            or container.get("channel_id")
+            or connection.default_external_conversation_id
+            or "__connection__"
+        )
+        return f"{connection.id}:{channel}"
+
+    @staticmethod
+    def _slack_payload_dedupe_key(
+        envelope_id: str | None,
+        payload: dict[str, Any],
+    ) -> str | None:
+        event = payload.get("event") or {}
+        if not isinstance(event, dict):
+            event = {}
+        event_identity = (
+            payload.get("event_id")
+            or event.get("client_msg_id")
+            or event.get("event_ts")
+            or event.get("ts")
+        )
+        if event_identity:
+            return f"event:{event_identity}"
+        trigger_id = payload.get("trigger_id")
+        if trigger_id:
+            return f"trigger:{trigger_id}"
+        if envelope_id:
+            return f"envelope:{envelope_id}"
+        return None
+
+    @staticmethod
+    def _slack_payload_shard(
+        ordering_key: str,
+        shard_count: int,
+    ) -> int:
+        digest = hashlib.sha256(ordering_key.encode()).digest()
+        return int.from_bytes(digest[:8], "big") % shard_count
+
+    def _remember_slack_payload_key(
+        self,
+        connection_id: str,
+        key: str | None,
+    ) -> bool:
+        if not key:
+            return True
+        seen = self.slack_payload_seen.setdefault(connection_id, set())
+        if key in seen:
+            return False
+        order = self.slack_payload_seen_order.setdefault(
+            connection_id,
+            deque(),
+        )
+        seen.add(key)
+        order.append(key)
+        limit = self.slack_payload_dedupe_limit()
+        while len(order) > limit:
+            expired = order.popleft()
+            seen.discard(expired)
+        return True
+
+    def _start_slack_payload_workers(
+        self,
+        connection: BotConnection,
+    ) -> None:
+        existing = self.slack_payload_workers.get(connection.id)
+        if existing and any(not task.done() for task in existing):
+            return
+        shard_count = self.slack_payload_worker_count()
+        queues = [
+            asyncio.Queue(maxsize=self.slack_payload_queue_size())
+            for _ in range(shard_count)
+        ]
+        workers = [
+            asyncio.create_task(
+                self._slack_payload_worker(
+                    connection,
+                    shard_index,
+                    queues[shard_index],
+                ),
+                name=(
+                    f"slack-payload-worker-{connection.id}-{shard_index}"
+                ),
+            )
+            for shard_index in range(shard_count)
+        ]
+        self.slack_payload_queues[connection.id] = queues
+        self.slack_payload_workers[connection.id] = workers
+        self.slack_payload_stats.setdefault(
+            connection.id,
+            {
+                "accepted": 0,
+                "deduped": 0,
+                "rejected": 0,
+                "processed": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "processingLatencySeconds": 0.0,
+                "processingWorkers": 0,
+                "lastOverloadAt": None,
+            },
+        )
+        self._update_slack_payload_status(connection)
+
+    def _update_slack_payload_status(
+        self,
+        connection: BotConnection,
+    ) -> dict[str, Any]:
+        queues = self.slack_payload_queues.get(connection.id, [])
+        workers = self.slack_payload_workers.get(connection.id, [])
+        queued_items = [
+            item
+            for queue in queues
+            for item in list(queue._queue)
+        ]
+        now = time.time()
+        per_channel = Counter(
+            item.ordering_key for item in queued_items
+        )
+        stats = self.slack_payload_stats.setdefault(connection.id, {})
+        snapshot = {
+            **stats,
+            "queueDepth": len(queued_items),
+            "queueCapacity": sum(queue.maxsize for queue in queues),
+            "oldestQueuedAgeSeconds": (
+                max(
+                    0.0,
+                    now - min(
+                        item.enqueued_at for item in queued_items
+                    ),
+                )
+                if queued_items
+                else 0.0
+            ),
+            "activeWorkers": int(stats.get("processingWorkers", 0)),
+            "workerTasks": sum(
+                1 for task in workers if not task.done()
+            ),
+            "workerLimit": len(workers),
+            "overloaded": any(queue.full() for queue in queues),
+            "perChannelBacklog": dict(
+                per_channel.most_common(20)
+            ),
+            "dedupeEntries": len(
+                self.slack_payload_seen.get(connection.id, set())
+            ),
+        }
+        self.slack_payload_stats[connection.id] = snapshot
+        self.telemetry.set_status(
+            connection,
+            "connected",
+            slackPayloadQueueDepth=snapshot["queueDepth"],
+            slackPayloadQueueCapacity=snapshot["queueCapacity"],
+            slackPayloadOldestQueuedAgeSeconds=(
+                snapshot["oldestQueuedAgeSeconds"]
+            ),
+            slackPayloadActiveWorkers=snapshot["activeWorkers"],
+            slackPayloadOverloaded=snapshot["overloaded"],
+            slackPayloadAccepted=snapshot.get("accepted", 0),
+            slackPayloadDeduped=snapshot.get("deduped", 0),
+            slackPayloadRejected=snapshot.get("rejected", 0),
+            slackPayloadFailed=snapshot.get("failed", 0),
+        )
+        return dict(snapshot)
+
+    def slack_payload_status(
+        self,
+        connection_id: str | None = None,
+    ) -> dict[str, Any]:
+        if connection_id is not None:
+            return dict(
+                self.slack_payload_stats.get(connection_id, {})
+            )
+        return {
+            key: dict(value)
+            for key, value in self.slack_payload_stats.items()
+        }
+
+    def _admit_slack_payload(
+        self,
+        connection: BotConnection,
+        payload: dict[str, Any],
+        *,
+        envelope_id: str | None = None,
+    ) -> str:
+        self._start_slack_payload_workers(connection)
+        dedupe_key = self._slack_payload_dedupe_key(
+            envelope_id,
+            payload,
+        )
+        seen = self.slack_payload_seen.setdefault(connection.id, set())
+        if dedupe_key and dedupe_key in seen:
+            stats = self.slack_payload_stats[connection.id]
+            stats["deduped"] = int(stats.get("deduped", 0)) + 1
+            self._update_slack_payload_status(connection)
+            return "deduped"
+
+        ordering_key = self._slack_payload_ordering_key(
+            connection,
+            payload,
+        )
+        queues = self.slack_payload_queues[connection.id]
+        shard = self._slack_payload_shard(
+            ordering_key,
+            len(queues),
+        )
+        queue = queues[shard]
+        if queue.full():
+            stats = self.slack_payload_stats[connection.id]
+            stats["rejected"] = int(stats.get("rejected", 0)) + 1
+            stats["lastOverloadAt"] = time.time()
+            self.telemetry.append(
+                {
+                    "type": "slack_payload_overload",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "ordering_key": ordering_key,
+                    "queue_depth": queue.qsize(),
+                    "queue_capacity": queue.maxsize,
+                }
+            )
+            self._update_slack_payload_status(connection)
+            return "rejected"
+
+        work = SlackPayloadWork(
+            payload=dict(payload),
+            enqueued_at=time.time(),
+            ordering_key=ordering_key,
+            dedupe_key=dedupe_key,
+        )
+        queue.put_nowait(work)
+        self._remember_slack_payload_key(
+            connection.id,
+            dedupe_key,
+        )
+        stats = self.slack_payload_stats[connection.id]
+        stats["accepted"] = int(stats.get("accepted", 0)) + 1
+        self._update_slack_payload_status(connection)
+        return "accepted"
+
+    async def _slack_payload_worker(
+        self,
+        connection: BotConnection,
+        shard_index: int,
+        queue: asyncio.Queue[SlackPayloadWork],
+    ) -> None:
+        del shard_index
+        while True:
+            work = await queue.get()
+            started = time.perf_counter()
+            stats = self.slack_payload_stats[connection.id]
+            stats["processingWorkers"] = (
+                int(stats.get("processingWorkers", 0)) + 1
+            )
+            self._update_slack_payload_status(connection)
+            try:
+                await self._handle_slack_payload(
+                    connection,
+                    work.payload,
+                )
+                stats = self.slack_payload_stats[connection.id]
+                stats["processed"] = (
+                    int(stats.get("processed", 0)) + 1
+                )
+            except asyncio.CancelledError:
+                stats = self.slack_payload_stats.get(
+                    connection.id,
+                    {},
+                )
+                stats["cancelled"] = (
+                    int(stats.get("cancelled", 0)) + 1
+                )
+                raise
+            except Exception as exc:
+                stats = self.slack_payload_stats[connection.id]
+                stats["failed"] = int(stats.get("failed", 0)) + 1
+                self.telemetry.append(
+                    {
+                        "type": "slack_payload_worker_failed",
+                        "provider": "slack",
+                        "connection_id": connection.id,
+                        "ordering_key": work.ordering_key,
+                        "error": str(exc),
+                    }
+                )
+            finally:
+                elapsed = time.perf_counter() - started
+                stats = self.slack_payload_stats.get(
+                    connection.id,
+                    {},
+                )
+                stats["processingLatencySeconds"] = elapsed
+                stats["processingWorkers"] = max(
+                    0,
+                    int(stats.get("processingWorkers", 0)) - 1,
+                )
+                queue.task_done()
+                self._update_slack_payload_status(connection)
+
+    async def _stop_slack_payload_workers(
+        self,
+        connection: BotConnection,
+    ) -> None:
+        queues = self.slack_payload_queues.get(connection.id, [])
+        workers = self.slack_payload_workers.get(connection.id, [])
+        pending_before = sum(queue.qsize() for queue in queues)
+        if queues and self.slack_payload_drain_timeout() > 0:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(queue.join() for queue in queues)
+                    ),
+                    timeout=self.slack_payload_drain_timeout(),
+                )
+            except asyncio.TimeoutError:
+                pass
+
+        cancelled_items = 0
+        for queue in queues:
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    cancelled_items += 1
+                    queue.task_done()
+
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(
+                *workers,
+                return_exceptions=True,
+            )
+
+        if cancelled_items:
+            stats = self.slack_payload_stats.setdefault(
+                connection.id,
+                {},
+            )
+            stats["cancelled"] = (
+                int(stats.get("cancelled", 0)) + cancelled_items
+            )
+            self.telemetry.append(
+                {
+                    "type": "slack_payload_shutdown_cancelled",
+                    "provider": "slack",
+                    "connection_id": connection.id,
+                    "pending_before": pending_before,
+                    "cancelled": cancelled_items,
+                }
+            )
+        self.slack_payload_queues.pop(connection.id, None)
+        self.slack_payload_workers.pop(connection.id, None)
+        self.slack_payload_seen.pop(connection.id, None)
+        self.slack_payload_seen_order.pop(connection.id, None)
+        stats = self.slack_payload_stats.setdefault(connection.id, {})
+        stats.update(
+            {
+                "queueDepth": 0,
+                "queueCapacity": 0,
+                "oldestQueuedAgeSeconds": 0.0,
+                "activeWorkers": 0,
+                "workerTasks": 0,
+                "workerLimit": 0,
+                "processingWorkers": 0,
+                "overloaded": False,
+                "perChannelBacklog": {},
+                "dedupeEntries": 0,
+            }
+        )
 
     @staticmethod
     def _credential_identity(
@@ -183,39 +644,67 @@ class BotRuntime:
         )
 
     async def _run_connection(self, connection: BotConnection) -> None:
-        while True:
-            try:
-                self.telemetry.set_status(
-                    connection,
-                    "starting",
-                    lastError=None,
-                )
-                if connection.provider == "slack":
-                    await self._run_slack(connection)
-                elif connection.provider == "telegram":
-                    await self._run_telegram(connection)
-                else:
-                    return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if (
-                    connection.provider == "slack"
-                    and self.is_transient_websocket_disconnect(exc)
-                ):
+        if connection.provider == "slack":
+            self._start_slack_payload_workers(connection)
+        try:
+            while True:
+                try:
                     self.telemetry.set_status(
                         connection,
-                        "reconnecting",
-                        lastDisconnect=str(exc),
-                        lastDisconnectAt=time.time(),
+                        "starting",
                         lastError=None,
+                    )
+                    if connection.provider == "slack":
+                        await self._run_slack(connection)
+                    elif connection.provider == "telegram":
+                        await self._run_telegram(connection)
+                    else:
+                        return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if (
+                        connection.provider == "slack"
+                        and self.is_transient_websocket_disconnect(exc)
+                    ):
+                        self.telemetry.set_status(
+                            connection,
+                            "reconnecting",
+                            lastDisconnect=str(exc),
+                            lastDisconnectAt=time.time(),
+                            lastError=None,
+                        )
+                        self.telemetry.append(
+                            {
+                                "type": "runtime_reconnect",
+                                "provider": connection.provider,
+                                "connection_id": connection.id,
+                                "reason": str(exc),
+                            }
+                        )
+                        await self.publish_event(
+                            {
+                                "type": "bot.runtime",
+                                "provider": connection.provider,
+                                "connectionId": connection.id,
+                                "status": "reconnecting",
+                                "reason": str(exc),
+                            }
+                        )
+                        await asyncio.sleep(5)
+                        continue
+                    self.telemetry.set_status(
+                        connection,
+                        "error",
+                        lastError=str(exc),
+                        lastErrorAt=time.time(),
                     )
                     self.telemetry.append(
                         {
-                            "type": "runtime_reconnect",
+                            "type": "runtime_error",
                             "provider": connection.provider,
                             "connection_id": connection.id,
-                            "reason": str(exc),
+                            "error": str(exc),
                         }
                     )
                     await self.publish_event(
@@ -223,36 +712,14 @@ class BotRuntime:
                             "type": "bot.runtime",
                             "provider": connection.provider,
                             "connectionId": connection.id,
-                            "status": "reconnecting",
-                            "reason": str(exc),
+                            "status": "error",
+                            "error": str(exc),
                         }
                     )
-                    await asyncio.sleep(5)
-                    continue
-                self.telemetry.set_status(
-                    connection,
-                    "error",
-                    lastError=str(exc),
-                    lastErrorAt=time.time(),
-                )
-                self.telemetry.append(
-                    {
-                        "type": "runtime_error",
-                        "provider": connection.provider,
-                        "connection_id": connection.id,
-                        "error": str(exc),
-                    }
-                )
-                await self.publish_event(
-                    {
-                        "type": "bot.runtime",
-                        "provider": connection.provider,
-                        "connectionId": connection.id,
-                        "status": "error",
-                        "error": str(exc),
-                    }
-                )
-                await asyncio.sleep(10)
+                    await asyncio.sleep(10)
+        finally:
+            if connection.provider == "slack":
+                await self._stop_slack_payload_workers(connection)
 
     async def _run_slack(self, connection: BotConnection) -> None:
         socket_url = await self._with_credential(
@@ -288,52 +755,45 @@ class BotRuntime:
             )
             async for raw in websocket:
                 envelope = json.loads(raw)
-                envelope_id = envelope.get("envelope_id")
-                if envelope_id:
+                envelope_id = str(
+                    envelope.get("envelope_id") or ""
+                ).strip() or None
+                payload = envelope.get("payload") or {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                admission = self._admit_slack_payload(
+                    connection,
+                    payload,
+                    envelope_id=envelope_id,
+                )
+                # Ack only after bounded admission succeeds, or when replay is
+                # safely deduplicated. A saturated queue deliberately leaves
+                # the envelope unacked so Slack can retry instead of losing a
+                # user message after we reported success.
+                if envelope_id and admission in {
+                    "accepted",
+                    "deduped",
+                }:
                     await websocket.send(
                         json.dumps({"envelope_id": envelope_id})
                     )
-                payload = envelope.get("payload") or {}
                 self.telemetry.set_status(
                     connection,
                     "connected",
                     lastEnvelopeAt=time.time(),
                     lastPayloadType=payload.get("type"),
+                    lastPayloadAdmission=admission,
                 )
-                self._schedule_slack_payload(connection, payload)
 
     def _schedule_slack_payload(
         self,
         connection: BotConnection,
         payload: dict[str, Any],
-    ) -> None:
-        task = asyncio.create_task(
-            self._handle_slack_payload(connection, payload),
-            name=f"slack-payload-{connection.id}",
+    ) -> bool:
+        return (
+            self._admit_slack_payload(connection, payload)
+            == "accepted"
         )
-
-        def done_callback(completed: asyncio.Task[None]) -> None:
-            try:
-                completed.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                self.telemetry.set_status(
-                    connection,
-                    "connected",
-                    lastError=str(exc),
-                    lastErrorAt=time.time(),
-                )
-                self.telemetry.append(
-                    {
-                        "type": "inbound_error",
-                        "provider": "slack",
-                        "connection_id": connection.id,
-                        "error": str(exc),
-                    }
-                )
-
-        task.add_done_callback(done_callback)
 
     async def _handle_slack_payload(
         self,
@@ -366,12 +826,10 @@ class BotRuntime:
             )
             if not channel:
                 return
-            lock_key = f"{connection.id}:{channel}"
-            lock = self.slack_payload_locks.setdefault(
-                lock_key,
-                asyncio.Lock(),
-            )
-            async with lock:
+            # Same-channel ordering is already guaranteed by stable
+            # shard assignment and one worker per shard. Avoid retaining a
+            # lock object for every channel ever observed.
+            async with contextlib.nullcontext():
                 if self.conversation_channels is not None:
                     normalized_payload = dict(payload)
                     normalized_event = dict(event)

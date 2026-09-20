@@ -137,6 +137,17 @@ class BotService:
             "runtimeStatus": list(
                 self.telemetry.snapshot().values()
             ),
+            "slackPayloadBackpressure": (
+                self.runtime.slack_payload_status()
+                if callable(
+                    getattr(
+                        self.runtime,
+                        "slack_payload_status",
+                        None,
+                    )
+                )
+                else {}
+            ),
             "channelDiscovery": (
                 self.channels.status()
                 if callable(getattr(self.channels, "status", None))
