@@ -249,6 +249,45 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("--unshare-net", command)
         self.assertNotIn(["--ro-bind", "/", "/"], mounts)
 
+    def test_danger_full_access_cannot_make_read_only_sibling_repository_writable(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "mutable-repo"
+            sibling = root / "readonly-repo"
+            workspace.mkdir()
+            sibling.mkdir()
+            destination = Path("/mnt/codex-context/repo-2")
+
+            command = backend.build_command(
+                _assignment(sandbox="danger-full-access"),
+                argv=("sh", "-c", "true"),
+                workspace_path=workspace,
+                trusted_readonly_mounts=((sibling, destination),),
+            )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--bind", str(workspace.resolve()), str(workspace.resolve())],
+            mounts,
+        )
+        self.assertIn(
+            ["--ro-bind", str(sibling.resolve()), str(destination)],
+            mounts,
+        )
+        self.assertNotIn(
+            ["--bind", str(sibling.resolve()), str(destination)],
+            mounts,
+        )
+        self.assertNotIn(["--ro-bind", "/", "/"], mounts)
+        self.assertIn("--unshare-net", command)
+
     def test_network_requests_still_fail_closed_for_local_worker(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
