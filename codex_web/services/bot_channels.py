@@ -177,14 +177,14 @@ class BotChannelDiscoveryService:
         return self._known_from(
             project_id,
             self.connections.load_connections(),
-            self.bindings.load_bindings(),
+            self.bindings.for_project_all(project_id),
         )
 
     async def refresh(self, project_id: str) -> list[dict[str, str]]:
         self.projects.get(project_id)
         started = time.perf_counter()
         connections = self.connections.load_connections()
-        bindings = self.bindings.load_bindings()
+        bindings = self.bindings.for_project_all(project_id)
         channels = {
             (item["provider"], item["id"]): item
             for item in self._known_from(
