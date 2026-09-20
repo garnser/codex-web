@@ -2701,6 +2701,9 @@ def _execution_readiness_health():
         "capabilities": [
             capability.value for capability in isolation.capabilities
         ],
+        "container_runtime": isolation.container_runtime,
+        "container_profile": isolation.container_profile,
+        "remediation": isolation.remediation,
     }
     return payload
 
