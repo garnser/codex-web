@@ -269,6 +269,18 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("api_client.js", coordinator)
         self.assertIn("apiRequest", coordinator)
 
+    def test_danger_full_access_is_explicitly_warned_in_execution_controls(self) -> None:
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        css = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('value="danger-full-access">Full access (high risk)', html)
+        self.assertIn('id="sandbox-danger-warning"', html)
+        self.assertIn("disables the Codex inner sandbox", html)
+        self.assertIn(
+            '#sandbox:has(option[value="danger-full-access"]:checked) + .sandbox-danger-warning',
+            css,
+        )
+
     def test_shared_api_client_preserves_structured_http_errors(self) -> None:
         source = (STATIC / "api_client.js").read_text()
         self.assertIn("class CodexApiError", source)
