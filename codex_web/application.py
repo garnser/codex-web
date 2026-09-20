@@ -1279,7 +1279,6 @@ assignment_session_managers = {
     ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
 }
 
-context_service = ContextCompactionService(core)
 gitlab_client = GitLabClient()
 work_item_state_machine = install_work_item_state_machine(
     app,
@@ -1884,6 +1883,18 @@ turn_queue_policy = install_turn_queue_policy(
     app,
     core,
     load_queues=turn_queue_repository.load,
+)
+
+context_service = ContextCompactionService(
+    request_for_thread=turn_execution_service.request_for_thread,
+    pending_approvals=approval_service.pending,
+    approval_thread_id=approval_service.thread_id,
+    queue_depth=turn_queue_policy.depth,
+    thread_is_active=turn_execution_service.thread_is_active,
+    raise_if_thread_replaced=(
+        thread_recovery_service.raise_if_thread_replaced
+    ),
+    publish_event=core.hub.publish,
 )
 
 thread_service = ThreadService(
