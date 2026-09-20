@@ -48,6 +48,14 @@ class GitLabServiceExtractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("integrations", tags)
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["integrations"], 0)
 
+    def test_event_dedupe_state_is_isolated_per_service_instance(self) -> None:
+        first = GitLabService(_Host())
+        second = GitLabService(_Host())
+
+        self.assertTrue(first.remember_event("evt-shared"))
+        self.assertFalse(first.remember_event("evt-shared"))
+        self.assertTrue(second.remember_event("evt-shared"))
+
     async def test_disabled_gitlab_routing_short_circuits_after_verification(self) -> None:
         host = _Host(enabled=False)
         result = await GitLabService(host).handle_event(_Request({"object_kind": "issue"}))
