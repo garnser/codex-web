@@ -101,6 +101,41 @@ class ExecutionPreflightServiceTests(unittest.TestCase):
         )
         self.assertEqual(len(items[0].blocker_history), 1)
 
+    def test_execution_identity_cannot_be_rebound_to_different_message(self) -> None:
+        self._record()
+
+        with self.assertRaises(HTTPException) as caught:
+            self.service.record_blocked(
+                actor=self.admin,
+                thread_id="thread-1",
+                project_id="project-1",
+                execution_id="thread-turn-abc",
+                payload=TurnCreate(
+                    message="different message",
+                    project_id="project-1",
+                ),
+                effective={
+                    "sandbox": "workspace-write",
+                    "approval_policy": "on-request",
+                },
+                detail={
+                    "code": "execution_preflight_blocked",
+                    "message": "still blocked",
+                    "blockers": [
+                        {
+                            "code": "worker_capability_missing",
+                            "message": "still blocked",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "execution_preflight_identity_conflict",
+        )
+
     def test_retry_requires_admin_authority(self) -> None:
         attempt = self._record()
 
