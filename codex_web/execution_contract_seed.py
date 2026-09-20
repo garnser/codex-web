@@ -74,6 +74,7 @@ SEED_ROLE_CONTRACTS: dict[str, ExecutionRoleContract] = {
             "a locally actionable lane remains on passive narration",
         ),
         keywords=("orchestrate", "orchestrator", "assign", "ownership", "split brain", "stalled", "reroute", "sequence", "multi-repo", "wake", "steer"),
+        execution_profile_id="orchestration-only",
     ),
     "release-manager": ExecutionRoleContract(
         id="release-manager",
