@@ -950,3 +950,28 @@ class WorkItemService:
     ) -> dict[str, Any]:
         return await self.progress(ref, payload)
 
+
+
+def install_work_item_compatibility(
+    app: Any,
+    host: Any,
+    service: WorkItemService,
+) -> WorkItemCompatibilityFacade:
+    """Attach the verified historical work-item surface at the edge only."""
+
+    compatibility = WorkItemCompatibilityFacade(host, service)
+    app.state.work_item_compatibility_service = compatibility
+    host.create_work_item_handoff = compatibility.handoff
+    host.ack_work_item_handoff = compatibility.acknowledge
+    host.update_work_item_progress = compatibility.progress
+    host._reconcile_task_source_event = service.reconcile_task_source_event
+    host._upsert_work_item_state_from_gitlab_issue = (
+        service.project_gitlab_issue_compat
+    )
+    host._upsert_work_item_state_from_gitlab_event = (
+        service.project_gitlab_event_compat
+    )
+    host._sync_gitlab_issue_labels_from_work_item = (
+        service.schedule_task_source_writeback
+    )
+    return compatibility
