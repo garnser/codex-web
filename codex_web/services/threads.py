@@ -637,7 +637,7 @@ class ThreadService:
             read_only_repository_resource_ids=(
                 binding.repository_target.read_only_repository_ids
             ),
-            execution_profile_id=binding.execution_profile_id,
+            execution_profile_id=getattr(binding, "execution_profile_id", None),
         )
         self.event_sink(
             {
