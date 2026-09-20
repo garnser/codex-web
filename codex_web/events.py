@@ -98,7 +98,7 @@ class EventHub:
             self._senders.pop(websocket, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
-        event = self._envelope(dict(event))
+        event = dict(event)
         for key, value in correlation_fields().items():
             event.setdefault(key, value)
         if self._metrics:
@@ -135,6 +135,8 @@ class EventHub:
                         error=str(exc),
                     )
 
+        wire_event = self._envelope(event)
+
         dead: list[WebSocket] = []
         for websocket in list(self._clients):
             queue = self._queues.get(websocket)
@@ -142,7 +144,7 @@ class EventHub:
                 dead.append(websocket)
                 continue
             try:
-                queue.put_nowait(event)
+                queue.put_nowait(wire_event)
             except asyncio.QueueFull:
                 if self._metrics:
                     self._metrics.increment("websocket.queue_overflows")
