@@ -298,7 +298,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          podman run --rm             --security-opt seccomp=unconfined             --security-opt label=disable             localhost/codex-bwrap-probe:test             bwrap               --die-with-parent               --new-session               --unshare-user               --unshare-pid               --unshare-uts               --unshare-ipc               --unshare-net               --ro-bind /usr /usr               --symlink usr/bin /bin               --symlink usr/lib /lib               --proc /proc               --dev /dev               --tmpfs /tmp               -- /bin/true
+          podman run --rm             --cap-add SYS_ADMIN             --security-opt seccomp=unconfined             --security-opt label=disable             localhost/codex-bwrap-probe:test             bwrap               --die-with-parent               --new-session               --unshare-user               --unshare-pid               --unshare-uts               --unshare-ipc               --unshare-net               --ro-bind /usr /usr               --symlink usr/bin /bin               --symlink usr/lib /lib               --proc /proc               --dev /dev               --tmpfs /tmp               -- /bin/true
 
       - name: Verify incompatible namespace profile fails closed
         shell: bash
