@@ -136,6 +136,9 @@ def build_execution_workers_router(
                     "capabilities": [
                         value.value for value in isolation.capabilities
                     ],
+                    "container_runtime": isolation.container_runtime,
+                    "container_profile": isolation.container_profile,
+                    "remediation": isolation.remediation,
                 }
             return {
                 "execution": result.model_dump(mode="json"),
