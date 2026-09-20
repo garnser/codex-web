@@ -83,6 +83,11 @@
       workspace.status, workspace.path, workspace.branch_name,
       workspace.base_revision, workspace.head_revision,
       workspace.repository_resource_id, ...(workspace.resource_ids || []),
+      ...(workspace.repository_members || []).flatMap((member) => [
+        member.resource_id, member.access_mode, member.source_path,
+        member.workspace_path, member.sandbox_path, member.branch_name,
+        member.base_revision, member.head_revision,
+      ]),
       lease.id, lease.mode, lease.release_reason,
       workspace.integration?.strategy, workspace.integration?.outcome,
       ...(workspace.integration?.conflicts || []), workspace.error,
@@ -120,8 +125,7 @@
       <small>Integration recorded by: ${escapeHtml(integration.recorded_by || "none")} · ${timeText(integration.recorded_at)}</small>`;
   }
 
-  function renderItem(item) {
-    const workspace = item.workspace;
+  function repositoryMembersHtml(workspace) {\n    const members = workspace.repository_members || [];\n    if (!members.length) return "<small>Repository members: legacy/single-repository projection.</small>";\n    return `<div class="comm-log">${members.map((member) => `<div class="comm-entry">\n      <strong>${escapeHtml(resourceNames([member.resource_id]))} · ${escapeHtml(member.access_mode)}</strong>\n      <small>Source: ${escapeHtml(member.source_path)} · workspace: ${escapeHtml(member.workspace_path)}</small>\n      <small>Sandbox path: ${escapeHtml(member.sandbox_path)} · branch: ${escapeHtml(member.branch_name || "detached/read-only")}</small>\n      <small>Revision: ${escapeHtml(member.base_revision)} → ${escapeHtml(member.head_revision)} · disk ${bytes(member.disk_bytes)}</small>\n    </div>`).join("")}</div>`;\n  }\n\n  function renderItem(item) {\n    const workspace = item.workspace;
     const lease = item.lease;
     const leaseState = lease
       ? item.lease_active ? "active" : item.lease_expired ? "expired-unrecovered" : lease.released_at ? "released" : "inactive"
@@ -132,6 +136,7 @@
       <small>Owner: ${escapeHtml(workspace.owner_identity_id)} · resources: ${escapeHtml(resourceNames(workspace.resource_ids))}</small>
       <small>Repository resource: ${escapeHtml(workspace.repository_resource_id || "none")} · branch: ${escapeHtml(workspace.branch_name || "none")}</small>
       <small>Path: ${escapeHtml(workspace.path || "none")} · base revision: ${escapeHtml(workspace.base_revision || "none")} · head revision: ${escapeHtml(workspace.head_revision || "none")}</small>
+      ${repositoryMembersHtml(workspace)}
       <small>Disk: requested ${bytes(workspace.requested_disk_bytes)} · actual ${workspace.actual_disk_bytes == null ? "unknown" : bytes(workspace.actual_disk_bytes)}</small>
       <small>Created: ${timeText(workspace.created_at)} · updated: ${timeText(workspace.updated_at)} · cleaned: ${timeText(workspace.cleaned_at)}</small>
       ${workspace.error ? `<small>Error: ${escapeHtml(workspace.error)}</small>` : ""}
