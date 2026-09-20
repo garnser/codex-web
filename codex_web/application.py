@@ -1256,7 +1256,6 @@ def _resource_ids_for_project(project_id: str) -> list[str]:
     return resource_catalog_service.resource_ids_for_project(project)
 
 core._resource_ids_for_project = _resource_ids_for_project
-runtime_service = RuntimeService(core)
 approval_compatibility_actor = identity_service.local_trusted_actor()
 codex_approval_requester = identity_service.bootstrap_service_actor(
     identity_id="service-codex-approval-requester",
@@ -2145,8 +2144,6 @@ runtime_health_service = RuntimeHealthService(
 )
 app.state.static_asset_version_service = static_asset_version_service
 app.state.runtime_health_service = runtime_health_service
-runtime_service.static_version = static_asset_version_service.version
-runtime_service.runtime_health = runtime_health_service.health
 
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor coordinates explicit
@@ -2175,6 +2172,39 @@ runtime_supervisor = install_runtime_supervisor(
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
 )
+
+runtime_service = RuntimeService(
+    codex=core.codex,
+    static_version=static_asset_version_service.version,
+    runtime_health=runtime_health_service.health,
+    load_active_turns=runtime_state.active_turns.load,
+    load_turn_queues=turn_queue_repository.load,
+    active_turn_stale_seconds=(
+        thread_recovery_service.active_turn_stale_seconds
+    ),
+    resume_active_threads_after_startup=(
+        turn_execution_service.resume_active_threads_after_startup
+    ),
+    schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+    load_work_item_states=runtime_state.work_item_states.load,
+    work_item_split_brain_findings=(
+        work_item_state_machine._work_item_split_brain_findings
+    ),
+    recent_events=bot_runtime_telemetry.recent,
+    supervisor_status=runtime_supervisor.task_status,
+    event_sink=bot_runtime_telemetry.append,
+    state_store=state_store,
+    coordination_backend=coordination_backend,
+    replicated_ownership=replicated_ownership_service,
+    canonical_event_bus=canonical_event_bus,
+    event_transport_runtime=event_transport_runtime,
+    event_transport=event_transport,
+    deployment_mode=deployment_mode,
+    instance_id=instance_id,
+)
+app.state.runtime_service = runtime_service
+core.healthz = runtime_service.healthz
+core.recovery_resume = runtime_service.recovery_resume
 
 def _diagnostic_queued_turn_public(queued):
     preview = queued.message.replace("\n", " ")
