@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import WorkItemState
+from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
 
 
@@ -103,6 +104,7 @@ class WorkItemContinuityService:
         watchdog_dispatch_allowed: Callable[[str], bool],
         record_watchdog_dispatch: Callable[[str], None],
         coordination_channel: str,
+        revalidate_after_thread_replacement: bool = True,
     ) -> None:
         self.policy = policy
         self.get_state = get_state
@@ -119,8 +121,76 @@ class WorkItemContinuityService:
         self.watchdog_dispatch_allowed = watchdog_dispatch_allowed
         self.record_watchdog_dispatch = record_watchdog_dispatch
         self.coordination_channel = coordination_channel
+        self.revalidate_after_thread_replacement = (
+            revalidate_after_thread_replacement
+        )
         self.actionable_owner_tasks: dict[str, asyncio.Task[None]] = {}
         self.handoff_tasks: dict[str, asyncio.Task[None]] = {}
+        max_concurrency_getter = getattr(
+            self.policy,
+            "background_task_max_concurrency",
+            None,
+        )
+        per_scope_getter = getattr(
+            self.policy,
+            "continuity_per_project_concurrency",
+            None,
+        )
+        self.dispatch_coordinator = KeyedTaskCoordinator(
+            max_concurrency=(
+                int(max_concurrency_getter())
+                if callable(max_concurrency_getter)
+                else 16
+            ),
+            per_scope_concurrency=(
+                int(per_scope_getter())
+                if callable(per_scope_getter)
+                else 4
+            ),
+        )
+
+    @staticmethod
+    def _handoff_revision(state: WorkItemState) -> str:
+        handoff = state.handoff
+        return "|".join(
+            (
+                state.ref,
+                str(handoff.to_agent if handoff else ""),
+                str(handoff.requested_at if handoff else ""),
+                str(handoff.status if handoff else ""),
+            )
+        )
+
+    def _owner_revision(self, state: WorkItemState) -> str:
+        return "|".join(
+            (
+                state.ref,
+                str(
+                    self.coerce_owner(
+                        state.current_owner or state.next_owner
+                    )
+                    or ""
+                ),
+                str(state.current_stage or ""),
+                str(state.closed_at or ""),
+                str(state.handoff.status if state.handoff else ""),
+            )
+        )
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "dispatch": self.dispatch_coordinator.status(),
+            "delayedActionableOwnerChecks": sum(
+                1
+                for task in self.actionable_owner_tasks.values()
+                if not task.done()
+            ),
+            "delayedHandoffChecks": sum(
+                1
+                for task in self.handoff_tasks.values()
+                if not task.done()
+            ),
+        }
 
     @staticmethod
     def actionable_owner_stage(stage: str | None) -> bool:
@@ -171,6 +241,32 @@ class WorkItemContinuityService:
             )
             return
         binding = await self.replace_nonperforming_thread(binding, source)
+        if self.revalidate_after_thread_replacement:
+            try:
+                latest = self.get_state(state.ref)
+            except HTTPException:
+                return
+            latest_handoff = latest.handoff
+            latest_recipient = (
+                self.coerce_owner(latest_handoff.to_agent)
+                if latest_handoff
+                else None
+            )
+            if (
+                not latest_handoff
+                or latest_handoff.status != "pending"
+                or latest_recipient != recipient
+                or latest_handoff.requested_at != handoff.requested_at
+            ):
+                return
+            state = latest
+        dispatch_key = (
+            f"handoff-dispatch:{state.ref}:{binding.thread_id}:"
+            f"{recipient}:{handoff.requested_at}"
+        )
+        if not self.watchdog_dispatch_allowed(dispatch_key):
+            return
+        self.record_watchdog_dispatch(dispatch_key)
         result = await self.dispatch_event(
             binding,
             self.dispatch_text(state),
@@ -193,14 +289,44 @@ class WorkItemContinuityService:
         *,
         source: str,
     ) -> None:
+        handoff = state.handoff
+        if (
+            not state.project_id
+            or not handoff
+            or handoff.status != "pending"
+        ):
+            return
+        expected_recipient = self.coerce_owner(handoff.to_agent)
+        if not expected_recipient:
+            return
+        expected_requested_at = handoff.requested_at
+        ref = state.ref
+
         async def run() -> None:
             try:
-                await self.dispatch_structured_handoff(state, source=source)
+                latest = self.get_state(ref)
+            except HTTPException:
+                return
+            latest_handoff = latest.handoff
+            if (
+                not latest_handoff
+                or latest_handoff.status != "pending"
+                or self.coerce_owner(latest_handoff.to_agent)
+                != expected_recipient
+                or latest_handoff.requested_at
+                != expected_requested_at
+            ):
+                return
+            try:
+                await self.dispatch_structured_handoff(
+                    latest,
+                    source=source,
+                )
             except Exception as exc:
                 self.append_event(
                     {
                         "type": "work_item_handoff_dispatch_failed",
-                        "ref": state.ref,
+                        "ref": ref,
                         "source": source,
                         "error": self.truncate_text(
                             str(getattr(exc, "detail", exc)),
@@ -209,7 +335,21 @@ class WorkItemContinuityService:
                     }
                 )
 
-        asyncio.create_task(run())
+        self.dispatch_coordinator.schedule(
+            f"handoff-dispatch:{ref}",
+            run,
+            revision=self._handoff_revision(state),
+            scope=state.project_id,
+            timeout_seconds=(
+                float(
+                    getattr(
+                        self.policy,
+                        "continuity_dispatch_timeout",
+                        lambda: 120.0,
+                    )()
+                )
+            ),
+        )
 
     async def run_handoff_continuity_check(
         self,
@@ -347,6 +487,27 @@ class WorkItemContinuityService:
         ):
             return
         binding = await self.replace_nonperforming_thread(binding, source)
+        if self.revalidate_after_thread_replacement:
+            try:
+                latest = self.get_state(state.ref)
+            except HTTPException:
+                return
+            latest_owner = self.coerce_owner(
+                latest.current_owner or latest.next_owner
+            )
+            if (
+                latest.current_stage == "closed"
+                or latest.closed_at
+                or not self.actionable_owner_stage(latest.current_stage)
+                or (
+                    latest.handoff
+                    and latest.handoff.status == "pending"
+                )
+                or latest_owner != owner
+                or latest.current_stage != state.current_stage
+            ):
+                return
+            state = latest
         dispatch_key = (
             f"work-item-owner-progress:{state.ref}:{binding.thread_id}:"
             f"{owner}:{state.current_stage}"
@@ -379,18 +540,58 @@ class WorkItemContinuityService:
         source: str,
         actor: str | None = None,
     ) -> None:
+        if (
+            not state.project_id
+            or state.current_stage == "closed"
+            or state.closed_at
+            or not self.actionable_owner_stage(state.current_stage)
+        ):
+            return
+        if state.handoff and state.handoff.status == "pending":
+            return
+        expected_owner = self.coerce_owner(
+            state.current_owner or state.next_owner
+        )
+        if not expected_owner:
+            return
+        expected_stage = state.current_stage
+        ref = state.ref
+
         async def run() -> None:
             try:
+                latest = self.get_state(ref)
+            except HTTPException:
+                return
+            current_owner = self.coerce_owner(
+                latest.current_owner or latest.next_owner
+            )
+            if (
+                latest.current_stage == "closed"
+                or latest.closed_at
+                or not self.actionable_owner_stage(
+                    latest.current_stage
+                )
+                or (
+                    latest.handoff
+                    and latest.handoff.status == "pending"
+                )
+                or current_owner != expected_owner
+                or latest.current_stage != expected_stage
+            ):
+                return
+            try:
                 await self.dispatch_actionable_owner(
-                    state,
+                    latest,
                     source=source,
                     actor=actor,
                 )
             except Exception as exc:
                 self.append_event(
                     {
-                        "type": "work_item_owner_progress_dispatch_failed",
-                        "ref": state.ref,
+                        "type": (
+                            "work_item_owner_progress_dispatch_failed"
+                        ),
+                        "ref": ref,
                         "source": source,
                         "actor": actor,
                         "error": self.truncate_text(
@@ -400,7 +601,21 @@ class WorkItemContinuityService:
                     }
                 )
 
-        asyncio.create_task(run())
+        self.dispatch_coordinator.schedule(
+            f"owner-dispatch:{ref}",
+            run,
+            revision=self._owner_revision(state),
+            scope=state.project_id,
+            timeout_seconds=(
+                float(
+                    getattr(
+                        self.policy,
+                        "continuity_dispatch_timeout",
+                        lambda: 120.0,
+                    )()
+                )
+            ),
+        )
 
     async def run_actionable_owner_continuity_check(
         self,
@@ -482,6 +697,7 @@ class WorkItemContinuityService:
         self.actionable_owner_tasks[state.ref] = task
 
     async def stop(self) -> None:
+        await self.dispatch_coordinator.stop()
         tasks = [
             *self.actionable_owner_tasks.values(),
             *self.handoff_tasks.values(),
@@ -505,8 +721,39 @@ def build_work_item_continuity_compatibility_service(
     """
 
     policy = SimpleNamespace(
-        actionable_owner_continuity_delay=lambda: host._actionable_owner_continuity_delay_seconds(),
-        handoff_continuity_delay=lambda: host._handoff_continuity_delay_seconds(),
+        actionable_owner_continuity_delay=(
+            lambda: host._actionable_owner_continuity_delay_seconds()
+        ),
+        handoff_continuity_delay=(
+            lambda: host._handoff_continuity_delay_seconds()
+        ),
+        continuity_dispatch_timeout=(
+            lambda: float(
+                getattr(
+                    host,
+                    "CONTINUITY_DISPATCH_TIMEOUT_SECONDS",
+                    120.0,
+                )
+            )
+        ),
+        background_task_max_concurrency=(
+            lambda: int(
+                getattr(
+                    host,
+                    "BACKGROUND_TASK_MAX_CONCURRENCY",
+                    16,
+                )
+            )
+        ),
+        continuity_per_project_concurrency=(
+            lambda: int(
+                getattr(
+                    host,
+                    "CONTINUITY_PER_PROJECT_CONCURRENCY",
+                    4,
+                )
+            )
+        ),
     )
     return WorkItemContinuityService(
         policy=policy,
@@ -542,4 +789,5 @@ def build_work_item_continuity_compatibility_service(
             key
         ),
         coordination_channel=host.HANDOFF_COORDINATION_CHANNEL,
+        revalidate_after_thread_replacement=False,
     )

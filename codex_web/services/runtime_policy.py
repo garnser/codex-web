@@ -104,3 +104,41 @@ class RuntimePolicy:
             30.0,
             minimum=1.0,
         )
+
+    def native_recovery_cycle_timeout(self) -> float:
+        return self._seconds(
+            "CODEX_WEB_NATIVE_RECOVERY_CYCLE_TIMEOUT_SECONDS",
+            300.0,
+            minimum=5.0,
+        )
+
+    def continuity_dispatch_timeout(self) -> float:
+        return self._seconds(
+            "CODEX_WEB_CONTINUITY_DISPATCH_TIMEOUT_SECONDS",
+            120.0,
+            minimum=5.0,
+        )
+
+    def background_task_max_concurrency(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_BACKGROUND_TASK_MAX_CONCURRENCY"
+                )
+                or "16"
+            )
+        except ValueError:
+            value = 16
+        return max(1, min(value, 128))
+
+    def continuity_per_project_concurrency(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_CONTINUITY_PER_PROJECT_CONCURRENCY"
+                )
+                or "4"
+            )
+        except ValueError:
+            value = 4
+        return max(1, min(value, 32))
