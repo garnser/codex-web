@@ -37,75 +37,111 @@ from codex_web.services.work_item_state import WorkItemStateMachine
 
 
 class _HostContinuityAdapter:
-    """Compatibility edge for lightweight direct WorkItemService consumers."""
+    """Dynamic compatibility edge for historical direct-call entrypoints."""
 
     def __init__(self, host: Any) -> None:
-        self.schedule_structured_handoff_dispatch = getattr(
-            host,
+        self.host = host
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        callback = getattr(self.host, name, None)
+        if callback is None:
+            return None
+        return callback(*args, **kwargs)
+
+    def schedule_structured_handoff_dispatch(
+        self,
+        state: Any,
+        *,
+        source: str,
+    ) -> None:
+        self._call(
             "_schedule_structured_handoff_dispatch",
-            lambda *_args, **_kwargs: None,
+            state,
+            source=source,
         )
-        self.schedule_handoff_continuity_check = getattr(
-            host,
+
+    def schedule_handoff_continuity_check(
+        self,
+        state: Any,
+        *,
+        source: str,
+    ) -> None:
+        self._call(
             "_schedule_handoff_continuity_check",
-            lambda *_args, **_kwargs: None,
+            state,
+            source=source,
         )
-        self.schedule_actionable_owner_dispatch = getattr(
-            host,
+
+    def schedule_actionable_owner_dispatch(
+        self,
+        state: Any,
+        *,
+        source: str,
+        actor: str | None = None,
+    ) -> None:
+        self._call(
             "_schedule_actionable_owner_dispatch",
-            lambda *_args, **_kwargs: None,
+            state,
+            source=source,
+            actor=actor,
         )
-        self.schedule_actionable_owner_continuity_check = getattr(
-            host,
+
+    def schedule_actionable_owner_continuity_check(
+        self,
+        state: Any,
+        *,
+        source: str,
+    ) -> None:
+        self._call(
             "_schedule_actionable_owner_continuity_check",
-            lambda *_args, **_kwargs: None,
-        )
-        self._binding_for_agent = getattr(
-            host,
-            "_binding_for_agent",
-            lambda *_args, **_kwargs: None,
-        )
-        self.dispatch_text = getattr(
-            host,
-            "_work_item_dispatch_text",
-            lambda state: state.ref,
-        )
-        self._coerce_owner = getattr(
-            host,
-            "_coerce_owner",
-            lambda owner: owner,
-        )
-        self._coordination_channel = getattr(
-            host,
-            "HANDOFF_COORDINATION_CHANNEL",
-            "",
+            state,
+            source=source,
         )
 
     def responsible_binding(self, state: Any) -> Any | None:
-        owner = self._coerce_owner(
+        owner_callback = getattr(
+            self.host,
+            "_coerce_owner",
+            lambda owner: owner,
+        )
+        owner = owner_callback(
             getattr(state, "current_owner", None)
             or getattr(state, "next_owner", None)
         )
         project_id = getattr(state, "project_id", None)
         if not owner or not project_id:
             return None
-        return self._binding_for_agent(
+        callback = getattr(self.host, "_binding_for_agent", None)
+        if callback is None:
+            return None
+        return callback(
             owner,
             project_id,
-            preferred_conversation_id=self._coordination_channel,
+            preferred_conversation_id=getattr(
+                self.host,
+                "HANDOFF_COORDINATION_CHANNEL",
+                "",
+            ),
         )
+
+    def dispatch_text(self, state: Any) -> str:
+        callback = getattr(self.host, "_work_item_dispatch_text", None)
+        return callback(state) if callback is not None else state.ref
 
 
 class _HostRecoveryAdapter:
     def __init__(self, host: Any) -> None:
-        self._schedule = getattr(
-            host,
-            "_schedule_native_recovery_cycles",
-            lambda **_kwargs: None,
-        )
+        self.host = host
 
     def schedule(self, *, reason: str = "manual") -> bool:
-        self._schedule(reason=reason)
+        callback = getattr(
+            self.host,
+            "_schedule_native_recovery_cycles",
+            None,
+        )
+        if callback is None:
+            return False
+        callback(reason=reason)
         return True
 
 
@@ -129,6 +165,8 @@ class WorkItemService:
         self.gitlab = gitlab or GitLabClient()
         self.continuity = continuity or _HostContinuityAdapter(host)
         self.recovery = recovery or _HostRecoveryAdapter(host)
+        self.compatibility_continuity = _HostContinuityAdapter(host)
+        self.compatibility_recovery = _HostRecoveryAdapter(host)
         self.state_machine = state_machine or WorkItemStateMachine(host)
         self.task_source_projector = task_source_projector or TaskSourceWorkItemProjector(
             host,
@@ -175,9 +213,9 @@ class WorkItemService:
         # Preserve historical entrypoints at the integration edge. These aliases
         # terminate at TaskSource/integration services, never provider code in
         # the canonical state machine.
-        host.create_work_item_handoff = self.handoff
-        host.ack_work_item_handoff = self.acknowledge
-        host.update_work_item_progress = self.progress
+        host.create_work_item_handoff = self.compatibility_handoff
+        host.ack_work_item_handoff = self.compatibility_acknowledge
+        host.update_work_item_progress = self.compatibility_progress
         host._reconcile_task_source_event = self.reconcile_task_source_event
         host._upsert_work_item_state_from_gitlab_issue = self.project_gitlab_issue_compat
         host._upsert_work_item_state_from_gitlab_event = self.project_gitlab_event_compat
@@ -562,10 +600,11 @@ class WorkItemService:
         await self.task_source_writeback.add_comment(state, body)
         return {"ok": True, "ref": ref}
 
-    async def handoff(
+    async def _handoff_with(
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
+        continuity: Any,
     ) -> dict[str, Any]:
         structured_handoff = self._compat(
             "_structured_handoff",
@@ -581,20 +620,40 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.handoff", "ref": ref, "state": public}
         )
-        self.continuity.schedule_structured_handoff_dispatch(
+        continuity.schedule_structured_handoff_dispatch(
             state,
             source="work-item-handoff",
         )
-        self.continuity.schedule_handoff_continuity_check(
+        continuity.schedule_handoff_continuity_check(
             state,
             source="work-item-handoff-continuity",
         )
         return {"ok": True, "item": public}
 
-    async def acknowledge(
+    async def handoff(
+        self,
+        ref: str,
+        payload: WorkItemHandoffCreate,
+    ) -> dict[str, Any]:
+        return await self._handoff_with(ref, payload, self.continuity)
+
+    async def compatibility_handoff(
+        self,
+        ref: str,
+        payload: WorkItemHandoffCreate,
+    ) -> dict[str, Any]:
+        return await self._handoff_with(
+            ref,
+            payload,
+            self.compatibility_continuity,
+        )
+
+    async def _acknowledge_with(
         self,
         ref: str,
         payload: WorkItemAckCreate,
+        continuity: Any,
+        recovery: Any,
     ) -> dict[str, Any]:
         structured_ack = self._compat(
             "_structured_ack",
@@ -614,25 +673,49 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.ack", "ref": ref, "state": public}
         )
-        self.continuity.schedule_actionable_owner_dispatch(
+        continuity.schedule_actionable_owner_dispatch(
             state,
             source="work-item-ack",
             actor=payload.actor,
         )
-        self.continuity.schedule_actionable_owner_continuity_check(
+        continuity.schedule_actionable_owner_continuity_check(
             state,
             source="work-item-ack-continuity",
         )
         if split_brain_findings(state):
-            self.recovery.schedule(
-                reason="work-item-ack-routing-drift"
-            )
+            recovery.schedule(reason="work-item-ack-routing-drift")
         return {"ok": True, "item": public}
 
-    async def progress(
+    async def acknowledge(
+        self,
+        ref: str,
+        payload: WorkItemAckCreate,
+    ) -> dict[str, Any]:
+        return await self._acknowledge_with(
+            ref,
+            payload,
+            self.continuity,
+            self.recovery,
+        )
+
+    async def compatibility_acknowledge(
+        self,
+        ref: str,
+        payload: WorkItemAckCreate,
+    ) -> dict[str, Any]:
+        return await self._acknowledge_with(
+            ref,
+            payload,
+            self.compatibility_continuity,
+            self.compatibility_recovery,
+        )
+
+    async def _progress_with(
         self,
         ref: str,
         payload: WorkItemProgressUpdate,
+        continuity: Any,
+        recovery: Any,
     ) -> dict[str, Any]:
         structured_progress = self._compat(
             "_structured_progress",
@@ -652,17 +735,39 @@ class WorkItemService:
         await self.host.hub.publish(
             {"type": "work-item.progress", "ref": ref, "state": public}
         )
-        self.continuity.schedule_actionable_owner_dispatch(
+        continuity.schedule_actionable_owner_dispatch(
             state,
             source="work-item-progress",
             actor=payload.actor,
         )
-        self.continuity.schedule_actionable_owner_continuity_check(
+        continuity.schedule_actionable_owner_continuity_check(
             state,
             source="work-item-progress-continuity",
         )
         if split_brain_findings(state):
-            self.recovery.schedule(
-                reason="work-item-progress-routing-drift"
-            )
+            recovery.schedule(reason="work-item-progress-routing-drift")
         return {"ok": True, "item": public}
+
+    async def progress(
+        self,
+        ref: str,
+        payload: WorkItemProgressUpdate,
+    ) -> dict[str, Any]:
+        return await self._progress_with(
+            ref,
+            payload,
+            self.continuity,
+            self.recovery,
+        )
+
+    async def compatibility_progress(
+        self,
+        ref: str,
+        payload: WorkItemProgressUpdate,
+    ) -> dict[str, Any]:
+        return await self._progress_with(
+            ref,
+            payload,
+            self.compatibility_continuity,
+            self.compatibility_recovery,
+        )
