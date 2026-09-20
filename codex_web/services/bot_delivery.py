@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
