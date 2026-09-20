@@ -13,7 +13,11 @@ from codex_web.configuration import (
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
 from codex_web.execution_workspaces import LeaseMode
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    ExecutionRuntimeBinding,
+    ExecutionWorkerRegister,
+    WorkerCapability,
+)
 from codex_web.models import Project
 from codex_web.resources import (
     RepositoryTargetSource,
@@ -171,6 +175,24 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.workers = ExecutionWorkerService(
             ExecutionWorkerStore(self.sqlite),
             workspaces=self.workspaces,
+        )
+        self.workers.register(
+            ExecutionWorkerRegister(
+                service_identity_id="test-local-worker",
+                pool="local",
+                version="test-v1",
+                capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                    WorkerCapability.ARTIFACT_UPLOAD,
+                ),
+                supported_execution_contract_versions=(
+                    "1.0",
+                    THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                    THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+                ),
+            ),
+            actor=self.actor,
         )
         self.execution_profiles = install_execution_profile_definitions(
             DefinitionRegistryService(DefinitionRegistryStore(self.sqlite))
