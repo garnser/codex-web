@@ -13,6 +13,7 @@ from codex_web.services.agent_process_session import (
     AssignmentBoundAgentProcessSessionManager,
     AssignmentBoundAgentProcessSessionStaleError,
 )
+from codex_web.services.control_plane_broker import DeferredControlPlaneBrokerFactory
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialProvider,
@@ -42,6 +43,7 @@ class AssignmentBoundClaudeSession(AssignmentBoundAgentProcessSession):
         | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider | None = None,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
@@ -59,6 +61,7 @@ class AssignmentBoundClaudeSession(AssignmentBoundAgentProcessSession):
             runtime_binding=runtime_binding,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,
+            control_plane_broker_factory=control_plane_broker_factory,
             clock=clock,
             monotonic=monotonic,
             sleep=sleep,
@@ -81,6 +84,7 @@ class AssignmentBoundClaudeSessionManager(AssignmentBoundAgentProcessSessionMana
         | None = None,
         credential_provider: AssignmentRuntimeCredentialProvider,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
     ) -> None:
         super().__init__(
             local_worker,
