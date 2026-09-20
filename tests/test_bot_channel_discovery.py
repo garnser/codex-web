@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from codex_web.services.bot_channels import BotChannelDiscoveryService
 
 class _Projects:
     def get(self, project_id: str):
-        if project_id != "home":
+        if project_id not in {"home", "other"}:
             raise AssertionError(f"unexpected project: {project_id}")
         return SimpleNamespace(id=project_id)
 
@@ -81,12 +82,13 @@ def _connection(
     token: str = "xoxb-shared",
     channel: str | None = None,
     name: str | None = None,
+    project_id: str = "home",
 ) -> BotConnection:
     return BotConnection(
         id=connection_id,
         provider="slack",
         name=f"Slack {connection_id}",
-        project_id="home",
+        project_id=project_id,
         bot_token=token,
         default_external_conversation_id=channel,
         default_external_name=name,
@@ -142,7 +144,7 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             slack_client=slack,
         )
 
-        result = await service.list("home")
+        result = await service.refresh("home")
 
         self.assertEqual(len(result), 3)
         self.assertEqual(slack.list_calls, ["xoxb-shared"])
@@ -177,7 +179,7 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             slack_client=slack,
         )
 
-        result = await service.list("home")
+        result = await service.refresh("home")
 
         self.assertEqual(result[0]["label"], "#general")
         self.assertEqual(len(slack.list_calls), 1)
@@ -221,7 +223,7 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             slack_client=slack,
         )
 
-        await service.list("home")
+        await service.refresh("home")
 
         metrics = service.status("home")
         self.assertEqual(metrics["credentialGroups"], 1)
@@ -261,7 +263,7 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
         )
         service.MAX_METADATA_CONCURRENCY = 4
 
-        await service.list("home")
+        await service.refresh("home")
 
         self.assertEqual(len(slack.info_calls), 24)
         self.assertLessEqual(slack.max_active_info, 4)
@@ -280,11 +282,11 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             slack_client=slack,
         )
 
-        await service.list("home")
+        await service.refresh("home")
         self.assertEqual(len(slack.info_calls), 1)
 
         service.cache.clear()
-        await service.list("home")
+        await service.refresh("home")
 
         self.assertEqual(len(slack.list_calls), 2)
         self.assertEqual(len(slack.info_calls), 1)
@@ -305,11 +307,12 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             slack_client=slack,
         )
 
-        first = await service.list("home")
+        first = await service.refresh("home")
+        list_calls = len(slack.list_calls)
         second = await service.list("home")
 
         self.assertEqual(first, second)
-        self.assertEqual(len(slack.list_calls), 1)
+        self.assertEqual(len(slack.list_calls), list_calls)
         metrics = service.status("home")
         self.assertTrue(metrics["cacheHit"])
         self.assertEqual(metrics["providerCalls"], 0)
@@ -332,13 +335,13 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
         )
         service.MAX_METADATA_CONCURRENCY = 1
 
-        await service.list("home")
+        await service.refresh("home")
         self.assertEqual(len(slack.list_calls), 1)
         self.assertEqual(len(slack.info_calls), 1)
         self.assertEqual(service.status("home")["rateLimitEvents"], 1)
 
         service.cache.clear()
-        await service.list("home")
+        await service.refresh("home")
 
         self.assertEqual(len(slack.list_calls), 1)
         self.assertEqual(len(slack.info_calls), 1)
@@ -346,6 +349,60 @@ class BotChannelDiscoveryPerformanceTests(unittest.IsolatedAsyncioTestCase):
             service.status("home")["cooldownSkips"],
             1,
         )
+
+
+    async def test_normal_list_returns_known_channels_before_slow_provider_refresh(self) -> None:
+        connections = _Connections(
+            [_connection("c1", channel="C1", name="known")]
+        )
+        slack = _Slack()
+        slack.info_delay = 0.2
+        service = BotChannelDiscoveryService(
+            connections=connections,
+            bindings=_Bindings(),
+            projects=_Projects(),
+            slack_client=slack,
+        )
+
+        result = await asyncio.wait_for(
+            service.list("home"),
+            timeout=0.05,
+        )
+
+        self.assertEqual(result[0]["label"], "#known")
+        self.assertEqual(slack.list_calls, [])
+        self.assertTrue(service.status("home")["refreshScheduled"])
+        await service.wait_for_refresh("home")
+        self.assertEqual(slack.list_calls, ["xoxb-shared"])
+
+    async def test_project_invalidation_keeps_unrelated_failure_caches(self) -> None:
+        home = _connection("home-c", project_id="home")
+        other = _connection("other-c", project_id="other", token="xoxb-other")
+        service = BotChannelDiscoveryService(
+            connections=_Connections([home, other]),
+            bindings=_Bindings(),
+            projects=_Projects(),
+            slack_client=_Slack(),
+        )
+        home_group = service._credential_group_key(home)
+        other_group = service._credential_group_key(other)
+        assert home_group is not None
+        assert other_group is not None
+        service.negative_cache[
+            ("home", home_group, "C1")
+        ] = time.time() + 60
+        service.negative_cache[
+            ("other", other_group, "C2")
+        ] = time.time() + 60
+        service.cooldowns[("home", home_group)] = time.time() + 60
+        service.cooldowns[("other", other_group)] = time.time() + 60
+
+        service.invalidate("home")
+
+        self.assertNotIn(("home", home_group, "C1"), service.negative_cache)
+        self.assertNotIn(("home", home_group), service.cooldowns)
+        self.assertIn(("other", other_group, "C2"), service.negative_cache)
+        self.assertIn(("other", other_group), service.cooldowns)
 
 
 if __name__ == "__main__":
