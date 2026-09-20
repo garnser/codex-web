@@ -771,6 +771,58 @@ class LegacyProjectMigrationService:
             sorted(rows, key=lambda item: (item.updated_at, item.id), reverse=True)
         )
 
+    def revoke_legacy_path(
+        self,
+        project_id: str,
+        path: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[LegacyPathCompatibilityMapping, ...]:
+        self.projects.get(project_id, actor.tenant)
+        normalized = str(path or "").strip()
+        if not normalized:
+            raise LegacyProjectMigrationError(
+                "legacy compatibility path is required"
+            )
+        now = self.clock()
+        revoked: list[LegacyPathCompatibilityMapping] = []
+
+        def mutate(state):
+            for execution_index, execution in enumerate(state.executions):
+                if (
+                    execution.project_id != project_id
+                    or execution.organization_id != actor.organization_id
+                    or execution.workspace_id != actor.workspace_id
+                ):
+                    continue
+                mappings = []
+                changed = False
+                for mapping in execution.compatibility_mappings:
+                    if (
+                        mapping.legacy_path == normalized
+                        and mapping.revoked_at is None
+                    ):
+                        mapping = mapping.model_copy(
+                            update={
+                                "revoked_at": now,
+                                "revoked_by": actor.identity_id,
+                            }
+                        )
+                        revoked.append(mapping)
+                        changed = True
+                    mappings.append(mapping)
+                if changed:
+                    state.executions[execution_index] = execution.model_copy(
+                        update={
+                            "compatibility_mappings": tuple(mappings),
+                            "updated_at": now,
+                        }
+                    )
+            return state
+
+        self.store.update(mutate)
+        return tuple(revoked)
+
     def resolve_legacy_path(
         self,
         path: str,
@@ -784,7 +836,11 @@ class LegacyProjectMigrationService:
             if execution.organization_id == actor.organization_id
             and execution.workspace_id == actor.workspace_id
             for mapping in execution.compatibility_mappings
-            if mapping.legacy_path == path and mapping.expires_at > now
+            if (
+                mapping.legacy_path == path
+                and mapping.revoked_at is None
+                and mapping.expires_at > now
+            )
         ]
         if not candidates:
             return None
