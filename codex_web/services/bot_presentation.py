@@ -424,12 +424,42 @@ class BotPresentationService:
         return fallback
 
 
-def install_bot_presentation_service(app: Any, host: Any) -> BotPresentationService:
+def install_bot_presentation_service(
+    app: Any,
+    host: Any,
+    *,
+    load_slack_icons: Callable[[], dict[str, str]] | None = None,
+    save_slack_icons: Callable[[dict[str, str]], None] | None = None,
+) -> BotPresentationService:
+    icon_state = getattr(app.state, "bot_slack_icon_assignments", None)
+    if icon_state is None:
+        icon_state = {}
+        app.state.bot_slack_icon_assignments = icon_state
+
+    load_icons = load_slack_icons or getattr(
+        host,
+        "_load_slack_thread_icons",
+        None,
+    )
+    save_icons = save_slack_icons or getattr(
+        host,
+        "_save_slack_thread_icons",
+        None,
+    )
+    if load_icons is None:
+        load_icons = lambda: dict(icon_state)
+    if save_icons is None:
+        def save_icons(values: dict[str, str]) -> None:
+            icon_state.clear()
+            icon_state.update(values)
+
     service = BotPresentationService(
-        load_slack_icons=host._load_slack_thread_icons,
-        save_slack_icons=host._save_slack_thread_icons,
+        load_slack_icons=load_icons,
+        save_slack_icons=save_icons,
     )
     app.state.bot_presentation_service = service
+    host._load_slack_thread_icons = load_icons
+    host._save_slack_thread_icons = save_icons
     host._binding_prefix = service.binding_prefix
     host._binding_report_name = service.binding_report_name
     host._binding_prefix_candidates = service.binding_prefix_candidates
