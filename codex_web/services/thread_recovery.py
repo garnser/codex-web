@@ -38,6 +38,8 @@ class ThreadRecoveryService:
         ],
         event_sink: Callable[[dict[str, Any]], None],
         truncate_text: Callable[[str, int], str],
+        thread_replacements: dict[str, str] | None = None,
+        terminal_failures: dict[str, Any] | None = None,
     ) -> None:
         self.host = host
         self.projects = projects
@@ -47,6 +49,16 @@ class ThreadRecoveryService:
         self.runtime_request = runtime_request
         self.event_sink = event_sink
         self.truncate_text = truncate_text
+        self.thread_replacements = (
+            thread_replacements
+            if thread_replacements is not None
+            else getattr(host, "THREAD_REPLACEMENTS", {})
+        )
+        self.terminal_failures = (
+            terminal_failures
+            if terminal_failures is not None
+            else getattr(host, "THREAD_TERMINAL_FAILURES", {})
+        )
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
@@ -161,11 +173,11 @@ class ThreadRecoveryService:
 
     def _remember_replacement(self, old_thread_id: str, new_thread_id: str) -> None:
         h = self.host
-        for prior_thread_id, replacement_thread_id in list(h.THREAD_REPLACEMENTS.items()):
+        for prior_thread_id, replacement_thread_id in list(self.thread_replacements.items()):
             if replacement_thread_id == old_thread_id:
-                h.THREAD_REPLACEMENTS[prior_thread_id] = new_thread_id
-        h.THREAD_REPLACEMENTS[old_thread_id] = new_thread_id
-        h.THREAD_TERMINAL_FAILURES.pop(old_thread_id, None)
+                self.thread_replacements[prior_thread_id] = new_thread_id
+        self.thread_replacements[old_thread_id] = new_thread_id
+        self.terminal_failures.pop(old_thread_id, None)
 
     async def replace_stale_bot_thread(self, binding: BotBinding, error: str) -> BotBinding:
         h = self.host
@@ -339,11 +351,11 @@ class ThreadRecoveryService:
         self.host._clear_thread_active(thread_id)
 
     def replacement_thread_id(self, thread_id: str) -> str | None:
-        replacement = self.host.THREAD_REPLACEMENTS.get(thread_id)
+        replacement = self.thread_replacements.get(thread_id)
         seen = {thread_id}
         while replacement and replacement not in seen:
             seen.add(replacement)
-            next_replacement = self.host.THREAD_REPLACEMENTS.get(replacement)
+            next_replacement = self.thread_replacements.get(replacement)
             if not next_replacement:
                 return replacement
             replacement = next_replacement
@@ -377,6 +389,8 @@ def install_thread_recovery_service(
         [str, dict[str, Any]],
         Awaitable[dict[str, Any]],
     ],
+    thread_replacements: dict[str, str] | None = None,
+    terminal_failures: dict[str, Any] | None = None,
 ) -> ThreadRecoveryService:
     service = ThreadRecoveryService(
         host,
@@ -387,8 +401,14 @@ def install_thread_recovery_service(
         runtime_request=runtime_request,
         event_sink=host._append_bot_event,
         truncate_text=host._truncate_text,
+        thread_replacements=thread_replacements,
+        terminal_failures=terminal_failures,
     )
     app.state.thread_recovery_service = service
+
+    # Compatibility state aliases point at canonical service-owned objects.
+    host.THREAD_REPLACEMENTS = service.thread_replacements
+    host.THREAD_TERMINAL_FAILURES = service.terminal_failures
 
     # Compatibility aliases for direct import-server callers.
     host._logical_binding_name = service.logical_binding_name

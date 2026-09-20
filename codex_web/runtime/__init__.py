@@ -1,6 +1,6 @@
-"""Runtime implementation modules for codex-web.
+"""Runtime package.
 
-``core`` is a thin compatibility alias for the quarantined ``legacy_core``
-module. New behavior belongs in focused runtime, service, API, integration, or
-storage modules; ``legacy_core`` may only shrink until it can be removed.
+Runtime behavior is owned by focused runtime modules and composed services.
+The core module is a definition-free compatibility namespace for verified
+historical imports only; production code must depend on explicit owners.
 """

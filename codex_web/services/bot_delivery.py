@@ -619,7 +619,7 @@ def install_bot_delivery_service(
             icon_emoji=icon_emoji,
         )
 
-    # Transitional aliases for direct imports until legacy_core is deleted.
+    # Compatibility aliases for verified historical direct imports.
     # Keep outbound delivery dynamic for supported callers/tests that replace
     # the historical compatibility helpers. Production services use the
     # explicit service graph above and never discover dependencies from host.

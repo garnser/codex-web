@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
@@ -66,14 +70,26 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
 from codex_web.canonical_events import CanonicalEventType
-from codex_web.composition import replace_routes
 from codex_web.configuration import ConfigurationContext
+from codex_web.events import EventHub
 from codex_web.executive_integration import install_executive_integrated
 from codex_web.extension_packages import LocalExtensionPackageCatalog
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
-from codex_web.integrations.webhook_security import install_webhook_security
+from codex_web.integrations.webhook_security import (
+    install_webhook_security,
+    verify_gitlab_token,
+)
+from codex_web.devhealth import (
+    build_context as build_devhealth_context,
+    render_html as render_devhealth_html,
+)
+from codex_web.devstatus import (
+    build_context as build_devstatus_context,
+    render_html as render_devstatus_html,
+)
+from codex_web.models import GitLabProjectRoutingSettings
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
@@ -86,7 +102,9 @@ from codex_web.paths import (
     BOT_REPLY_TARGETS_FILE,
     BOTS_BINDINGS_FILE,
     BOTS_CONNECTIONS_FILE,
+    BOTS_EVENTS_FILE,
     EXECUTION_WORKSPACE_DIR,
+    GITLAB_SEMANTIC_EVENTS_FILE,
     EXTENSION_PACKAGE_DIR,
     KEY_MATERIAL_DIR,
     DATA_DIR,
@@ -104,6 +122,7 @@ from codex_web.runtime import core
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
+from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -143,6 +162,10 @@ from codex_web.services.bot_runtime_telemetry import install_bot_runtime_telemet
 from codex_web.services.bot_targets import install_bot_target_service
 from codex_web.services.bot_webhook_security import install_bot_webhook_security_service
 from codex_web.services.bot_delivery import install_bot_delivery_service
+from codex_web.services.bot_event_dispatch import (
+    BotEventDispatchCompatibilityFacade,
+    BotEventDispatchService,
+)
 from codex_web.services.bot_routing import install_bot_routing_service
 from codex_web.services.bots import BotService
 from codex_web.services.conversation_channels import (
@@ -204,6 +227,9 @@ from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.gitlab import (
     install_gitlab_compatibility,
     install_gitlab_service,
+)
+from codex_web.services.gitlab_event_presentation import (
+    GitLabEventPresentationService,
 )
 from codex_web.services.gitlab_dependencies import (
     GitLabOperationalDependencies,
@@ -275,8 +301,12 @@ from codex_web.services.turn_execution_binding import TurnExecutionBindingServic
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_continuity import (
+    DeferredWorkItemContinuityService,
     WorkItemContinuityService,
     build_work_item_continuity_compatibility_service,
+)
+from codex_web.services.work_item_dispatch_prompt import (
+    WorkItemDispatchPromptPolicy,
 )
 from codex_web.services.work_item_timing import install_work_item_timing_policy
 from codex_web.services.work_item_wakeups import install_work_item_wakeup_queue_policy
@@ -300,6 +330,7 @@ from codex_web.services.work_item_dependencies import (
     gitlab_token_for_project,
     gitlab_url,
 )
+from codex_web.services.workflow_claims import WorkflowClaimPolicy
 from codex_web.services.work_items import (
     WorkItemService,
     install_work_item_compatibility,
@@ -364,10 +395,23 @@ from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
 
 
-# Keep one FastAPI application and one runtime lifecycle while domains are
-# extracted. The legacy runtime is now a compatibility host for the portions
-# that have not moved yet, rather than the place new API behavior is added.
-app = core.app
+# Application and EventHub ownership lives in the composed application layer.
+# The compatibility module receives output-only aliases for historical
+# `import server` callers; startup no longer depends on a legacy-owned app.
+app = FastAPI(title="Codex Web Local")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+event_hub = EventHub()
+core.app = app
+core.hub = event_hub
+
+# Verified import-server compatibility data. Canonical ownership remains in
+# codex_web.paths; the compatibility namespace only mirrors these references.
+core.DATA_DIR = DATA_DIR
+core.WORK_ITEM_STATES_FILE = WORK_ITEM_STATES_FILE
+core.WORK_ITEM_EVENTS_FILE = WORK_ITEM_EVENTS_FILE
+core.BOTS_EVENTS_FILE = BOTS_EVENTS_FILE
+core.GITLAB_SEMANTIC_EVENTS_FILE = GITLAB_SEMANTIC_EVENTS_FILE
+core.GitLabProjectRoutingSettings = GitLabProjectRoutingSettings
 
 runtime_policy = RuntimePolicy(DATA_DIR)
 app.state.runtime_policy = runtime_policy
@@ -527,7 +571,7 @@ def _definition_change_notifier(event: dict[str, object]) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(core.hub.publish(event))
+    loop.create_task(event_hub.publish(event))
 
 definition_registry_store = DefinitionRegistryStore(state_store)
 definition_registry_service = DefinitionRegistryService(
@@ -1365,85 +1409,33 @@ work_item_state_machine = install_work_item_state_machine(
     store=state_store,
     dependencies=work_item_dependencies,
 )
+work_item_dispatch_prompt_policy = WorkItemDispatchPromptPolicy(
+    coerce_owner=work_item_state_machine._coerce_owner,
+    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+)
 work_item_contract_service = install_work_item_contract_service(
     app,
-    core,
+    None,
     execution_role_definition_service,
+    base_formatter=work_item_dispatch_prompt_policy.render,
+    split_brain_findings=(
+        work_item_state_machine._work_item_split_brain_findings
+    ),
+    save_state=work_item_state_machine._save_work_item_state,
+    append_event=work_item_state_machine._append_work_item_event,
 )
 # Telemetry has no dependency on bot repositories/runtime tasks, so compose it
 # before work-item services that need an explicit event sink.
-bot_runtime_telemetry = install_bot_runtime_telemetry(app, core)
-
-work_item_continuity_service = WorkItemContinuityService(
-    policy=runtime_policy,
-    get_state=work_item_state_machine._work_item_state,
-    coerce_owner=lambda owner: core._coerce_owner(owner),
-    binding_for_agent=lambda *args, **kwargs: core._binding_for_agent(
-        *args,
-        **kwargs,
-    ),
-    replace_nonperforming_thread=(
-        lambda binding, reason: core._replace_nonperforming_thread_if_needed(
-            binding,
-            reason,
-        )
-    ),
-    dispatch_event=lambda binding, text, source: core._dispatch_event_to_binding(
-        binding,
-        text,
-        source,
-    ),
-    dispatch_text=lambda state: core._work_item_dispatch_text(state),
-    append_event=bot_runtime_telemetry.append,
-    truncate_text=lambda value, limit: str(value)[:limit],
-    thread_is_active=lambda thread_id: core._thread_is_active(thread_id),
-    thread_queue_depth=lambda thread_id: core._thread_queue_depth(thread_id),
-    thread_recently_active=lambda thread_id: core._thread_recently_active(
-        thread_id
-    ),
-    watchdog_dispatch_allowed=(
-        lambda key: core._watchdog_dispatch_allowed(key)
-    ),
-    record_watchdog_dispatch=lambda key: core._record_watchdog_dispatch(key),
-    coordination_channel=core.HANDOFF_COORDINATION_CHANNEL,
+bot_runtime_telemetry = install_bot_runtime_telemetry(
+    app,
+    core,
+    events_file=BOTS_EVENTS_FILE,
 )
+watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
+
+work_item_continuity_service = DeferredWorkItemContinuityService()
 app.state.work_item_continuity_service = work_item_continuity_service
-work_item_continuity_compatibility = (
-    build_work_item_continuity_compatibility_service(core)
-)
-app.state.work_item_continuity_compatibility = (
-    work_item_continuity_compatibility
-)
 
-# Historical names are output-only compatibility aliases. They terminate in
-# the extracted compatibility service; legacy_core contains no implementation.
-core._schedule_structured_handoff_dispatch = (
-    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
-)
-core._schedule_handoff_continuity_check = (
-    work_item_continuity_compatibility.schedule_handoff_continuity_check
-)
-core._schedule_actionable_owner_dispatch = (
-    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
-)
-core._schedule_actionable_owner_continuity_check = (
-    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
-)
-core._dispatch_structured_handoff_to_recipient = (
-    work_item_continuity_compatibility.dispatch_structured_handoff
-)
-core._run_handoff_continuity_check = (
-    work_item_continuity_compatibility.run_handoff_continuity_check
-)
-core._actionable_owner_dispatch_stage = (
-    work_item_continuity_compatibility.actionable_owner_stage
-)
-core._dispatch_actionable_owner_to_responsible_thread = (
-    work_item_continuity_compatibility.dispatch_actionable_owner
-)
-core._run_actionable_owner_continuity_check = (
-    work_item_continuity_compatibility.run_actionable_owner_continuity_check
-)
 def _mirror_gitlab_sync_health(snapshot):
     core.GITLAB_SYNC_CONSECUTIVE_FAILURES = snapshot[
         "consecutive_failures"
@@ -1470,7 +1462,7 @@ work_item_service = WorkItemService(
     recovery=work_item_recovery_scheduler,
     sync_health=gitlab_sync_health,
     event_sink=bot_runtime_telemetry.append,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
     work_item_dependencies=work_item_dependencies,
     gitlab_dependencies=gitlab_work_item_dependencies,
@@ -1685,7 +1677,7 @@ bot_state = BotStateRepositories(
 )
 app.state.bot_state_repositories = bot_state
 # Transitional aliases for unextracted bot services. The authoritative mutable
-# state lives in BotStateRepositories rather than legacy_core.
+# state lives canonically in BotStateRepositories.
 core._load_bot_connections = bot_state.connections.load
 core._save_bot_connections = bot_state.connections.save
 core._load_bot_bindings = bot_state.bindings.load
@@ -1883,6 +1875,7 @@ turn_execution_service = install_turn_execution_service(
     runtime_adapter_factory=_assignment_runtime_adapter,
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
+    bindings_for_thread=bot_binding_selection_service.for_thread,
 )
 
 async def _existing_thread_runtime_request(method, params):
@@ -1965,6 +1958,7 @@ thread_recovery_service = install_thread_recovery_service(
     naming=thread_naming_service,
     thread_index=thread_index_repository,
     runtime_request=_thread_recovery_runtime_request,
+    terminal_failures=turn_execution_service.terminal_failures,
 )
 
 bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
@@ -2013,8 +2007,28 @@ context_service = ContextCompactionService(
     raise_if_thread_replaced=(
         thread_recovery_service.raise_if_thread_replaced
     ),
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
 )
+
+def _binding_public(binding):
+    item = binding.model_dump()
+    item["prefix"] = bot_presentation_service.binding_prefix(binding)
+    item["report_name"] = (
+        bot_presentation_service.binding_report_name(binding)
+    )
+    item["active"] = turn_execution_service.thread_is_active(
+        binding.thread_id
+    )
+    item["queueDepth"] = turn_queue_policy.depth(binding.thread_id)
+    if binding.provider == "slack":
+        item["slack_icon"] = (
+            bot_presentation_service.slack_reply_icon(binding)
+        )
+        item["slack_username"] = (
+            bot_presentation_service.slack_reply_username(binding)
+        )
+    return item
+
 
 thread_service = ThreadService(
     runtime_transport=codex_runtime,
@@ -2047,7 +2061,7 @@ turn_service = TurnService(
     execution=turn_execution_service,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
-    binding_public=core._binding_public,
+    binding_public=_binding_public,
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
@@ -2085,7 +2099,7 @@ provider_capacity_service.register_resume_handler(
 )
 
 # Bot provider runtime is composed from explicit domain owners. Compatibility
-# aliases written to legacy_core are output-only and are not read by these
+# compatibility aliases are output-only and are not read by these
 # services after construction.
 slack_client = SlackClient()
 telegram_client = TelegramClient()
@@ -2119,6 +2133,102 @@ agent_channel_preference_service = (
         same_logical_binding=thread_recovery_service.same_logical_binding,
     )
 )
+
+bot_event_dispatch_service = BotEventDispatchService(
+    projects=project_runtime_service,
+    settings=thread_execution_settings_service,
+    targets=bot_target_service,
+    bindings=bot_binding_lifecycle_service,
+    execution=turn_execution_service,
+    queue_policy=turn_queue_policy,
+    recovery=thread_recovery_service,
+    resume=thread_resume_service,
+    telemetry=bot_runtime_telemetry,
+    publish_event=event_hub.publish,
+    binding_name=thread_recovery_service.logical_binding_name,
+)
+bot_event_dispatch_compatibility = (
+    BotEventDispatchCompatibilityFacade(core)
+)
+app.state.bot_event_dispatch_compatibility = (
+    bot_event_dispatch_compatibility
+)
+
+canonical_work_item_continuity_service = WorkItemContinuityService(
+    policy=runtime_policy,
+    get_state=work_item_state_machine._work_item_state,
+    coerce_owner=work_item_state_machine._coerce_owner,
+    binding_for_agent=agent_channel_preference_service.binding_for_agent,
+    replace_nonperforming_thread=(
+        bot_event_dispatch_service.replace_nonperforming_thread
+    ),
+    dispatch_event=bot_event_dispatch_service.dispatch,
+    dispatch_text=work_item_contract_service.dispatch_text,
+    append_event=bot_runtime_telemetry.append,
+    truncate_text=lambda value, limit: str(value)[:limit],
+    thread_is_active=turn_execution_service.thread_is_active,
+    thread_queue_depth=turn_queue_policy.depth,
+    thread_recently_active=bot_event_dispatch_service.thread_recently_active,
+    watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
+    record_watchdog_dispatch=watchdog_dispatch_policy.record,
+    coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+)
+work_item_continuity_service.bind(
+    canonical_work_item_continuity_service
+)
+app.state.canonical_work_item_continuity_service = (
+    canonical_work_item_continuity_service
+)
+
+# Historical direct callers resolve through this explicit compatibility edge.
+core._binding_for_agent = agent_channel_preference_service.binding_for_agent
+core._replace_nonperforming_thread_if_needed = (
+    bot_event_dispatch_service.replace_nonperforming_thread
+)
+core._dispatch_event_to_binding = (
+    bot_event_dispatch_compatibility.dispatch
+)
+core._work_item_dispatch_text = work_item_contract_service.dispatch_text
+core._work_item_execution_contract = (
+    work_item_contract_service.contract_for_state
+)
+core._thread_recently_active = bot_event_dispatch_service.thread_recently_active
+core._watchdog_dispatch_allowed = watchdog_dispatch_policy.allowed
+core._record_watchdog_dispatch = watchdog_dispatch_policy.record
+core.HANDOFF_COORDINATION_CHANNEL = HANDOFF_COORDINATION_CHANNEL
+work_item_continuity_compatibility = (
+    build_work_item_continuity_compatibility_service(core)
+)
+app.state.work_item_continuity_compatibility = (
+    work_item_continuity_compatibility
+)
+core._schedule_structured_handoff_dispatch = (
+    work_item_continuity_compatibility.schedule_structured_handoff_dispatch
+)
+core._schedule_handoff_continuity_check = (
+    work_item_continuity_compatibility.schedule_handoff_continuity_check
+)
+core._schedule_actionable_owner_dispatch = (
+    work_item_continuity_compatibility.schedule_actionable_owner_dispatch
+)
+core._schedule_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.schedule_actionable_owner_continuity_check
+)
+core._dispatch_structured_handoff_to_recipient = (
+    work_item_continuity_compatibility.dispatch_structured_handoff
+)
+core._run_handoff_continuity_check = (
+    work_item_continuity_compatibility.run_handoff_continuity_check
+)
+core._actionable_owner_dispatch_stage = (
+    work_item_continuity_compatibility.actionable_owner_stage
+)
+core._dispatch_actionable_owner_to_responsible_thread = (
+    work_item_continuity_compatibility.dispatch_actionable_owner
+)
+core._run_actionable_owner_continuity_check = (
+    work_item_continuity_compatibility.run_actionable_owner_continuity_check
+)
 work_item_timing_policy = install_work_item_timing_policy(
     app,
     core,
@@ -2146,9 +2256,6 @@ work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(
     core,
     project_lookup=project_runtime_service.get,
 )
-watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
-
-
 async def _autonomy_gitlab_group_issues(
     project_id,
     project_settings,
@@ -2191,15 +2298,15 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     orchestrator_binding=bot_binding_selection_service.orchestrator,
     binding_prefix=bot_presentation_service.binding_prefix,
     replace_nonperforming_thread=(
-        core._replace_nonperforming_thread_if_needed
+        bot_event_dispatch_service.replace_nonperforming_thread
     ),
-    dispatch_event=core._dispatch_event_to_binding,
+    dispatch_event=bot_event_dispatch_service.dispatch,
     release_stale_active_turn=(
         thread_recovery_service.release_stale_active_turn
     ),
     thread_is_active=turn_execution_service.thread_is_active,
     thread_queue_depth=turn_queue_policy.depth,
-    thread_recently_active=core._thread_recently_active,
+    thread_recently_active=bot_event_dispatch_service.thread_recently_active,
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
     handoff_timeout_seconds=work_item_timing_policy.handoff_timeout_seconds,
@@ -2224,7 +2331,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     format_split_brain_watchdog_prompt=(
         work_item_watchdog_prompt_policy.format_split_brain_prompt
     ),
-    work_item_dispatch_text=core._work_item_dispatch_text,
+    work_item_dispatch_text=work_item_dispatch_prompt_policy.render,
 )
 app.state.autonomy_runtime_dependencies = autonomy_runtime_dependencies
 
@@ -2252,6 +2359,14 @@ work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
+workflow_claim_policy = WorkflowClaimPolicy(
+    load_states=runtime_state.work_item_states.load,
+    ensure_defaults=work_item_state_machine._ensure_work_item_lane_defaults,
+    coerce_owner=work_item_state_machine._coerce_owner,
+    owner_names=OWNER_QUEUE_AGENTS,
+)
+app.state.workflow_claim_policy = workflow_claim_policy
+
 bot_delivery_service = install_bot_delivery_service(
     app,
     core,
@@ -2263,9 +2378,9 @@ bot_delivery_service = install_bot_delivery_service(
     telemetry=bot_runtime_telemetry,
     collaboration=thread_bot_collaboration_service,
     approvals=approval_service,
-    publish_event=core.hub.publish,
-    workflow_claim_findings=core._workflow_outbound_claim_findings,
-    workflow_correction=core._canonical_workflow_correction,
+    publish_event=event_hub.publish,
+    workflow_claim_findings=workflow_claim_policy.findings,
+    workflow_correction=workflow_claim_policy.correction,
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
@@ -2285,7 +2400,7 @@ bot_routing_service = install_bot_routing_service(
     resume=thread_resume_service,
     queue_policy=turn_queue_policy,
     execution=turn_execution_service,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
 )
 
 gitlab_routing_dependencies = GitLabRoutingDependencies(
@@ -2309,19 +2424,37 @@ gitlab_work_item_runtime_dependencies = (
         load_projects=project_repository.load,
     )
 )
+gitlab_event_presentation = GitLabEventPresentationService(
+    delivery=bot_delivery_service,
+    targets=bot_target_service,
+    telemetry=bot_runtime_telemetry,
+    label_names=gitlab_work_item_dependencies.label_names,
+    event_url=gitlab_work_item_dependencies.url,
+)
+app.state.gitlab_event_presentation = gitlab_event_presentation
+
+
+def _verify_gitlab_webhook(request):
+    verify_gitlab_token(
+        request,
+        os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
+        or os.environ.get("GITLAB_WEBHOOK_SECRET"),
+    )
+
+
 gitlab_operational_dependencies = GitLabOperationalDependencies(
     api_base_url=gitlab_work_item_dependencies.api_base_url,
     load_support_state=auxiliary_state.support_servicedesk.load,
     save_support_state=auxiliary_state.support_servicedesk.save,
     load_semantic_events=auxiliary_state.gitlab_semantic_events.load,
     save_semantic_events=auxiliary_state.gitlab_semantic_events.save,
-    verify_webhook=core._verify_gitlab_webhook,
+    verify_webhook=_verify_gitlab_webhook,
     append_event=bot_runtime_telemetry.append,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
-    dispatch_event=core._dispatch_event_to_binding,
-    format_event_prompt=core._format_gitlab_event_prompt,
-    send_event_notice=core._send_gitlab_event_notice,
+    dispatch_event=bot_event_dispatch_service.dispatch,
+    format_event_prompt=gitlab_event_presentation.format_prompt,
+    send_event_notice=gitlab_event_presentation.send_notice,
     schedule_recovery=native_recovery_service.schedule,
 )
 gitlab_service = install_gitlab_service(
@@ -2344,7 +2477,7 @@ bot_runtime = install_bot_runtime(
     telemetry=bot_runtime_telemetry,
     routing=bot_routing_service,
     delivery=bot_delivery_service,
-    publish_event=core.hub.publish,
+    publish_event=event_hub.publish,
     slack_client=slack_client,
     telegram_client=telegram_client,
     ownership=replicated_ownership_service,
@@ -2428,6 +2561,17 @@ app.state.runtime_health_service = runtime_health_service
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor coordinates explicit
 # runtime owners and receives the extracted health evaluator directly.
+def _compact_turn_queues() -> None:
+    queues = turn_queue_repository.load()
+    compacted = {
+        thread_id: items
+        for thread_id, items in queues.items()
+        if items
+    }
+    if len(compacted) != len(queues):
+        turn_queue_repository.save(compacted)
+
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -2440,11 +2584,11 @@ runtime_supervisor = install_runtime_supervisor(
     bot_runtime=bot_runtime,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
-    sd_notify=core._sd_notify,
+    sd_notify=sd_notify,
     daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
-    compact_turn_queues=core._compact_turn_queues,
-    dedupe_bot_integrations=core._dedupe_bot_integrations,
+    compact_turn_queues=_compact_turn_queues,
+    dedupe_bot_integrations=bot_connection_service.dedupe_integrations,
     restore_thread_names=thread_naming_service.restore_all,
     resume_active_threads=turn_execution_service.resume_active_threads_after_startup,
     load_turn_queues=turn_queue_repository.load,
@@ -2562,13 +2706,13 @@ operator_ui_service = OperatorUiService(
     load_turn_queues=turn_queue_repository.load,
     load_active_turns=runtime_state.active_turns.load,
     load_work_item_states=runtime_state.work_item_states.load,
-    event_hub=core.hub,
+    event_hub=event_hub,
 )
 app.state.runtime_diagnostics_service = runtime_diagnostics_service
 app.state.operator_ui_service = operator_ui_service
 
 # Output-only compatibility aliases. Implementations live in extracted
-# services; legacy_core only receives names for historical direct callers.
+# services; the compatibility namespace serves historical direct callers.
 core._static_version = static_asset_version_service.version
 
 def _compat_daemon_health():
@@ -2625,164 +2769,139 @@ core._thread_recent_event_count = (
     bot_runtime_telemetry.thread_recent_event_count
 )
 
+# Verified historical operator-UI compatibility. These wrappers deliberately
+# resolve names from the compatibility namespace at call time so direct tests
+# can patch them without changing the canonical UI/router implementation.
+core.build_devstatus_context = build_devstatus_context
+core.render_devstatus_html = render_devstatus_html
+core.build_devhealth_context = build_devhealth_context
+core.render_devhealth_html = render_devhealth_html
+
+
+async def _compat_devstatus():
+    return HTMLResponse(
+        core.render_devstatus_html(
+            core.build_devstatus_context()
+        )
+    )
+
+
+async def _compat_devhealth(request):
+    force_refresh = request.query_params.get("refresh") in {
+        "1",
+        "true",
+        "yes",
+    }
+    queues = core._load_turn_queues()
+    context = core.build_devhealth_context(
+        core._daemon_health(),
+        active_turns=len(core._load_active_turns()),
+        queued_turns=sum(len(items) for items in queues.values()),
+        status_context=core.build_devstatus_context(
+            force_refresh=force_refresh
+        ),
+        work_item_stats=core._devhealth_work_item_stats(),
+        refresh_url="/devhealth?refresh=1",
+    )
+    return HTMLResponse(core.render_devhealth_html(context))
+
+
+core.devstatus = _compat_devstatus
+core.devhealth = _compat_devhealth
+
 install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
-    core.hub.unsubscribe(previous_context_service.observe)
-core.hub.subscribe(context_service.observe)
+    event_hub.unsubscribe(previous_context_service.observe)
+event_hub.subscribe(context_service.observe)
 app.state.context_compaction_service = context_service
 
+def _include_domain_router(router) -> int:
+    route_count = len(router.routes)
+    app.include_router(router)
+    return route_count
+
+
 EXTRACTED_ROUTE_COUNTS = {
-    "definitions": replace_routes(
-        app,
-        build_definitions_router(definition_registry_service, project_service),
-        paths=set(),
-        key="definitions",
+    "definitions": _include_domain_router(
+        build_definitions_router(
+            definition_registry_service,
+            project_service,
+        )
     ),
-    "configuration": replace_routes(
-        app,
-        build_configuration_router(configuration_service, project_service, resource_catalog_service),
-        paths=set(),
-        key="configuration",
+    "configuration": _include_domain_router(
+        build_configuration_router(
+            configuration_service,
+            project_service,
+            resource_catalog_service,
+        )
     ),
-    "projects": replace_routes(
-        app,
-        build_projects_router(project_service),
-        paths={"/api/projects", "/api/projects/{project_id}"},
-        key="projects",
+    "projects": _include_domain_router(
+        build_projects_router(project_service)
     ),
-    "threads": replace_routes(
-        app,
-        build_threads_router(thread_service),
-        paths={
-            "/api/threads",
-            "/api/threads/{thread_id}",
-            "/api/threads/{thread_id}/name",
-            "/api/threads/{thread_id}/settings",
-            "/api/thread-settings",
-            "/api/threads/{thread_id}/primary",
-            "/api/threads/{thread_id}/primary-channel",
-            "/api/threads/{thread_id}/archive",
-            "/api/threads/{thread_id}/unarchive",
-            "/api/turns/interrupt",
-        },
-        key="threads",
+    "threads": _include_domain_router(
+        build_threads_router(thread_service)
     ),
-    "turns": replace_routes(
-        app,
-        build_turns_router(turn_service),
-        paths={
-            "/api/threads/{thread_id}/resume",
-            "/api/threads/{thread_id}/replace",
-            "/api/threads/{thread_id}/turns",
-            "/api/threads/{thread_id}/queue",
-            "/api/threads/{thread_id}/queue/steer",
-            "/api/threads/{thread_id}/queue/{queued_id}/steer",
-        },
-        key="turns",
+    "turns": _include_domain_router(
+        build_turns_router(turn_service)
     ),
-    "context": replace_routes(
-        app,
-        build_context_router(context_service),
-        paths={
-            "/api/threads/{thread_id}/context",
-            "/api/threads/{thread_id}/compact",
-        },
-        key="context",
+    "context": _include_domain_router(
+        build_context_router(context_service)
     ),
-    "runtime": replace_routes(
-        app,
-        build_runtime_router(runtime_service),
-        paths={
-            "/api/status",
-            "/api/healthz",
-            "/api/operations",
-            "/api/recovery/resume",
-            "/api/account/rate-limits",
-            "/api/models",
-        },
-        key="runtime",
+    "runtime": _include_domain_router(
+        build_runtime_router(runtime_service)
     ),
-    "approvals": replace_routes(
-        app,
-        build_approvals_router(approval_service),
-        paths={"/api/approvals", "/api/approvals/{request_id}"},
-        key="approvals",
+    "approvals": _include_domain_router(
+        build_approvals_router(approval_service)
     ),
-    "bots": replace_routes(
-        app,
-        build_bots_router(bot_service),
-        paths={
-            "/api/bots",
-            "/api/bots/connections",
-            "/api/bots/bindings",
-            "/api/bots/channels",
-            "/api/bots/inbound",
-        },
-        key="bots",
+    "bots": _include_domain_router(
+        build_bots_router(bot_service)
     ),
-    "slack": replace_routes(
-        app,
-        build_slack_router(slack_provider_service),
-        paths={"/bots/slack/events"},
-        key="slack",
+    "slack": _include_domain_router(
+        build_slack_router(slack_provider_service)
     ),
-    "telegram": replace_routes(
-        app,
+    "telegram": _include_domain_router(
         build_telegram_router(
             bot_routing_service,
             connections=bot_connection_service,
             webhook_security=bot_webhook_security_service,
             conversation_channels=conversation_channel_service,
-        ),
-        paths={"/bots/telegram/webhook"},
-        key="telegram",
+        )
     ),
-    "work-items": replace_routes(
-        app,
-        build_work_items_router(work_item_service),
-        paths={
-            "/api/work-items",
-            "/api/work-items/sync-from-gitlab",
-            "/api/work-items/{ref:path}",
-            "/api/work-items/{ref:path}/handoff",
-            "/api/work-items/{ref:path}/ack",
-            "/api/work-items/{ref:path}/progress",
-        },
-        key="work-items",
+    "work-items": _include_domain_router(
+        build_work_items_router(work_item_service)
     ),
-    "ui": replace_routes(
-        app,
-        build_ui_router(operator_ui_service),
-        paths={"/", "/devstatus", "/devhealth", "/ws"},
-        key="ui",
+    "ui": _include_domain_router(
+        build_ui_router(operator_ui_service)
     ),
-    "system": replace_routes(
-        app,
+    "system": _include_domain_router(
         build_system_router(
             static_asset_version_service,
             runtime_health_service,
             runtime_diagnostics_service,
             bot_routing_service,
-        ),
-        paths={
-            "/api/livez",
-            "/api/auth-verifier",
-            "/api/diagnostics",
-            "/api/diagnostics/route-test",
-        },
-        key="system",
+        )
     ),
-    "integrations": replace_routes(
-        app,
-        build_integrations_router(core, gitlab_service),
-        paths={
-            "/api/integrations/agent-presence",
-            "/api/integrations/gitlab",
-            "/api/integrations/gitlab/support-servicedesk/sweep",
-            "/bots/gitlab/events",
-        },
-        key="integrations",
+    "integrations": _include_domain_router(
+        build_integrations_router(
+            None,
+            gitlab_service,
+            load_agent_presence=(
+                configuration_state.agent_channel_presence.load
+            ),
+            save_agent_presence=(
+                configuration_state.agent_channel_presence.save
+            ),
+            load_gitlab_routing=(
+                configuration_state.gitlab_routing.load
+            ),
+            save_gitlab_routing=(
+                configuration_state.gitlab_routing.save
+            ),
+            event_sink=bot_runtime_telemetry.append,
+            publish_event=event_hub.publish,
+            truncate_text=lambda value, limit: str(value)[:limit],
+        )
     ),
 }
 app.state.extracted_route_counts = EXTRACTED_ROUTE_COUNTS
@@ -2803,4 +2922,4 @@ app.state.api_authorization_service = api_authorization_service
 
 
 def main() -> None:
-    core.main()
+    run_server()

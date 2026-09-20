@@ -1,16 +1,9 @@
-"""Thin compatibility alias for the quarantined legacy runtime.
+"""Intentional compatibility namespace for historical runtime imports.
 
-New runtime behavior belongs in composed services, API routers, storage modules,
-or focused runtime modules. ``legacy_core`` exists only while the remaining
-historical implementation is extracted and deleted.
+The composed application and focused installers may publish verified
+compatibility aliases onto this module for historical server consumers. This
+module owns no runtime behavior or mutable application state and deliberately
+does not import or alias the deleted legacy runtime.
 """
+
 from __future__ import annotations
-
-import sys
-
-from . import legacy_core as _legacy_core
-
-# Preserve module identity for existing consumers. Functions defined in the
-# legacy module continue to resolve globals from that same module, so
-# application-level compatibility rebinding remains effective during migration.
-sys.modules[__name__] = _legacy_core

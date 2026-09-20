@@ -13,7 +13,7 @@ Application composition supplies the supervisor with focused collaborators:
 - `GitLabService` owns Support ServiceDesk sweep behavior and GitLab credentials/configuration.
 - the composed Codex runtime, bot runtime, queue/recovery services, scheduler, and event-transport runtime own their respective execution behavior.
 
-`RuntimeSupervisor` only starts, schedules, coordinates ownership leases, and stops those collaborators. It no longer discovers autonomy/watchdog/Support ServiceDesk behavior from `runtime.legacy_core`.
+`RuntimeSupervisor` only starts, schedules, coordinates ownership leases, and stops those collaborators. Runtime behavior is supplied through explicit service dependencies; there is no legacy runtime host.
 
 ## Lifecycle
 
@@ -38,6 +38,6 @@ Recovery scheduling is idempotent inside the configured cooldown window. Continu
 
 ## Compatibility boundary
 
-Historical names written onto `runtime.core` are output-only compatibility aliases. They delegate into the extracted services and exist for direct imports/tests during the `legacy_core` deletion sequence. New runtime behavior must depend on explicit services and must not add state or behavior back to `runtime.legacy_core`.
+`runtime.core` is an intentional, definition-free compatibility namespace for the verified historical `import server` surface. Application composition may publish aliases to canonical services onto that namespace, but production services never read behavior or state from it.
 
-Legacy watchdog task-handle globals may still be mirrored for diagnostics until the runtime diagnostics/global extraction lands. They are not the owners of the tasks.
+FastAPI, EventHub, runtime lifecycle supervision, diagnostics, provider runtimes, work-item continuity, and process startup all have explicit owners outside the compatibility namespace. New production code must depend on those owners directly rather than adding new aliases or mutable state to `runtime.core`.

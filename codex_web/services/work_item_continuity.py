@@ -11,6 +11,77 @@ from codex_web.models import WorkItemState
 from codex_web.services.runtime_policy import RuntimePolicy
 
 
+class DeferredWorkItemContinuityService:
+    """Stable early reference that binds to the composed continuity owner later."""
+
+    def __init__(self) -> None:
+        self.service: WorkItemContinuityService | None = None
+
+    def bind(self, service: "WorkItemContinuityService") -> None:
+        self.service = service
+
+    def _require(self) -> "WorkItemContinuityService":
+        if self.service is None:
+            raise RuntimeError("work-item continuity is not composed yet")
+        return self.service
+
+    def responsible_binding(self, state: WorkItemState) -> Any | None:
+        return self._require().responsible_binding(state)
+
+    def schedule_structured_handoff_dispatch(
+        self,
+        state: WorkItemState,
+        *,
+        source: str,
+    ) -> None:
+        self._require().schedule_structured_handoff_dispatch(
+            state,
+            source=source,
+        )
+
+    def schedule_handoff_continuity_check(
+        self,
+        state: WorkItemState,
+        *,
+        source: str,
+    ) -> None:
+        self._require().schedule_handoff_continuity_check(
+            state,
+            source=source,
+        )
+
+    def schedule_actionable_owner_dispatch(
+        self,
+        state: WorkItemState,
+        *,
+        source: str,
+        actor: str | None = None,
+    ) -> None:
+        self._require().schedule_actionable_owner_dispatch(
+            state,
+            source=source,
+            actor=actor,
+        )
+
+    def schedule_actionable_owner_continuity_check(
+        self,
+        state: WorkItemState,
+        *,
+        source: str,
+    ) -> None:
+        self._require().schedule_actionable_owner_continuity_check(
+            state,
+            source=source,
+        )
+
+    def dispatch_text(self, state: WorkItemState) -> str:
+        return self._require().dispatch_text(state)
+
+    async def stop(self) -> None:
+        if self.service is not None:
+            await self.service.stop()
+
+
 class WorkItemContinuityService:
     """Own handoff and actionable-owner dispatch/continuity scheduling."""
 
