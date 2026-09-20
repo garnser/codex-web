@@ -126,6 +126,7 @@ from codex_web.services.artifact_content_configuration import (
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_control_center import AutonomyControlCenterService
 from codex_web.services.autonomy_policy import AutonomyPolicyService
@@ -285,7 +286,9 @@ from codex_web.services.work_item_contracts import install_work_item_contract_se
 from codex_web.services.work_item_dependencies import (
     DEFAULT_RELEASE_OWNER,
     DEFAULT_VALIDATION_OWNER,
+    HANDOFF_COORDINATION_CHANNEL,
     NON_IMPLEMENTATION_OWNERS,
+    OWNER_QUEUE_AGENTS,
     GitLabWorkItemDependencies,
     WorkItemRuntimeDependencies,
     default_leading_owner_cue,
@@ -2085,9 +2088,110 @@ work_item_timing_policy = install_work_item_timing_policy(
     core,
     coerce_owner=work_item_state_machine._coerce_owner,
 )
-work_item_watchdog_candidate_policy = install_work_item_watchdog_candidate_policy(app, core)
-work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(app, core)
+work_item_watchdog_candidate_policy = (
+    install_work_item_watchdog_candidate_policy(
+        app,
+        core,
+        load_states=runtime_state.work_item_states.load,
+        split_brain_findings=(
+            work_item_state_machine._work_item_split_brain_findings
+        ),
+        handoff_timeout_seconds=(
+            work_item_timing_policy.handoff_timeout_seconds
+        ),
+        coerce_owner=work_item_state_machine._coerce_owner,
+        sla_threshold_seconds=(
+            work_item_timing_policy.sla_threshold_seconds
+        ),
+    )
+)
+work_item_watchdog_prompt_policy = install_work_item_watchdog_prompt_policy(
+    app,
+    core,
+    project_lookup=project_runtime_service.get,
+)
 watchdog_dispatch_policy = install_watchdog_dispatch_policy(app, core)
+
+
+async def _autonomy_gitlab_group_issues(
+    project_id,
+    project_settings,
+    *,
+    labels=None,
+    state="opened",
+):
+    token = gitlab_work_item_dependencies.token_for_project(project_id)
+    group = gitlab_work_item_dependencies.group_path(project_settings)
+    if not token or not group:
+        return []
+    return await gitlab_client.group_issues(
+        gitlab_work_item_dependencies.api_base_url,
+        group,
+        token=token,
+        labels=labels,
+        state=state,
+    )
+
+
+autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
+    load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
+    load_work_item_states=runtime_state.work_item_states.load,
+    save_work_item_states=runtime_state.work_item_states.save,
+    gitlab_token_for_project=(
+        gitlab_work_item_dependencies.token_for_project
+    ),
+    gitlab_group_path=gitlab_work_item_dependencies.group_path,
+    gitlab_group_issues=_autonomy_gitlab_group_issues,
+    append_bot_event=bot_runtime_telemetry.append,
+    append_work_item_event=work_item_state_machine._append_work_item_event,
+    work_item_event=work_item_state_machine._work_item_event,
+    archive_active_handoff=(
+        work_item_state_machine._archive_active_handoff
+    ),
+    coerce_owner=work_item_state_machine._coerce_owner,
+    owner_queue_agents=OWNER_QUEUE_AGENTS,
+    handoff_coordination_channel=HANDOFF_COORDINATION_CHANNEL,
+    binding_for_agent=core._binding_for_agent,
+    orchestrator_binding=bot_binding_selection_service.orchestrator,
+    binding_prefix=bot_presentation_service.binding_prefix,
+    replace_nonperforming_thread=(
+        core._replace_nonperforming_thread_if_needed
+    ),
+    dispatch_event=core._dispatch_event_to_binding,
+    release_stale_active_turn=(
+        thread_recovery_service.release_stale_active_turn
+    ),
+    thread_is_active=turn_execution_service.thread_is_active,
+    thread_queue_depth=turn_queue_policy.depth,
+    thread_recently_active=core._thread_recently_active,
+    watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
+    record_watchdog_dispatch=watchdog_dispatch_policy.record,
+    handoff_timeout_seconds=work_item_timing_policy.handoff_timeout_seconds,
+    release_validation_sla_seconds=(
+        work_item_timing_policy.release_validation_sla_seconds
+    ),
+    work_item_sla_threshold_seconds=(
+        work_item_timing_policy.sla_threshold_seconds
+    ),
+    owner_activity_timestamp=(
+        work_item_timing_policy.owner_activity_timestamp
+    ),
+    orchestrator_watchdog_candidates=(
+        work_item_watchdog_candidate_policy.orchestrator_candidates
+    ),
+    split_brain_watchdog_candidates=(
+        work_item_watchdog_candidate_policy.split_brain_candidates
+    ),
+    format_orchestrator_watchdog_prompt=(
+        work_item_watchdog_prompt_policy.format_orchestrator_prompt
+    ),
+    format_split_brain_watchdog_prompt=(
+        work_item_watchdog_prompt_policy.format_split_brain_prompt
+    ),
+    work_item_dispatch_text=core._work_item_dispatch_text,
+)
+app.state.autonomy_runtime_dependencies = autonomy_runtime_dependencies
+
 autonomy_service = install_autonomy_service(
     app,
     core,
@@ -2095,6 +2199,7 @@ autonomy_service = install_autonomy_service(
     action_intent_service,
     controller=autonomy_controller,
     canonical_events=canonical_event_ingestion,
+    runtime=autonomy_runtime_dependencies,
 )
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
