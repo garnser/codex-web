@@ -15,6 +15,7 @@ from codex_web.services.task_sources import (
     TaskSourceCreateRequest,
     TaskSourceEvent,
     TaskSourceSnapshot,
+    TaskSourceWriteResult,
 )
 
 
@@ -376,6 +377,88 @@ class GitLabTaskSource:
         if replacement:
             kept.append(replacement)
         return list(dict.fromkeys(kept))
+
+    async def write_projection(
+        self,
+        identity: TaskSourceIdentity,
+        *,
+        owner: str | None,
+        state: str,
+        current_snapshot: TaskSourceSnapshot | None = None,
+    ) -> TaskSourceWriteResult:
+        """Apply canonical owner and stage with one read and at most one PUT."""
+
+        self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
+        self.capabilities.require(TaskSourceCapability.STATE_WRITE)
+        if state not in get_args(WorkItemStage):
+            raise ValueError(
+                f"Unsupported canonical work-item stage: {state!r}"
+            )
+        self._validate_identity(identity)
+        provider_reads = 0
+        if current_snapshot is None:
+            current = await self.read(identity)
+            provider_reads = 1
+        else:
+            current = current_snapshot
+            self._validate_identity(current.identity)
+
+        owner = str(owner or "").strip().lower() or None
+        labels = self._replace_prefixed_label(
+            current.labels,
+            "owner::",
+            f"owner::{owner}" if owner else None,
+        )
+        status_by_stage = {
+            "implementation_active": "status::in progress",
+            "ready_for_validation": "status::awaiting confirmation",
+            "validation_running": "status::in progress",
+            "failed_with_action_owner": "status::blocked",
+            "ready_to_close": "status::in progress",
+            "closed": None,
+        }
+        labels = self._replace_prefixed_label(
+            tuple(labels),
+            "status::",
+            status_by_stage[state],
+        )
+        normalized_labels = tuple(sorted(dict.fromkeys(labels)))
+        current_labels = tuple(sorted(dict.fromkeys(current.labels)))
+
+        payload: dict[str, Any] = {}
+        if normalized_labels != current_labels:
+            payload["labels"] = ",".join(normalized_labels)
+        source_state = (current.source_state or "").strip().lower()
+        if state == "closed" and source_state != "closed":
+            payload["state_event"] = "close"
+        elif state != "closed" and source_state == "closed":
+            payload["state_event"] = "reopen"
+
+        if not payload:
+            return TaskSourceWriteResult(
+                snapshot=current,
+                changed=False,
+                provider_reads=provider_reads,
+                provider_writes=0,
+            )
+
+        project_path, iid = self._split_external_id(identity.external_id)
+        issue = await self.client.update_project_issue(
+            self.api_base,
+            project_path,
+            iid,
+            token=self.token,
+            payload=payload,
+        )
+        return TaskSourceWriteResult(
+            snapshot=self._snapshot_from_issue(
+                issue,
+                project_path=project_path,
+            ),
+            changed=True,
+            provider_reads=provider_reads,
+            provider_writes=1,
+        )
 
     async def write_owner(
         self,
