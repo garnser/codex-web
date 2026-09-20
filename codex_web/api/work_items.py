@@ -28,7 +28,11 @@ class WorkItemOperatorAction(BaseModel):
 
 def build_work_items_router(service: WorkItemService) -> APIRouter:
     router = APIRouter(tags=["work-items"])
-    execution = WorkItemExecutionLifecycleService(service.host, service.state_machine)
+    execution = WorkItemExecutionLifecycleService(
+        None,
+        service.state_machine,
+        dependencies=service.work_items,
+    )
     operator = WorkItemOperatorService(service)
 
     def require_item_scope(ref: str, request: Request) -> None:
@@ -46,7 +50,7 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
         project = next(
             (
                 project
-                for project in service.host._load_projects()
+                for project in service.work_items.load_projects()
                 if project.id == project_id
                 and project.organization_id == scope.organization_id
                 and project.workspace_id == scope.workspace_id
@@ -77,7 +81,7 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
         scope = request.state.tenant_scope
         allowed = {
             project.id
-            for project in service.host._load_projects()
+            for project in service.work_items.load_projects()
             if project.organization_id == scope.organization_id
             and project.workspace_id == scope.workspace_id
         }
