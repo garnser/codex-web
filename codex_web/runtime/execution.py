@@ -28,7 +28,10 @@ from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
 )
-from codex_web.services.turn_execution_binding import TurnExecutionBindingService
+from codex_web.services.turn_execution_binding import (
+    TurnExecutionBindingError,
+    TurnExecutionBindingService,
+)
 
 
 class _ThreadRuntimeTransport:
@@ -949,23 +952,34 @@ class TurnExecutionService:
                     )
                 session_manager = self._manager_for_binding(runtime_binding)
                 canonical_execution_id = requested_execution_id
-                binding = binding_service.prepare(
-                    thread_id=thread_id,
-                    execution_id=canonical_execution_id,
-                    project_id=project.id,
-                    sandbox=effective_sandbox,
-                    approval_policy=effective_approval_policy,
-                    runtime_binding=runtime_binding,
-                    explicit_repository_id=(
-                        repository_resource_id
-                        or settings.repository_resource_id
-                    ),
-                    read_only_repository_ids=(
-                        read_only_repository_resource_ids
-                        or settings.read_only_repository_resource_ids
-                    ),
-                    execution_profile_id=effective_execution_profile_id,
-                )
+                try:
+                    binding = binding_service.prepare(
+                        thread_id=thread_id,
+                        execution_id=canonical_execution_id,
+                        project_id=project.id,
+                        sandbox=effective_sandbox,
+                        approval_policy=effective_approval_policy,
+                        runtime_binding=runtime_binding,
+                        explicit_repository_id=(
+                            repository_resource_id
+                            or settings.repository_resource_id
+                        ),
+                        read_only_repository_ids=(
+                            read_only_repository_resource_ids
+                            or settings.read_only_repository_resource_ids
+                        ),
+                        execution_profile_id=effective_execution_profile_id,
+                    )
+                except TurnExecutionBindingError as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "code": "execution_preflight_blocked",
+                            "message": str(exc),
+                            "blockers": [exc.public()],
+                            "retryable": False,
+                        },
+                    ) from exc
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
                 canonical_repository_resource_id = getattr(

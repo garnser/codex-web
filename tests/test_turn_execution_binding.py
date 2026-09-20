@@ -13,7 +13,11 @@ from codex_web.configuration import (
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
 from codex_web.execution_workspaces import LeaseMode
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    ExecutionRuntimeBinding,
+    ExecutionWorkerRegister,
+    WorkerCapability,
+)
 from codex_web.models import Project
 from codex_web.resources import (
     RepositoryTargetSource,
@@ -172,6 +176,24 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ExecutionWorkerStore(self.sqlite),
             workspaces=self.workspaces,
         )
+        self.worker = self.workers.register(
+            ExecutionWorkerRegister(
+                service_identity_id="test-local-worker",
+                pool="local",
+                version="test-v1",
+                capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                    WorkerCapability.ARTIFACT_UPLOAD,
+                ),
+                supported_execution_contract_versions=(
+                    "1.0",
+                    THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                    THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+                ),
+            ),
+            actor=self.actor,
+        )
         self.execution_profiles = install_execution_profile_definitions(
             DefinitionRegistryService(DefinitionRegistryStore(self.sqlite))
         )
@@ -234,6 +256,44 @@ class TurnExecutionBindingTests(unittest.TestCase):
             sandbox=sandbox,
             approval_policy="on-request",
         )
+
+    def test_missing_command_execution_blocks_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        self.workers.ensure_local_worker(
+            service_identity_id="test-local-worker",
+            version="test-v1",
+            capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.ARTIFACT_UPLOAD,
+            ),
+            supported_execution_contract_versions=(
+                "1.0",
+                THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(execution_id="turn-no-command")
+
+        self.assertEqual(
+            raised.exception.code,
+            "worker_capability_missing",
+        )
+        blocker = raised.exception.public()
+        self.assertEqual(blocker["code"], "worker_capability_missing")
+        self.assertIn(
+            "command_execution",
+            blocker["required_capabilities"],
+        )
+        self.assertNotIn(
+            "command_execution",
+            blocker["available_capabilities"],
+        )
+        self.assertIn("remediation", blocker)
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
 
     def test_prepares_thread_workspace_and_assignment_from_canonical_state(self) -> None:
         self._publish_secret()

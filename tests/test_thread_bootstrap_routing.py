@@ -12,6 +12,9 @@ from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings
 from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
 from codex_web.services.threads import ThreadService
+from codex_web.services.turn_execution_binding import (
+    TurnExecutionBindingError,
+)
 
 
 class _Host:
@@ -92,6 +95,22 @@ def _thread_service(host: _Host, **kwargs):
         settings=_Settings(host),
         **kwargs,
     )
+
+
+class _BlockedBindingService:
+    def prepare_bootstrap(self, **kwargs):
+        raise TurnExecutionBindingError(
+            "worker_capability_missing: command execution unavailable",
+            code="worker_capability_missing",
+            blocker={
+                "code": "worker_capability_missing",
+                "message": "command execution unavailable",
+                "retryable": False,
+                "required_capabilities": ["command_execution"],
+                "available_capabilities": ["git"],
+                "remediation": "Fix the local isolation probe.",
+            },
+        )
 
 
 class _BindingService:
@@ -226,6 +245,31 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
             agent_sessions=agent_sessions,
         )
         return host, binding_service, manager, bindings, service
+
+    async def test_worker_preflight_blocker_is_structured_503(self) -> None:
+        host = _Host()
+        manager = _SessionManager(_Session())
+        service = _thread_service(
+            host,
+            binding_service=_BlockedBindingService(),
+            session_manager=manager,
+            bootstrap_bindings=_BootstrapBindings(),
+            control_actor=SimpleNamespace(identity_id="control"),
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.create(project_id="p1")
+
+        self.assertEqual(caught.exception.status_code, 503)
+        detail = caught.exception.detail
+        self.assertEqual(detail["code"], "execution_preflight_blocked")
+        self.assertFalse(detail["retryable"])
+        self.assertEqual(
+            detail["blockers"][0]["code"],
+            "worker_capability_missing",
+        )
+        self.assertEqual(manager.started, [])
+        host.codex.request.assert_not_awaited()
 
     async def test_create_routes_thread_start_only_through_isolated_bootstrap_session(self) -> None:
         host, planner, manager, bindings, service = self._service()

@@ -40,6 +40,9 @@ class LocalIsolationStatus:
     supports_network_disabled: bool
     supports_network_allowlist: bool
     supports_resource_limits: bool
+    container_runtime: str | None = None
+    container_profile: str | None = None
+    remediation: str | None = None
 
     @property
     def capabilities(self) -> tuple[WorkerCapability, ...]:
@@ -107,6 +110,48 @@ class BubblewrapExecutionBackend:
         self.max_output_bytes = max(1024, max_output_bytes)
         self._status: LocalIsolationStatus | None = None
 
+    @staticmethod
+    def _container_runtime() -> str | None:
+        if Path("/run/.containerenv").exists():
+            return "podman"
+        if Path("/.dockerenv").exists():
+            return "docker"
+        return None
+
+    @classmethod
+    def _container_profile(cls) -> str | None:
+        runtime = cls._container_runtime()
+        if runtime is None:
+            return None
+        return (
+            os.environ.get("CODEX_WEB_EXECUTION_CONTAINER_PROFILE")
+            or f"{runtime}-default"
+        )
+
+    @classmethod
+    def _probe_remediation(cls, reason: str | None) -> str | None:
+        detail = str(reason or "").casefold()
+        runtime = cls._container_runtime()
+        if runtime == "podman" and (
+            "can't mount proc" in detail
+            or "operation not permitted" in detail
+        ):
+            return (
+                "Nested Bubblewrap execution inside rootless Podman is not "
+                "currently qualified. Run the execution worker natively on a "
+                "supported Linux host or in a dedicated VM; do not enable "
+                "privileged mode as an automatic fallback."
+            )
+        if runtime is not None:
+            return (
+                "Verify that the container runtime permits unprivileged user, "
+                "PID, mount, and network namespaces required by Bubblewrap."
+            )
+        return (
+            "Install Bubblewrap and enable unprivileged user namespaces for "
+            "the execution-worker account."
+        )
+
     def probe(self, *, refresh: bool = False) -> LocalIsolationStatus:
         if self._status is not None and not refresh:
             return self._status
@@ -118,6 +163,11 @@ class BubblewrapExecutionBackend:
                 supports_network_disabled=False,
                 supports_network_allowlist=False,
                 supports_resource_limits=True,
+                container_runtime=self._container_runtime(),
+                container_profile=self._container_profile(),
+                remediation=self._probe_remediation(
+                    "bubblewrap executable is unavailable"
+                ),
             )
             return self._status
         command = [
@@ -168,6 +218,9 @@ class BubblewrapExecutionBackend:
                 supports_network_disabled=False,
                 supports_network_allowlist=False,
                 supports_resource_limits=True,
+                container_runtime=self._container_runtime(),
+                container_profile=self._container_profile(),
+                remediation=self._probe_remediation(str(exc)),
             )
             return self._status
         if completed.returncode != 0:
@@ -179,6 +232,9 @@ class BubblewrapExecutionBackend:
                 supports_network_disabled=False,
                 supports_network_allowlist=False,
                 supports_resource_limits=True,
+                container_runtime=self._container_runtime(),
+                container_profile=self._container_profile(),
+                remediation=self._probe_remediation(detail),
             )
             return self._status
         self._status = LocalIsolationStatus(
@@ -191,6 +247,9 @@ class BubblewrapExecutionBackend:
             # cannot enforce.
             supports_network_allowlist=False,
             supports_resource_limits=True,
+            container_runtime=self._container_runtime(),
+            container_profile=self._container_profile(),
+            remediation=None,
         )
         return self._status
 

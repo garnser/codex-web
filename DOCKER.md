@@ -158,3 +158,17 @@ docker run --rm \
 ```
 
 The container deliberately does not mount the Docker socket, SSH keys, or arbitrary host directories. Add only the credentials and mounts required for the repositories and integrations you intend Codex to access.
+
+## Rootless Podman
+
+Rootless Podman may run the Codex Web control plane, but the built-in local
+Bubblewrap execution worker is currently **not supported inside a rootless
+Podman container**. Qualification found that nested Bubblewrap cannot establish
+its required `/proc`/namespace boundary reliably under the tested rootless
+Podman profiles.
+
+See [docs/operations/rootless-podman.md](docs/operations/rootless-podman.md)
+for the qualification evidence, readiness behavior, and supported execution
+alternatives. Do not use privileged mode or host-level privilege escalation as
+an automatic fallback.
+

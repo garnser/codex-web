@@ -54,6 +54,7 @@ class RuntimeHealthService:
         load_queues: Callable[[], dict[str, list[Any]]],
         slack_provider_health: Callable[[], dict[str, Any]],
         gitlab_sync_status: Callable[[], dict[str, Any]],
+        execution_readiness: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.codex = codex
         self.bot_runtime = bot_runtime
@@ -65,6 +66,7 @@ class RuntimeHealthService:
         self.load_queues = load_queues
         self.slack_provider_health = slack_provider_health
         self.gitlab_sync_status = gitlab_sync_status
+        self.execution_readiness = execution_readiness or (lambda: {})
 
     def health(self) -> dict[str, Any]:
         now = time.time()
@@ -160,6 +162,15 @@ class RuntimeHealthService:
                 f"{int(slack_backfill_cooldown)}s"
             )
 
+        execution_readiness = self.execution_readiness()
+        if execution_readiness and not execution_readiness.get("ready", False):
+            problems.append(
+                str(
+                    execution_readiness.get("reason")
+                    or "execution worker is not ready"
+                )
+            )
+
         gitlab = self.gitlab_sync_status()
         failures = int(gitlab.get("consecutive_failures") or 0)
         if failures >= 2:
@@ -187,6 +198,7 @@ class RuntimeHealthService:
             "gitlabSyncLastSuccessAt": (
                 gitlab.get("last_success_at") or None
             ),
+            "executionReadiness": execution_readiness,
         }
 
 
