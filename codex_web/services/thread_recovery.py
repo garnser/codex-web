@@ -52,12 +52,12 @@ class ThreadRecoveryService:
         self.thread_replacements = (
             thread_replacements
             if thread_replacements is not None
-            else {}
+            else getattr(host, "THREAD_REPLACEMENTS", {})
         )
         self.terminal_failures = (
             terminal_failures
             if terminal_failures is not None
-            else {}
+            else getattr(host, "THREAD_TERMINAL_FAILURES", {})
         )
 
     def logical_binding_name(self, binding: BotBinding) -> str:
