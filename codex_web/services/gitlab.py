@@ -21,6 +21,11 @@ from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import CodeHostCapability, CodeHostProviderBinding
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.services.canonical_events import CanonicalEventIngestionService
+from codex_web.services.gitlab_dependencies import (
+    GitLabOperationalDependencies,
+    GitLabRoutingDependencies,
+    GitLabWorkItemRuntimeDependencies,
+)
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
@@ -32,18 +37,210 @@ class GitLabService:
 
     def __init__(
         self,
-        host: Any,
+        host: Any | None = None,
         gitlab: GitLabClient | None = None,
         *,
         canonical_events: CanonicalEventIngestionService | None = None,
         autonomy_controller: AutonomyController | None = None,
+        routing: GitLabRoutingDependencies | None = None,
+        work_items: GitLabWorkItemRuntimeDependencies | None = None,
+        operations: GitLabOperationalDependencies | None = None,
     ) -> None:
-        self.host = host
+        async def _publish_noop(_event: dict[str, Any]) -> None:
+            return None
+
+        async def _dispatch_noop(
+            _binding: Any,
+            _text: str,
+            _source: str,
+        ) -> dict[str, Any]:
+            return {"ok": False, "queued": False}
+
+        async def _notice_noop(
+            _binding: Any,
+            _payload: dict[str, Any],
+            _agent: str | None,
+            _result: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"sent": False}
+
+        if routing is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires routing dependencies"
+                )
+            routing = GitLabRoutingDependencies(
+                load_settings=getattr(
+                    host,
+                    "_load_gitlab_routing_settings",
+                    lambda: GitLabRoutingSettings(),
+                ),
+                normalize_strings=getattr(
+                    host,
+                    "_normalize_string_list",
+                    lambda values: list(
+                        dict.fromkeys(
+                            str(value).strip()
+                            for value in (values or [])
+                            if str(value).strip()
+                        )
+                    ),
+                ),
+                binding_for_agent=getattr(
+                    host,
+                    "_binding_for_agent",
+                    lambda _agent, _project_id: None,
+                ),
+                preferred_agent_conversations=getattr(
+                    host,
+                    "_preferred_agent_conversations",
+                    lambda _agent, _project_id, channels: channels,
+                ),
+                clone_binding_to_known_channel=getattr(
+                    host,
+                    "_clone_binding_to_known_channel",
+                    lambda binding, _channel: binding,
+                ),
+                master_binding=getattr(
+                    host,
+                    "_master_binding",
+                    lambda _project_id: None,
+                ),
+            )
+        if work_items is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires work-item dependencies"
+                )
+            work_items = GitLabWorkItemRuntimeDependencies(
+                split_brain_findings=getattr(
+                    host,
+                    "_work_item_split_brain_findings",
+                    lambda _state: [],
+                ),
+                coerce_owner=getattr(
+                    host,
+                    "_coerce_owner",
+                    lambda owner: (
+                        str(owner).strip().lower()
+                        if owner
+                        else None
+                    ),
+                ),
+                project_event=getattr(
+                    host,
+                    "_upsert_work_item_state_from_gitlab_event",
+                    lambda _payload, **_kwargs: None,
+                ),
+                project_lookup=getattr(
+                    host,
+                    "_project",
+                    lambda _project_id: None,
+                ),
+                load_projects=getattr(
+                    host,
+                    "_load_projects",
+                    lambda: [],
+                ),
+            )
+        if operations is None:
+            if host is None:
+                raise TypeError(
+                    "GitLabService requires operational dependencies"
+                )
+            hub = getattr(host, "hub", None)
+            operations = GitLabOperationalDependencies(
+                api_base_url=getattr(
+                    host,
+                    "GITLAB_API_BASE",
+                    os.environ.get(
+                        "CODEX_WEB_GITLAB_API_BASE",
+                        "https://gitlab.example/api/v4",
+                    ),
+                ),
+                load_support_state=getattr(
+                    host,
+                    "_load_support_servicedesk_state",
+                    lambda: {"tickets": {}, "last_sweep_at": None},
+                ),
+                save_support_state=getattr(
+                    host,
+                    "_save_support_servicedesk_state",
+                    lambda _state: None,
+                ),
+                load_semantic_events=getattr(
+                    host,
+                    "_load_gitlab_semantic_events",
+                    lambda: {},
+                ),
+                save_semantic_events=getattr(
+                    host,
+                    "_save_gitlab_semantic_events",
+                    lambda _events: None,
+                ),
+                verify_webhook=getattr(
+                    host,
+                    "_verify_gitlab_webhook",
+                    lambda _request: None,
+                ),
+                append_event=getattr(
+                    host,
+                    "_append_bot_event",
+                    lambda _event: None,
+                ),
+                publish_event=getattr(
+                    hub,
+                    "publish",
+                    _publish_noop,
+                ),
+                truncate_text=getattr(
+                    host,
+                    "_truncate_text",
+                    lambda value, limit: str(value)[:limit],
+                ),
+                dispatch_event=getattr(
+                    host,
+                    "_dispatch_event_to_binding",
+                    _dispatch_noop,
+                ),
+                format_event_prompt=getattr(
+                    host,
+                    "_format_gitlab_event_prompt",
+                    lambda payload, agent: (
+                        f"GitLab event for {agent or 'orchestrator'}: "
+                        f"{payload.get('object_kind') or payload.get('event_name') or 'event'}"
+                    ),
+                ),
+                send_event_notice=getattr(
+                    host,
+                    "_send_gitlab_event_notice",
+                    _notice_noop,
+                ),
+                schedule_recovery=getattr(
+                    host,
+                    "_schedule_native_recovery_cycles",
+                    lambda **_kwargs: False,
+                ),
+            )
+
+        self.routing = routing
+        self.work_items = work_items
+        self.operations = operations
         self.gitlab = gitlab or GitLabClient()
         self.code_host = GitLabCodeHostProvider(self.gitlab)
         self.canonical_events = canonical_events
         self.autonomy_controller = autonomy_controller
         self._event_ids: dict[str, float] = {}
+        self._compat_event_id = (
+            getattr(host, "_gitlab_event_id", None)
+            if host is not None
+            else None
+        )
+        self._compat_remember_event = (
+            getattr(host, "_remember_gitlab_event", None)
+            if host is not None
+            else None
+        )
 
     def event_target_agents(
         self,
@@ -51,20 +248,19 @@ class GitLabService:
         project_settings: GitLabProjectRoutingSettings,
         projected_state: WorkItemState | None,
     ) -> list[str]:
-        h = self.host
         if projected_state:
-            findings = h._work_item_split_brain_findings(projected_state)
+            findings = self.work_items.split_brain_findings(projected_state)
             if findings:
                 return ["orchestrator"]
             if projected_state.handoff and projected_state.handoff.status == "pending":
-                recipient = h._coerce_owner(projected_state.handoff.to_agent)
+                recipient = self.work_items.coerce_owner(projected_state.handoff.to_agent)
                 if recipient:
                     return [recipient]
             if projected_state.current_stage == "failed_with_action_owner":
-                owner = h._coerce_owner(projected_state.current_owner or projected_state.next_owner)
+                owner = self.work_items.coerce_owner(projected_state.current_owner or projected_state.next_owner)
                 if owner:
                     return [owner]
-            owner = h._coerce_owner(projected_state.current_owner)
+            owner = self.work_items.coerce_owner(projected_state.current_owner)
             if owner and projected_state.current_stage in {
                 "implementation_active",
                 "ready_for_validation",
@@ -77,7 +273,7 @@ class GitLabService:
     def routing_enabled_for_project(self, project_id: str | None) -> bool:
         if not project_id:
             return False
-        settings = self.host._load_gitlab_routing_settings()
+        settings = self.routing.load_settings()
         if not settings.enabled:
             return False
         project_settings = settings.projects.get(project_id)
@@ -88,7 +284,7 @@ class GitLabService:
         payload: dict[str, Any],
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[str]:
-        explicit = self.host._normalize_string_list(project_settings.route_agents)
+        explicit = self.routing.normalize_strings(project_settings.route_agents)
         return explicit or self.owner_agents(payload, project_settings)
 
     def routing_bindings_for_agent(
@@ -97,31 +293,29 @@ class GitLabService:
         project_id: str,
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[Any]:
-        h = self.host
-        binding = h._binding_for_agent(agent, project_id)
+        binding = self.routing.binding_for_agent(agent, project_id)
         if not binding:
             return []
-        route_channels = h._normalize_string_list(project_settings.channel_ids)
+        route_channels = self.routing.normalize_strings(project_settings.channel_ids)
         if not route_channels:
             return [binding]
-        preferred_channels = h._preferred_agent_conversations(agent, project_id, route_channels)
+        preferred_channels = self.routing.preferred_agent_conversations(agent, project_id, route_channels)
         if not preferred_channels:
             return []
-        return [h._clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
+        return [self.routing.clone_binding_to_known_channel(binding, channel_id) for channel_id in preferred_channels]
 
     def routing_bindings_for_master(
         self,
         project_id: str,
         project_settings: GitLabProjectRoutingSettings,
     ) -> list[Any]:
-        h = self.host
-        master = h._master_binding(project_id)
+        master = self.routing.master_binding(project_id)
         if not master:
             return []
         route_channels = h._normalize_string_list(project_settings.channel_ids)
         if not route_channels or master.provider != "slack":
             return [master]
-        return [h._clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
+        return [self.routing.clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
 
     def event_id(self, request: Request, payload: dict[str, Any]) -> str:
         for header in ("x-gitlab-event-uuid", "x-request-id"):
