@@ -132,6 +132,39 @@ class RuntimeSupervisorAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["type"], "test_cycle_failed")
         self.assertIn("boom", str(events[0]["error"]))
 
+    async def test_stop_flushes_deferred_compatibility_state(self) -> None:
+        calls: list[str] = []
+
+        class Runtime:
+            async def stop(self) -> None:
+                return None
+
+        class Codex:
+            async def stop(self) -> None:
+                return None
+
+        host = SimpleNamespace(
+            IS_SHUTTING_DOWN=False,
+            _sd_notify=lambda _message: True,
+            ACTIONABLE_OWNER_CONTINUITY_TASKS={},
+            HANDOFF_CONTINUITY_TASKS={},
+            bot_runtime=Runtime(),
+            codex=Codex(),
+        )
+        app = SimpleNamespace(
+            state=SimpleNamespace(slack_provider_service=None)
+        )
+        service = RuntimeSupervisor(
+            app,
+            host,
+            flush_compatibility_state=lambda: calls.append("flushed"),
+        )
+        service.started = True
+
+        await service.stop()
+
+        self.assertEqual(calls, ["flushed"])
+
     async def test_stop_clears_legacy_task_slots_and_runtime_task_registry(self) -> None:
         async def sleeper() -> None:
             await asyncio.sleep(30)
