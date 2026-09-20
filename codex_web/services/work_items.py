@@ -13,6 +13,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
+from codex_web.services.gitlab_sync_health import GitLabSyncHealth
 from codex_web.services.builtin_task_source_runtime import install_builtin_task_source_runtime
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
@@ -160,11 +161,27 @@ class WorkItemService:
         gitlab_artifact_events: GitLabArtifactEventProjector | None = None,
         continuity: Any | None = None,
         recovery: Any | None = None,
+        sync_health: GitLabSyncHealth | None = None,
+        event_sink: Any | None = None,
+        publish_event: Any | None = None,
+        truncate_text: Any | None = None,
     ) -> None:
         self.host = host
         self.gitlab = gitlab or GitLabClient()
         self.continuity = continuity or _HostContinuityAdapter(host)
         self.recovery = recovery or _HostRecoveryAdapter(host)
+        self.sync_health = sync_health or GitLabSyncHealth()
+        self.event_sink = event_sink or getattr(
+            host,
+            "_append_bot_event",
+            lambda _event: None,
+        )
+        self.publish_event = publish_event or host.hub.publish
+        self.truncate_text = truncate_text or getattr(
+            host,
+            "_truncate_text",
+            lambda value, limit: str(value)[:limit],
+        )
         self.compatibility_continuity = _HostContinuityAdapter(host)
         self.compatibility_recovery = _HostRecoveryAdapter(host)
         self.state_machine = state_machine or WorkItemStateMachine(host)
@@ -543,26 +560,26 @@ class WorkItemService:
         state = self._preserve_gitlab_closed_label_cleanup(state)
         return state
 
-    async def sync_from_gitlab(self, scope: TenantScope | None = None) -> dict[str, Any]:
+    async def sync_from_gitlab(
+        self,
+        scope: TenantScope | None = None,
+    ) -> dict[str, Any]:
         try:
             result = await self._sync_from_gitlab_async(scope)
         except Exception as exc:
-            self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES += 1
-            self.host.GITLAB_SYNC_LAST_ERROR = self.host._truncate_text(str(exc), 500)
-            self.host.GITLAB_SYNC_LAST_ERROR_AT = time.time()
-            self.host._append_bot_event(
+            error = self.truncate_text(str(exc), 500)
+            health = self.sync_health.record_failure(error)
+            self.event_sink(
                 {
                     "type": "gitlab_work_item_sync_failed",
-                    "failure_count": self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES,
-                    "error": self.host.GITLAB_SYNC_LAST_ERROR,
+                    "failure_count": health["consecutive_failures"],
+                    "error": health["last_error"],
                 }
             )
             raise
 
-        self.host.GITLAB_SYNC_CONSECUTIVE_FAILURES = 0
-        self.host.GITLAB_SYNC_LAST_ERROR = None
-        self.host.GITLAB_SYNC_LAST_SUCCESS_AT = time.time()
-        await self.host.hub.publish({"type": "work-item.sync", **result})
+        self.sync_health.record_success()
+        await self.publish_event({"type": "work-item.sync", **result})
         return {"ok": True, **result}
 
     async def resume_provider_capacity_wait(
