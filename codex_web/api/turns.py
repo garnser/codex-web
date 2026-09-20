@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from codex_web.api.identity import request_actor
 from codex_web.models import TurnCreate
 from codex_web.services.turns import TurnService
 
@@ -36,8 +37,42 @@ def build_turns_router(service: TurnService) -> APIRouter:
         return await service.replace(thread_id)
 
     @router.post("/api/threads/{thread_id}/turns")
-    async def start_turn(thread_id: str, payload: TurnCreate) -> dict[str, Any]:
-        return await service.start(thread_id, payload)
+    async def start_turn(
+        thread_id: str,
+        payload: TurnCreate,
+        request: Request,
+    ) -> dict[str, Any]:
+        return await service.start(
+            thread_id,
+            payload,
+            actor=request_actor(request),
+        )
+
+    @router.get("/api/threads/{thread_id}/preflight-attempts")
+    async def preflight_attempts(
+        thread_id: str,
+        request: Request,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return service.preflight_attempts(
+            thread_id,
+            actor=request_actor(request),
+            limit=limit,
+        )
+
+    @router.post(
+        "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry"
+    )
+    async def retry_preflight_attempt(
+        thread_id: str,
+        attempt_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        return await service.retry_preflight(
+            thread_id,
+            attempt_id,
+            actor=request_actor(request),
+        )
 
     @router.get("/api/threads/{thread_id}/queue")
     async def thread_queue(thread_id: str) -> dict[str, Any]:
