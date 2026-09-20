@@ -2325,7 +2325,50 @@ app.state.operator_ui_service = operator_ui_service
 # Output-only compatibility aliases. Implementations live in extracted
 # services; legacy_core only receives names for historical direct callers.
 core._static_version = static_asset_version_service.version
-core._daemon_health = runtime_health_service.health
+
+def _compat_daemon_health():
+    compatibility_health = RuntimeHealthService(
+        codex=core.codex,
+        bot_runtime=core.bot_runtime,
+        telemetry=bot_runtime_telemetry,
+        load_bindings=bot_state.bindings.load,
+        terminal_failures=getattr(
+            core,
+            "THREAD_TERMINAL_FAILURES",
+            turn_execution_service.terminal_failures,
+        ),
+        terminal_recovery_tasks=getattr(
+            core,
+            "TERMINAL_RECOVERY_TASKS",
+            turn_execution_service.terminal_recovery_tasks,
+        ),
+        terminal_failure_window_seconds=(
+            turn_execution_service.terminal_failure_window_seconds
+        ),
+        load_queues=turn_queue_repository.load,
+        slack_provider_health=slack_provider_service.health,
+        gitlab_sync_status=gitlab_sync_health.snapshot,
+    )
+    # Historical tests may replace the public runtime-status dictionary.
+    compatibility_health.telemetry.status = getattr(
+        core,
+        "BOT_RUNTIME_STATUS",
+        bot_runtime_telemetry.status,
+    )
+    return compatibility_health.health()
+
+
+async def _compat_healthz():
+    health = core._daemon_health()
+    if not health["ok"]:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=503, detail=health)
+    return health
+
+
+core._daemon_health = _compat_daemon_health
+core.healthz = _compat_healthz
 core._diagnostic_snapshot = runtime_diagnostics_service.snapshot
 core._preview_bot_route = bot_routing_service.preview
 core._devhealth_work_item_stats = operator_ui_service.work_item_stats
