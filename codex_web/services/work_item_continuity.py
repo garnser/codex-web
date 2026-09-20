@@ -686,8 +686,39 @@ def build_work_item_continuity_compatibility_service(
     """
 
     policy = SimpleNamespace(
-        actionable_owner_continuity_delay=lambda: host._actionable_owner_continuity_delay_seconds(),
-        handoff_continuity_delay=lambda: host._handoff_continuity_delay_seconds(),
+        actionable_owner_continuity_delay=(
+            lambda: host._actionable_owner_continuity_delay_seconds()
+        ),
+        handoff_continuity_delay=(
+            lambda: host._handoff_continuity_delay_seconds()
+        ),
+        continuity_dispatch_timeout=(
+            lambda: float(
+                getattr(
+                    host,
+                    "CONTINUITY_DISPATCH_TIMEOUT_SECONDS",
+                    120.0,
+                )
+            )
+        ),
+        background_task_max_concurrency=(
+            lambda: int(
+                getattr(
+                    host,
+                    "BACKGROUND_TASK_MAX_CONCURRENCY",
+                    16,
+                )
+            )
+        ),
+        continuity_per_project_concurrency=(
+            lambda: int(
+                getattr(
+                    host,
+                    "CONTINUITY_PER_PROJECT_CONCURRENCY",
+                    4,
+                )
+            )
+        ),
     )
     return WorkItemContinuityService(
         policy=policy,
