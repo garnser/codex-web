@@ -95,6 +95,18 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
             ],
         }
 
+    @router.get("/api/work-items/task-source-writeback")
+    async def task_source_writeback_status(
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            IdentityService.require_admin(
+                request.state.identity_actor
+            )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        return service.task_source_writeback_status()
+
     @router.post("/api/work-items/sync-from-gitlab")
     async def sync_from_gitlab(request: Request) -> dict[str, Any]:
         try:
