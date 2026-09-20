@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
+    OperationTimingMetrics,
     parse_state_record_storage_key,
     state_record_marker,
     state_record_prefix,
@@ -41,6 +42,7 @@ class PostgresStateStore:
                 ) from exc
             connect = psycopg.connect
         self._connect_factory = connect
+        self._keyed_mutation_metrics = OperationTimingMetrics()
         self._initialize()
 
     def _connect(self):
@@ -278,24 +280,33 @@ class PostgresStateStore:
         upserts: dict[str, Any],
         deletes: tuple[str, ...] = (),
     ) -> None:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
-                self._lock(cursor, namespace)
-                self._ensure_record_collection_in_cursor(
-                    cursor,
-                    namespace,
-                )
-                for key in dict.fromkeys(str(item) for item in deletes):
-                    cursor.execute(
-                        "DELETE FROM codex_state_documents WHERE namespace = %s",
-                        (state_record_storage_key(namespace, key),),
-                    )
-                for key, payload in upserts.items():
-                    self._upsert(
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
                         cursor,
-                        state_record_storage_key(namespace, str(key)),
-                        payload,
+                        namespace,
                     )
+                    for key in dict.fromkeys(str(item) for item in deletes):
+                        cursor.execute(
+                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            (state_record_storage_key(namespace, key),),
+                        )
+                    for key, payload in upserts.items():
+                        self._upsert(
+                            cursor,
+                            state_record_storage_key(namespace, str(key)),
+                            payload,
+                        )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
 
     def record_update(
         self,
@@ -305,52 +316,70 @@ class PostgresStateStore:
         *,
         default: Any,
     ) -> Any:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
-                self._lock(cursor, f"{namespace}:{key}")
-                if not self._record_collection_exists_in_cursor(
-                    cursor,
-                    namespace,
-                ):
-                    # Migration is a namespace-wide transition; serialize the
-                    # one-time conversion before returning to per-key locks.
-                    self._lock(cursor, namespace)
-                    self._ensure_record_collection_in_cursor(
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, f"{namespace}:{key}")
+                    if not self._record_collection_exists_in_cursor(
                         cursor,
                         namespace,
+                    ):
+                        # Migration is a namespace-wide transition; serialize the
+                        # one-time conversion before returning to per-key locks.
+                        self._lock(cursor, namespace)
+                        self._ensure_record_collection_in_cursor(
+                            cursor,
+                            namespace,
+                        )
+                    storage_key = state_record_storage_key(
+                        namespace,
+                        str(key),
                     )
-                storage_key = state_record_storage_key(
-                    namespace,
-                    str(key),
-                )
-                cursor.execute(
-                    "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
-                    (storage_key,),
-                )
-                current = self._decode(cursor.fetchone(), default)
-                updated = updater(current)
-                if updated is None:
                     cursor.execute(
-                        "DELETE FROM codex_state_documents WHERE namespace = %s",
+                        "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
                         (storage_key,),
                     )
-                else:
-                    self._upsert(cursor, storage_key, updated)
-                return updated
+                    current = self._decode(cursor.fetchone(), default)
+                    updated = updater(current)
+                    if updated is None:
+                        cursor.execute(
+                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            (storage_key,),
+                        )
+                    else:
+                        self._upsert(cursor, storage_key, updated)
+            success = True
+            return updated
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
 
     def record_replace(
         self,
         namespace: str,
         records: dict[str, Any],
     ) -> None:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
-                self._lock(cursor, namespace)
-                self._replace_records_in_cursor(
-                    cursor,
-                    namespace,
-                    records,
-                )
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock(cursor, namespace)
+                    self._replace_records_in_cursor(
+                        cursor,
+                        namespace,
+                        records,
+                    )
+            success = True
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
 
     def schema_version(self) -> int:
         with self._connection() as connection:
@@ -393,6 +422,7 @@ class PostgresStateStore:
                 float(row[1]) if row[1] is not None else None
             ),
             "shared": True,
+            "keyedMutationMetrics": self._keyed_mutation_metrics.snapshot(),
         }
 
     def get(self, namespace: str) -> Any | None:
