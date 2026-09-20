@@ -211,6 +211,9 @@ def install_thread_execution_settings_service(
     bindings: BotBindingSelectionService | None = None,
     load_bindings: Callable[[], list[BotBinding]] | None = None,
     save_bindings: Callable[[list[BotBinding]], None] | None = None,
+    gitlab_routing_enabled_for_project: Callable[[str], bool] | None = None,
+    binding_report_name: Callable[[BotBinding], str | None] | None = None,
+    binding_prefix: Callable[[BotBinding], str | None] | None = None,
 ) -> ThreadExecutionSettingsService:
     service = ThreadExecutionSettingsService(
         load_settings=load_settings or host._load_thread_settings,
@@ -218,9 +221,14 @@ def install_thread_execution_settings_service(
         bindings=bindings or app.state.bot_binding_selection_service,
         load_bindings=load_bindings or host._load_bot_bindings,
         save_bindings=save_bindings or host._save_bot_bindings,
-        gitlab_routing_enabled_for_project=host._gitlab_routing_enabled_for_project,
-        binding_report_name=host._binding_report_name,
-        binding_prefix=host._binding_prefix,
+        gitlab_routing_enabled_for_project=(
+            gitlab_routing_enabled_for_project
+            or host._gitlab_routing_enabled_for_project
+        ),
+        binding_report_name=(
+            binding_report_name or host._binding_report_name
+        ),
+        binding_prefix=binding_prefix or host._binding_prefix,
     )
     app.state.thread_execution_settings_service = service
 
