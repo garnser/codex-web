@@ -53,7 +53,23 @@ THREAD_BOOTSTRAP_SESSION_SECONDS = 24 * 60 * 60
 
 
 class TurnExecutionBindingError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "execution_binding_error",
+        blocker: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.blocker = blocker or {
+            "code": code,
+            "message": message,
+            "retryable": False,
+        }
+
+    def public(self) -> dict[str, object]:
+        return dict(self.blocker)
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +521,49 @@ class TurnExecutionBindingService:
                 execution_profile_definition=execution_profile_definition,
             )
 
+        required_capabilities = (
+            tuple(
+                WorkerCapability(value)
+                for value in execution_profile.required_worker_capabilities
+            )
+            if execution_profile is not None
+            else (
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            )
+        )
+        worker_readiness = self.workers.execution_readiness(
+            required_capabilities=required_capabilities,
+            execution_contract_version=execution_contract_version,
+            actor=self.control_actor,
+        )
+        if not worker_readiness.ready:
+            blocker = {
+                "code": worker_readiness.code,
+                "message": worker_readiness.reason,
+                "retryable": False,
+                "required_capabilities": [
+                    value.value
+                    for value in worker_readiness.required_capabilities
+                ],
+                "available_capabilities": [
+                    value.value
+                    for value in worker_readiness.available_capabilities
+                ],
+                "execution_contract_version": (
+                    worker_readiness.execution_contract_version
+                ),
+                "active_worker_ids": list(
+                    worker_readiness.active_worker_ids
+                ),
+                "remediation": worker_readiness.remediation,
+            }
+            raise TurnExecutionBindingError(
+                f"{worker_readiness.code}: {worker_readiness.reason}",
+                code=worker_readiness.code,
+                blocker=blocker,
+            )
+
         secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
@@ -553,17 +612,6 @@ class TurnExecutionBindingService:
                 actor=self.control_actor,
             )
 
-        required_capabilities = (
-            tuple(
-                WorkerCapability(value)
-                for value in execution_profile.required_worker_capabilities
-            )
-            if execution_profile is not None
-            else (
-                WorkerCapability.GIT,
-                WorkerCapability.COMMAND_EXECUTION,
-            )
-        )
         assignment = self.workers.create_assignment(
             ExecutionAssignmentCreate(
                 subject=subject,
