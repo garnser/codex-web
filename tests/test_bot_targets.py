@@ -160,6 +160,165 @@ class BotTargetServiceTests(unittest.TestCase):
             host.delivery_targets,
         )
 
+    def test_external_thread_lookup_is_exact_keyed_with_large_registry(self) -> None:
+        host = _TargetHost()
+        target = BotReplyTarget(
+            thread_id="thread-hit",
+            provider="slack",
+            external_conversation_id="C-large",
+            external_thread_id="hit-ts",
+            message_id="hit-ts",
+            updated_at=time.time(),
+        )
+        targets = {
+            f"slack:C-large:external:{index}": BotReplyTarget(
+                thread_id=f"thread-{index}",
+                provider="slack",
+                external_conversation_id="C-large",
+                external_thread_id=str(index),
+                message_id=str(index),
+                updated_at=float(index),
+            )
+            for index in range(20_000)
+        }
+        targets["slack:C-large:external:hit-ts"] = target
+        reply_reads = 0
+        delivery_reads = 0
+
+        def get_reply(key):
+            nonlocal reply_reads
+            reply_reads += 1
+            return targets.get(key)
+
+        def get_delivery(key):
+            nonlocal delivery_reads
+            delivery_reads += 1
+            return None
+
+        service = BotTargetService(
+            load_reply_targets=lambda: (_ for _ in ()).throw(
+                AssertionError("must not load full reply target map")
+            ),
+            save_reply_targets=lambda _targets: None,
+            load_delivery_targets=lambda: (_ for _ in ()).throw(
+                AssertionError("must not load full delivery target map")
+            ),
+            save_delivery_targets=lambda _targets: None,
+            load_active_turns=host._load_active_turns,
+            bindings_for_project=host._bindings_for_project,
+            get_reply_target=get_reply,
+            get_delivery_target=get_delivery,
+        )
+
+        resolved = service.target_for_external_thread(
+            "SLACK",
+            "C-large",
+            "hit-ts",
+        )
+
+        self.assertEqual(resolved.thread_id, "thread-hit")
+        self.assertEqual(reply_reads, 1)
+        self.assertEqual(delivery_reads, 0)
+        self.assertEqual(service.metrics()["compatibilityRepairScans"], 0)
+
+    def test_one_outbound_decision_reuses_request_scoped_target_state(self) -> None:
+        host = _TargetHost()
+        binding = _binding("b1", thread_id="thread-1")
+        reply = BotReplyTarget(
+            thread_id="thread-1",
+            provider="slack",
+            external_conversation_id="C1",
+            external_thread_id="111.22",
+            message_id="111.22",
+            updated_at=time.time(),
+        )
+        reply_key = f"slack:C1:thread-1"
+        counts = {"reply": 0, "delivery": 0, "active": 0}
+
+        def get_reply(key):
+            counts["reply"] += 1
+            return reply if key == reply_key else None
+
+        def get_delivery(_key):
+            counts["delivery"] += 1
+            return None
+
+        def get_active(_thread_id):
+            counts["active"] += 1
+            return None
+
+        service = BotTargetService(
+            load_reply_targets=lambda: (_ for _ in ()).throw(
+                AssertionError("full reply load is forbidden")
+            ),
+            save_reply_targets=lambda _targets: None,
+            load_delivery_targets=lambda: (_ for _ in ()).throw(
+                AssertionError("full delivery load is forbidden")
+            ),
+            save_delivery_targets=lambda _targets: None,
+            load_active_turns=lambda: (_ for _ in ()).throw(
+                AssertionError("full active-turn load is forbidden")
+            ),
+            bindings_for_project=lambda _provider, _project: [],
+            get_reply_target=get_reply,
+            get_delivery_target=get_delivery,
+            get_active_turn=get_active,
+        )
+
+        target, should_thread = service.thread_target_for_outbound(binding)
+
+        self.assertIs(target, reply)
+        self.assertFalse(should_thread)
+        self.assertEqual(counts["active"], 1)
+        self.assertEqual(counts["reply"], 1)
+        self.assertLessEqual(counts["delivery"], 2)
+
+    def test_missing_legacy_alias_uses_one_bounded_observable_repair_page(self) -> None:
+        host = _TargetHost()
+        repaired = BotReplyTarget(
+            thread_id="thread-old",
+            provider="slack",
+            external_conversation_id="C-old",
+            external_thread_id="legacy-ts",
+            message_id="legacy-ts",
+            updated_at=time.time(),
+        )
+        page_calls: list[tuple[str | None, int]] = []
+        repaired_aliases: dict[str, BotReplyTarget] = {}
+
+        def page_reply_targets(*, key_prefix=None, after=None, limit=100):
+            del after
+            page_calls.append((key_prefix, limit))
+            return ({"slack:C-old:thread-old": repaired}, None)
+
+        service = BotTargetService(
+            load_reply_targets=lambda: {},
+            save_reply_targets=lambda _targets: None,
+            load_delivery_targets=lambda: {},
+            save_delivery_targets=lambda _targets: None,
+            load_active_turns=host._load_active_turns,
+            bindings_for_project=host._bindings_for_project,
+            get_reply_target=lambda _key: None,
+            get_delivery_target=lambda _key: None,
+            page_reply_targets=page_reply_targets,
+            put_reply_target=repaired_aliases.__setitem__,
+        )
+
+        target = service.target_for_external_thread(
+            "slack",
+            "C-old",
+            "legacy-ts",
+        )
+
+        self.assertIs(target, repaired)
+        self.assertEqual(page_calls, [("slack:C-old:", 250)])
+        self.assertIn(
+            "slack:C-old:external:legacy-ts",
+            repaired_aliases,
+        )
+        self.assertEqual(service.metrics()["compatibilityRepairScans"], 1)
+        self.assertEqual(service.metrics()["compatibilityRepairHits"], 1)
+
     def test_active_target_wins_outbound_selection(self) -> None:
         host = _TargetHost()
         service = _service(host)
