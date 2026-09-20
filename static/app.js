@@ -1445,8 +1445,7 @@ async function newThread() {
     sandbox: settings.sandbox,
     approval_policy: settings.approvalPolicy,
   });
-  qs.set("execution_profile_id",settings.profileId);
-  if(settings.repositoryResourceId&&!ep.isScratch(settings.profileId))qs.set("repository_resource_id",settings.repositoryResourceId);
+  ep.applyThreadQuery(qs,settings);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
