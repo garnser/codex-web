@@ -5,6 +5,7 @@ export async function loadProjectUiState({
   projects = [],
   models = [],
   cachedStatic = null,
+  onModelError = () => {},
 }) {
   const query = new URLSearchParams({
     thread_limit: "50",
@@ -23,7 +24,10 @@ export async function loadProjectUiState({
         .then((response) => (
           Array.isArray(response.data) ? response.data : []
         ))
-        .catch(() => []),
+        .catch((error) => {
+          onModelError(error);
+          return [];
+        }),
   ]);
 
   let nextProjects = projectList;
