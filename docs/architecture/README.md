@@ -107,6 +107,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Model gateway and prompt governance](model-gateway.md) — stable model classes, provider/model registry, deterministic routing/fallback, secret references, prompt revisions, and invocation attribution.
 - [Storage scaling](storage-scaling.md)
 - [Slack Socket Mode backpressure](slack-socket-backpressure.md) — bounded sharded ingress queues, ACK-after-admission safety, replay dedupe, overload telemetry, and managed shutdown.
+- [Coalesced in-process background work](background-task-coalescing.md) — keyed latest-wins coroutine coordination, bounded global/per-Project concurrency, recovery reruns, stale continuity suppression and shutdown ownership.
 
 Additional architecture contracts should be added when their GitHub issues move into implementation; issue state, not this index, remains the delivery source of truth.
 
