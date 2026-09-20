@@ -29,6 +29,7 @@ class BotBindingLifecycleService:
         projects: ProjectRuntimeService,
         runtime_request: Callable[[str, dict], Awaitable[dict]],
         set_thread_name: Callable[[str, str], Awaitable[object]],
+        on_change: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.load_bindings = load_bindings
         self.save_bindings = save_bindings
@@ -39,6 +40,7 @@ class BotBindingLifecycleService:
         self.projects = projects
         self.runtime_request = runtime_request
         self.set_thread_name = set_thread_name
+        self.on_change = on_change
 
     def upsert(self, new_binding: BotBinding) -> BotBinding:
         bindings = self.load_bindings()
@@ -66,12 +68,38 @@ class BotBindingLifecycleService:
             bindings.append(new_binding)
         self.save_bindings(bindings)
         self.connections.dedupe_integrations()
+        if self.on_change is not None:
+            self.on_change(
+                {
+                    "type": "binding.updated",
+                    "projectId": new_binding.project_id,
+                    "threadId": new_binding.thread_id,
+                    "bindingId": new_binding.id,
+                    "updatedAt": new_binding.updated_at,
+                }
+            )
         return new_binding
 
     def remove(self, binding_id: str) -> None:
-        self.save_bindings(
-            [binding for binding in self.load_bindings() if binding.id != binding_id]
+        bindings = self.load_bindings()
+        removed = next(
+            (binding for binding in bindings if binding.id == binding_id),
+            None,
         )
+        self.save_bindings(
+            [binding for binding in bindings if binding.id != binding_id]
+        )
+        if removed is not None and self.on_change is not None:
+            self.on_change(
+                {
+                    "type": "binding.updated",
+                    "projectId": removed.project_id,
+                    "threadId": removed.thread_id,
+                    "bindingId": removed.id,
+                    "removed": True,
+                    "updatedAt": time.time(),
+                }
+            )
 
     async def start(self, payload: BotBindingCreate) -> BotBinding:
         connection = (
@@ -382,6 +410,7 @@ def install_bot_binding_lifecycle_service(
     projects=None,
     runtime_request=None,
     set_thread_name=None,
+    on_change=None,
 ) -> BotBindingLifecycleService:
     service = BotBindingLifecycleService(
         load_bindings=load_bindings or host._load_bot_bindings,
@@ -393,6 +422,7 @@ def install_bot_binding_lifecycle_service(
         projects=projects or app.state.project_runtime_service,
         runtime_request=runtime_request or host.codex.request,
         set_thread_name=set_thread_name or host._set_thread_name,
+        on_change=on_change,
     )
     app.state.bot_binding_lifecycle_service = service
 

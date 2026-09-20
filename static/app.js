@@ -1,5 +1,6 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
+import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 
 const state = {
   projects: [],
@@ -187,6 +188,8 @@ async function api(path, options = {}) {
   logEvent("api.response", { path, status: response.status });
   return result;
 }
+
+const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
 function threadHistoryController() {
   return window.codexThreadHistory || null;
@@ -1565,34 +1568,17 @@ async function renameThread() {
   const currentTitle = $("thread-title").textContent === "No thread selected" ? "" : $("thread-title").textContent;
   const name = window.prompt("Thread name", currentTitle);
   if (!name || !name.trim()) return;
-  await api(`/api/threads/${state.threadId}/name`, {
+  const threadId = state.threadId;
+  await api(`/api/threads/${threadId}/name`, {
     method: "POST",
     body: JSON.stringify({ name: name.trim() }),
   });
   $("thread-title").textContent = name.trim();
-  await refresh();
-}
-
-function connectEvents() {
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${scheme}://${location.host}${BASE}/ws`);
-  logEvent("ws.opening", { url: `${BASE}/ws` });
-  ws.onopen = () => logEvent("ws.open", {});
-  ws.onmessage = (event) => {
-    const payload = JSON.parse(event.data);
-    logEvent("ws.message", eventLogPayload(payload));
-    handleEvent(payload);
-  };
-  ws.onerror = () => logEvent("ws.error", {});
-  ws.onclose = () => {
-    logEvent("ws.close", {});
-    state.activeTurnsByThread.clear();
-    setWaiting(false);
-    setTimeout(connectEvents, 1000);
-  };
+  uiEvents.patchThread(threadId,{name:name.trim(),updatedAt:Date.now()/1000});
 }
 
 function handleEvent(event) {
+  if(event.type==="binding.updated"){uiEvents.handleBindingEvent(event);return;}
   if (event.type === "bot.thread.replaced") {
     applyThreadReplacement(event.oldThreadId, event.newThreadId).catch((error) => {
       logEvent("thread.replacement.error", { message: error.message });
@@ -1609,7 +1595,7 @@ function handleEvent(event) {
         setWaiting(true, "Waiting for Codex");
       }
     }
-    scheduleRefresh(120);
+    uiEvents.handleBotInbound(event);
     return;
   }
   if (event.type === "queue.status") {
@@ -1654,6 +1640,8 @@ function handleEvent(event) {
   if (event.type !== "codex.event") return;
   const message = event.message;
   const threadId = eventThreadId(message);
+  const summary=uiEvents.handleCodexSummary(message,event);
+  if(summary.name&&threadId===state.threadId)$("thread-title").textContent=summary.name;
   updateThreadActivityFromEvent(message);
   if (message.method === "thread/tokenUsage/updated") {
     const params = message.params || {};
@@ -1667,9 +1655,6 @@ function handleEvent(event) {
     renderTokenUsage();
   }
   if (!isActiveThreadEvent(message)) {
-    if (message.method === "thread/name/updated" || message.method === "thread/status/changed") {
-      scheduleRefresh(120);
-    }
     updateWaitingFromState();
     return;
   }
@@ -1693,14 +1678,10 @@ function handleEvent(event) {
   } else if (message.method === "turn/completed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
-    scheduleRefresh(120);
   } else if (message.method === "turn/failed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
-  } else if (message.method === "thread/name/updated") {
-    scheduleRefresh(120);
   } else if (message.method === "thread/status/changed") {
-    scheduleRefresh(120);
     updateWaitingFromState();
   }
 }
@@ -2488,7 +2469,7 @@ setupSidebarControls();
 applySidebarPreference();
 state.tokenUsageByThread = loadTokenUsageCache();
 renderTokenUsage();
-connectEvents();
+connectProjectUiEventStream({base:BASE,reconciler:uiEvents,onEvent:handleEvent,logEvent,onDisconnect:()=>{state.activeTurnsByThread.clear();setWaiting(false);}});
 refreshTokenUsage();
 refresh().catch((error) => {
   addMessage("Error", error.message, "tool", new Date());

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -23,9 +26,26 @@ class EventHub:
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
         self._listeners: set[EventListener] = set()
         self._metrics: RuntimeMetrics | None = None
+        self._stream_id = uuid.uuid4().hex
+        self._sequence = 0
 
     def configure_observability(self, metrics: RuntimeMetrics) -> None:
         self._metrics = metrics
+
+    def stream_state(self) -> dict[str, Any]:
+        return {
+            "streamId": self._stream_id,
+            "sequence": self._sequence,
+        }
+
+    def _envelope(self, event: dict[str, Any]) -> dict[str, Any]:
+        self._sequence += 1
+        return {
+            **event,
+            "eventStreamId": self._stream_id,
+            "eventSequence": self._sequence,
+            "eventPublishedAt": time.time(),
+        }
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -115,6 +135,8 @@ class EventHub:
                         error=str(exc),
                     )
 
+        wire_event = self._envelope(event)
+
         dead: list[WebSocket] = []
         for websocket in list(self._clients):
             queue = self._queues.get(websocket)
@@ -122,7 +144,7 @@ class EventHub:
                 dead.append(websocket)
                 continue
             try:
-                queue.put_nowait(event)
+                queue.put_nowait(wire_event)
             except asyncio.QueueFull:
                 if self._metrics:
                     self._metrics.increment("websocket.queue_overflows")
@@ -137,3 +159,5 @@ class EventHub:
                 dead.append(websocket)
         for websocket in dead:
             self.disconnect(websocket)
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1013)

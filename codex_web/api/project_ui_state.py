@@ -14,6 +14,35 @@ def build_project_ui_state_router(
 ) -> APIRouter:
     router = APIRouter(tags=["project-ui"])
 
+    @router.get("/api/projects/{project_id}/ui-state/bindings")
+    async def project_ui_bindings(
+        project_id: str,
+        thread_id: str,
+        request: Request,
+        response: Response,
+    ) -> Any:
+        try:
+            payload = service.binding_state(
+                project_id,
+                actor=request_actor(request),
+                thread_id=thread_id,
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Project not found",
+            ) from exc
+        etag = service.etag(payload)
+        headers = {
+            "ETag": etag,
+            "Cache-Control": "private, no-cache",
+        }
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        for name, value in headers.items():
+            response.headers[name] = value
+        return payload
+
     @router.get("/api/projects/{project_id}/ui-state")
     async def project_ui_state(
         project_id: str,
