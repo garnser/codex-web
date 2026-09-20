@@ -432,6 +432,78 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             )
         )
 
+    def test_multi_repository_expiry_recovers_and_cleans_all_members(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="multi-expire",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        recovered = self.service.recover_expired(
+            now=time.time() + 31,
+            scope=self.actor.tenant,
+        )
+
+        self.assertEqual([item.id for item in recovered], [workspace.id])
+        current = self.service.get(workspace.id, self.actor)
+        self.assertEqual(current.status, ExecutionWorkspaceStatus.ABANDONED)
+        self.assertIsNotNone(current.cleaned_at)
+        self.assertEqual(len(self.backend.cleaned), 2)
+        self.assertTrue(all(not item[2] for item in self.backend.cleaned))
+
+    def test_integration_result_updates_only_mutable_repository_member(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="multi-integrate",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        before_read_only = next(
+            item
+            for item in workspace.repository_members
+            if item.resource_id == self.repo2.id
+        ).head_revision
+
+        updated = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.MERGED,
+                target_revision="main@abc",
+                resulting_revision="result-123",
+            ),
+            actor=self.actor,
+        )
+
+        mutable = next(
+            item
+            for item in updated.repository_members
+            if item.resource_id == self.repo.id
+        )
+        read_only = next(
+            item
+            for item in updated.repository_members
+            if item.resource_id == self.repo2.id
+        )
+        self.assertEqual(updated.head_revision, "result-123")
+        self.assertEqual(mutable.head_revision, "result-123")
+        self.assertEqual(read_only.head_revision, before_read_only)
+
     def test_same_execution_acquisition_is_idempotent(self) -> None:
         first = self._acquire("same-exec", self.repo.id)
         second = self._acquire("same-exec", self.repo.id)
