@@ -8,7 +8,7 @@ from typing import Any
 
 from codex_web.models import QueuedTurn
 from codex_web.storage.json_files import atomic_write_text
-from codex_web.storage.state_store import StateStore
+from codex_web.storage.state_store import OperationTimingMetrics, StateStore
 
 
 class TurnQueueRepository:
@@ -21,6 +21,7 @@ class TurnQueueRepository:
         self.legacy_path = legacy_path
         self._snapshots: dict[int, dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self._mirror_metrics = OperationTimingMetrics()
 
     def _legacy_payload(self) -> dict[str, Any]:
         if not self.legacy_path.exists():
@@ -126,17 +127,33 @@ class TurnQueueRepository:
         return existed
 
     def flush_legacy_mirror(self) -> None:
-        self._ensure_records()
-        atomic_write_text(
-            self.legacy_path,
-            json.dumps(
-                self.store.record_items(self.namespace),
-                indent=2,
-                sort_keys=True,
+        started = __import__("time").perf_counter()
+        success = False
+        try:
+            self._ensure_records()
+            atomic_write_text(
+                self.legacy_path,
+                json.dumps(
+                    self.store.record_items(self.namespace),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                private=True,
             )
-            + "\n",
-            private=True,
-        )
+            success = True
+        finally:
+            self._mirror_metrics.observe(
+                __import__("time").perf_counter() - started,
+                success=success,
+            )
+
+    def compatibility_metrics(self) -> dict[str, Any]:
+        return {
+            "namespace": self.namespace,
+            "legacyPath": str(self.legacy_path),
+            "checkpoint": self._mirror_metrics.snapshot(),
+        }
 
     @staticmethod
     def _merge_queue(
