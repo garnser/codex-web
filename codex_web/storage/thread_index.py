@@ -160,46 +160,71 @@ class ThreadIndexRepository:
         self.store.record_replace(self.LOOKUP_NAMESPACE, lookups)
         self._legacy_repository.save(threads)
 
-    def upsert(self, thread: IndexedThread) -> None:
+    def upsert_many(self, threads: list[IndexedThread]) -> None:
         self._ensure_migrated()
-        previous = self.store.record_get(
-            self.LOOKUP_NAMESPACE,
-            thread.id,
-        )
-        old_global = (
-            str(previous.get("globalKey") or "")
-            if isinstance(previous, dict)
-            else ""
-        )
-        old_project = (
-            str(previous.get("projectKey") or "")
-            if isinstance(previous, dict)
-            else ""
-        )
-        global_key = self._global_key(thread)
-        project_key = self._project_key(thread)
-        payload = thread.model_dump(mode="json")
+        if not threads:
+            return
+
+        global_upserts: dict[str, Any] = {}
+        project_upserts: dict[str, Any] = {}
+        lookup_upserts: dict[str, Any] = {}
+        global_deletes: list[str] = []
+        project_deletes: list[str] = []
+
+        for thread in threads:
+            previous = self.store.record_get(
+                self.LOOKUP_NAMESPACE,
+                thread.id,
+            )
+            old_global = (
+                str(previous.get("globalKey") or "")
+                if isinstance(previous, dict)
+                else ""
+            )
+            old_project = (
+                str(previous.get("projectKey") or "")
+                if isinstance(previous, dict)
+                else ""
+            )
+            global_key = self._global_key(thread)
+            project_key = self._project_key(thread)
+            payload = thread.model_dump(mode="json")
+            global_upserts[global_key] = payload
+            project_upserts[project_key] = payload
+            lookup_upserts[thread.id] = {
+                "globalKey": global_key,
+                "projectKey": project_key,
+            }
+            if old_global and old_global != global_key:
+                global_deletes.append(old_global)
+            if old_project and old_project != project_key:
+                project_deletes.append(old_project)
 
         self.store.record_apply(
             self.GLOBAL_NAMESPACE,
-            upserts={global_key: payload},
-            deletes=((old_global,) if old_global and old_global != global_key else ()),
+            upserts=global_upserts,
+            deletes=tuple(global_deletes),
         )
         self.store.record_apply(
             self.PROJECT_NAMESPACE,
-            upserts={project_key: payload},
-            deletes=((old_project,) if old_project and old_project != project_key else ()),
+            upserts=project_upserts,
+            deletes=tuple(project_deletes),
         )
         self.store.record_apply(
             self.LOOKUP_NAMESPACE,
-            upserts={
-                thread.id: {
-                    "globalKey": global_key,
-                    "projectKey": project_key,
-                }
-            },
+            upserts=lookup_upserts,
         )
-        self._compatibility_upsert(thread)
+
+        compatibility = {
+            thread.id: thread
+            for thread in self._legacy_repository.load()
+        }
+        for thread in threads:
+            compatibility[thread.id] = thread
+        self._legacy_repository.save(list(compatibility.values()))
+
+    def upsert(self, thread: IndexedThread) -> None:
+        self.upsert_many([thread])
 
     def remove(self, thread_id: str) -> None:
         self._ensure_migrated()
