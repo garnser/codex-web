@@ -345,5 +345,6 @@ def install_thread_compatibility_facade(
 
     app.state.thread_compatibility_service = compat_thread_service
     app.state.turn_compatibility_service = compat_turn_service
+    app.state.thread_resume_compatibility_service = compat_resume_service
     app.state.thread_recovery_compatibility_service = compat_recovery_service
     return compat_thread_service, compat_turn_service, compat_recovery_service
