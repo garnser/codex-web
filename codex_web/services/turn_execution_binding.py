@@ -412,7 +412,6 @@ class TurnExecutionBindingService:
                 repository_target=repository_target,
             )
 
-        project_resources = self._project_resources(project)
         repository = self.resources.get(
             repository_target.mutable_repository_id,
             self.control_actor,
@@ -429,7 +428,7 @@ class TurnExecutionBindingService:
                 subject=subject,
                 execution_id=normalized_execution_id,
                 project_id=project.id,
-                resource_ids=tuple(item.id for item in project_resources),
+                resource_ids=(repository.id,),
                 repository_resource_id=repository.id,
                 lease_mode=lease_mode,
                 ttl_seconds=session_seconds,
