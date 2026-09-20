@@ -296,6 +296,7 @@ class BotRuntime:
                 "failed": 0,
                 "cancelled": 0,
                 "processingLatencySeconds": 0.0,
+                "processingWorkers": 0,
                 "lastOverloadAt": None,
             },
         )
@@ -331,7 +332,8 @@ class BotRuntime:
                 if queued_items
                 else 0.0
             ),
-            "activeWorkers": sum(
+            "activeWorkers": int(stats.get("processingWorkers", 0)),
+            "workerTasks": sum(
                 1 for task in workers if not task.done()
             ),
             "workerLimit": len(workers),
@@ -446,6 +448,11 @@ class BotRuntime:
         while True:
             work = await queue.get()
             started = time.perf_counter()
+            stats = self.slack_payload_stats[connection.id]
+            stats["processingWorkers"] = (
+                int(stats.get("processingWorkers", 0)) + 1
+            )
+            self._update_slack_payload_status(connection)
             try:
                 await self._handle_slack_payload(
                     connection,
@@ -483,6 +490,10 @@ class BotRuntime:
                     {},
                 )
                 stats["processingLatencySeconds"] = elapsed
+                stats["processingWorkers"] = max(
+                    0,
+                    int(stats.get("processingWorkers", 0)) - 1,
+                )
                 queue.task_done()
                 self._update_slack_payload_status(connection)
 
@@ -551,7 +562,9 @@ class BotRuntime:
                 "queueCapacity": 0,
                 "oldestQueuedAgeSeconds": 0.0,
                 "activeWorkers": 0,
+                "workerTasks": 0,
                 "workerLimit": 0,
+                "processingWorkers": 0,
                 "overloaded": False,
                 "perChannelBacklog": {},
                 "dedupeEntries": 0,
