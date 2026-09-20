@@ -202,15 +202,36 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
             mounts,
         )
 
-    def test_danger_full_access_and_network_requests_fail_closed(self) -> None:
+    def test_danger_full_access_is_writable_but_stays_inside_worker_boundary(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
             probe_runner=_probe_success,
         )
-        with self.assertRaises(LocalExecutionPolicyError):
-            backend.validate_assignment(
-                _assignment(sandbox="danger-full-access")
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+            command = backend.build_command(
+                _assignment(sandbox="danger-full-access"),
+                argv=("git", "status"),
+                workspace_path=workspace,
             )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--bind", str(workspace.resolve()), str(workspace.resolve())],
+            mounts,
+        )
+        self.assertIn("--unshare-net", command)
+        self.assertNotIn(["--ro-bind", "/", "/"], mounts)
+
+    def test_network_requests_still_fail_closed_for_local_worker(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
         with self.assertRaises(LocalExecutionPolicyError):
             backend.validate_assignment(
                 _assignment(
