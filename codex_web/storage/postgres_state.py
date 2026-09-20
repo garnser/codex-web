@@ -366,7 +366,19 @@ class PostgresStateStore:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT COUNT(*), MAX(updated_at) FROM codex_state_documents"
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE namespace NOT LIKE %s
+                               OR namespace LIKE %s
+                        ),
+                        MAX(updated_at)
+                    FROM codex_state_documents
+                    """,
+                    (
+                        "__codex_records__/%",
+                        "__codex_records__/%/__meta__",
+                    ),
                 )
                 row = cursor.fetchone() or (0, None)
                 cursor.execute("SELECT 1")
