@@ -406,6 +406,9 @@ class AssignmentBoundAgentProcessSession:
             service_identity_id=worker.service_identity_id,
             fence=lease.fence,
             validator=self._validate_egress_state,
+            worker_service_identity_validator=lambda: (
+                self._current_worker().service_identity_id
+            ),
         )
 
     async def start(self) -> "AssignmentBoundAgentProcessSession":
