@@ -2757,6 +2757,7 @@ runtime_service = RuntimeService(
     deployment_mode=deployment_mode,
     instance_id=instance_id,
     compatibility_state_metrics=_compatibility_state_metrics,
+    task_source_writeback_status=task_source_writeback_service.status,
 )
 app.state.runtime_service = runtime_service
 core.healthz = runtime_service.healthz
