@@ -1946,6 +1946,7 @@ thread_recovery_service = install_thread_recovery_service(
     naming=thread_naming_service,
     thread_index=thread_index_repository,
     runtime_request=_thread_recovery_runtime_request,
+    terminal_failures=turn_execution_service.terminal_failures,
 )
 
 bot_binding_lifecycle_service = install_bot_binding_lifecycle_service(
