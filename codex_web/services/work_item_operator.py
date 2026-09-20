@@ -95,6 +95,14 @@ class WorkItemOperatorService:
         except Exception:
             return []
 
+    def _project(self, project_id: str | None) -> Any | None:
+        if not project_id:
+            return None
+        for project in self._projects():
+            if getattr(project, "id", None) == project_id:
+                return project
+        return None
+
     @staticmethod
     def _project_source(project: Any | None) -> Any | None:
         return getattr(project, "authoritative_task_source", None) if project is not None else None
