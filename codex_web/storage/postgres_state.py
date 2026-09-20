@@ -620,6 +620,40 @@ class PostgresStateStore:
                         self._upsert(cursor, namespace, updated[namespace])
                 return updated
 
+    def namespace_revision(self, namespace: str) -> float | None:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT updated_at FROM codex_state_documents WHERE namespace = %s",
+                    (namespace,),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    return float(row[0])
+                marker = state_record_marker(namespace)
+                cursor.execute(
+                    "SELECT updated_at FROM codex_state_documents WHERE namespace = %s",
+                    (marker,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                prefix = state_record_prefix(namespace)
+                cursor.execute(
+                    """
+                    SELECT MAX(updated_at)
+                    FROM codex_state_documents
+                    WHERE LEFT(namespace, LENGTH(%s)) = %s
+                    """,
+                    (prefix, prefix),
+                )
+                latest = cursor.fetchone()
+                return (
+                    float(latest[0])
+                    if latest and latest[0] is not None
+                    else float(row[0])
+                )
+
     def contains(self, namespace: str) -> bool:
         with self._connection() as connection:
             with connection.cursor() as cursor:
