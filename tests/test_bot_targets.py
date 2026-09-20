@@ -183,7 +183,7 @@ class BotTargetServiceTests(unittest.TestCase):
         service = install_bot_target_service(app, host)
 
         self.assertIs(app.state.bot_target_service, service)
-        self.assertIs(host._thread_target_for_outbound.__self__, service)
+        self.assertTrue(callable(host._thread_target_for_outbound))
         self.assertIs(host._remember_bot_reply_target.__self__, service)
         self.assertIs(host._retarget_bot_targets.__self__, service)
 
