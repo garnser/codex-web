@@ -45,6 +45,7 @@ class ThreadExecutionSettingsService:
         developer_instructions: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] | None = None,
+        execution_profile_id: str | None = None,
     ) -> ThreadRunSettings:
         all_settings = self.load_settings()
         current = all_settings.get(thread_id, ThreadRunSettings())
@@ -71,6 +72,8 @@ class ThreadExecutionSettingsService:
                     if value and value.strip()
                 )
             )
+        if execution_profile_id is not None:
+            current.execution_profile_id = execution_profile_id or None
         all_settings[thread_id] = current
         self.save_settings(all_settings)
         self.sync_bot_binding_settings(thread_id, current)
