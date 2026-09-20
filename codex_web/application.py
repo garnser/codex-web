@@ -970,6 +970,9 @@ turn_execution_binding_service = TurnExecutionBindingService(
         ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
     },
     execution_profiles=execution_profile_definition_service,
+    control_plane_available=lambda: (
+        control_plane_broker_factory.service is not None
+    ),
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
