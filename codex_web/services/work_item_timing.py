@@ -70,6 +70,19 @@ class WorkItemTimingPolicy:
             return 300.0
         return max(60.0, seconds)
 
+    def owner_activity_timestamp(self, state: WorkItemState) -> float:
+        if state.last_owner_activity_at is not None:
+            return state.last_owner_activity_at
+        if (
+            state.handoff
+            and state.handoff.status == "accepted"
+            and self.coerce_owner(state.current_owner)
+            == self.coerce_owner(state.handoff.to_agent)
+            and state.handoff.acknowledged_at is not None
+        ):
+            return state.handoff.acknowledged_at
+        return state.last_meaningful_update_at
+
     def sla_threshold_seconds(self, state: WorkItemState) -> float:
         accepted_by_current_owner = (
             state.handoff
@@ -128,4 +141,5 @@ def install_work_item_timing_policy(
     host._work_item_sla_threshold_seconds = (
         policy.sla_threshold_seconds
     )
+    host._owner_activity_timestamp = policy.owner_activity_timestamp
     return policy
