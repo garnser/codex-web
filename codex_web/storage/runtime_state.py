@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from codex_web.models import ActiveThreadTurn, ThreadRunSettings, WorkItemState
 from codex_web.storage.json_files import atomic_write_text
-from codex_web.storage.state_store import StateStore
+from codex_web.storage.state_store import OperationTimingMetrics, StateStore
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -41,6 +41,7 @@ class ModelMapRepository(Generic[T]):
         self.model = model
         self.private = private
         self.key_filter = key_filter
+        self._mirror_metrics = OperationTimingMetrics()
         self._snapshot: ContextVar[dict[str, Any] | None] = ContextVar(
             f"codex_web_{namespace}_snapshot",
             default=None,
@@ -120,17 +121,33 @@ class ModelMapRepository(Generic[T]):
         return existed
 
     def flush_legacy_mirror(self) -> None:
-        self._ensure_records()
-        atomic_write_text(
-            self.legacy_path,
-            json.dumps(
-                self.store.record_items(self.namespace),
-                indent=2,
-                sort_keys=True,
+        started = __import__("time").perf_counter()
+        success = False
+        try:
+            self._ensure_records()
+            atomic_write_text(
+                self.legacy_path,
+                json.dumps(
+                    self.store.record_items(self.namespace),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                private=self.private,
             )
-            + "\n",
-            private=self.private,
-        )
+            success = True
+        finally:
+            self._mirror_metrics.observe(
+                __import__("time").perf_counter() - started,
+                success=success,
+            )
+
+    def compatibility_metrics(self) -> dict[str, Any]:
+        return {
+            "namespace": self.namespace,
+            "legacyPath": str(self.legacy_path),
+            "checkpoint": self._mirror_metrics.snapshot(),
+        }
 
     def save(self, values: dict[str, T]) -> None:
         payload = {
