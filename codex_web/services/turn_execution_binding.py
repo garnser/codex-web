@@ -225,6 +225,7 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
+        allow_no_mutable_repository: bool = False,
     ) -> RepositoryExecutionTarget:
         try:
             target = self.resources.resolve_repository_target(
@@ -240,7 +241,7 @@ class TurnExecutionBindingService:
             )
         except RepositoryTargetSelectionError as exc:
             raise TurnExecutionBindingError(f"{exc.code}: {exc}") from exc
-        if target.mutable_repository_id is None:
+        if target.mutable_repository_id is None and not allow_no_mutable_repository:
             raise TurnExecutionBindingError(
                 "orchestration-only repository target requires an orchestration execution profile"
             )
@@ -317,6 +318,7 @@ class TurnExecutionBindingService:
         execution_contract_version: str,
         runtime_binding: ExecutionRuntimeBinding | None,
         repository_target: RepositoryExecutionTarget,
+        execution_profile: ExecutionProfileBinding | None,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -332,6 +334,10 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to different execution controls"
+            )
+        if assignment.execution_profile != execution_profile:
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different execution profile"
             )
         if (
             assignment.repository_target is not None
@@ -367,14 +373,23 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread assignment no longer matches its execution workspace"
             )
-        if workspace.repository_resource_id is None:
-            raise TurnExecutionBindingError(
-                "existing thread workspace has no canonical repository resource"
-            )
-        if workspace.repository_resource_id != repository_target.mutable_repository_id:
-            raise TurnExecutionBindingError(
-                "existing thread workspace no longer matches repository target"
-            )
+        if repository_target.mutable_repository_id is None:
+            if (
+                workspace.kind != ExecutionWorkspaceKind.SCRATCH
+                or workspace.repository_resource_id is not None
+            ):
+                raise TurnExecutionBindingError(
+                    "existing orchestration execution no longer matches scratch workspace"
+                )
+        else:
+            if workspace.repository_resource_id is None:
+                raise TurnExecutionBindingError(
+                    "existing thread workspace has no canonical repository resource"
+                )
+            if workspace.repository_resource_id != repository_target.mutable_repository_id:
+                raise TurnExecutionBindingError(
+                    "existing thread workspace no longer matches repository target"
+                )
         if len(assignment.secret_refs) != 1:
             raise TurnExecutionBindingError(
                 "existing thread assignment does not have exactly one credential reference"
@@ -389,6 +404,7 @@ class TurnExecutionBindingService:
             resource_ids=assignment.resource_ids,
             repository_resource_id=workspace.repository_resource_id,
             repository_target=assignment.repository_target or repository_target,
+            execution_profile=assignment.execution_profile,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
