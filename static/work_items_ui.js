@@ -1,5 +1,9 @@
 import { request } from './api_client.js';
 
+const PAGE_SIZE = 50;
+const ROW_WINDOW = 60;
+const WORK_ITEM_PROJECT_KEY = 'codex-web-work-item-project';
+
 const state = {
   projects: [],
   catalog: { items: [], sync: {} },
@@ -7,6 +11,12 @@ const state = {
   items: [],
   selectedRef: '',
   secrets: [],
+  nextCursor: null,
+  hasMore: false,
+  windowStart: 0,
+  pageError: '',
+  listGeneration: 0,
+  listController: null,
 };
 
 const esc = (value) => String(value ?? '')
@@ -25,6 +35,37 @@ function fmtTime(value) {
   const date = new Date(Number(value) * 1000);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
+
+function currentProjectContext() {
+  const query = new URLSearchParams(window.location.search);
+  return (
+    query.get('work_item_project')
+    || document.body?.dataset.projectId
+    || query.get('project')
+    || sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)
+    || ''
+  );
+}
+
+function persistWorkItemProject(projectId) {
+  if (!projectId) return;
+  sessionStorage.setItem(WORK_ITEM_PROJECT_KEY, projectId);
+  const url = new URL(window.location.href);
+  url.searchParams.set('work_item_project', projectId);
+  history.replaceState({ ...history.state, workItemProjectId: projectId }, '', url);
+}
+
+function resetPaging() {
+  state.listController?.abort();
+  state.listController = null;
+  state.listGeneration += 1;
+  state.items = [];
+  state.nextCursor = null;
+  state.hasMore = false;
+  state.windowStart = 0;
+  state.pageError = '';
+}
+
 
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
@@ -101,6 +142,8 @@ function ensureShell() {
   document.body.appendChild(dialog);
 
   button.addEventListener('click', async () => {
+    const contextProject = currentProjectContext();
+    if (contextProject) state.projectId = contextProject;
     dialog.showModal();
     await refreshAll();
   });
@@ -109,8 +152,10 @@ function ensureShell() {
   dialog.querySelector('.work-items-project').addEventListener('change', async (event) => {
     state.projectId = event.target.value;
     state.selectedRef = '';
+    persistWorkItemProject(state.projectId);
+    resetPaging();
     renderSourceConfig();
-    await loadItems();
+    await loadItems({ reset: true });
   });
   dialog.querySelector('.work-source-type').addEventListener('change', (event) => {
     renderProviderFields(event.target.value);
@@ -138,12 +183,16 @@ async function refreshAll() {
     state.projects = Array.isArray(projects) ? projects : [];
     state.catalog = catalog || { items: [], sync: {} };
     state.secrets = Array.isArray(secretsPayload?.items) ? secretsPayload.items : [];
-    if (!state.projectId || !state.projects.some((project) => project.id === state.projectId)) {
+    const contextProject = state.projectId || currentProjectContext();
+    if (contextProject && state.projects.some((project) => project.id === contextProject)) {
+      state.projectId = contextProject;
+    } else if (!state.projectId || !state.projects.some((project) => project.id === state.projectId)) {
       state.projectId = state.projects[0]?.id || '';
     }
+    if (state.projectId) persistWorkItemProject(state.projectId);
     renderProjectSelect();
     renderSourceConfig();
-    await loadItems();
+    await loadItems({ reset: true });
     setStatus('Up to date');
   } catch (error) {
     setStatus(error.message || 'Failed to load operator state', true);
@@ -322,37 +371,142 @@ async function syncSource() {
   }
 }
 
-async function loadItems() {
+function renderItemList() {
+  const list = document.querySelector('.work-items-list');
+  if (!list) return;
+  if (!state.items.length) {
+    if (state.pageError) {
+      list.innerHTML = `
+        <div class="work-item-empty work-item-error">
+          <strong>Work Items could not be loaded.</strong>
+          <span>${esc(state.pageError)}</span>
+          <button type="button" class="ghost-button work-items-retry-page">Retry</button>
+        </div>`;
+      list.querySelector('.work-items-retry-page')?.addEventListener(
+        'click',
+        () => loadItems({ reset: true }),
+      );
+      return;
+    }
+    list.innerHTML = '<p class="work-item-empty">No canonical work items for this project.</p>';
+    return;
+  }
+
+  const maxStart = Math.max(0, state.items.length - ROW_WINDOW);
+  state.windowStart = Math.min(Math.max(0, state.windowStart), maxStart);
+  const visible = state.items.slice(
+    state.windowStart,
+    state.windowStart + ROW_WINDOW,
+  );
+  const first = state.windowStart + 1;
+  const last = state.windowStart + visible.length;
+  const controls = `
+    <div class="work-items-window-controls">
+      <button type="button" class="ghost-button work-items-window-prev" ${state.windowStart <= 0 ? 'disabled' : ''}>Previous rows</button>
+      <small>Rows ${first}–${last} of ${state.items.length} loaded</small>
+      <button type="button" class="ghost-button work-items-window-next" ${last >= state.items.length ? 'disabled' : ''}>Next rows</button>
+      <button type="button" class="ghost-button work-items-load-more" ${state.hasMore ? '' : 'disabled'}>${state.pageError ? 'Retry next page' : (state.hasMore ? 'Load more' : 'All loaded')}</button>
+    </div>`;
+
+  list.innerHTML = visible.map((item) => `
+    <button type="button" class="work-item-row ${item.ref === state.selectedRef ? 'selected' : ''}" data-ref="${esc(item.ref)}">
+      <strong>${esc(item.title || item.ref)}</strong>
+      <span>${esc(item.current_stage)} · ${esc(item.current_owner || item.next_owner || 'unowned')}</span>
+      ${item.routingError ? `<small class="work-item-warning">${esc(item.routingError)}</small>` : ''}
+    </button>`).join('') + controls;
+
+  list.querySelectorAll('.work-item-row').forEach((row) => row.addEventListener('click', async () => {
+    state.selectedRef = row.dataset.ref;
+    renderItemList();
+    await loadDetail(state.selectedRef);
+  }));
+  list.querySelector('.work-items-window-prev')?.addEventListener('click', () => {
+    state.windowStart = Math.max(0, state.windowStart - ROW_WINDOW);
+    renderItemList();
+  });
+  list.querySelector('.work-items-window-next')?.addEventListener('click', () => {
+    state.windowStart = Math.min(
+      Math.max(0, state.items.length - ROW_WINDOW),
+      state.windowStart + ROW_WINDOW,
+    );
+    renderItemList();
+  });
+  list.querySelector('.work-items-load-more')?.addEventListener('click', async () => {
+    await loadItems({ reset: false });
+    if (state.items.length > last) {
+      state.windowStart = Math.max(0, state.items.length - ROW_WINDOW);
+      renderItemList();
+    }
+  });
+}
+
+async function loadItems({ reset = false } = {}) {
   const list = document.querySelector('.work-items-list');
   const detail = document.querySelector('.work-item-detail');
   if (!state.projectId) {
-    state.items = [];
+    resetPaging();
     if (list) list.innerHTML = '<p class="work-item-empty">No project available.</p>';
     return;
   }
-  const payload = await request(`/api/work-items?project_id=${encodeURIComponent(state.projectId)}`);
-  state.items = Array.isArray(payload?.items) ? payload.items : [];
-  if (!state.items.some((item) => item.ref === state.selectedRef)) {
-    state.selectedRef = state.items[0]?.ref || '';
+  if (reset) resetPaging();
+  if (!reset && !state.hasMore && state.items.length) {
+    renderItemList();
+    return;
   }
-  if (list) {
-    list.innerHTML = state.items.length ? state.items.map((item) => `
-      <button type="button" class="work-item-row ${item.ref === state.selectedRef ? 'selected' : ''}" data-ref="${esc(item.ref)}">
-        <strong>${esc(item.title || item.ref)}</strong>
-        <span>${esc(item.current_stage)} · ${esc(item.current_owner || item.next_owner || 'unowned')}</span>
-        ${item.routingError ? `<small class="work-item-warning">${esc(item.routingError)}</small>` : ''}
-      </button>`).join('') : '<p class="work-item-empty">No canonical work items for this project.</p>';
-    list.querySelectorAll('.work-item-row').forEach((row) => row.addEventListener('click', async () => {
-      state.selectedRef = row.dataset.ref;
-      await loadItems();
-    }));
-  }
-  if (state.selectedRef) {
-    await loadDetail(state.selectedRef);
-  } else if (detail) {
-    detail.innerHTML = '<div class="work-item-empty">No work item selected.</div>';
+
+  const generation = state.listGeneration;
+  const controller = new AbortController();
+  state.listController?.abort();
+  state.listController = controller;
+  state.pageError = '';
+  setStatus(state.items.length ? 'Loading more Work Items…' : 'Loading Work Items…');
+
+  const query = new URLSearchParams({
+    project_id: state.projectId,
+    limit: String(PAGE_SIZE),
+  });
+  if (!reset && state.nextCursor) query.set('cursor', state.nextCursor);
+
+  try {
+    const payload = await request(`/api/work-items?${query}`, {
+      signal: controller.signal,
+    });
+    if (generation !== state.listGeneration || controller.signal.aborted) return;
+    const page = Array.isArray(payload?.items) ? payload.items : [];
+    const byRef = new Map(state.items.map((item) => [item.ref, item]));
+    page.forEach((item) => {
+      if (item?.ref) byRef.set(item.ref, item);
+    });
+    state.items = [...byRef.values()];
+    state.nextCursor = payload?.nextCursor || null;
+    state.hasMore = Boolean(payload?.hasMore && state.nextCursor);
+    state.pageError = '';
+
+    if (!state.items.some((item) => item.ref === state.selectedRef)) {
+      state.selectedRef = state.items[0]?.ref || '';
+    }
+    renderItemList();
+    if (reset && state.selectedRef) {
+      await loadDetail(state.selectedRef);
+    } else if (!state.selectedRef && detail) {
+      detail.innerHTML = '<div class="work-item-empty">No work item selected.</div>';
+    }
+    setStatus(
+      state.hasMore
+        ? `${state.items.length} Work Items loaded · more available`
+        : `${state.items.length} Work Items loaded`,
+    );
+  } catch (error) {
+    if (error?.name === 'AbortError' || controller.signal.aborted) return;
+    if (generation !== state.listGeneration) return;
+    state.pageError = error.message || 'Failed to load Work Items';
+    renderItemList();
+    setStatus(state.pageError, true);
+  } finally {
+    if (state.listController === controller) state.listController = null;
   }
 }
+
 
 function keyValueRows(values) {
   return Object.entries(values).map(([key, value]) => `
@@ -505,5 +659,19 @@ async function runItemAction(action) {
     setStatus(error.message || `${action} failed`, true);
   }
 }
+
+window.addEventListener('codex:project-changed', async (event) => {
+  const projectId = String(event.detail?.projectId || '').trim();
+  if (!projectId || projectId === state.projectId) return;
+  state.projectId = projectId;
+  state.selectedRef = '';
+  persistWorkItemProject(projectId);
+  resetPaging();
+  if (document.querySelector('#work-items-dialog')?.open) {
+    renderProjectSelect();
+    renderSourceConfig();
+    await loadItems({ reset: true });
+  }
+});
 
 ensureShell();
