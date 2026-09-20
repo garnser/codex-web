@@ -139,6 +139,11 @@ class _Execution:
             model=kwargs["model"],
             reasoning_effort=kwargs["reasoning_effort"],
             execution_id=kwargs.get("execution_id"),
+            repository_resource_id=kwargs.get("repository_resource_id"),
+            read_only_repository_resource_ids=kwargs.get(
+                "read_only_repository_resource_ids",
+                (),
+            ),
             created_at=time.time(),
         )
         self.queue_policy.queued = [queued]
@@ -233,6 +238,26 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.queued[0].message, "next task")
         self.assertEqual(events[-1]["type"], "web_turn_queued")
         self.assertEqual(execution.published, ["thread-1"])
+
+    async def test_start_queues_repository_target_with_message(self) -> None:
+        service, queue, _execution, _events, _settings = self._service()
+
+        result = await service.start(
+            "thread-1",
+            TurnCreate(
+                message="next task",
+                project_id="home",
+                repository_resource_id="repo-app",
+                read_only_repository_resource_ids=("repo-docs",),
+            ),
+        )
+
+        self.assertTrue(result["queued"])
+        self.assertEqual(queue.queued[0].repository_resource_id, "repo-app")
+        self.assertEqual(
+            queue.queued[0].read_only_repository_resource_ids,
+            ("repo-docs",),
+        )
 
     def test_queue_snapshot_is_presentational(self) -> None:
         service, _queue, _execution, _events, _settings = self._service()
