@@ -2673,6 +2673,22 @@ runtime_supervisor = install_runtime_supervisor(
     flush_compatibility_state=_flush_compatibility_state,
 )
 
+def _compatibility_state_metrics() -> dict[str, object]:
+    repositories = (
+        runtime_state.thread_settings,
+        runtime_state.active_turns,
+        runtime_state.work_item_states,
+        turn_queue_repository,
+        bot_state.reply_targets,
+        bot_state.delivery_targets,
+    )
+    return {
+        repository.namespace: repository.compatibility_metrics()
+        for repository in repositories
+        if repository is not None
+    }
+
+
 runtime_service = RuntimeService(
     codex=codex_runtime,
     static_version=static_asset_version_service.version,
@@ -2701,6 +2717,7 @@ runtime_service = RuntimeService(
     event_transport=event_transport,
     deployment_mode=deployment_mode,
     instance_id=instance_id,
+    compatibility_state_metrics=_compatibility_state_metrics,
 )
 app.state.runtime_service = runtime_service
 core.healthz = runtime_service.healthz
