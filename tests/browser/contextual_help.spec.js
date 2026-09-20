@@ -4,12 +4,16 @@ test("complex operator surfaces receive contextual documentation links", async (
   await page.goto("http://127.0.0.1:18766/tests/browser/contextual_help_fixture.html");
 
   const links = page.locator(".context-help-link");
-  await expect(links).toHaveCount(10);
+  await expect(links).toHaveCount(12);
 
   await expect(page.locator("h2", { hasText: "Definition Registry" }).locator(".context-help-link"))
     .toHaveAttribute("href", /\/help-docs\/administration\/definition-registry\.md$/);
   await expect(page.locator("h2", { hasText: "Execution Workers" }).locator(".context-help-link"))
     .toHaveAttribute("href", /operations\/runbooks\.md#execution-worker-drain-quarantine-and-replacement$/);
+  await expect(page.locator("h2", { hasText: "Execution Preflight" }).locator(".context-help-link"))
+    .toHaveAttribute("href", /operations\/multi-repository-projects\.md$/);
+  await expect(page.locator("h2", { hasText: "Legacy Project Migration" }).locator(".context-help-link"))
+    .toHaveAttribute("href", /operations\/legacy-project-migration\.md$/);
   await expect(page.locator("h3", { hasText: "Recovery / DR" }).locator(".context-help-link"))
     .toHaveAttribute("href", /operations\/runbooks\.md#backup-restore-and-recovery-drill$/);
   await expect(page.locator("h3", { hasText: "Upgrade / migration" }).locator(".context-help-link"))
