@@ -137,11 +137,10 @@ class BubblewrapExecutionBackend:
             or "operation not permitted" in detail
         ):
             return (
-                "Use the documented rootless Podman Bubblewrap profile "
-                "(container-scoped SYS_ADMIN, seccomp=unconfined, "
-                "label=disable), or run the execution "
-                "worker natively/in a dedicated VM if that syscall relaxation "
-                "is not acceptable."
+                "Nested Bubblewrap execution inside rootless Podman is not "
+                "currently qualified. Run the execution worker natively on a "
+                "supported Linux host or in a dedicated VM; do not enable "
+                "privileged mode as an automatic fallback."
             )
         if runtime is not None:
             return (
