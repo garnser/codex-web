@@ -600,6 +600,36 @@ class SQLiteStateStore:
                     self._upsert(connection, namespace, updated[namespace])
             return updated
 
+    def namespace_revision(self, namespace: str) -> float | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT updated_at FROM state_documents WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+            if row is not None:
+                return float(row[0])
+            marker = state_record_marker(namespace)
+            row = connection.execute(
+                "SELECT updated_at FROM state_documents WHERE namespace = ?",
+                (marker,),
+            ).fetchone()
+            if row is None:
+                return None
+            prefix = state_record_prefix(namespace)
+            latest = connection.execute(
+                """
+                SELECT MAX(updated_at)
+                FROM state_documents
+                WHERE substr(namespace, 1, length(?)) = ?
+                """,
+                (prefix, prefix),
+            ).fetchone()
+            return (
+                float(latest[0])
+                if latest and latest[0] is not None
+                else float(row[0])
+            )
+
     def contains(self, namespace: str) -> bool:
         with self._connection() as connection:
             row = connection.execute(
