@@ -8,6 +8,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from codex_web.storage.state_store import (
+    parse_state_record_storage_key,
+    state_record_marker,
+    state_record_prefix,
+    state_record_storage_key,
+)
+
 
 class SQLiteStateStore:
     """Small transactional document store for codex-web runtime state."""
@@ -110,6 +117,174 @@ class SQLiteStateStore:
                         f"State database schema version {version} is newer than supported version {self.SCHEMA_VERSION}"
                     )
 
+    @staticmethod
+    def _record_collection_exists_in_connection(
+        connection: sqlite3.Connection,
+        namespace: str,
+    ) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM state_documents WHERE namespace = ?",
+            (state_record_marker(namespace),),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _record_items_in_connection(
+        connection: sqlite3.Connection,
+        namespace: str,
+    ) -> dict[str, Any]:
+        prefix = f"{state_record_prefix(namespace)}k/"
+        rows = connection.execute(
+            """
+            SELECT namespace, payload
+            FROM state_documents
+            WHERE substr(namespace, 1, length(?)) = ?
+            ORDER BY namespace
+            """,
+            (prefix, prefix),
+        ).fetchall()
+        result: dict[str, Any] = {}
+        for storage_namespace, payload in rows:
+            parsed = parse_state_record_storage_key(str(storage_namespace))
+            if parsed is None or parsed[1] is None:
+                continue
+            result[parsed[1]] = json.loads(payload)
+        return result
+
+    def _replace_records_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None:
+        prefix = state_record_prefix(namespace)
+        connection.execute(
+            "DELETE FROM state_documents WHERE substr(namespace, 1, length(?)) = ?",
+            (prefix, prefix),
+        )
+        connection.execute(
+            "DELETE FROM state_documents WHERE namespace = ?",
+            (namespace,),
+        )
+        self._upsert(
+            connection,
+            state_record_marker(namespace),
+            {"schemaVersion": 1},
+        )
+        for key, payload in records.items():
+            self._upsert(
+                connection,
+                state_record_storage_key(namespace, str(key)),
+                payload,
+            )
+
+    def _ensure_record_collection_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        namespace: str,
+    ) -> None:
+        if self._record_collection_exists_in_connection(connection, namespace):
+            return
+        row = connection.execute(
+            "SELECT payload FROM state_documents WHERE namespace = ?",
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            self._upsert(
+                connection,
+                state_record_marker(namespace),
+                {"schemaVersion": 1},
+            )
+            return
+        payload = self._decode(row)
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"state namespace {namespace!r} is not a keyed mapping"
+            )
+        self._replace_records_in_connection(connection, namespace, payload)
+
+    def record_collection_exists(self, namespace: str) -> bool:
+        with self._connection() as connection:
+            return self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            )
+
+    def record_get(self, namespace: str, key: str) -> Any | None:
+        with self._connection() as connection:
+            if self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                row = connection.execute(
+                    "SELECT payload FROM state_documents WHERE namespace = ?",
+                    (state_record_storage_key(namespace, key),),
+                ).fetchone()
+                return self._decode(row)
+            row = connection.execute(
+                "SELECT payload FROM state_documents WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+            payload = self._decode(row)
+            if isinstance(payload, dict):
+                return payload.get(key)
+            return None
+
+    def record_items(self, namespace: str) -> dict[str, Any]:
+        with self._connection() as connection:
+            if self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                return self._record_items_in_connection(
+                    connection,
+                    namespace,
+                )
+            row = connection.execute(
+                "SELECT payload FROM state_documents WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+            payload = self._decode(row)
+            return dict(payload) if isinstance(payload, dict) else {}
+
+    def record_apply(
+        self,
+        namespace: str,
+        *,
+        upserts: dict[str, Any],
+        deletes: tuple[str, ...] = (),
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_record_collection_in_connection(
+                connection,
+                namespace,
+            )
+            for key in dict.fromkeys(str(item) for item in deletes):
+                connection.execute(
+                    "DELETE FROM state_documents WHERE namespace = ?",
+                    (state_record_storage_key(namespace, key),),
+                )
+            for key, payload in upserts.items():
+                self._upsert(
+                    connection,
+                    state_record_storage_key(namespace, str(key)),
+                    payload,
+                )
+
+    def record_replace(
+        self,
+        namespace: str,
+        records: dict[str, Any],
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._replace_records_in_connection(
+                connection,
+                namespace,
+                records,
+            )
+
     def schema_version(self) -> int:
         with self._connection() as connection:
             row = connection.execute(
@@ -167,11 +342,36 @@ class SQLiteStateStore:
                 "SELECT payload FROM state_documents WHERE namespace = ?",
                 (namespace,),
             ).fetchone()
-        return self._decode(row)
+            if row is not None:
+                return self._decode(row)
+            if self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                return self._record_items_in_connection(
+                    connection,
+                    namespace,
+                )
+            return None
 
     def put(self, namespace: str, payload: Any) -> None:
+        if (
+            isinstance(payload, dict)
+            and self.record_collection_exists(namespace)
+        ):
+            self.record_replace(namespace, payload)
+            return
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                prefix = state_record_prefix(namespace)
+                connection.execute(
+                    "DELETE FROM state_documents WHERE substr(namespace, 1, length(?)) = ?",
+                    (prefix, prefix),
+                )
             self._upsert(connection, namespace, payload)
 
     def update(
@@ -181,15 +381,32 @@ class SQLiteStateStore:
         *,
         default: Any,
     ) -> Any:
-        """Atomically read, transform and replace one namespace document.
+        """Atomically transform one logical namespace.
 
-        `BEGIN IMMEDIATE` serializes competing writers before the read so an
-        updater always sees the latest committed value. This lets repositories
-        merge only their local delta instead of overwriting unrelated changes
-        made by another worker between load() and save().
+        Record-backed mappings remain physically keyed while compatibility
+        callers can continue to use the document-level update contract.
         """
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                current = self._record_items_in_connection(
+                    connection,
+                    namespace,
+                )
+                updated = updater(current)
+                if not isinstance(updated, dict):
+                    raise TypeError(
+                        "record-backed namespace updates must return a mapping"
+                    )
+                self._replace_records_in_connection(
+                    connection,
+                    namespace,
+                    updated,
+                )
+                return updated
             row = connection.execute(
                 "SELECT payload FROM state_documents WHERE namespace = ?",
                 (namespace,),
@@ -241,7 +458,13 @@ class SQLiteStateStore:
                 "SELECT 1 FROM state_documents WHERE namespace = ?",
                 (namespace,),
             ).fetchone()
-        return row is not None
+            return (
+                row is not None
+                or self._record_collection_exists_in_connection(
+                    connection,
+                    namespace,
+                )
+            )
 
     def delete(self, namespace: str) -> bool:
         with self._connection() as connection:
@@ -250,14 +473,34 @@ class SQLiteStateStore:
                 "DELETE FROM state_documents WHERE namespace = ?",
                 (namespace,),
             )
-            return bool(cursor.rowcount)
+            prefix = state_record_prefix(namespace)
+            record_cursor = connection.execute(
+                "DELETE FROM state_documents WHERE substr(namespace, 1, length(?)) = ?",
+                (prefix, prefix),
+            )
+            return bool(cursor.rowcount or record_cursor.rowcount)
 
     def documents(self) -> dict[str, Any]:
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT namespace, payload FROM state_documents ORDER BY namespace"
             ).fetchall()
-        return {
-            str(namespace): json.loads(payload)
-            for namespace, payload in rows
-        }
+        documents: dict[str, Any] = {}
+        records: dict[str, dict[str, Any]] = {}
+        record_collections: set[str] = set()
+        for storage_namespace, payload in rows:
+            name = str(storage_namespace)
+            parsed = parse_state_record_storage_key(name)
+            if parsed is None:
+                documents[name] = json.loads(payload)
+                continue
+            logical_namespace, key = parsed
+            record_collections.add(logical_namespace)
+            if key is not None:
+                records.setdefault(logical_namespace, {})[key] = json.loads(
+                    payload
+                )
+        for namespace in record_collections:
+            if namespace not in documents:
+                documents[namespace] = records.get(namespace, {})
+        return documents
