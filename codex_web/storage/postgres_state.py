@@ -297,6 +297,47 @@ class PostgresStateStore:
                         payload,
                     )
 
+    def record_update(
+        self,
+        namespace: str,
+        key: str,
+        updater: Callable[[Any], Any],
+        *,
+        default: Any,
+    ) -> Any:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                self._lock(cursor, f"{namespace}:{key}")
+                if not self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    # Migration is a namespace-wide transition; serialize the
+                    # one-time conversion before returning to per-key locks.
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                storage_key = state_record_storage_key(
+                    namespace,
+                    str(key),
+                )
+                cursor.execute(
+                    "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+                    (storage_key,),
+                )
+                current = self._decode(cursor.fetchone(), default)
+                updated = updater(current)
+                if updated is None:
+                    cursor.execute(
+                        "DELETE FROM codex_state_documents WHERE namespace = %s",
+                        (storage_key,),
+                    )
+                else:
+                    self._upsert(cursor, storage_key, updated)
+                return updated
+
     def record_replace(
         self,
         namespace: str,
