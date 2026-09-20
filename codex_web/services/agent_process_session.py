@@ -245,6 +245,7 @@ class AssignmentBoundAgentProcessSession:
         assignment: ExecutionAssignment,
         workspace_path: Path,
         broker: AssignmentBoundAgentModelEgressBroker | None,
+        control_broker: AssignmentBoundControlPlaneBroker | None,
     ):
         delegation_service = self.credential_provider
         if delegation_service is None:
@@ -300,6 +301,26 @@ class AssignmentBoundAgentProcessSession:
                 trusted_mounts = (
                     *trusted_mounts,
                     (broker.mount_source, broker.mount_destination),
+                )
+            if control_broker is not None:
+                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
+                    control_broker.sandbox_url
+                )
+                command = (
+                    "/usr/bin/python3",
+                    "-u",
+                    "-c",
+                    CONTROL_PLANE_RELAY_SCRIPT,
+                    str(control_broker.sandbox_socket_path),
+                    "8788",
+                    *command,
+                )
+                trusted_mounts = (
+                    *trusted_mounts,
+                    (
+                        control_broker.mount_source,
+                        control_broker.mount_destination,
+                    ),
                 )
             process = self.local_worker.backend.spawn_interactive(
                 assignment,
@@ -369,6 +390,23 @@ class AssignmentBoundAgentProcessSession:
         )
         await broker.start()
         return broker
+
+    async def _start_control_plane_broker(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> AssignmentBoundControlPlaneBroker | None:
+        factory = self.control_plane_broker_factory
+        lease = assignment.lease
+        if factory is None or lease is None:
+            return None
+        worker = self._current_worker()
+        return await factory.start(
+            assignment=assignment,
+            worker_id=worker.id,
+            service_identity_id=worker.service_identity_id,
+            fence=lease.fence,
+            validator=self._validate_egress_state,
+        )
 
     async def start(self) -> "AssignmentBoundAgentProcessSession":
         async with self._start_lock:
