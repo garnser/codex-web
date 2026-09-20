@@ -86,6 +86,7 @@ class _FakeBackend:
 
     def cleanup_scratch(self, workspace_path):
         self.cleaned.append((str(workspace_path), "scratch", False))
+        Path(workspace_path).rmdir()
 
     def cleanup_git(self, repository_path, workspace_path, branch_name, *, discard_branch):
         self.cleaned.append((str(workspace_path), branch_name, discard_branch))
