@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from codex_web.models import ExecutionPreflightAttempt
+from codex_web.models import (
+    ExecutionPreflightAttempt,
+    ExecutionPreflightBlocker,
+    ExecutionPreflightBlockerSnapshot,
+)
 from codex_web.storage.state_store import StateStore
 
 
@@ -179,18 +183,21 @@ class ExecutionPreflightStore:
         now: float,
         last_error: str | None = None,
     ) -> ExecutionPreflightAttempt:
-        normalized = tuple(blockers)
+        normalized = tuple(
+            item
+            if isinstance(item, ExecutionPreflightBlocker)
+            else ExecutionPreflightBlocker.model_validate(item)
+            for item in blockers
+        )
 
         def apply(current: ExecutionPreflightAttempt):
+            snapshot = ExecutionPreflightBlockerSnapshot(
+                blockers=normalized,
+                recorded_at=now,
+                attempt_number=current.attempt_number,
+            )
             history = tuple(
-                (
-                    *current.blocker_history,
-                    {
-                        "blockers": normalized,
-                        "recorded_at": now,
-                        "attempt_number": current.attempt_number,
-                    },
-                )[-20:]
+                (*current.blocker_history, snapshot)[-20:]
             )
             return current.model_copy(
                 update={
