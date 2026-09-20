@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
@@ -420,3 +421,54 @@ class WorkItemContinuityService:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.actionable_owner_tasks.clear()
         self.handoff_tasks.clear()
+
+
+def build_work_item_continuity_compatibility_service(
+    host: Any,
+) -> WorkItemContinuityService:
+    """Build a dynamic adapter for historical direct-call entrypoints.
+
+    Every collaborator resolves through the host at call time so supported
+    tests/integrations can patch one historical seam. Canonical application
+    paths use the explicitly composed WorkItemContinuityService instead.
+    """
+
+    policy = SimpleNamespace(
+        actionable_owner_continuity_delay=lambda: host._actionable_owner_continuity_delay_seconds(),
+        handoff_continuity_delay=lambda: host._handoff_continuity_delay_seconds(),
+    )
+    return WorkItemContinuityService(
+        policy=policy,
+        get_state=lambda ref: host._work_item_state(ref),
+        coerce_owner=lambda owner: host._coerce_owner(owner),
+        binding_for_agent=lambda *args, **kwargs: host._binding_for_agent(
+            *args,
+            **kwargs,
+        ),
+        replace_nonperforming_thread=(
+            lambda binding, reason: host._replace_nonperforming_thread_if_needed(
+                binding,
+                reason,
+            )
+        ),
+        dispatch_event=lambda binding, text, source: host._dispatch_event_to_binding(
+            binding,
+            text,
+            source,
+        ),
+        dispatch_text=lambda state: host._work_item_dispatch_text(state),
+        append_event=lambda event: host._append_bot_event(event),
+        truncate_text=lambda value, limit: host._truncate_text(value, limit),
+        thread_is_active=lambda thread_id: host._thread_is_active(thread_id),
+        thread_queue_depth=lambda thread_id: host._thread_queue_depth(thread_id),
+        thread_recently_active=lambda thread_id: host._thread_recently_active(
+            thread_id
+        ),
+        watchdog_dispatch_allowed=lambda key: host._watchdog_dispatch_allowed(
+            key
+        ),
+        record_watchdog_dispatch=lambda key: host._record_watchdog_dispatch(
+            key
+        ),
+        coordination_channel=host.HANDOFF_COORDINATION_CHANNEL,
+    )
