@@ -98,6 +98,25 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertFalse(hasattr(application.thread_service, "host"))
         self.assertFalse(hasattr(application.turn_service, "host"))
 
+    def test_work_item_and_gitlab_services_use_explicit_dependencies(self) -> None:
+        self.assertFalse(hasattr(application.work_item_service, "host"))
+        self.assertFalse(
+            hasattr(application.work_item_state_machine, "host")
+        )
+        self.assertFalse(hasattr(application.gitlab_service, "host"))
+        self.assertIs(
+            application.work_item_service.work_items,
+            application.work_item_dependencies,
+        )
+        self.assertIs(
+            application.gitlab_service.work_items.project_event.__self__,
+            application.work_item_service,
+        )
+        self.assertIs(
+            application.app.state.work_item_compatibility_service.service,
+            application.work_item_service,
+        )
+
     def test_context_service_observes_shared_event_hub(self) -> None:
         self.assertIs(application.app.state.context_compaction_service, application.context_service)
         self.assertIn(application.context_service.observe, core.hub._listeners)
