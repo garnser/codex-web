@@ -718,6 +718,7 @@ class TurnExecutionService:
                     },
                 )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            canonical_repository_resource_id: str | None = None
             if bootstrap is not None:
                 session_manager, session = self._session_for_assignment(
                     bootstrap.assignment_id
@@ -774,6 +775,11 @@ class TurnExecutionService:
                             ),
                         },
                     )
+                canonical_repository_resource_id = (
+                    target.mutable_repository_id
+                    if target is not None
+                    else settings.repository_resource_id
+                )
                 canonical_execution_id = bootstrap.execution_id
                 assignment_id = bootstrap.assignment_id
                 workspace_id = bootstrap.execution_workspace_id
@@ -813,6 +819,7 @@ class TurnExecutionService:
                 )
                 session = await session_manager.start(binding.assignment_id)
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
+                canonical_repository_resource_id = binding.repository_resource_id
                 assignment_id = binding.assignment_id
                 workspace_id = binding.workspace_id
 
@@ -904,13 +911,7 @@ class TurnExecutionService:
                 execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
-                repository_resource_id=(
-                    getattr(
-                        getattr(session.validate_current(), "repository_target", None),
-                        "mutable_repository_id",
-                        None,
-                    )
-                ),
+                repository_resource_id=canonical_repository_resource_id,
             )
 
             params: dict[str, Any] = {
@@ -1018,13 +1019,7 @@ class TurnExecutionService:
                 execution_workspace_id=workspace_id,
                 worker_id=status.worker_id,
                 fence=status.fence,
-                repository_resource_id=(
-                    getattr(
-                        getattr(session.validate_current(), "repository_target", None),
-                        "mutable_repository_id",
-                        None,
-                    )
-                ),
+                repository_resource_id=canonical_repository_resource_id,
             )
         h._append_bot_event(
             {
