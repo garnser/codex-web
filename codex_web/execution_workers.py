@@ -3,10 +3,12 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import (
     ExecutionSubject,
     normalize_execution_subject,
@@ -17,8 +19,8 @@ from codex_web.resources import RepositoryExecutionTarget
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 
 
@@ -130,6 +132,21 @@ class ExecutionRuntimeBinding(BaseModel):
     capability_revision: int = Field(ge=1)
 
 
+class ExecutionProfileBinding(BaseModel):
+    """Exact published execution profile revision pinned to an assignment."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    profile_id: str = Field(min_length=1)
+    definition: DefinitionReference
+    workspace_mode: Literal["repository", "scratch"]
+    repository_access: Literal["none", "read-only", "workspace-write"]
+    required_worker_capabilities: tuple[WorkerCapability, ...]
+    allowed_sandboxes: tuple[SandboxMode, ...]
+    allowed_control_plane_operations: tuple[str, ...] = ()
+    authority_explanation: str = Field(min_length=1)
+
+
 class ExecutionAssignmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -152,6 +169,7 @@ class ExecutionAssignmentCreate(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    execution_profile: ExecutionProfileBinding | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -164,12 +182,45 @@ class ExecutionAssignmentCreate(BaseModel):
             sorted(set(self.required_capabilities), key=lambda value: value.value)
         )
         self.secret_refs = tuple(dict.fromkeys(item for item in self.secret_refs if item))
-        if not self.resource_ids:
+        scratch_profile = bool(
+            self.execution_profile is not None
+            and self.execution_profile.workspace_mode == "scratch"
+        )
+        if not self.resource_ids and not scratch_profile:
             raise ValueError("assignment requires at least one resource")
+        if scratch_profile and self.resource_ids:
+            raise ValueError("scratch execution profile cannot carry resource authority")
         if not self.required_capabilities:
             raise ValueError("assignment requires at least one worker capability")
         if self.network.enabled and WorkerCapability.NETWORK not in self.required_capabilities:
             raise ValueError("network-enabled assignment requires network capability")
+        if self.execution_profile is not None:
+            profile = self.execution_profile
+            if self.sandbox not in profile.allowed_sandboxes:
+                raise ValueError("assignment sandbox is not allowed by execution profile")
+            if set(self.required_capabilities) != set(
+                profile.required_worker_capabilities
+            ):
+                raise ValueError(
+                    "assignment capabilities must exactly match execution profile"
+                )
+            if profile.workspace_mode == "scratch":
+                if (
+                    self.repository_target is None
+                    or self.repository_target.mutable_repository_id is not None
+                    or self.repository_target.source.value != "orchestration_only"
+                ):
+                    raise ValueError(
+                        "scratch execution profile requires orchestration-only repository target"
+                    )
+                if profile.repository_access != "none":
+                    raise ValueError(
+                        "scratch execution profile cannot grant repository access"
+                    )
+            elif profile.repository_access == "none":
+                raise ValueError(
+                    "repository execution profile requires repository access"
+                )
         if self.repository_target is not None:
             mutable_repository_id = self.repository_target.mutable_repository_id
             if (
@@ -223,6 +274,7 @@ class ExecutionAssignment(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    execution_profile: ExecutionProfileBinding | None = None
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None
@@ -243,6 +295,20 @@ class ExecutionAssignment(BaseModel):
             self.subject,
             self.work_item_ref,
         )
+        if self.execution_profile is not None:
+            profile = self.execution_profile
+            if self.sandbox not in profile.allowed_sandboxes:
+                raise ValueError("assignment sandbox is not allowed by execution profile")
+            if set(self.required_capabilities) != set(
+                profile.required_worker_capabilities
+            ):
+                raise ValueError(
+                    "assignment capabilities must exactly match execution profile"
+                )
+            if profile.workspace_mode == "scratch" and self.resource_ids:
+                raise ValueError(
+                    "persisted scratch execution profile cannot carry resources"
+                )
         return self
 
 
