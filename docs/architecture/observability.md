@@ -76,6 +76,18 @@ Dependencies explicitly declare whether they are required for readiness and/or a
 
 Health is deterministic application state derived from current dependency checks. It must not require an LLM.
 
+## Runtime diagnostics ownership
+
+Process/operator diagnostics are composed from focused services rather than from the legacy runtime module:
+
+- `RuntimeHealthService` derives daemon/provider health from Codex, bot runtime, queue, recovery, Slack and GitLab status collaborators.
+- `RuntimeDiagnosticsService` builds the privileged process-wide snapshot and receives public serializers explicitly; raw provider credentials are never serialized directly.
+- `StaticAssetVersionService` owns UI cache-busting version calculation.
+- `OperatorUiService` owns the data projection for `/`, `/devstatus`, `/devhealth`, and the websocket presentation boundary.
+- `BotRuntimeTelemetry` owns recent bot event journal reads, while `BotRoutingService` owns route-preview diagnostics.
+
+The system and UI routers depend on these services directly. Compatibility names on `runtime.core` are temporary aliases only and must not become new implementation seams.
+
 ## Operator APIs
 
 The local runtime exposes:
