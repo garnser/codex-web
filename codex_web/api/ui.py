@@ -35,7 +35,11 @@ def build_ui_router(service: OperatorUiService) -> APIRouter:
         await service.event_hub.connect(websocket)
         try:
             await websocket.send_json(
-                {"type": "hello", "time": time.time()}
+                {
+                    "type": "hello",
+                    "time": time.time(),
+                    **service.event_hub.stream_state(),
+                }
             )
             while True:
                 await websocket.receive_text()
