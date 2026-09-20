@@ -46,6 +46,7 @@ class RuntimeService:
         deployment_mode: str = "local",
         instance_id: str = "local",
         compatibility_state_metrics: Callable[[], dict[str, Any]] | None = None,
+        task_source_writeback_status: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if host is not None:
             codex = codex or getattr(host, "codex", None)
@@ -200,6 +201,9 @@ class RuntimeService:
         self.instance_id = instance_id
         self.compatibility_state_metrics = (
             compatibility_state_metrics or (lambda: {})
+        )
+        self.task_source_writeback_status = (
+            task_source_writeback_status or (lambda: {})
         )
 
         if host is not None:
@@ -400,6 +404,9 @@ class RuntimeService:
                 ),
                 "gitlabSyncLastSuccessAt": health.get(
                     "gitlabSyncLastSuccessAt"
+                ),
+                "taskSourceWriteback": (
+                    self.task_source_writeback_status()
                 ),
             },
             "activity": {
