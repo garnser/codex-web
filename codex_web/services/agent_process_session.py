@@ -440,6 +440,12 @@ class AssignmentBoundAgentProcessSession:
             self.workspace_path,
             self.git_metadata_path,
         )
+        readonly_disk_bytes = getattr(
+            self.local_worker,
+            "readonly_disk_bytes",
+            lambda _assignment: 0,
+        )(assignment)
+        disk_bytes += readonly_disk_bytes
         if disk_bytes > assignment.limits.disk_bytes:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded disk_bytes"
