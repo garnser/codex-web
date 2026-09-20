@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import time
 from typing import Any
 
@@ -39,6 +41,7 @@ from codex_web.services.work_item_dependencies import (
     WorkItemRuntimeDependencies,
 )
 from codex_web.services.work_item_state import WorkItemStateMachine
+from codex_web.storage.work_item_list_index import WorkItemListIndex
 
 
 class _HostContinuityAdapter:
@@ -315,6 +318,7 @@ class WorkItemService:
         gitlab_dependencies: GitLabWorkItemDependencies | None = None,
         identity_service: Any | None = None,
         secret_broker: Any | None = None,
+        work_item_list_index: WorkItemListIndex | None = None,
     ) -> None:
         async def _publish_noop(_event: dict[str, Any]) -> None:
             return None
@@ -341,6 +345,7 @@ class WorkItemService:
             gitlab_dependencies = GitLabWorkItemDependencies.from_host(host)
 
         self.work_items = work_item_dependencies
+        self.work_item_list_index = work_item_list_index
         self.gitlab_dependencies = gitlab_dependencies
         self.gitlab = gitlab or GitLabClient()
         self.continuity = (
@@ -607,6 +612,100 @@ class WorkItemService:
         """Compatibility entrypoint backed by keyed coalesced writeback."""
         return self.task_source_writeback.schedule(state)
 
+    @staticmethod
+    def _list_cursor_payload(
+        *,
+        after: str,
+        project_id: str,
+        owner: str | None,
+        stage: str | None,
+        release_gate: bool | None,
+        revision: float | None,
+    ) -> str:
+        payload = {
+            "after": after,
+            "projectId": project_id,
+            "owner": str(owner or "").strip(),
+            "stage": str(stage or "").strip(),
+            "releaseGate": release_gate,
+            "revision": revision,
+        }
+        raw = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_list_cursor(
+        cursor: str,
+        *,
+        project_id: str,
+        owner: str | None,
+        stage: str | None,
+        release_gate: bool | None,
+    ) -> dict[str, Any]:
+        from fastapi import HTTPException
+
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            payload = json.loads(
+                base64.urlsafe_b64decode(
+                    (cursor + padding).encode()
+                )
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="invalid Work Item cursor",
+            ) from exc
+        expected = {
+            "projectId": project_id,
+            "owner": str(owner or "").strip(),
+            "stage": str(stage or "").strip(),
+            "releaseGate": release_gate,
+        }
+        actual = {
+            "projectId": str(payload.get("projectId") or ""),
+            "owner": str(payload.get("owner") or "").strip(),
+            "stage": str(payload.get("stage") or "").strip(),
+            "releaseGate": payload.get("releaseGate"),
+        }
+        if not payload.get("after") or actual != expected:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Work Item cursor does not match the current "
+                    "Project/filter query"
+                ),
+            )
+        return payload
+
+    def _work_item_list_public(self, state: Any) -> dict[str, Any]:
+        routing_errors = self.state_machine._work_item_split_brain_findings(
+            state
+        )
+        return {
+            "ref": state.ref,
+            "project_id": state.project_id,
+            "title": state.title,
+            "url": state.url,
+            "kind": state.kind,
+            "priority": state.priority,
+            "current_owner": state.current_owner,
+            "current_stage": state.current_stage,
+            "next_owner": state.next_owner,
+            "next_action": state.next_action,
+            "artifact_state": state.artifact_state,
+            "blocker": state.blocker,
+            "release_gate": state.release_gate,
+            "status_label": state.status_label,
+            "updated_at": state.updated_at,
+            "created_at": state.created_at,
+            "routingError": routing_errors[0] if routing_errors else None,
+        }
+
     async def list(
         self,
         *,
@@ -615,37 +714,149 @@ class WorkItemService:
         stage: str | None,
         release_gate: bool | None,
         scope: TenantScope | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        states = list(self.work_items.load_states().values())
-        if scope is not None:
-            states = [
-                state
-                for state in states
-                if state.organization_id == scope.organization_id
-                and state.workspace_id == scope.workspace_id
-            ]
-        if project_id:
-            states = [state for state in states if state.project_id == project_id]
-        if owner:
-            normalized_owner = self.state_machine._coerce_owner(owner)
-            states = [
-                state
-                for state in states
-                if self.state_machine._coerce_owner(state.current_owner or state.next_owner)
-                == normalized_owner
-            ]
-        if stage:
-            normalized_stage = self.state_machine._normalize_work_item_stage(
+        from fastapi import HTTPException
+
+        if scope is None:
+            scope = TenantScope()
+        if not project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="project_id is required for paginated Work Item lists",
+            )
+        self._project_for_scope(project_id, scope)
+
+        page_size = max(1, min(int(limit or 50), 100))
+        normalized_owner = (
+            self.state_machine._coerce_owner(owner)
+            if owner
+            else None
+        )
+        normalized_stage = (
+            self.state_machine._normalize_work_item_stage(
                 stage,
                 fallback="",
             )
-            states = [state for state in states if state.current_stage == normalized_stage]
-        if release_gate is not None:
-            states = [state for state in states if state.release_gate is release_gate]
-        states.sort(key=lambda item: item.updated_at, reverse=True)
+            if stage
+            else None
+        )
+        cursor_payload = (
+            self._decode_list_cursor(
+                cursor,
+                project_id=project_id,
+                owner=normalized_owner,
+                stage=normalized_stage,
+                release_gate=release_gate,
+            )
+            if cursor
+            else None
+        )
+
+        index = self.work_item_list_index
+        if index is None:
+            # Compatibility-only construction: keep response bounded even
+            # though production composition always supplies the keyed index.
+            states = [
+                state
+                for state in self.work_items.load_states().values()
+                if state.organization_id == scope.organization_id
+                and state.workspace_id == scope.workspace_id
+                and state.project_id == project_id
+            ]
+            states.sort(
+                key=lambda item: (-float(item.updated_at), item.ref)
+            )
+            states = states[:page_size]
+            return {
+                "items": [
+                    self._work_item_list_public(state)
+                    for state in states
+                ],
+                "pageSize": page_size,
+                "nextCursor": None,
+                "hasMore": False,
+                "compatibilityFallback": True,
+            }
+
+        current_revision = index.revision(
+            scope=scope,
+            project_id=project_id,
+        )
+        if (
+            cursor_payload is not None
+            and cursor_payload.get("revision") != current_revision
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "work_item_cursor_stale",
+                    "message": (
+                        "Work Items changed after this cursor was issued; "
+                        "restart pagination from the first page"
+                    ),
+                },
+            )
+
+        def predicate(state: Any) -> bool:
+            if normalized_owner:
+                candidate = self.state_machine._coerce_owner(
+                    state.current_owner or state.next_owner
+                )
+                if candidate != normalized_owner:
+                    return False
+            if (
+                normalized_stage
+                and state.current_stage != normalized_stage
+            ):
+                return False
+            if (
+                release_gate is not None
+                and state.release_gate is not release_gate
+            ):
+                return False
+            return True
+
+        get_state = self.work_items.get_state
+        if get_state is None:
+            loaded = self.work_items.load_states()
+            get_state = loaded.get
+
+        states, next_after, scan_truncated = index.page(
+            scope=scope,
+            project_id=project_id,
+            after=(
+                str(cursor_payload.get("after"))
+                if cursor_payload is not None
+                else None
+            ),
+            limit=page_size,
+            get_state=get_state,
+            predicate=predicate,
+        )
+        next_cursor = (
+            self._list_cursor_payload(
+                after=next_after,
+                project_id=project_id,
+                owner=normalized_owner,
+                stage=normalized_stage,
+                release_gate=release_gate,
+                revision=current_revision,
+            )
+            if next_after
+            else None
+        )
         return {
-            "items": [self.state_machine._work_item_state_public(state) for state in states],
-            "count": len(states),
+            "items": [
+                self._work_item_list_public(state)
+                for state in states
+            ],
+            "pageSize": page_size,
+            "nextCursor": next_cursor,
+            "hasMore": bool(next_cursor),
+            "scanTruncated": bool(scan_truncated),
+            "revision": current_revision,
         }
 
     async def _sync_from_gitlab_async(self, scope: TenantScope | None = None) -> dict[str, int]:
