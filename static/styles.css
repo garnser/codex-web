@@ -763,6 +763,13 @@ h1 {
   min-width: 110px;
 }
 
+.execution-profile-summary {
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 .sandbox-danger-warning {
   display: none;
   max-width: 420px;
