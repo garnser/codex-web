@@ -331,6 +331,8 @@ def install_bot_target_service(
     save_delivery_targets: Callable[[dict[str, BotReplyTarget]], None] | None = None,
     load_active_turns: Callable[[], dict[str, Any]] | None = None,
     bindings_for_project: Callable[[str, str], list[BotBinding]] | None = None,
+    put_reply_target: Callable[[str, BotReplyTarget], Any] | None = None,
+    put_delivery_target: Callable[[str, BotReplyTarget], Any] | None = None,
 ) -> BotTargetService:
     service = BotTargetService(
         load_reply_targets=load_reply_targets or host._load_bot_reply_targets,
