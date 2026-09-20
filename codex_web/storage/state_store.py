@@ -106,6 +106,14 @@ class StateStore(Protocol):
     def record_collection_exists(self, namespace: str) -> bool: ...
     def record_get(self, namespace: str, key: str) -> Any | None: ...
     def record_items(self, namespace: str) -> dict[str, Any]: ...
+    def record_page(
+        self,
+        namespace: str,
+        *,
+        key_prefix: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], str | None]: ...
     def record_apply(
         self,
         namespace: str,
