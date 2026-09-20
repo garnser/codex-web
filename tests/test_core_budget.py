@@ -51,6 +51,25 @@ class CoreBudgetTests(unittest.TestCase):
         )
         self.assertNotIn("legacy_core", source)
 
+    def test_production_has_no_legacy_core_references(self) -> None:
+        production_root = RUNTIME_DIR.parent
+        references = []
+        for path in production_root.rglob("*.py"):
+            if "legacy_core" in path.read_text():
+                references.append(str(path.relative_to(production_root)))
+        self.assertEqual(
+            references,
+            [],
+            f"legacy_core references remain in production: {references}",
+        )
+
+    def test_application_owns_app_and_registers_routes_directly(self) -> None:
+        source = (
+            RUNTIME_DIR.parent / "application.py"
+        ).read_text()
+        self.assertNotIn("app = core.app", source)
+        self.assertNotIn("replace_routes(", source)
+
     def test_legacy_core_is_deleted(self) -> None:
         self.assertFalse(
             LEGACY_CORE_PATH.exists(),
