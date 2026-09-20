@@ -2628,6 +2628,22 @@ def _compact_turn_queues() -> None:
         turn_queue_repository.save(compacted)
 
 
+def _flush_compatibility_state() -> None:
+    repositories = (
+        runtime_state.thread_settings,
+        runtime_state.active_turns,
+        runtime_state.work_item_states,
+        turn_queue_repository,
+        bot_state.reply_targets,
+        bot_state.delivery_targets,
+    )
+    for repository in repositories:
+        if repository is not None:
+            repository.flush_legacy_mirror()
+
+
+core._flush_compatibility_state = _flush_compatibility_state
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -2651,6 +2667,7 @@ runtime_supervisor = install_runtime_supervisor(
     thread_is_active=turn_execution_service.thread_is_active,
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+    flush_compatibility_state=_flush_compatibility_state,
 )
 
 runtime_service = RuntimeService(
