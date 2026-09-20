@@ -13,6 +13,7 @@ from codex_web.execution_workers import (
     AssignmentStartRequest,
     ExecutionAssignmentCreate,
     ExecutionWorkerRegister,
+    WorkerCapability,
     WorkerHeartbeatRequest,
     WorkerLifecycle,
     WorkerLifecycleUpdate,
@@ -78,6 +79,7 @@ def build_execution_workers_router(
     service: ExecutionWorkerService,
     *,
     control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
+    local_isolation_status=None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/execution-workers", tags=["execution-workers"])
 
@@ -86,6 +88,59 @@ def build_execution_workers_router(
         try:
             items = service.list_workers(request_actor(request))
             return {"items": [item.model_dump(mode="json") for item in items]}
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/readiness")
+    async def readiness(
+        request: Request,
+        required_capability: list[WorkerCapability] | None = None,
+        execution_contract_version: str = "thread-turn/1.0",
+    ) -> dict[str, Any]:
+        try:
+            actor = _control_actor(request)
+            required = tuple(
+                required_capability
+                or (
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                )
+            )
+            result = service.execution_readiness(
+                required_capabilities=required,
+                execution_contract_version=execution_contract_version,
+                actor=actor,
+            )
+            isolation = (
+                local_isolation_status()
+                if callable(local_isolation_status)
+                else None
+            )
+            isolation_payload = None
+            if isolation is not None:
+                isolation_payload = {
+                    "backend": isolation.backend,
+                    "ready": isolation.ready,
+                    "reason": isolation.reason,
+                    "supports_network_disabled": (
+                        isolation.supports_network_disabled
+                    ),
+                    "supports_network_allowlist": (
+                        isolation.supports_network_allowlist
+                    ),
+                    "supports_resource_limits": (
+                        isolation.supports_resource_limits
+                    ),
+                    "capabilities": [
+                        value.value for value in isolation.capabilities
+                    ],
+                }
+            return {
+                "execution": result.model_dump(mode="json"),
+                "local_isolation": isolation_payload,
+            }
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
