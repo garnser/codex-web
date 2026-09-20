@@ -125,7 +125,7 @@ def install_work_item_timing_policy(
         )
         app.state.work_item_timing_policy = policy
 
-    # Output-only compatibility aliases while legacy_core is deleted.
+    # Output-only aliases for the verified compatibility namespace.
     host._work_item_handoff_timeout_seconds = (
         policy.handoff_timeout_seconds
     )
