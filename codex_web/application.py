@@ -77,7 +77,10 @@ from codex_web.extension_packages import LocalExtensionPackageCatalog
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.integrations.slack_client import SlackClient
 from codex_web.integrations.telegram_client import TelegramClient
-from codex_web.integrations.webhook_security import install_webhook_security
+from codex_web.integrations.webhook_security import (
+    install_webhook_security,
+    verify_gitlab_token,
+)
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
@@ -108,6 +111,7 @@ from codex_web.runtime import core
 from codex_web.runtime.bots import install_bot_runtime
 from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
+from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -213,6 +217,9 @@ from codex_web.services.gitlab import (
     install_gitlab_compatibility,
     install_gitlab_service,
 )
+from codex_web.services.gitlab_event_presentation import (
+    GitLabEventPresentationService,
+)
 from codex_web.services.gitlab_dependencies import (
     GitLabOperationalDependencies,
     GitLabRoutingDependencies,
@@ -312,6 +319,7 @@ from codex_web.services.work_item_dependencies import (
     gitlab_token_for_project,
     gitlab_url,
 )
+from codex_web.services.workflow_claims import WorkflowClaimPolicy
 from codex_web.services.work_items import (
     WorkItemService,
     install_work_item_compatibility,
@@ -1966,6 +1974,26 @@ context_service = ContextCompactionService(
     publish_event=event_hub.publish,
 )
 
+def _binding_public(binding):
+    item = binding.model_dump()
+    item["prefix"] = bot_presentation_service.binding_prefix(binding)
+    item["report_name"] = (
+        bot_presentation_service.binding_report_name(binding)
+    )
+    item["active"] = turn_execution_service.thread_is_active(
+        binding.thread_id
+    )
+    item["queueDepth"] = turn_queue_policy.depth(binding.thread_id)
+    if binding.provider == "slack":
+        item["slack_icon"] = (
+            bot_presentation_service.slack_reply_icon(binding)
+        )
+        item["slack_username"] = (
+            bot_presentation_service.slack_reply_username(binding)
+        )
+    return item
+
+
 thread_service = ThreadService(
     runtime_transport=codex_runtime,
     runtime_request_for_thread=turn_execution_service.request_for_thread,
@@ -1997,7 +2025,7 @@ turn_service = TurnService(
     execution=turn_execution_service,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
-    binding_public=core._binding_public,
+    binding_public=_binding_public,
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
@@ -2296,6 +2324,14 @@ work_item_recovery_scheduler.bind(native_recovery_service)
 core._schedule_native_recovery_cycles = native_recovery_service.schedule
 work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
+workflow_claim_policy = WorkflowClaimPolicy(
+    load_states=runtime_state.work_item_states.load,
+    ensure_defaults=work_item_state_machine._ensure_work_item_lane_defaults,
+    coerce_owner=work_item_state_machine._coerce_owner,
+    owner_names=OWNER_QUEUE_AGENTS,
+)
+app.state.workflow_claim_policy = workflow_claim_policy
+
 bot_delivery_service = install_bot_delivery_service(
     app,
     core,
@@ -2308,8 +2344,8 @@ bot_delivery_service = install_bot_delivery_service(
     collaboration=thread_bot_collaboration_service,
     approvals=approval_service,
     publish_event=event_hub.publish,
-    workflow_claim_findings=core._workflow_outbound_claim_findings,
-    workflow_correction=core._canonical_workflow_correction,
+    workflow_claim_findings=workflow_claim_policy.findings,
+    workflow_correction=workflow_claim_policy.correction,
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
@@ -2353,19 +2389,37 @@ gitlab_work_item_runtime_dependencies = (
         load_projects=project_repository.load,
     )
 )
+gitlab_event_presentation = GitLabEventPresentationService(
+    delivery=bot_delivery_service,
+    targets=bot_target_service,
+    telemetry=bot_runtime_telemetry,
+    label_names=gitlab_work_item_dependencies.label_names,
+    event_url=gitlab_work_item_dependencies.url,
+)
+app.state.gitlab_event_presentation = gitlab_event_presentation
+
+
+def _verify_gitlab_webhook(request):
+    verify_gitlab_token(
+        request,
+        os.environ.get("CODEX_WEB_GITLAB_WEBHOOK_SECRET")
+        or os.environ.get("GITLAB_WEBHOOK_SECRET"),
+    )
+
+
 gitlab_operational_dependencies = GitLabOperationalDependencies(
     api_base_url=gitlab_work_item_dependencies.api_base_url,
     load_support_state=auxiliary_state.support_servicedesk.load,
     save_support_state=auxiliary_state.support_servicedesk.save,
     load_semantic_events=auxiliary_state.gitlab_semantic_events.load,
     save_semantic_events=auxiliary_state.gitlab_semantic_events.save,
-    verify_webhook=core._verify_gitlab_webhook,
+    verify_webhook=_verify_gitlab_webhook,
     append_event=bot_runtime_telemetry.append,
     publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
     dispatch_event=bot_event_dispatch_service.dispatch,
-    format_event_prompt=core._format_gitlab_event_prompt,
-    send_event_notice=core._send_gitlab_event_notice,
+    format_event_prompt=gitlab_event_presentation.format_prompt,
+    send_event_notice=gitlab_event_presentation.send_notice,
     schedule_recovery=native_recovery_service.schedule,
 )
 gitlab_service = install_gitlab_service(
@@ -2472,6 +2526,17 @@ app.state.runtime_health_service = runtime_health_service
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor coordinates explicit
 # runtime owners and receives the extracted health evaluator directly.
+def _compact_turn_queues() -> None:
+    queues = turn_queue_repository.load()
+    compacted = {
+        thread_id: items
+        for thread_id, items in queues.items()
+        if items
+    }
+    if len(compacted) != len(queues):
+        turn_queue_repository.save(compacted)
+
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -2484,11 +2549,11 @@ runtime_supervisor = install_runtime_supervisor(
     bot_runtime=bot_runtime,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
-    sd_notify=core._sd_notify,
+    sd_notify=sd_notify,
     daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
-    compact_turn_queues=core._compact_turn_queues,
-    dedupe_bot_integrations=core._dedupe_bot_integrations,
+    compact_turn_queues=_compact_turn_queues,
+    dedupe_bot_integrations=bot_connection_service.dedupe_integrations,
     restore_thread_names=thread_naming_service.restore_all,
     resume_active_threads=turn_execution_service.resume_active_threads_after_startup,
     load_turn_queues=turn_queue_repository.load,
@@ -2648,7 +2713,7 @@ def _compat_daemon_health():
 
 
 async def _compat_healthz():
-    health = core._daemon_health()
+    health = runtime_health_service.health()
     if not health["ok"]:
         from fastapi import HTTPException
 
@@ -2847,4 +2912,4 @@ app.state.api_authorization_service = api_authorization_service
 
 
 def main() -> None:
-    core.main()
+    run_server()
