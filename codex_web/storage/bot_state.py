@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from contextvars import ContextVar
+import threading
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -31,10 +31,8 @@ class ModelListRepository(Generic[T]):
         self.namespace = namespace
         self.legacy_path = legacy_path
         self.model = model
-        self._snapshot: ContextVar[list[dict[str, Any]] | None] = ContextVar(
-            f"codex_web_{namespace}_snapshot",
-            default=None,
-        )
+        self._snapshots: dict[int, list[dict[str, Any]]] = {}
+        self._lock = threading.RLock()
 
     def _legacy_payload(self) -> list[dict[str, Any]]:
         if not self.legacy_path.exists():
@@ -54,12 +52,14 @@ class ModelListRepository(Generic[T]):
 
     def load(self) -> list[T]:
         raw = self._raw()
-        self._snapshot.set(copy.deepcopy(raw))
-        return [
+        result = [
             self.model.model_validate(item)
             for item in raw
             if isinstance(item, dict)
         ]
+        with self._lock:
+            self._snapshots[id(result)] = copy.deepcopy(raw)
+        return result
 
     @staticmethod
     def _by_id(values: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -72,7 +72,8 @@ class ModelListRepository(Generic[T]):
 
     def save(self, values: list[T]) -> None:
         payload = [item.model_dump(mode="json") for item in values]
-        base = self._snapshot.get()
+        with self._lock:
+            base = self._snapshots.pop(id(values), None)
         if base is None:
             self.store.put(self.namespace, payload)
             merged = payload
@@ -129,7 +130,6 @@ class ModelListRepository(Generic[T]):
                 default=[],
             )
 
-        self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(
             self.legacy_path,
             json.dumps(merged, indent=2) + "\n",
