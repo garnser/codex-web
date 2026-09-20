@@ -155,7 +155,8 @@
       <small>Created: ${timeText(workspace.created_at)} · updated: ${timeText(workspace.updated_at)} · cleaned: ${timeText(workspace.cleaned_at)}</small>
       ${workspace.error ? `<small>Error: ${escapeHtml(workspace.error)}</small>` : ""}
       ${lease ? `<small>Lease: ${escapeHtml(lease.id)} · ${escapeHtml(lease.mode)} · ${leaseState} · acquired ${timeText(lease.acquired_at)} · renewed ${timeText(lease.renewed_at)} · expires ${timeText(lease.expires_at)}</small>
-        <small>Per-resource lease modes: ${escapeHtml(JSON.stringify(lease.resource_modes || {}))}</small>\n        <small>Lease owner: ${escapeHtml(lease.owner_identity_id)} · released ${timeText(lease.released_at)} · reason ${escapeHtml(lease.release_reason || "none")}</small>` : '<small>Canonical lease metadata is missing for this workspace.</small>'}
+        <small>Per-resource lease modes: ${escapeHtml(JSON.stringify(lease.resource_modes || {}))}</small>
+        <small>Lease owner: ${escapeHtml(lease.owner_identity_id)} · released ${timeText(lease.released_at)} · reason ${escapeHtml(lease.release_reason || "none")}</small>` : '<small>Canonical lease metadata is missing for this workspace.</small>'}
       ${integrationHtml(workspace)}
       <button type="button" class="ghost-button" data-workspace-events="${escapeHtml(workspace.id)}">Load event history</button>
       <div id="workspace-events-${escapeHtml(workspace.id)}"></div>
