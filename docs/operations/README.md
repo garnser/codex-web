@@ -9,6 +9,8 @@ Operational state should be read from canonical APIs and the operator UI, not re
 - Frontend responsiveness: [Frontend performance budgets](frontend-performance.md)
 - Releases: [Release promotion](../architecture/releases.md)
 - Upgrades and rollback compatibility: [Upgrade and rollback procedure](upgrade-and-rollback.md) and [Safe upgrades](../architecture/safe-upgrades.md)
+- Multi-repository Project setup, execution, recovery and migration: [Multi-repository Projects](multi-repository-projects.md)
+- Multi-repository security/E2E evidence: [Security qualification](multi-repository-security-qualification.md)
 - Legacy multi-repository Project/thread conversion: [Legacy Project migration](legacy-project-migration.md)
 - Controlled autonomy/audit: [Bounded autonomy](../architecture/bounded-autonomy.md) and [Autonomy audit](../architecture/autonomy-audit.md)
 

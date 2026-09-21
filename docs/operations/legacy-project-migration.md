@@ -116,7 +116,11 @@ The diagnostic endpoint is:
 
 `GET /api/legacy-migration/path-compatibility?path=...`
 
-An expired mapping resolves as unavailable.
+An expired or explicitly revoked mapping resolves as unavailable. Administrators can revoke a mapping before its expiry without deleting migration evidence:
+
+`DELETE /api/projects/{project_id}/legacy-migration/path-compatibility?path=...`
+
+Revocation records `revoked_at` and `revoked_by` in the persisted migration report. Repeating the same revocation is idempotent.
 
 ## Rollback boundary
 

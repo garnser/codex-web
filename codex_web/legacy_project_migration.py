@@ -82,6 +82,8 @@ class LegacyPathCompatibilityMapping(BaseModel):
     canonical_path: str = Field(min_length=1)
     expires_at: float
     created_at: float = Field(default_factory=time.time)
+    revoked_at: float | None = None
+    revoked_by: str | None = None
 
 
 class LegacyMigrationPlan(BaseModel):

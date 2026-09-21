@@ -147,6 +147,26 @@
         "Executive/action explainability"
       ],
       "open_selector": "#company-operations-button"
+    },
+    {
+      "name": "execution-preflight-remediation",
+      "fixture": "tests/browser/execution_preflight_fixture.html",
+      "title": "Execution preflight blocker and retained retry",
+      "landmarks": [
+        "make the requested change",
+        "Execution blocked",
+        "Profile: repository-write",
+        "Repository: repo-app",
+        "worker_capability_missing",
+        "Restore a qualified worker."
+      ],
+      "annotations": [
+        "effective execution profile",
+        "repository and read-only context",
+        "typed blocker and remediation",
+        "correlation identity",
+        "authorized retained retry"
+      ]
     }
   ],
   "forbidden_markers": [

@@ -143,6 +143,18 @@ Tenant administrators can inspect:
 
 Events are diagnostic/audit facts. They do not themselves grant authority.
 
+## Multi-repository execution boundary
+
+Repository content, migrated thread content, task text and model output remain untrusted data. They cannot select a repository target, widen a sandbox, grant broker operations, introduce a SecretReference, or convert read-only context into mutation authority.
+
+For local isolated execution, the selected repository workspace is the only repository mount that may be writable. Explicit sibling repository context is mounted read-only. `danger-full-access` does not change that resource boundary, does not mount the host root, does not disable tenant/resource leases or fencing, and does not grant control-plane administrator credentials. Network capability remains independently qualified.
+
+Orchestration-only assignments have no repository/Git authority. Their control-plane access is assignment-bound, allowlisted, tenant/project scoped, fenced and audited. Arbitrary localhost/network proxying is rejected.
+
+Legacy sandbox/profile migration must surface material authority differences. Historical `danger-full-access` semantics are not silently treated as equivalent to the current contained worker boundary.
+
+See [Multi-repository security qualification](../operations/multi-repository-security-qualification.md) for executable evidence.
+
 ## Fail-closed rules
 
 Codex-web fails closed when:
