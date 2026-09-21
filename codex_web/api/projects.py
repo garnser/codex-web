@@ -14,7 +14,10 @@ from codex_web.services.projects import (
 )
 
 
-def build_projects_router(service: ProjectService) -> APIRouter:
+def build_projects_router(
+    service: ProjectService,
+    fresh_bootstrap: Any | None = None,
+) -> APIRouter:
     router = APIRouter(tags=["projects"])
 
     @router.get("/api/projects")
@@ -26,11 +29,40 @@ def build_projects_router(service: ProjectService) -> APIRouter:
     async def create_project(payload: ProjectCreate, request: Request) -> dict[str, Any]:
         try:
             IdentityService.require_admin(request.state.identity_actor)
-            return service.create(payload, request.state.tenant_scope).model_dump()
+            project = service.create(payload, request.state.tenant_scope)
+            result = project.model_dump()
+            if fresh_bootstrap is not None:
+                result["freshBootstrap"] = fresh_bootstrap.bootstrap(
+                    project.id,
+                    actor=request.state.identity_actor,
+                )
+            return result
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
         except InvalidProjectPathError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/api/projects/{project_id}/fresh-bootstrap")
+    async def fresh_project_bootstrap(
+        project_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        if fresh_bootstrap is None:
+            raise HTTPException(
+                status_code=503,
+                detail="fresh Project bootstrap is unavailable",
+            )
+        try:
+            IdentityService.require_admin(request.state.identity_actor)
+            service.get(project_id, request.state.tenant_scope)
+            return fresh_bootstrap.bootstrap(
+                project_id,
+                actor=request.state.identity_actor,
+            )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.put("/api/projects/{project_id}/task-source")
     async def set_project_task_source(
