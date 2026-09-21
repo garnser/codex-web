@@ -82,6 +82,7 @@ class WorkItemSourceIdentityIndexTests(unittest.TestCase):
             self.index.ref_for_identity(_identity("group/project#43")),
             "canonical-1",
         )
+        self.assertEqual(self.index.metrics()["rekeys"], 1)
 
     def test_duplicate_identity_fails_deterministically(self):
         identity = _identity("group/project#42")
