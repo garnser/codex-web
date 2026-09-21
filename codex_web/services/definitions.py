@@ -589,8 +589,6 @@ class DefinitionRegistryService:
         """Archive an active Definition revision without deleting history."""
 
         changed: list[DefinitionRecord] = []
-        now = time.time()
-
         def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
             selected = next(
                 (record for record in records if record.record_id == record_id),
@@ -607,11 +605,6 @@ class DefinitionRegistryService:
             current = selected.model_copy(
                 update={
                     "lifecycle": DefinitionLifecycle.DEPRECATED,
-                    "effective_until": (
-                        min(selected.effective_until, now)
-                        if selected.effective_until is not None
-                        else now
-                    ),
                     "publish_reason": (
                         f"deprecated by {actor}: {reason}"
                     ),
