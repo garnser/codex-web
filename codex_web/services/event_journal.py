@@ -449,6 +449,10 @@ class EventJournal:
                 self._persist_manifest()
             raise
 
+    def rotate(self) -> JournalSegment | None:
+        with self._lock:
+            return self._rotate_locked()
+
     def rotate_if_due(self) -> JournalSegment | None:
         with self._lock:
             if not self._rotation_due():
