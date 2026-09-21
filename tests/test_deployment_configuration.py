@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -100,6 +101,33 @@ class DeploymentConfigurationTests(unittest.TestCase):
                 self.assertEqual(host._support_servicedesk_sweep_interval(), 300.0)
             finally:
                 os.environ.pop("CODEX_WEB_SUPPORT_SERVICEDESK_PROJECT_PATH", None)
+
+
+    def test_recovery_compose_uses_immutable_image_and_no_python_bind_mounts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        base = (root / "compose.yaml").read_text(encoding="utf-8")
+        recovery = (root / "compose.recovery.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "CODEX_WEB_IMAGE:?CODEX_WEB_IMAGE must reference the qualified immutable image",
+            recovery,
+        )
+        self.assertIn("deploy/recovery/nginx.conf", recovery)
+        self.assertNotIn(".py:", base)
+        self.assertNotIn(".py:", recovery)
+        self.assertNotIn("/app/codex_web", recovery)
+
+    def test_release_dockerfile_embeds_explicit_build_identity(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("ARG CODEX_WEB_RELEASE_VERSION=dev", dockerfile)
+        self.assertIn("ARG CODEX_WEB_GIT_REVISION=unknown", dockerfile)
+        self.assertIn("CODEX_WEB_RELEASE_VERSION=", dockerfile)
+        self.assertIn("CODEX_WEB_GIT_REVISION=", dockerfile)
+
 
 
 if __name__ == "__main__":

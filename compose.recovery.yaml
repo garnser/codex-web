@@ -1,0 +1,16 @@
+services:
+  codex-web:
+    image: ${CODEX_WEB_IMAGE:?CODEX_WEB_IMAGE must reference the qualified immutable image}
+    build: !reset null
+    ports: !reset []
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      codex-web:
+        condition: service_healthy
+    ports:
+      - "${CODEX_WEB_NGINX_BIND:-127.0.0.1}:${CODEX_WEB_NGINX_PORT:-18768}:8080"
+    volumes:
+      - ./deploy/recovery/nginx.conf:/etc/nginx/nginx.conf:ro

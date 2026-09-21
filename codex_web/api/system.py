@@ -29,6 +29,26 @@ from codex_web.services.runtime_diagnostics import (
 )
 
 
+def _build_metadata() -> dict[str, str]:
+    return {
+        "releaseVersion": (
+            os.environ.get("CODEX_WEB_RELEASE_VERSION", "dev").strip()
+            or "dev"
+        ),
+        "gitRevision": (
+            os.environ.get("CODEX_WEB_GIT_REVISION", "unknown").strip()
+            or "unknown"
+        ),
+        "source": (
+            os.environ.get(
+                "CODEX_WEB_BUILD_SOURCE",
+                "https://github.com/garnser/codex-web",
+            ).strip()
+            or "https://github.com/garnser/codex-web"
+        ),
+    }
+
+
 def _codex_verifier_credentials() -> tuple[str, str] | None:
     user = os.environ.get("CODEX_WEB_VERIFIER_USER", "").strip()
     password = os.environ.get("CODEX_WEB_VERIFIER_PASSWORD", "")
@@ -98,7 +118,15 @@ def build_system_router(
             "ok": True,
             "status": "alive",
             "version": static_assets.version(),
+            "build": _build_metadata(),
             "time": time.time(),
+        }
+
+    @router.get("/api/version")
+    async def version() -> dict[str, Any]:
+        return {
+            "staticVersion": static_assets.version(),
+            **_build_metadata(),
         }
 
     @router.get("/api/compatibility")

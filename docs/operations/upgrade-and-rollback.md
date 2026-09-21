@@ -22,6 +22,8 @@ Before a production upgrade:
 
 Read [Safe upgrades](../architecture/safe-upgrades.md) and [Recovery continuity](../architecture/recovery-continuity.md) before operating a production upgrade.
 
+For the v0.1.0 emergency-recovery to v0.2.0 immutable-image transition, follow [Recovery release v0.2.0](recovery-release-v0.2.0.md). That procedure explicitly removes application-source compatibility mounts and records the exact image/state evidence required for rollback.
+
 ## Production upgrade
 
 Use the canonical Upgrade lifecycle rather than applying database changes manually.
