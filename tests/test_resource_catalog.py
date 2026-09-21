@@ -30,6 +30,8 @@ from codex_web.services.resources import (
     ResourceAmbiguousError,
     ResourceCatalogService,
     RepositoryTargetAmbiguousError,
+    RepositoryTargetConflictError,
+    RepositoryTargetMissingError,
     RepositoryTargetUnauthorizedError,
     ResourceConflictError,
     ResourceNotFoundError,
@@ -274,20 +276,25 @@ class ResourceCatalogTests(unittest.TestCase):
                 actor=foreign,
             )
 
-    def test_repository_target_selection_precedence_and_provenance(self) -> None:
+    def test_repository_target_selectors_must_converge_and_preserve_provenance(self) -> None:
         first = self.service.create(
-            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="App"),
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="App",
+            ),
             actor=self.actor,
         )
         second = self.service.create(
-            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Platform"),
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Platform",
+            ),
             actor=self.actor,
         )
         self.service.bind_project(
             project=self.project,
             resource_id=first.id,
             actor=self.actor,
-            purpose="execution-default",
         )
         self.service.bind_project(
             project=self.project,
@@ -295,38 +302,90 @@ class ResourceCatalogTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        work_item = self.service.resolve_repository_target(
+        converged = self.service.resolve_repository_target(
             self.project,
             actor=self.actor,
             work_item_resource_ids=(second.id,),
             work_item_ref="group/platform#42",
-            explicit_repository_id=first.id,
+            explicit_repository_id=second.id,
+            thread_profile_repository_id=second.id,
+            routing_repository_id=second.id,
         )
-        self.assertEqual(work_item.mutable_repository_id, second.id)
-        self.assertEqual(work_item.source, RepositoryTargetSource.WORK_ITEM)
-        self.assertEqual(work_item.source_ref, "group/platform#42")
+        self.assertEqual(
+            converged.mutable_repository_id,
+            second.id,
+        )
+        self.assertEqual(
+            converged.source,
+            RepositoryTargetSource.WORK_ITEM,
+        )
+        self.assertEqual(
+            converged.source_ref,
+            "group/platform#42",
+        )
+        self.assertEqual(
+            [item.source for item in converged.selection_evidence],
+            [
+                RepositoryTargetSource.WORK_ITEM,
+                RepositoryTargetSource.EXPLICIT,
+                RepositoryTargetSource.THREAD_PROFILE,
+                RepositoryTargetSource.ROUTING_RULE,
+            ],
+        )
+        self.assertEqual(
+            {
+                item.repository_id
+                for item in converged.selection_evidence
+            },
+            {second.id},
+        )
+
+        with self.assertRaises(RepositoryTargetConflictError):
+            self.service.resolve_repository_target(
+                self.project,
+                actor=self.actor,
+                work_item_resource_ids=(second.id,),
+                work_item_ref="group/platform#42",
+                explicit_repository_id=first.id,
+            )
 
         explicit = self.service.resolve_repository_target(
             self.project,
             actor=self.actor,
             explicit_repository_id=second.id,
         )
-        self.assertEqual(explicit.mutable_repository_id, second.id)
-        self.assertEqual(explicit.source, RepositoryTargetSource.EXPLICIT)
+        self.assertEqual(
+            explicit.mutable_repository_id,
+            second.id,
+        )
+        self.assertEqual(
+            explicit.source,
+            RepositoryTargetSource.EXPLICIT,
+        )
 
         profile = self.service.resolve_repository_target(
             self.project,
             actor=self.actor,
             thread_profile_repository_id=second.id,
         )
-        self.assertEqual(profile.source, RepositoryTargetSource.THREAD_PROFILE)
+        self.assertEqual(
+            profile.source,
+            RepositoryTargetSource.THREAD_PROFILE,
+        )
 
         routed = self.service.resolve_repository_target(
             self.project,
             actor=self.actor,
+            routing_repository_id=first.id,
         )
-        self.assertEqual(routed.mutable_repository_id, first.id)
-        self.assertEqual(routed.source, RepositoryTargetSource.ROUTING_RULE)
+        self.assertEqual(
+            routed.mutable_repository_id,
+            first.id,
+        )
+        self.assertEqual(
+            routed.source,
+            RepositoryTargetSource.ROUTING_RULE,
+        )
 
     def test_repository_target_ambiguity_unauthorized_and_orchestration_only(self) -> None:
         first = self.service.create(
@@ -363,6 +422,39 @@ class ResourceCatalogTests(unittest.TestCase):
         self.assertEqual(
             orchestration.source,
             RepositoryTargetSource.ORCHESTRATION_ONLY,
+        )
+
+    def test_explicit_policy_requires_contextual_target_even_for_one_repository(self) -> None:
+        repository = self.service.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Only repo",
+            ),
+            actor=self.actor,
+        )
+        self.service.bind_project(
+            project=self.project,
+            resource_id=repository.id,
+            actor=self.actor,
+        )
+        explicit_project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+
+        with self.assertRaises(RepositoryTargetMissingError):
+            self.service.resolve_repository_target(
+                explicit_project,
+                actor=self.actor,
+            )
+
+        resolved = self.service.resolve_repository_target(
+            explicit_project,
+            actor=self.actor,
+            explicit_repository_id=repository.id,
+        )
+        self.assertEqual(
+            resolved.mutable_repository_id,
+            repository.id,
         )
 
     def test_disabled_resource_cannot_resolve_for_privileged_use(self) -> None:
