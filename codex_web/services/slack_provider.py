@@ -297,21 +297,36 @@ class SlackProviderService:
         self,
         limit: int = 2000,
     ) -> set[str]:
-        events_file = self.telemetry.events_file
-        if not events_file.exists():
-            return set()
-        with events_file.open(errors="replace") as handle:
-            lines = deque(handle, maxlen=max(1, limit))
-        message_ids: set[str] = set()
-        for line in lines:
-            with contextlib.suppress(Exception):
-                event = json.loads(line)
-                if (
-                    event.get("provider") == "slack"
-                    and event.get("message_id")
-                ):
-                    message_ids.add(str(event["message_id"]))
-        return message_ids
+        recent = getattr(self.telemetry, "recent", None)
+        if callable(recent):
+            events = recent(max(1, limit))
+        else:
+            events_file = self.telemetry.events_file
+            if not events_file.exists():
+                return set()
+            max_bytes = 4 * 1024 * 1024
+            with events_file.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                end_offset = handle.tell()
+                start_offset = max(0, end_offset - max_bytes)
+                handle.seek(start_offset)
+                raw = handle.read(end_offset - start_offset)
+            lines = raw.splitlines()
+            if start_offset > 0 and lines:
+                lines = lines[1:]
+            events = []
+            for line in lines[-max(1, limit):]:
+                with contextlib.suppress(Exception):
+                    events.append(
+                        json.loads(line.decode("utf-8", errors="replace"))
+                    )
+        return {
+            str(event["message_id"])
+            for event in events
+            if isinstance(event, dict)
+            and event.get("provider") == "slack"
+            and event.get("message_id")
+        }
 
     def _slack_connections(self) -> dict[str, BotConnection]:
         return {
@@ -320,6 +335,31 @@ class SlackProviderService:
             if connection.provider == "slack"
             and self._credential_identity(connection, "bot_token")
         }
+
+    def _bindings_for_projects(
+        self,
+        project_ids: set[str] | None,
+    ) -> list[Any]:
+        if project_ids is not None and callable(
+            getattr(self.bindings, "for_project", None)
+        ):
+            values: dict[str, Any] = {}
+            for project_id in sorted(project_ids):
+                for binding in self.bindings.for_project(
+                    "slack",
+                    project_id,
+                ):
+                    values[binding.id] = binding
+            return list(values.values())
+        return [
+            binding
+            for binding in self.bindings.load_bindings()
+            if binding.provider == "slack"
+            and (
+                project_ids is None
+                or binding.project_id in project_ids
+            )
+        ]
 
     def _channels(
         self,
@@ -336,7 +376,9 @@ class SlackProviderService:
             tuple[str, str],
             tuple[BotConnection, str],
         ] = {}
-        for binding in self.bindings.load_bindings():
+        for binding in self._bindings_for_projects(
+            allowed_project_ids
+        ):
             connection = connections.get(binding.connection_id or "")
             if connection and binding.external_conversation_id:
                 pairs[
@@ -357,7 +399,10 @@ class SlackProviderService:
                         connection.default_external_conversation_id,
                     ),
                 )
-        return list(pairs.values())
+        return [
+            pairs[key]
+            for key in sorted(pairs)
+        ]
 
     def _thread_targets(
         self,
@@ -370,15 +415,64 @@ class SlackProviderService:
                 for key, value in connections.items()
                 if value.project_id in allowed_project_ids
             }
-        all_bindings = self.bindings.load_bindings()
+        bindings = self._bindings_for_projects(
+            allowed_project_ids
+        )
+        exact = all(
+            callable(getattr(self.targets, name, None))
+            for name in (
+                "active_reply_target_for_binding",
+                "reply_target_for_binding",
+                "delivery_target_for_binding",
+            )
+        )
+        pairs: dict[
+            tuple[str, str, str],
+            tuple[BotConnection, str, str],
+        ] = {}
+        if exact:
+            for binding in bindings:
+                connection = connections.get(
+                    binding.connection_id or ""
+                )
+                if connection is None:
+                    continue
+                for getter in (
+                    self.targets.active_reply_target_for_binding,
+                    self.targets.reply_target_for_binding,
+                    self.targets.delivery_target_for_binding,
+                ):
+                    target = getter(binding)
+                    if target is None:
+                        continue
+                    thread_ts = (
+                        target.external_thread_id
+                        or target.message_id
+                    )
+                    if not thread_ts:
+                        continue
+                    key = (
+                        connection.id,
+                        target.external_conversation_id,
+                        str(thread_ts),
+                    )
+                    pairs[key] = (
+                        connection,
+                        target.external_conversation_id,
+                        str(thread_ts),
+                    )
+            return [pairs[key] for key in sorted(pairs)]
+
+        # Compatibility-only fallback for older direct service consumers.
+        # Production composition supplies exact keyed target lookups above.
         binding_map = {
             (
                 binding.provider,
                 binding.thread_id,
                 binding.external_conversation_id,
             ): binding
-            for binding in all_bindings
-            if binding.provider == "slack" and binding.connection_id
+            for binding in bindings
+            if binding.connection_id
         }
         targets: list[Any] = []
         targets.extend(self.targets.load_reply_targets().values())
@@ -388,10 +482,6 @@ class SlackProviderService:
             for active in self.targets.load_active_turns().values()
             if active.reply_target
         )
-        pairs: dict[
-            tuple[str, str, str],
-            tuple[BotConnection, str, str],
-        ] = {}
         for target in targets:
             if (
                 target.provider != "slack"
@@ -408,36 +498,24 @@ class SlackProviderService:
                     target.external_conversation_id,
                 )
             )
-            if not binding:
-                candidates = [
-                    item
-                    for item in all_bindings
-                    if item.provider == "slack"
-                    and item.thread_id == target.thread_id
-                    and item.external_conversation_id
-                    == target.external_conversation_id
-                    and item.connection_id
-                ]
-                binding = candidates[0] if candidates else None
             connection = (
                 connections.get(binding.connection_id or "")
                 if binding
                 else None
             )
-            if not connection:
+            if connection is None:
                 continue
-            pairs[
-                (
-                    connection.id,
-                    target.external_conversation_id,
-                    thread_ts,
-                )
-            ] = (
+            key = (
+                connection.id,
+                target.external_conversation_id,
+                str(thread_ts),
+            )
+            pairs[key] = (
                 connection,
                 target.external_conversation_id,
-                thread_ts,
+                str(thread_ts),
             )
-        return list(pairs.values())
+        return [pairs[key] for key in sorted(pairs)]
 
     async def _history(
         self,
@@ -450,7 +528,7 @@ class SlackProviderService:
                 token,
                 channel_id,
                 oldest=oldest,
-                limit=50,
+                limit=self.batch_limit(),
             )
 
         return await self._with_credential(
