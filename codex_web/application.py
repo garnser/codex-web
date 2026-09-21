@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_profiles import build_agent_profiles_router
+from codex_web.api.agent_teams import build_agent_teams_router
 from codex_web.api.skills import build_skills_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
@@ -144,6 +145,7 @@ from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_profiles import AgentProfileService
+from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.skills import SkillService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -382,6 +384,7 @@ from codex_web.services.work_items import (
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_profiles import AgentProfileStore
+from codex_web.storage.agent_teams import AgentTeamStore
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
@@ -1332,6 +1335,16 @@ app.state.agent_profile_store = agent_profile_store
 app.state.agent_profile_service = agent_profile_service
 app.include_router(build_agent_profiles_router(agent_profile_service))
 app.include_router(build_skills_router(skill_service))
+
+agent_team_store = AgentTeamStore(state_store)
+agent_team_service = AgentTeamService(
+    agent_team_store,
+    profiles=agent_profile_service,
+    definitions=definition_registry_service,
+)
+app.state.agent_team_store = agent_team_store
+app.state.agent_team_service = agent_team_service
+app.include_router(build_agent_teams_router(agent_team_service))
 
 
 def _agent_profile_definition_usage(reference):
