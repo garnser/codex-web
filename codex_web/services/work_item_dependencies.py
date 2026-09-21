@@ -11,6 +11,7 @@ from typing import Any
 from codex_web.models import (
     GitLabProjectRoutingSettings,
     GitLabRoutingSettings,
+    TaskSourceIdentity,
     WorkItemState,
 )
 
@@ -30,6 +31,10 @@ class WorkItemRuntimeDependencies:
     default_release_owner: str
     non_implementation_owners: frozenset[str]
     get_state: Callable[[str], WorkItemState | None] | None = None
+    get_state_by_source_identity: Callable[
+        [TaskSourceIdentity],
+        WorkItemState | None,
+    ] | None = None
     save_state: Callable[[WorkItemState], None] | None = None
 
     @classmethod
@@ -90,6 +95,11 @@ class WorkItemRuntimeDependencies:
             get_state=getattr(
                 host,
                 "_get_work_item_state_record",
+                None,
+            ),
+            get_state_by_source_identity=getattr(
+                host,
+                "_get_work_item_state_by_source_identity",
                 None,
             ),
             save_state=getattr(
