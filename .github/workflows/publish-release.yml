@@ -250,6 +250,7 @@ jobs:
           EXPECTED_RELEASE_VERSION="$VERSION" \
           EXPECTED_REVISION="$CANDIDATE_SHA" \
           BASE_URL="$BASE_URL" \
+          EVIDENCE_DIR="$artifacts" \
             bash scripts/qualify-recovery-image.sh \
             | tee "$artifacts/recovery.json"
 
@@ -266,6 +267,7 @@ jobs:
           EXPECTED_RELEASE_VERSION="$VERSION" \
           EXPECTED_REVISION="$CANDIDATE_SHA" \
           BASE_URL="$BASE_URL" \
+          EVIDENCE_DIR="$artifacts" \
             bash scripts/qualify-recovery-image.sh \
             > "$artifacts/recovery-after-restart.json"
 
@@ -349,7 +351,7 @@ jobs:
             }' > /tmp/codex-web-recovery-evidence/candidate-evidence.json
 
       - name: Upload candidate release evidence
-        if: steps.release.outputs.build == 'true'
+        if: always() && steps.release.outputs.build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: recovery-candidate-${{ steps.candidate.outputs.sha }}

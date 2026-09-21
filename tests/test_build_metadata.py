@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from codex_web.api.runtime import build_runtime_router
 from codex_web.api.system import build_system_router
 
 
@@ -82,6 +84,50 @@ class BuildMetadataTests(unittest.TestCase):
         self.assertEqual(
             live.json()["build"]["releaseVersion"],
             "0.2.0",
+        )
+
+    def test_livez_has_one_canonical_owner_when_runtime_router_is_composed_first(self) -> None:
+        runtime_only = FastAPI()
+        runtime_only.include_router(
+            build_runtime_router(SimpleNamespace())
+        )
+        with TestClient(runtime_only) as client:
+            self.assertEqual(
+                client.get("/api/livez").status_code,
+                404,
+            )
+
+        app = FastAPI()
+        app.include_router(build_runtime_router(SimpleNamespace()))
+        app.include_router(
+            build_system_router(
+                _StaticAssets(),
+                _RuntimeHealth(),
+                _Diagnostics(),
+                _Routing(),
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_WEB_RELEASE_VERSION": "0.2.0",
+                "CODEX_WEB_GIT_REVISION": "abc123def456",
+            },
+            clear=False,
+        ):
+            with TestClient(app) as client:
+                response = client.get("/api/livez")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "alive")
+        self.assertEqual(
+            response.json()["build"]["releaseVersion"],
+            "0.2.0",
+        )
+        self.assertEqual(
+            response.json()["build"]["gitRevision"],
+            "abc123def456",
         )
 
     def test_build_metadata_defaults_are_explicit_not_inferred_from_mounts(self) -> None:
