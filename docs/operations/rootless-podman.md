@@ -99,3 +99,44 @@ After moving execution to a supported host/boundary:
 
 Do not edit persisted worker capabilities manually. Worker startup/probe
 reconciliation is authoritative.
+
+
+## Recovery image with rootless Podman and nginx
+
+The v0.2 recovery image is also the supported immutable control-plane image for
+rootless Podman. The nested Bubblewrap limitation above still applies: use a
+separately qualified execution worker when command execution is required.
+
+Use the exact SHA-tagged image recorded by release evidence rather than
+bind-mounting application source into an older image. A minimal rootless
+control-plane launch is:
+
+    podman network create codex-web-recovery || true
+    podman volume create codex-web-data
+    podman volume create codex-home
+
+    podman run -d --replace --name codex-web \
+      --network codex-web-recovery \
+      -e CODEX_WEB_HOST=0.0.0.0 \
+      -e CODEX_WEB_PORT=8765 \
+      -e CODEX_WEB_WORKSPACE_ROOT=/workspace \
+      -v codex-web-data:/app/data \
+      -v codex-home:/home/codex/.codex \
+      -v /srv/codex-workspace:/workspace \
+      garnser/codex-web:sha-<qualified-commit>
+
+    podman run -d --replace --name codex-web-nginx \
+      --network codex-web-recovery \
+      -p 127.0.0.1:18768:8080 \
+      -v ./deploy/recovery/nginx.conf:/etc/nginx/nginx.conf:ro \
+      nginx:1.27-alpine
+
+Verify the deployed candidate through nginx with
+scripts/qualify-recovery-image.sh and confirm /api/version reports the exact
+qualified commit.
+
+The repository-controlled Docker Compose recovery overlay remains the CI
+qualification reference. Rootless Podman must preserve the same image,
+workspace, data-volume, Secret-input and nginx boundaries; it must not add
+privileged mode, a container-engine socket, application source mounts, or host
+filesystem access beyond the approved workspace/state paths.
