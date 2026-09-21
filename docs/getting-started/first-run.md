@@ -2,67 +2,92 @@
 
 > Applies to: current main  
 > Audience: new users  
-> Risk: local workspace mutation under the selected sandbox/approval policy
+> Risk: local workspace mutation only after Project readiness succeeds
 
 ## Goal
 
-Create a project that points at an allowed workspace repository and confirm codex-web can create/resume a native Codex thread without enabling external automation.
+Create one Project from a repository beneath the approved workspace root, let Codex Web establish the canonical repository topology, verify Project execution readiness, and only then start the first thread.
 
 ## Prerequisites
 
-- codex-web is healthy; see [Install and start](installation.md);
-- a repository exists below the configured workspace root;
-- the current identity is allowed to create/manage projects.
+- [Install and start](installation.md) completed;
+- `GET /api/livez` succeeds;
+- `GET /api/readyz` succeeds;
+- a Git repository exists beneath the configured workspace root;
+- the current identity may create/manage Projects.
 
-## Create the first project
+## 1. Create the first Project
 
-Use the Projects UI and create a project with:
+Use **Project Setup** in the browser.
 
-- **Name:** a human-readable project name;
-- **Path:** the repository path below the configured workspace root;
-- **Sandbox:** keep `workspace-write` for the starter path;
-- **Approval policy:** keep `on-request`.
+For the starter path choose:
 
-The canonical API is `POST /api/projects`; the UI uses the same project model.
+- **Name:** a human-readable Project name;
+- **Path:** the Git repository beneath the configured workspace root;
+- **Sandbox:** `workspace-write`;
+- **Approval policy:** `on-request`.
 
-## Start a thread
+The manifest/CLI is **not required** for this simple first run.
 
-Select the new project, create a thread and ask for a read-only orientation first, for example:
+Fresh Project creation creates or reuses the canonical repository Resource, binds it to the Project and runs the supported fresh bootstrap/readiness evaluation. You do not need to invent or edit Resource IDs.
+
+The equivalent API is `POST /api/projects`; its response can include `freshBootstrap` details alongside the Project.
+
+## 2. Verify Project readiness
+
+Find the Project ID in the UI or `GET /api/projects`, then query:
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/projects/<project-id>/readiness
+```
+
+**Expected result:** `semantic_ready` and `execution_ready` are true and the overall status is ready (or otherwise explicitly non-blocking for the selected topology).
+
+Do not substitute `/api/healthz`, `codexReady: true`, or a successful browser load for this check.
+
+### If readiness is blocked
+
+Read the returned `checks[]`, especially `code`, `message`, `remediation`, and `remediation_route`.
+
+Common starter blockers include:
+
+- repository path/target missing or ambiguous;
+- worker capability missing;
+- sandbox/profile incompatibility;
+- workspace path outside the approved root.
+
+Use [Project readiness troubleshooting](../troubleshooting/project-readiness.md). Do not edit SQLite, compatibility JSON, worker capabilities, or Resource IDs by hand.
+
+## 3. Run a read-only orientation turn
+
+Only after Project readiness succeeds, create a thread and ask:
 
 ```text
 Inspect this repository and summarize its structure. Do not change files.
 ```
 
-Approve nothing you do not understand.
+**Expected result:** the thread executes against the selected canonical repository target and does not require unrelated external integrations.
 
-## Expected result
+## 4. Verify the thread
 
-- the project appears in `GET /api/projects`;
-- a native Codex thread is created for that project;
-- the response refers to the selected repository rather than another host path.
+Confirm that:
 
-## Verify
+- the selected Project/repository shown in the UI is the one you intended;
+- no unexpected repository target or host path was selected;
+- a blocked execution appears with a structured preflight blocker/remediation rather than silently doing nothing;
+- the thread can be reopened/resumed.
 
-Check:
+## Optional: authoritative task source
 
-```bash
-curl -fsS http://127.0.0.1:8765/api/projects
-curl -fsS http://127.0.0.1:8765/api/healthz
-```
+A local first task does **not** require GitLab/Jira/ServiceNow or another TaskSource.
 
-Then continue in the browser and confirm the thread can be resumed.
+When you later bind an authoritative TaskSource, use a canonical SecretReference rather than raw credential material. Read [Task-source contract](../architecture/task-source-contract.md) before enabling synchronization.
 
-## Optional: configure an authoritative task source
+## Recovery
 
-A project can have exactly one authoritative external task source. This is **not required** for the first successful local task.
+If Project creation succeeded but readiness is blocked, keep the Project and remediate the blocker; do not delete/recreate it to bypass canonical state.
 
-When you later configure one, the binding is canonical project state and contains provider identity/scope plus a secret **reference**, never raw credential material. Use the project/task-source administration UI or `PUT /api/projects/{project_id}/task-source`.
-
-Read [Task-source contract](../architecture/task-source-contract.md) before enabling synchronization.
-
-## Failure modes and recovery
-
-If the repository path is rejected, fix the workspace root/mount; do not work around it by mounting the entire host filesystem. If a thread cannot start, re-check `/api/healthz` and Codex authentication.
+Fresh bootstrap is idempotent and can be rerun through the supported Project setup/bootstrap surfaces.
 
 ## Next
 
