@@ -264,6 +264,29 @@ class CanonicalMaterializationService:
                 f"ambiguous canonical repository alias: {path}"
             ) from exc
 
+    def _secret_by_id(
+        self,
+        secret_id: str | None,
+        *,
+        actor: AuthenticationActor,
+    ):
+        normalized = str(secret_id or "").strip()
+        if not normalized:
+            return None
+        try:
+            reference = self.secrets.metadata(
+                normalized,
+                actor=actor,
+                require_use=True,
+            )
+        except Exception:
+            return None
+        return (
+            reference
+            if reference.status() == SecretStatus.ACTIVE
+            else None
+        )
+
     def _secret_reference(
         self,
         project_id: str,
@@ -632,7 +655,19 @@ class CanonicalMaterializationService:
                 )
             )
 
-        secret = self._secret_reference(project.id, actor=actor)
+        current_source = project.authoritative_task_source
+        bound_secret = self._secret_by_id(
+            (
+                current_source.credential_secret_id
+                if current_source is not None
+                else None
+            ),
+            actor=actor,
+        )
+        secret = (
+            bound_secret
+            or self._secret_reference(project.id, actor=actor)
+        )
         token_available = False
         if secret is None:
             token_available = self._legacy_token_available(project.id)
@@ -705,7 +740,6 @@ class CanonicalMaterializationService:
             all_work_items,
         )
         task_operation_id = "task-source:gitlab"
-        current_source = project.authoritative_task_source
         secret_reference = secret.id if secret is not None else None
         if current_source is not None:
             matching = (
@@ -715,6 +749,10 @@ class CanonicalMaterializationService:
                 and (
                     task_scope is None
                     or current_source.scope == task_scope
+                )
+                and (
+                    not current_source.credential_secret_id
+                    or bound_secret is not None
                 )
             )
             operations.append(
