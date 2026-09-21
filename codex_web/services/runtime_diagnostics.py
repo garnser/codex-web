@@ -590,8 +590,16 @@ class RuntimeHealthService:
         problems = list(snapshot.get("problems") or [])
         if stale and "runtime health snapshot is stale" not in problems:
             problems.append("runtime health snapshot is stale")
+        if error_class is not None:
+            problems.append(
+                f"runtime health refresh failed: {error_class}"
+            )
         snapshot["evaluatedOk"] = evaluated_ok
-        snapshot["ok"] = evaluated_ok and not stale
+        snapshot["ok"] = (
+            evaluated_ok
+            and not stale
+            and error_class is None
+        )
         snapshot["problems"] = problems
         snapshot["healthCache"] = {
             "generatedAt": generated_at,
