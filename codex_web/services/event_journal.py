@@ -507,8 +507,8 @@ class EventJournal:
             offset = self._active_size()
             payload = {
                 "created_at": now,
-                "journal_cursor": f"{sequence}:{offset}",
                 **event,
+                "journal_cursor": f"{sequence}:{offset}",
             }
             encoded = (
                 json.dumps(
