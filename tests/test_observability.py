@@ -297,9 +297,10 @@ class RuntimeMetricsTests(unittest.TestCase):
             "corr-slow",
         )
         emitted.assert_called_once()
+        args = emitted.call_args.args
         fields = emitted.call_args.kwargs
         self.assertEqual(
-            fields["event"],
+            args[2],
             "runtime.slow_http_request",
         )
         self.assertEqual(fields["path"], "/slow-probe")
