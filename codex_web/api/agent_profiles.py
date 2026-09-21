@@ -128,6 +128,53 @@ def build_agent_profiles_router(
         except Exception as exc:
             raise _error(exc) from exc
 
+    @router.get("/{profile_id}/executions")
+    async def executions(
+        profile_id: str,
+        request: Request,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return service.execution_history(
+                profile_id,
+                actor=request_actor(request),
+                limit=limit,
+            )
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.get("/{profile_id}/audit")
+    async def audit(
+        profile_id: str,
+        request: Request,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        try:
+            items = service.revisions(
+                profile_id,
+                actor=request_actor(request),
+            )
+            bounded = list(reversed(items))[
+                : max(1, min(int(limit), 100))
+            ]
+            return {
+                "items": [
+                    {
+                        "profileId": item.profile_id,
+                        "revision": item.revision,
+                        "recordId": item.record_id,
+                        "lifecycle": item.lifecycle.value,
+                        "updatedBy": item.updated_by,
+                        "updatedAt": item.updated_at,
+                        "reason": item.change_reason,
+                    }
+                    for item in bounded
+                ],
+                "count": len(items),
+            }
+        except Exception as exc:
+            raise _error(exc) from exc
+
     @router.get("/{profile_id}/revisions")
     async def revisions(
         profile_id: str,
