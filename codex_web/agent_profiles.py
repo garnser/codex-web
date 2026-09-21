@@ -346,6 +346,10 @@ class AgentProfileExecutionBinding(BaseModel):
     profile_record_id: str
     instructions_ref: DefinitionReference | None = None
     skill_refs: tuple[DefinitionReference, ...] = ()
+    required_provider_capabilities: tuple[
+        AgentProviderCapability, ...
+    ] = ()
+    required_worker_capabilities: tuple[str, ...] = ()
     role_id: str | None = None
     role_definition_ref: DefinitionReference | None = None
     authority_role_id: str | None = None
