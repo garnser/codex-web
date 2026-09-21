@@ -281,6 +281,23 @@ class AgentTeamTests(unittest.IsolatedAsyncioTestCase):
             {item["profile_id"] for item in self.dispatches[1:]},
             {"backend", "frontend"},
         )
+        dispatch_count = len(self.dispatches)
+        duplicate = await self.teams.submit_coordinator_decision(
+            AgentTeamCoordinatorDecision(
+                delegation_id=record.delegation_id,
+                team_revision=team.revision,
+                source_profile_id="leader",
+                selected_member_ids=(
+                    "backend-member",
+                    "frontend-member",
+                ),
+                reason="duplicate coordinator output",
+                observed_event_id="event-1",
+            ),
+            actor=self.member,
+        )
+        self.assertEqual(duplicate.delegation_id, updated.delegation_id)
+        self.assertEqual(len(self.dispatches), dispatch_count)
 
     async def test_duplicate_trigger_does_not_dispatch_again(self) -> None:
         self._team()
@@ -430,6 +447,38 @@ class AgentTeamTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(self.dispatches), dispatch_count)
 
+    async def test_stale_member_result_does_not_mutate_active_execution(self) -> None:
+        self._team(team_id="stale-result")
+        record = await self.teams.assign(
+            "stale-result",
+            self._request(capabilities=("python",)),
+            actor=self.member,
+        )
+        current_execution = record.execution_links[-1].execution_id
+        stale = await self.teams.record_member_result(
+            record.delegation_id,
+            member_id="backend-member",
+            event_id="late-result",
+            execution_id="old-execution",
+            succeeded=True,
+            actor=self.member,
+        )
+        self.assertEqual(stale.active_member_ids, ("backend-member",))
+        self.assertEqual(stale.result_event_ids, ())
+        completed = await self.teams.record_member_result(
+            record.delegation_id,
+            member_id="backend-member",
+            event_id="current-result",
+            execution_id=current_execution,
+            succeeded=True,
+            actor=self.member,
+        )
+        self.assertEqual(completed.active_member_ids, ())
+        self.assertEqual(
+            completed.status,
+            AgentTeamDelegationStatus.COMPLETED,
+        )
+
     async def test_failed_direct_member_recoordinates_once_and_dedupes_result(
         self,
     ) -> None:
@@ -519,6 +568,12 @@ class AgentTeamTests(unittest.IsolatedAsyncioTestCase):
             AgentTeamDelegationStatus.BLOCKED,
         )
         self.assertTrue(self.attention.items)
+        self.profiles.lifecycle(
+            "backend",
+            AgentProfileLifecycle.ACTIVE,
+            AgentProfileLifecycleChange(reason="maintenance complete"),
+            actor=self.admin,
+        )
 
         team = self._team(team_id="round-budget")
         coordination = await self.teams.assign(
