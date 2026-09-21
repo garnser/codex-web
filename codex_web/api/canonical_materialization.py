@@ -59,6 +59,7 @@ def build_canonical_materialization_router(
                 "plan": value.model_dump(mode="json"),
                 "counts": value.counts(),
                 "blocked": bool(value.blockers),
+                "report": service.human_report(value),
             }
         except Exception as exc:
             if isinstance(exc, CanonicalMaterializationError):
@@ -84,6 +85,7 @@ def build_canonical_materialization_router(
             return {
                 "execution": execution.model_dump(mode="json"),
                 "counts": execution.counts(),
+                "report": service.human_report(execution),
             }
         except Exception as exc:
             if isinstance(exc, CanonicalMaterializationError):
