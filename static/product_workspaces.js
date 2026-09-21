@@ -1,7 +1,7 @@
 const WORKSPACES = [
   { id: "overview", label: "Overview", group: "Core", kind: "embedded", description: "Product-wide status vocabulary, explainability and shortcuts." },
   { id: "inbox", label: "Inbox / Attention", group: "Core", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
-  { id: "projects", label: "Projects", group: "Core", kind: "focus", selector: "#projects", description: "Project selection and creation." },
+  { id: "projects", label: "Projects", group: "Core", kind: "focus", selector: "#projects", description: "Project selection and creation." },\n  { id: "setup", label: "Project Setup / Readiness", group: "Core", kind: "launcher", selector: "#project-setup-launch", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
   { id: "threads", label: "Threads", group: "Core", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
   { id: "work", label: "Work", group: "Work", kind: "embedded", description: "Canonical work graph and execution continuity." },
   { id: "goals", label: "Goals", group: "Work", kind: "launcher", selector: "#goals-button", description: "Outcome definitions and progress." },
@@ -21,7 +21,7 @@ const WORKSPACES = [
 ];
 
 const CARD_RULES = [
-  [/^Work Graph$/i, "work"],
+  [/^Project Setup & Readiness$/i, "setup"],\n  [/^Work Graph$/i, "work"],
   [/^Identity & Sessions$/i, "organization"],
   [/^Resource Catalog$/i, "resources"],
   [/^Definition Registry$/i, "definitions"],
