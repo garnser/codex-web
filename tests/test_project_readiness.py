@@ -260,6 +260,100 @@ class ProjectReadinessTests(unittest.TestCase):
         )
         self.assertEqual(check.code, "repository_target_ambiguous")
 
+    def test_explicit_multi_repository_policy_is_ready_without_default(self):
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        resources = _Resources(
+            repository_ids=("repo-a", "repo-b"),
+            target_error=RepositoryTargetAmbiguousError(
+                "must not be called for explicit policy"
+            ),
+        )
+
+        value = self.service(resources=resources).evaluate(
+            self.project.id,
+            actor=_actor(),
+        )
+
+        self.assertTrue(value.semantic_ready)
+        self.assertTrue(value.execution_ready)
+        check = next(
+            item for item in value.checks
+            if item.id == "repository:execution-target"
+        )
+        self.assertEqual(
+            check.code,
+            "repository_target_required_per_turn",
+        )
+        self.assertEqual(check.status, ReadinessCheckStatus.READY)
+        self.assertEqual(check.details["policy"], "explicit")
+        self.assertEqual(
+            check.details["target_resolution"],
+            "required_per_turn",
+        )
+        self.assertEqual(check.details["repository_count"], 2)
+        self.assertNotIn("mutable_repository_id", check.details)
+
+    def test_explicit_policy_still_blocks_when_no_repository_exists(self):
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        value = self.service(
+            resources=_Resources(repository_ids=())
+        ).evaluate(self.project.id, actor=_actor())
+
+        self.assertFalse(value.semantic_ready)
+        self.assertFalse(value.execution_ready)
+        target = next(
+            item for item in value.checks
+            if item.id == "repository:execution-target"
+        )
+        self.assertEqual(target.code, "repository_target_missing")
+        self.assertEqual(target.status, ReadinessCheckStatus.BLOCKED)
+        self.assertEqual(target.details["policy"], "explicit")
+
+    def test_single_repository_default_policy_remains_deterministic(self):
+        value = self.service().evaluate(
+            self.project.id,
+            actor=_actor(),
+        )
+        check = next(
+            item for item in value.checks
+            if item.id == "repository:execution-target"
+        )
+        self.assertEqual(
+            self.project.repository_selection_policy,
+            "deterministic",
+        )
+        self.assertEqual(
+            check.code,
+            "repository_execution_target_ready",
+        )
+        self.assertEqual(check.details["policy"], "deterministic")
+        self.assertEqual(
+            check.details["mutable_repository_id"],
+            "repo-a",
+        )
+
+    def test_tenant_isolation_precedes_repository_policy(self):
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        foreign = _actor(
+        ).model_copy(
+            update={
+                "organization_id": "other",
+                "workspace_id": "other",
+            }
+        )
+        with self.assertRaises(LookupError):
+            self.service(
+                resources=_Resources(
+                    repository_ids=("repo-a", "repo-b")
+                )
+            ).evaluate(self.project.id, actor=foreign)
+
     def test_required_task_source_missing_is_blocked(self):
         manifest = SimpleNamespace(task_source=SimpleNamespace(type="gitlab"))
         plan = SimpleNamespace(
