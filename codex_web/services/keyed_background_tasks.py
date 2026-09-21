@@ -214,6 +214,17 @@ class KeyedTaskCoordinator:
                 return
             await self._run_one(key, work)
 
+    def cancel(self, key: str) -> bool:
+        key = str(key or "").strip()
+        if not key:
+            return False
+        removed = self._pending.pop(key, None) is not None
+        task = self._tasks.get(key)
+        if task is not None and not task.done():
+            task.cancel()
+            removed = True
+        return removed
+
     def status(self) -> dict[str, Any]:
         now = time.time()
         queued_at = [
