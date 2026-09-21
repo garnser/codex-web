@@ -227,10 +227,9 @@ class GitLabSyncJobService:
         job.cancel_requested = True
         job.updated_at = self.clock()
         job = self._save(job)
-        # Cancellation of a running to_thread call is cooperative: the
-        # currently executing projection may finish, while no next snapshot
-        # is started once the durable cancellation flag is observed.
-        self.coordinator.cancel(job.scope_key)
+        # User cancellation is cooperative. The currently executing
+        # projection is allowed to reach its persistence boundary; the sync
+        # loop observes this durable flag before starting another snapshot.
         return self.store.get(job.id) or job
 
     async def stop(self) -> None:
