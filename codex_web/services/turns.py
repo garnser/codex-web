@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, QueuedTurn, TurnCreate
+from codex_web.services.agent_profiles import AgentProfileAccessDenied, AgentProfileService
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
 from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.agent_routing import AgentCapacityRoutingError
@@ -92,6 +93,7 @@ class TurnService:
         truncate_text: TextTruncator,
         binding_public: BindingProjector,
         preflight: ExecutionPreflightService | None = None,
+        agent_profiles: AgentProfileService | None = None,
     ) -> None:
         self.projects = projects
         self.settings = settings
@@ -104,6 +106,7 @@ class TurnService:
         self.truncate_text = truncate_text
         self.binding_public = binding_public
         self.preflight = preflight
+        self.agent_profiles = agent_profiles
 
     async def resume(
         self,
@@ -230,9 +233,82 @@ class TurnService:
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
+        agent_profile_id = payload.agent_profile_id
+        agent_profile_revision = payload.agent_profile_revision
+        agent_profile_actor_id: str | None = None
+        profile = None
+        if agent_profile_id is not None:
+            if actor is None or self.agent_profiles is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "agent_profile_unavailable",
+                        "message": (
+                            "Agent Profile execution requires an authenticated "
+                            "actor and Agent Profile service"
+                        ),
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile_id,
+                    },
+                )
+            try:
+                profile, _decision = (
+                    self.agent_profiles.resolve_for_execution(
+                        agent_profile_id,
+                        actor=actor,
+                        project_id=project.id,
+                        revision=agent_profile_revision,
+                    )
+                )
+            except AgentProfileAccessDenied as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "agent_profile_access_denied",
+                        "message": str(exc),
+                        "decision": (
+                            exc.decision.model_dump(mode="json")
+                            if exc.decision is not None
+                            else None
+                        ),
+                    },
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "agent_profile_unavailable",
+                        "message": str(exc),
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile_id,
+                    },
+                ) from exc
+            agent_profile_revision = profile.revision
+            agent_profile_actor_id = actor.identity_id
         remembered = self.settings.get(thread_id)
+        profile_sandbox = (
+            profile.sandbox_requirement
+            if profile is not None
+            else None
+        )
+        if (
+            payload.sandbox
+            and profile_sandbox
+            and payload.sandbox != profile_sandbox
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_profile_sandbox_conflict",
+                    "requestedSandbox": payload.sandbox,
+                    "agentProfileSandbox": profile_sandbox,
+                },
+            )
         effective_sandbox = (
-            payload.sandbox or remembered.sandbox or project.sandbox
+            profile_sandbox
+            or payload.sandbox
+            or remembered.sandbox
+            or project.sandbox
         )
         effective_approval_policy = (
             payload.approval_policy
@@ -251,8 +327,31 @@ class TurnService:
             payload.read_only_repository_resource_ids
             or remembered.read_only_repository_resource_ids
         )
-        effective_execution_profile_id = (
+        profile_execution_id = (
+            profile.execution_profile_id
+            if profile is not None
+            else None
+        )
+        if (
             payload.execution_profile_id
+            and profile_execution_id
+            and payload.execution_profile_id != profile_execution_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_profile_execution_profile_conflict",
+                    "requestedExecutionProfileId": (
+                        payload.execution_profile_id
+                    ),
+                    "agentProfileExecutionProfileId": (
+                        profile_execution_id
+                    ),
+                },
+            )
+        effective_execution_profile_id = (
+            profile_execution_id
+            or payload.execution_profile_id
             or remembered.execution_profile_id
         )
         self.settings.remember(
@@ -276,6 +375,8 @@ class TurnService:
                 effective_read_only_repository_ids
             ),
             "execution_profile_id": effective_execution_profile_id,
+            "agent_profile_id": agent_profile_id,
+            "agent_profile_revision": agent_profile_revision,
         }
         execution_id = execution_id or f"thread-turn-{uuid.uuid4().hex}"
 
@@ -298,6 +399,9 @@ class TurnService:
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
                 execution_profile_id=effective_execution_profile_id,
+                agent_profile_id=agent_profile_id,
+                agent_profile_revision=agent_profile_revision,
+                agent_profile_actor_id=agent_profile_actor_id,
             )
             queue_depth = self.queue_policy.depth(thread_id)
             event_payload: dict[str, Any] = {
@@ -372,6 +476,10 @@ class TurnService:
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
                 execution_profile_id=effective_execution_profile_id,
+                actor=actor,
+                agent_profile_id=agent_profile_id,
+                agent_profile_revision=agent_profile_revision,
+                agent_profile_actor_id=agent_profile_actor_id,
             )
             if self.preflight is not None and actor is not None:
                 self.preflight.mark_started_for_execution(

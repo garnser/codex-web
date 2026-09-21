@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.agent_providers import AgentProviderCapability, AgentProviderHealth
 from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.definitions import DefinitionReference
@@ -16,6 +17,8 @@ class AgentRoutingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     project_id: str = Field(min_length=1)
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
     role_id: str | None = None
     required_capabilities: tuple[AgentProviderCapability, ...] = (
         AgentProviderCapability.AGENT_EXECUTION,
@@ -35,6 +38,10 @@ class AgentRoutingRequest(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "AgentRoutingRequest":
+        if self.agent_profile_revision is not None and not self.agent_profile_id:
+            raise ValueError(
+                "agent_profile_revision requires agent_profile_id"
+            )
         required = list(dict.fromkeys(self.required_capabilities))
         if AgentProviderCapability.AGENT_EXECUTION not in required:
             required.insert(0, AgentProviderCapability.AGENT_EXECUTION)
@@ -112,3 +119,4 @@ class AgentRoutingResult(BaseModel):
     rejected_reasons: tuple[str, ...] = ()
     configuration_sources: tuple[AgentRoutingConfigurationSource, ...] = ()
     role_definition_ref: DefinitionReference | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None

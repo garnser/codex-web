@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
 from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
@@ -102,6 +103,7 @@ class TurnExecutionBinding:
     runtime_binding: ExecutionRuntimeBinding | None = None
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None
 
     def public(self) -> dict[str, object]:
         return {
@@ -128,6 +130,11 @@ class TurnExecutionBinding:
             "execution_profile_definition": (
                 self.execution_profile_definition.model_dump(mode="json")
                 if self.execution_profile_definition is not None
+                else None
+            ),
+            "agent_profile": (
+                self.agent_profile.model_dump(mode="json")
+                if self.agent_profile is not None
                 else None
             ),
         }
@@ -444,6 +451,7 @@ class TurnExecutionBindingService:
         repository_target: RepositoryExecutionTarget,
         execution_profile_id: str | None,
         execution_profile_definition: DefinitionReference | None,
+        agent_profile: AgentProfileExecutionBinding | None,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -482,6 +490,24 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different execution profile"
+            )
+        comparable_agent_profile = agent_profile
+        if (
+            assignment.agent_profile is not None
+            and comparable_agent_profile is not None
+            and assignment.agent_profile.selected_worker_id
+            and comparable_agent_profile.selected_worker_id is None
+        ):
+            comparable_agent_profile = comparable_agent_profile.model_copy(
+                update={
+                    "selected_worker_id": (
+                        assignment.agent_profile.selected_worker_id
+                    )
+                }
+            )
+        if assignment.agent_profile != comparable_agent_profile:
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different Agent Profile revision"
             )
         if assignment.execution_contract_version != execution_contract_version:
             raise TurnExecutionBindingError(
@@ -541,6 +567,7 @@ class TurnExecutionBindingService:
             runtime_binding=assignment.runtime_binding,
             execution_profile_id=assignment.execution_profile_id,
             execution_profile_definition=assignment.execution_profile_definition,
+            agent_profile=assignment.agent_profile,
         )
 
     def _require_project_readiness(
@@ -618,6 +645,7 @@ class TurnExecutionBindingService:
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
+        agent_profile: AgentProfileExecutionBinding | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -746,6 +774,7 @@ class TurnExecutionBindingService:
                 repository_target=repository_target,
                 execution_profile_id=effective_profile_id,
                 execution_profile_definition=execution_profile_definition,
+                agent_profile=agent_profile,
             )
 
         required_capabilities = (
@@ -924,6 +953,7 @@ class TurnExecutionBindingService:
                     repository_target=repository_target,
                     execution_profile_id=effective_profile_id,
                     execution_profile_definition=execution_profile_definition,
+                    agent_profile=agent_profile,
                 ),
                 actor=self.control_actor,
             )
@@ -971,6 +1001,7 @@ class TurnExecutionBindingService:
             runtime_binding=assignment.runtime_binding,
             execution_profile_id=assignment.execution_profile_id,
             execution_profile_definition=assignment.execution_profile_definition,
+            agent_profile=assignment.agent_profile,
         )
 
     def prepare(
@@ -992,6 +1023,7 @@ class TurnExecutionBindingService:
         routing_repository_id: str | None = None,
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
+        agent_profile: AgentProfileExecutionBinding | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -1014,6 +1046,7 @@ class TurnExecutionBindingService:
             routing_repository_id=routing_repository_id,
             orchestration_only=orchestration_only,
             execution_profile_id=execution_profile_id,
+            agent_profile=agent_profile,
         )
 
     def prepare_bootstrap(

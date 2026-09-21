@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from codex_web.api.action_intents import build_action_intents_router
+from codex_web.api.agent_profiles import build_agent_profiles_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
@@ -141,6 +142,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
@@ -377,6 +379,7 @@ from codex_web.services.work_items import (
 )
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.agent_profiles import AgentProfileStore
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
@@ -1281,6 +1284,72 @@ app.state.extension_state_store = extension_state_store
 app.state.extension_package_catalog = extension_package_catalog
 app.state.extension_service = extension_service
 
+def _agent_profile_role_ref(role_id, actor):
+    role, definition_ref = agent_routing_definition_service.resolve(
+        role_id=role_id,
+        organization_id=actor.organization_id,
+        workspace_id=actor.workspace_id,
+    )
+    if role is None:
+        raise ValueError(f"unknown agent routing role: {role_id}")
+    return definition_ref
+
+
+def _agent_profile_assignment_history(actor):
+    return [
+        item
+        for item in execution_worker_store.load().assignments
+        if item.organization_id == actor.organization_id
+        and item.workspace_id == actor.workspace_id
+    ]
+
+
+agent_profile_store = AgentProfileStore(state_store)
+agent_profile_service = AgentProfileService(
+    agent_profile_store,
+    definitions=definition_registry_service,
+    authority=authority_role_service,
+    execution_profiles=execution_profile_definition_service,
+    role_resolver=_agent_profile_role_ref,
+    assignment_history=_agent_profile_assignment_history,
+)
+app.state.agent_profile_store = agent_profile_store
+app.state.agent_profile_service = agent_profile_service
+app.include_router(build_agent_profiles_router(agent_profile_service))
+
+
+def _agent_profile_definition_usage(reference):
+    items = []
+    for profile in agent_profile_store.load().revisions:
+        refs = [
+            profile.instructions_ref,
+            profile.role_definition_ref,
+            profile.authority_definition_ref,
+            *profile.skill_refs,
+        ]
+        if not any(
+            item is not None
+            and item.record_id == reference.record_id
+            for item in refs
+        ):
+            continue
+        items.append(
+            {
+                "object_type": "agent_profile",
+                "object_id": profile.profile_id,
+                "revision": profile.revision,
+                "lifecycle": profile.lifecycle.value,
+                "organization_id": profile.organization_id,
+                "workspace_id": profile.workspace_id,
+            }
+        )
+    return items
+
+
+definition_registry_service.register_usage_provider(
+    _agent_profile_definition_usage
+)
+
 agent_provider_store = AgentProviderStore(state_store)
 agent_provider_service = AgentProviderService(
     agent_provider_store,
@@ -1298,6 +1367,7 @@ agent_routing_service = AgentRoutingService(
     configuration=configuration_service,
     role_defaults=agent_routing_definition_service,
     provider_capacity=provider_capacity_service,
+    profiles=agent_profile_service,
 )
 app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service

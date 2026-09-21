@@ -761,6 +761,15 @@ class ExecutionWorkerService:
                     "fence": fence,
                     "lease": lease,
                     "assigned_worker_id": worker.id,
+                    "agent_profile": (
+                        target.agent_profile.model_copy(
+                            update={
+                                "selected_worker_id": worker.id,
+                            }
+                        )
+                        if target.agent_profile is not None
+                        else None
+                    ),
                     "updated_at": now,
                     "failure_code": None,
                     "failure_message": None,

@@ -4,6 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 
@@ -180,6 +181,8 @@ class TurnCreate(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
 
 
 class ApprovalDecision(BaseModel):
@@ -365,6 +368,9 @@ class ExecutionPreflightAttempt(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    agent_profile_actor_id: str | None = None
     source: str = "web"
     status: ExecutionPreflightStatus = "blocked"
     blockers: tuple[ExecutionPreflightBlocker, ...] = ()
@@ -395,6 +401,8 @@ class ActiveThreadTurn(BaseModel):
     fence: int | None = None
     repository_resource_id: str | None = None
     execution_profile_id: str | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None
+    agent_profile_actor_id: str | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -414,6 +422,9 @@ class QueuedTurn(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    agent_profile_actor_id: str | None = None
     source: str = "web"
     reply_target: BotReplyTarget | None = None
     attempts: int = 0

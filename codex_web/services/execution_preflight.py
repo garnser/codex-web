@@ -144,6 +144,13 @@ class ExecutionPreflightService:
                 execution_profile_id=effective.get(
                     "execution_profile_id"
                 ),
+                agent_profile_id=effective.get(
+                    "agent_profile_id"
+                ),
+                agent_profile_revision=effective.get(
+                    "agent_profile_revision"
+                ),
+                agent_profile_actor_id=actor.identity_id,
                 source=source,
                 status="blocked",
                 blockers=blockers,
@@ -374,4 +381,6 @@ class ExecutionPreflightService:
                 attempt.read_only_repository_resource_ids
             ),
             execution_profile_id=attempt.execution_profile_id,
+            agent_profile_id=attempt.agent_profile_id,
+            agent_profile_revision=attempt.agent_profile_revision,
         )
