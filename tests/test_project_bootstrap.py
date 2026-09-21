@@ -209,8 +209,8 @@ class ProjectBootstrapCliTests(unittest.TestCase):
             return {
                 "status": "ready",
                 "bootstrapExecutionId": "materialization-abc",
-                "materializationPlanId": "materialization-plan-abc",
-                "counts": {"migrated": 2},
+                "bootstrapPlanId": "bootstrap-plan-abc",
+                "counts": {"migrate": 2},
                 "warnings": [],
                 "blockers": [],
             }
