@@ -402,7 +402,10 @@ class CanonicalMaterializationService:
     ) -> CanonicalMaterializationPlan:
         self._require_admin(actor)
         project = self._legacy_project(project_id)
-        source_scope = project.tenant
+        source_scope = TenantScope(
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+        )
         target_scope = actor.tenant
         root = self._safe_root(project)
         routing_paths = self._routing_paths(project.id)
@@ -420,7 +423,30 @@ class CanonicalMaterializationService:
 
         scope_operation_id = "project:scope"
         scope_compatible = source_scope == target_scope
-        if scope_compatible:
+        if (
+            source_scope == self.GENERIC_SCOPE
+            and target_scope == self.GENERIC_SCOPE
+            and not confirm_generic_target
+        ):
+            operations.append(
+                self._operation(
+                    operation_id=scope_operation_id,
+                    domain="project_scope",
+                    record_ref=project.id,
+                    disposition=MaterializationDisposition.OPERATOR_ACTION_REQUIRED,
+                    reason_code="generic_scope_requires_confirmation",
+                    message=(
+                        "Project still uses Local / Default; explicit "
+                        "confirmation is required to keep that tenant."
+                    ),
+                    operator_action=(
+                        "Confirm Local / Default as intentional ownership "
+                        "or choose the intended organization/workspace."
+                    ),
+                )
+            )
+            scope_compatible = False
+        elif scope_compatible:
             operations.append(
                 self._operation(
                     operation_id=scope_operation_id,
@@ -432,27 +458,7 @@ class CanonicalMaterializationService:
                 )
             )
         elif source_scope == self.GENERIC_SCOPE:
-            if target_scope == self.GENERIC_SCOPE and not confirm_generic_target:
-                operations.append(
-                    self._operation(
-                        operation_id=scope_operation_id,
-                        domain="project_scope",
-                        record_ref=project.id,
-                        disposition=MaterializationDisposition.OPERATOR_ACTION_REQUIRED,
-                        reason_code="generic_scope_requires_confirmation",
-                        message=(
-                            "Project still uses Local / Default; explicit "
-                            "confirmation is required to keep that tenant."
-                        ),
-                        operator_action=(
-                            "Confirm Local / Default as intentional ownership "
-                            "or choose the intended organization/workspace."
-                        ),
-                    )
-                )
-                scope_compatible = False
-            else:
-                operations.append(
+            operations.append(
                     self._operation(
                         operation_id=scope_operation_id,
                         domain="project_scope",
@@ -469,8 +475,8 @@ class CanonicalMaterializationService:
                             "target_workspace_id": target_scope.workspace_id,
                         },
                     )
-                )
-                scope_compatible = True
+            )
+            scope_compatible = True
         else:
             operations.append(
                 self._operation(
