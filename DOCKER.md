@@ -16,7 +16,18 @@ docker compose up -d
 
 The UI is exposed on `127.0.0.1:8765` by default. Set `CODEX_WEB_BIND=0.0.0.0` only when a reverse proxy or trusted network boundary protects the service.
 
-The image has a Docker healthcheck against `/api/livez`. `/api/healthz` remains the deeper readiness/daemon-health endpoint and can return 503 when the Codex app-server is unavailable.
+The image has a Docker healthcheck against `/api/livez`. For onboarding, verify the layers separately:
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/livez
+curl -fsS http://127.0.0.1:8765/api/readyz
+```
+
+`/api/livez` proves only process liveness. `/api/readyz` verifies application/runtime readiness. `/api/healthz` is a deeper diagnostic surface and can return 503 when a component such as the Codex app-server is unavailable, but it is not a Project execution gate.
+
+After creating a Project, verify `GET /api/projects/{project_id}/readiness` before the first executable turn. A container can be healthy while a Project remains blocked on repository targeting, worker capability, sandbox/profile compatibility, migration, or another semantic prerequisite.
+
+Use the same conceptual flow for Docker and native deployments: start -> runtime readiness -> Project creation/bootstrap -> Project readiness -> execution.
 
 ## Production release image
 
