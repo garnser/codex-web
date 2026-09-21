@@ -116,32 +116,20 @@ Architecture contracts live under [`docs/architecture/`](docs/architecture/READM
 
 ## Quick start
 
-### Local Python environment
+The supported first-run path separates **process liveness**, **application/runtime readiness**, and **Project execution readiness**. A healthy Codex daemon alone does not prove that a Project can execute.
 
-From the repository root:
+### Local Python environment
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.lock
 python server.py
 ```
 
 The server binds to `127.0.0.1:8765` by default.
 
-Override the bind address or port with:
-
-```bash
-CODEX_WEB_HOST=0.0.0.0 CODEX_WEB_PORT=8765 python server.py
-```
-
-Only expose Codex Web on a trusted network or behind an appropriately authenticated reverse proxy. The application can initiate code and infrastructure actions on behalf of authorized users.
-
-When proxied below `/codex/`, the frontend automatically prefixes API and WebSocket requests with `/codex`.
-
 ### Docker / Compose
-
-The repository includes a non-root container image and Compose stack. Codex Web state and Codex authentication are persisted separately, while developer repositories are mounted under `/workspace`.
 
 ```bash
 cp .env.example .env
@@ -151,19 +139,30 @@ docker compose run --rm codex-web codex login
 docker compose up -d
 ```
 
-Liveness:
+Developer repositories must be available beneath the configured workspace root (Compose uses `/workspace`).
 
-```text
-GET /api/livez
+### Verify readiness before the first task
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/livez
+curl -fsS http://127.0.0.1:8765/api/readyz
 ```
 
-Codex daemon health:
+- `GET /api/livez` proves the web process is alive.
+- `GET /api/readyz` proves the application/runtime and canonical state backend are ready enough to serve work.
+- `GET /api/projects/{project_id}/readiness` proves one Project has the semantic/execution prerequisites required for execution.
+
+Do **not** treat `/api/healthz`, `codexReady: true`, or a successful browser load as Project execution readiness.
+
+For a fresh Project, use the **Project Setup** UI. Project creation runs the supported canonical bootstrap for the selected repository. Before the first executable turn, verify:
 
 ```text
-GET /api/healthz
+GET /api/projects/<project-id>/readiness
 ```
 
-See [DOCKER.md](DOCKER.md) for workspace mounts, UID/GID mapping, persistence, secrets, direct `docker run` usage, and Codex CLI pinning.
+Continue only when the Project readiness response reports execution-ready state. If it is blocked, follow the returned blocker/remediation information rather than editing JSON, SQLite, Resource IDs, or other canonical state manually.
+
+Start with [Getting Started](docs/getting-started/README.md). It separates fresh Projects, existing canonical Projects, and legacy/imported installations. See [DOCKER.md](DOCKER.md) for container deployment details.
 
 ## Model and agent providers
 

@@ -32,6 +32,8 @@ REQUIRED_DOCS = (
     "docs/getting-started/README.md",
     "docs/getting-started/installation.md",
     "docs/getting-started/first-run.md",
+    "docs/getting-started/existing-project.md",
+    "docs/getting-started/legacy-migration.md",
     "docs/core-concepts/README.md",
     "docs/tutorials/README.md",
     "docs/tutorials/first-successful-task.md",
@@ -46,11 +48,14 @@ REQUIRED_DOCS = (
     "docs/operations/uninstall.md",
     "docs/operations/runbooks.md",
     "docs/operations/release-readiness.md",
+    "docs/operations/project-bootstrap.md",
     "docs/reference/README.md",
     "docs/reference/documentation-versioning.md",
     "docs/reference/platform-contracts.md",
+    "docs/reference/readiness-bootstrap.md",
     "docs/troubleshooting/README.md",
     "docs/troubleshooting/operator-matrix.md",
+    "docs/troubleshooting/project-readiness.md",
     "docs/advanced-adoption/README.md",
     "docs/extensions/developer-guide.md",
     "docs/extensions/business-data-source-guide.md",
@@ -147,6 +152,70 @@ class DocumentationFoundationTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding="utf-8").casefold()
             self.assertIn("verify", text, relative)
             self.assertIn("recovery", text, relative)
+
+    def test_onboarding_distinguishes_runtime_and_project_readiness(self) -> None:
+        documents = [
+            ROOT / "README.md",
+            ROOT / "docs/getting-started/README.md",
+            ROOT / "docs/getting-started/installation.md",
+            ROOT / "docs/getting-started/first-run.md",
+            ROOT / "DOCKER.md",
+            ROOT / "docs/reference/readiness-bootstrap.md",
+        ]
+        combined = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in documents
+        )
+        for endpoint in (
+            "/api/livez",
+            "/api/readyz",
+            "/api/projects/{project_id}/readiness",
+        ):
+            self.assertIn(endpoint, combined, endpoint)
+        self.assertIn(
+            "not a Project execution gate",
+            combined,
+        )
+        self.assertIn(
+            "codexReady",
+            combined,
+        )
+
+    def test_bootstrap_onboarding_documents_machine_verifiable_cli_contract(self) -> None:
+        bootstrap = (
+            ROOT / "docs/operations/project-bootstrap.md"
+        ).read_text(encoding="utf-8")
+        reference = (
+            ROOT / "docs/reference/readiness-bootstrap.md"
+        ).read_text(encoding="utf-8")
+        combined = bootstrap + "\n" + reference
+        for mode in ("--scaffold", "--dry-run", "--apply"):
+            self.assertIn(mode, combined, mode)
+        for switch in (
+            "--migrate-legacy",
+            "--approve-authority-changes",
+            "--output json",
+        ):
+            self.assertIn(switch, combined, switch)
+        for code in ("`0`", "`2`", "`10`", "`20`", "`30`"):
+            self.assertIn(code, bootstrap, code)
+        self.assertIn("no separate `--resume` flag", bootstrap.casefold())
+        self.assertIn("secretref", bootstrap.casefold())
+        self.assertIn("raw credentials", bootstrap.casefold())
+
+    def test_fresh_onboarding_never_requires_manual_canonical_state_edits(self) -> None:
+        fresh = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8").casefold()
+            for relative in (
+                "docs/getting-started/README.md",
+                "docs/getting-started/first-run.md",
+                "docs/troubleshooting/project-readiness.md",
+            )
+        )
+        self.assertIn("do not edit", fresh)
+        self.assertIn("resource id", fresh)
+        self.assertIn("sqlite", fresh)
+        self.assertIn("manifest is optional", fresh)
 
     def test_operator_docs_cover_critical_release_readiness_topics(self) -> None:
         documents = {

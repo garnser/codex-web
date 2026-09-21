@@ -2,6 +2,8 @@
 
 Codex Web supports a versioned `ProjectBootstrap` manifest for declaring the intended Project topology without embedding credentials. The manifest is an operator input; it does not grant authority.
 
+For the common fresh single-repository first run, the manifest is optional: Project Setup and fresh Project creation perform the supported canonical bootstrap automatically. Use the manifest/CLI when you need declarative setup, reconciliation, multi-repository topology, or legacy migration.
+
 The current contract version is `codex-web/v1`.
 
 ## Supported command
@@ -106,6 +108,8 @@ The bootstrap engine delegates canonical Project/Resource/Work Item/Secret migra
 
 Bootstrap execution state is durable. Stable operation IDs and checkpoints allow interrupted runs to resume without duplicating bootstrap audit records or canonical resources/bindings. A Project-scoped lease prevents simultaneous applies; lease-owner fencing prevents a stale executor from overwriting a replacement executor after lease expiry.
 
+There is no separate `--resume` flag. To resume after interruption, rerun the same reviewed apply. If the plan is stale, generate and review a new plan instead of forcing the old plan.
+
 The execution ID is returned as `bootstrapExecutionId`. Re-running a converged plan returns the existing successful execution.
 
 Material execution-authority changes require explicit approval. For example:
@@ -179,3 +183,12 @@ A missing execution worker does not roll back repository topology: the Project r
 For a Project root containing multiple independent Git repositories, all repositories are materialized and preserved. Codex Web does not pick the first repository as mutable execution authority; readiness remains blocked until deterministic selection/routing is configured.
 
 A non-Git directory remains a configured Project but reports the canonical `repository_missing` materialization/readiness blocker unless a supported orchestration-only topology is configured separately.
+
+
+## First-user and troubleshooting links
+
+- [Fresh first run](../getting-started/first-run.md)
+- [Existing Project reconciliation](../getting-started/existing-project.md)
+- [Legacy/imported installation](../getting-started/legacy-migration.md)
+- [Project readiness troubleshooting](../troubleshooting/project-readiness.md)
+- [Liveness/readiness/bootstrap reference](../reference/readiness-bootstrap.md)
