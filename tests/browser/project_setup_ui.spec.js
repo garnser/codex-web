@@ -1,3 +1,5 @@
+const { test, expect } = require('@playwright/test');
+
 test('clean first-run surface exposes setup immediately without an indefinite loading state', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
 
@@ -13,8 +15,6 @@ test('clean first-run surface exposes setup immediately without an indefinite lo
   await expect(page.locator('#new-thread')).toBeDisabled();
   await expect(page.locator('#send')).toBeDisabled();
 });
-
-const { test, expect } = require('@playwright/test');
 
 test('blocked Project exposes setup, exact readiness blocker, and gates execution controls', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
