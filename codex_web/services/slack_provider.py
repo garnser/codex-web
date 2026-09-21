@@ -68,6 +68,11 @@ class SlackProviderService:
         self.rate_limit_failures = int(
             persisted.rate_limit_failures
         ) if persisted is not None else 0
+        self._backfill_diagnostics = (
+            persisted.model_dump(mode="json")
+            if persisted is not None
+            else {}
+        )
 
     @staticmethod
     def _credential_identity(
@@ -194,11 +199,7 @@ class SlackProviderService:
         return max(1, min(value, 200))
 
     def health(self) -> dict[str, Any]:
-        diagnostics = (
-            self.backfill_store.diagnostics()
-            if self.backfill_store is not None
-            else {}
-        )
+        diagnostics = dict(self._backfill_diagnostics)
         return {
             "intervalSeconds": self.interval_seconds(),
             "running": bool(self.task and not self.task.done()),
@@ -263,12 +264,6 @@ class SlackProviderService:
             self.cooldown_until,
             time.time() + delay,
         )
-        if self.backfill_store is not None:
-            def persist_rate_limit(state):
-                state.cooldown_until = self.cooldown_until
-                state.rate_limit_failures = self.rate_limit_failures
-                return state
-            self.backfill_store.update(persist_rate_limit)
         self.telemetry.append(
             {
                 "type": "slack_backfill_cooldown_set",
@@ -680,7 +675,8 @@ class SlackProviderService:
             state.current_cursor = None
             return state
 
-        self.backfill_store.update(apply)
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
 
     def _mark_cycle_complete(
         self,
@@ -707,7 +703,8 @@ class SlackProviderService:
             state.rate_limit_failures = self.rate_limit_failures
             return state
 
-        self.backfill_store.update(apply)
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
 
     def _mark_coalesced_cycle(self) -> None:
         if self.backfill_store is None:
@@ -717,7 +714,8 @@ class SlackProviderService:
             state.coalesced_cycles += 1
             return state
 
-        self.backfill_store.update(apply)
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
 
     def _checkpoint_work(
         self,
@@ -730,7 +728,7 @@ class SlackProviderService:
     ) -> None:
         if self.backfill_store is None:
             return
-        self.backfill_store.checkpoint(
+        saved = self.backfill_store.checkpoint(
             key,
             watermark=watermark,
             completed_at=time.time(),
@@ -738,6 +736,7 @@ class SlackProviderService:
             skipped=skipped,
             errors=errors,
         )
+        self._backfill_diagnostics = saved.model_dump(mode="json")
 
     async def run_backfill_cycle(self) -> None:
         if self.backfill_lock.locked():
