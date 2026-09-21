@@ -387,6 +387,12 @@ class ProjectBootstrapService:
             project_id,
             actor=actor,
             confirm_generic_target=confirm_generic,
+            preferred_gitlab_secret_id=(
+                manifest.task_source.secret_ref
+                if manifest.task_source is not None
+                and manifest.task_source.type.casefold() == "gitlab"
+                else None
+            ),
         )
         discovered_paths = {
             Path(str(item.metadata["filesystem_path"])).resolve()
@@ -743,6 +749,12 @@ class ProjectBootstrapService:
             project_id,
             actor=actor,
             confirm_generic_target=confirm_generic,
+            preferred_gitlab_secret_id=(
+                manifest.task_source.secret_ref
+                if manifest.task_source is not None
+                and manifest.task_source.type.casefold() == "gitlab"
+                else None
+            ),
         )
         legacy = (
             self._legacy_plan_if_available(project_id, actor=actor)
@@ -840,61 +852,7 @@ class ProjectBootstrapService:
             )
         )
 
-        canonical_provider_operations = []
         for item in canonical.operations:
-            superseded_by_manifest = bool(
-                explicit_gitlab_reference
-                and item.id in {"secret:gitlab", "task-source:gitlab"}
-                and (
-                    item.reason_code
-                    in {
-                        "gitlab_credential_missing",
-                        "task_source_credential_unresolved",
-                        "legacy_gitlab_credential_available",
-                        "task_source_binding_missing",
-                    }
-                    or item.apply_kind in {
-                        "gitlab_secret",
-                        "gitlab_task_source",
-                    }
-                )
-            )
-            if superseded_by_manifest:
-                canonical_provider_operations.append(
-                    item.model_copy(
-                        update={
-                            "disposition": MaterializationDisposition.SKIPPED,
-                            "reason_code": (
-                                "manifest_secret_reference_supersedes_legacy_credential"
-                            ),
-                            "message": (
-                                "Explicit canonical SecretReference supersedes "
-                                "legacy credential/task-source materialization."
-                            ),
-                            "apply_kind": None,
-                            "dependencies": (),
-                            "operator_action": None,
-                        }
-                    )
-                )
-                operations.append(
-                    self._operation(
-                        f"canonical:{item.id}",
-                        item.domain,
-                        item.record_ref,
-                        BootstrapDisposition.SKIP,
-                        "manifest_secret_reference_supersedes_legacy_credential",
-                        (
-                            "Explicit canonical SecretReference supersedes "
-                            "legacy credential/task-source materialization."
-                        ),
-                        provider="none",
-                        provider_operation_id=item.id,
-                    )
-                )
-                continue
-
-            canonical_provider_operations.append(item)
             disposition = self._canonical_disposition(item)
             operations.append(
                 self._operation(
@@ -921,11 +879,7 @@ class ProjectBootstrapService:
                 )
             )
 
-        effective_canonical = canonical.model_copy(
-            update={
-                "operations": tuple(canonical_provider_operations),
-            }
-        )
+        effective_canonical = canonical
 
         if manifest.task_source is not None:
             desired_type = manifest.task_source.type.casefold()
@@ -1019,17 +973,35 @@ class ProjectBootstrapService:
                 and desired_secret
                 and task_source_candidate is not None
             ):
+                delegated = next(
+                    (
+                        item
+                        for item in canonical.operations
+                        if item.domain == "task_source"
+                        and item.apply_kind == "gitlab_task_source"
+                    ),
+                    None,
+                )
                 operations.append(
                     self._operation(
                         "task-source:manifest",
                         "task_source",
                         project_id,
-                        BootstrapDisposition.CREATE,
-                        "task_source_manifest_create",
                         (
-                            "Authoritative GitLab TaskSource will be created "
-                            "from deterministic legacy/source evidence and the "
-                            "explicit canonical SecretReference."
+                            BootstrapDisposition.READY
+                            if delegated is not None
+                            else BootstrapDisposition.BLOCKED
+                        ),
+                        (
+                            "task_source_materialization_delegated"
+                            if delegated is not None
+                            else "task_source_binding_missing"
+                        ),
+                        (
+                            "TaskSource desired state is handled by canonical "
+                            "materialization using the explicit SecretReference."
+                            if delegated is not None
+                            else "TaskSource binding cannot be materialized safely."
                         ),
                         desired={
                             "source_type": task_source_candidate.source_type,
@@ -1037,8 +1009,7 @@ class ProjectBootstrapService:
                             "scope": task_source_candidate.scope,
                             "secret_reference_id": desired_secret,
                         },
-                        rollback=BootstrapRollbackClass.REVERSIBLE,
-                        provider="bootstrap",
+                        operator_action_required=(delegated is None),
                     )
                 )
             else:
