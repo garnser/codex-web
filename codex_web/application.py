@@ -68,6 +68,9 @@ from codex_web.api.reconciliation_gates import build_reconciliation_gates_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
+from codex_web.api.stale_active_turns import (
+    build_stale_active_turn_router,
+)
 from codex_web.api.releases import build_releases_router
 from codex_web.api.upgrades import build_upgrades_router
 from codex_web.api.secrets import build_secrets_router
@@ -311,6 +314,10 @@ from codex_web.services.scheduler import SchedulerService
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.services.runtime_supervisor import install_runtime_supervisor
+from codex_web.services.stale_active_turns import (
+    ActiveTurnRecoveryStore,
+    StaleActiveTurnRecoveryService,
+)
 from codex_web.services.runtime_policy import RuntimePolicy
 from codex_web.services.native_recovery import (
     DeferredRecoveryScheduler,
@@ -3010,6 +3017,31 @@ bot_service = BotService(
 )
 app.state.bot_service = bot_service
 
+active_turn_recovery_store = ActiveTurnRecoveryStore(state_store)
+stale_active_turn_recovery_service = StaleActiveTurnRecoveryService(
+    active_turns=runtime_state.active_turns,
+    turn_queues=turn_queue_repository,
+    worker_state_loader=execution_worker_store.load,
+    store=active_turn_recovery_store,
+    schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+    append_event=bot_runtime_telemetry.append,
+    resume_active_threads=(
+        turn_execution_service.resume_active_threads_after_startup
+    ),
+)
+thread_recovery_service.stale_active_turn_reconciler = (
+    stale_active_turn_recovery_service.schedule_thread
+)
+app.state.active_turn_recovery_store = active_turn_recovery_store
+app.state.stale_active_turn_recovery_service = (
+    stale_active_turn_recovery_service
+)
+app.include_router(
+    build_stale_active_turn_router(
+        stale_active_turn_recovery_service
+    )
+)
+
 static_asset_version_service = StaticAssetVersionService(
     STATIC_DIR,
     DATA_DIR.parent,
@@ -3097,6 +3129,7 @@ runtime_supervisor = install_runtime_supervisor(
     continuity=work_item_continuity_service,
     codex=codex_runtime,
     bot_runtime=bot_runtime,
+    stale_turn_recovery=stale_active_turn_recovery_service,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
     sd_notify=sd_notify,
