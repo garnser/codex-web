@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from codex_web.models import TaskSourceIdentity, WorkItemState
@@ -203,6 +204,73 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         )
 
         self.assertEqual(self.host.put_calls, 0)
+
+    def test_compatibility_fallback_scans_and_bulk_saves_when_indexes_absent(self) -> None:
+        self.projector.dependencies = replace(
+            self.projector.dependencies,
+            get_state=None,
+            get_state_by_source_identity=None,
+            save_state=None,
+        )
+
+        state = self.projector.upsert(
+            self.source,
+            self.snapshot(),
+            project_id="home",
+        )
+
+        self.assertEqual(state.ref, "group/project#42")
+        self.assertEqual(self.host.load_calls, 1)
+        self.assertEqual(self.host.save_calls, 1)
+        metrics = self.projector.metrics()
+        self.assertEqual(metrics["compatibility_full_scans"], 1)
+        self.assertEqual(metrics["compatibility_bulk_saves"], 1)
+
+    def test_many_new_snapshots_do_not_scale_with_existing_collection_reads(self) -> None:
+        for index in range(200):
+            identity = TaskSourceIdentity(
+                source_type="gitlab",
+                source_instance="https://gitlab.example/api/v4",
+                external_id=f"other/project#{index}",
+            )
+            self.host.states[f"canonical-{index}"] = WorkItemState(
+                ref=f"canonical-{index}",
+                project_id="home",
+                source_identity=identity,
+                current_stage="implementation_active",
+                last_meaningful_update_at=1.0,
+                updated_at=1.0,
+                created_at=1.0,
+            )
+
+        self.host.load_calls = 0
+        self.host.save_calls = 0
+        for index in range(95):
+            snapshot = TaskSourceSnapshot(
+                identity=TaskSourceIdentity(
+                    source_type="gitlab",
+                    source_instance="https://gitlab.example/api/v4",
+                    external_id=f"group/project#{1000 + index}",
+                    revision="2026-09-17T19:00:00Z",
+                ),
+                title=f"External issue {index}",
+                source_state="opened",
+                labels=("owner::carl",),
+            )
+            self.projector.upsert(
+                self.source,
+                snapshot,
+                project_id="home",
+            )
+
+        self.assertEqual(self.host.load_calls, 0)
+        self.assertEqual(self.host.save_calls, 0)
+        self.assertEqual(self.host.put_calls, 95)
+        metrics = self.projector.metrics()
+        self.assertEqual(metrics["keyed_gets"], 95)
+        self.assertEqual(metrics["source_identity_index_lookups"], 95)
+        self.assertEqual(metrics["compatibility_full_scans"], 0)
+        self.assertEqual(metrics["compatibility_bulk_saves"], 0)
 
 
 if __name__ == "__main__":
