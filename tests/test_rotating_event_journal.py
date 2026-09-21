@@ -148,6 +148,44 @@ class RotatingJsonlJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(set(indices)), total)
         self.assertEqual(set(indices), set(range(total)))
 
+    def test_recent_and_rotation_share_one_consistent_segment_view(self) -> None:
+        self.journal.append(self._event(1))
+        entered = threading.Event()
+        release = threading.Event()
+        original = self.journal._read_plain_tail
+
+        def blocking_read(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(timeout=5))
+            return original(*args, **kwargs)
+
+        with patch.object(
+            self.journal,
+            "_read_plain_tail",
+            side_effect=blocking_read,
+        ), ThreadPoolExecutor(max_workers=2) as pool:
+            recent_future = pool.submit(self.journal.recent, 10)
+            self.assertTrue(entered.wait(timeout=5))
+            rotate_future = pool.submit(
+                self.journal.rotate_if_needed,
+                force=True,
+            )
+            time.sleep(0.02)
+            self.assertFalse(rotate_future.done())
+            release.set()
+            values = recent_future.result(timeout=5)
+            rotate_future.result(timeout=5)
+
+        self.assertEqual(
+            [item["index"] for item in values],
+            [1],
+        )
+        self.journal.append(self._event(2))
+        self.assertEqual(
+            [item["index"] for item in self.journal.recent(10)],
+            [1, 2],
+        )
+
     def test_restart_recovers_segment_after_crash_between_rename_and_manifest(self) -> None:
         self.journal.append(self._event(1))
         with self.assertRaisesRegex(
