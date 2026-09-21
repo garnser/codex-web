@@ -36,6 +36,7 @@ class WorkItemSourceIdentityIndex:
             "hits": 0,
             "misses": 0,
             "upserts": 0,
+            "rekeys": 0,
             "removes": 0,
             "conflicts": 0,
             "rebuilds": 0,
@@ -129,6 +130,7 @@ class WorkItemSourceIdentityIndex:
                 upserts={},
                 deletes=(previous_key,),
             )
+            self._metric("rekeys")
 
         payload = {
             **self._identity_payload(identity),
