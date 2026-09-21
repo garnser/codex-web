@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from codex_web.agent_profiles import (
     AgentProfileAccessMode,
+    AgentProfileExecutionBinding,
     AgentProfileAccessPolicy,
     AgentProfileCreate,
     AgentProfileLifecycle,
@@ -26,6 +28,7 @@ from codex_web.definitions import (
     reference_for,
 )
 from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.execution_workers import AssignmentStatus
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -576,6 +579,57 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "profile_disabled",
             denied.exception.decision.reasons,
+        )
+
+    async def test_workload_projection_uses_canonical_assignment_provenance(self) -> None:
+        profile = self._create()
+        binding = AgentProfileExecutionBinding(
+            profile_id=profile.profile_id,
+            profile_revision=profile.revision,
+            profile_record_id=profile.record_id,
+            selected_provider_id="provider-a",
+            selected_runtime_id="runtime-a",
+            selected_provider_revision=2,
+            selected_runtime_capability_revision=4,
+            selected_worker_id="worker-a",
+        )
+        self.profiles.assignment_history = lambda _actor: [
+            SimpleNamespace(
+                id="assignment-1",
+                execution_id="execution-1",
+                project_id="project-a",
+                status=AssignmentStatus.RUNNING,
+                agent_profile=binding,
+                assigned_worker_id="worker-a",
+                created_at=10.0,
+                updated_at=20.0,
+                completed_at=None,
+            )
+        ]
+
+        workload = self.profiles.execution_history(
+            "coder",
+            actor=self.member,
+        )
+
+        self.assertTrue(workload["available"])
+        self.assertEqual(workload["count"], 1)
+        self.assertEqual(workload["activeCount"], 1)
+        self.assertEqual(
+            workload["items"][0]["profileRevision"],
+            profile.revision,
+        )
+        self.assertEqual(
+            workload["items"][0]["providerId"],
+            "provider-a",
+        )
+        self.assertEqual(
+            workload["items"][0]["runtimeId"],
+            "runtime-a",
+        )
+        self.assertEqual(
+            workload["items"][0]["workerId"],
+            "worker-a",
         )
 
     async def test_unavailable_profile_runtime_returns_structured_blocker(self) -> None:
