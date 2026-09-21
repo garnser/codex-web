@@ -44,6 +44,36 @@ class GitLabSyncJobStore:
             None,
         )
 
+    def get_or_create_active(
+        self,
+        candidate: GitLabSyncJob,
+    ) -> GitLabSyncJob:
+        selected: list[GitLabSyncJob] = []
+
+        def mutate(state):
+            active = [
+                item
+                for item in state.jobs
+                if item.scope_key == candidate.scope_key
+                and item.status in {
+                    GitLabSyncJobStatus.QUEUED,
+                    GitLabSyncJobStatus.RUNNING,
+                }
+            ]
+            if active:
+                current = max(
+                    active,
+                    key=lambda item: (item.updated_at, item.id),
+                )
+                selected.append(current)
+                return state
+            state.jobs.append(candidate)
+            selected.append(candidate)
+            return state
+
+        self.update(mutate)
+        return selected[0]
+
     def active_for_scope(self, scope_key: str) -> GitLabSyncJob | None:
         candidates = [
             item
