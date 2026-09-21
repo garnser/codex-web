@@ -503,6 +503,12 @@ class ProjectBootstrapService:
                 )
             )
 
+        effective_canonical = canonical.model_copy(
+            update={
+                "operations": tuple(canonical_provider_operations),
+            }
+        )
+
         if manifest.task_source is not None:
             provider_health = (
                 self.task_source_health(project_id, manifest, actor)
@@ -840,6 +846,7 @@ class ProjectBootstrapService:
             )
         )
 
+        canonical_provider_operations = []
         for item in canonical.operations:
             superseded_by_manifest = bool(
                 explicit_gitlab_reference
@@ -859,6 +866,23 @@ class ProjectBootstrapService:
                 )
             )
             if superseded_by_manifest:
+                canonical_provider_operations.append(
+                    item.model_copy(
+                        update={
+                            "disposition": MaterializationDisposition.SKIPPED,
+                            "reason_code": (
+                                "manifest_secret_reference_supersedes_legacy_credential"
+                            ),
+                            "message": (
+                                "Explicit canonical SecretReference supersedes "
+                                "legacy credential/task-source materialization."
+                            ),
+                            "apply_kind": None,
+                            "dependencies": (),
+                            "operator_action": None,
+                        }
+                    )
+                )
                 operations.append(
                     self._operation(
                         f"canonical:{item.id}",
@@ -876,6 +900,7 @@ class ProjectBootstrapService:
                 )
                 continue
 
+            canonical_provider_operations.append(item)
             disposition = self._canonical_disposition(item)
             operations.append(
                 self._operation(
@@ -1239,7 +1264,7 @@ class ProjectBootstrapService:
             migrate_legacy=migrate_legacy,
             preflight=preflight,
             operations=tuple(operations),
-            canonical_materialization_plan=canonical,
+            canonical_materialization_plan=effective_canonical,
             legacy_migration_plan=legacy,
             generated_at=self.clock(),
         )
