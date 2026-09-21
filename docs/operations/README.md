@@ -29,3 +29,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Background reconciliation gates](reconciliation-gates.md) — readiness-aware service startup, durable approval/pause controls, maintenance exclusion, and Slack polling disable semantics.
 
 - [Operational-state inspection and compaction](operational-state-compaction.md) — bounded pathology inspection, guarded delivery-target compaction, backup, verification, and rollback.
+
+- [Slack missed-message backfill](slack-backfill.md) — polling disable control, bounded incremental reconciliation, durable pagination checkpoints, rate limits, and diagnostics.
