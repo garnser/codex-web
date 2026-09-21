@@ -92,6 +92,7 @@ class ProjectBootstrapService:
         environment_health: HealthProbe | None = None,
         readiness_probe: ReadinessProbe | None = None,
         authorization_check: AuthorizationCheck | None = None,
+        operational_state_inspection: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -108,6 +109,7 @@ class ProjectBootstrapService:
         self.authorization_check = (
             authorization_check or IdentityService.require_admin
         )
+        self.operational_state_inspection = operational_state_inspection
         self.clock = clock
 
     def _authorize(
@@ -609,28 +611,58 @@ class ProjectBootstrapService:
                 )
             )
 
-        document_count = int(status.get("documents") or 0)
-        if document_count >= 50_000:
-            checks.append(
-                self._check(
-                    "operational-state:size",
-                    "operational_state",
-                    "state-store",
-                    BootstrapDisposition.WARNING,
-                    "large_state_requires_bounded_inspection",
-                    "Large canonical state detected; bounded inspection/compaction may be required.",
-                    details={"document_count": document_count},
+        if self.operational_state_inspection is not None:
+            operational = self.operational_state_inspection()
+            for item in operational.stores:
+                checks.append(
+                    self._check(
+                        f"operational-state:{item.store}",
+                        "operational_state",
+                        item.store,
+                        (
+                            BootstrapDisposition.WARNING
+                            if item.warning
+                            else BootstrapDisposition.READY
+                        ),
+                        item.reason_code,
+                        (
+                            "Operational state exceeds a bounded-inspection "
+                            "threshold; review the explicit compaction workflow."
+                            if item.warning
+                            else "Operational state is within the configured threshold."
+                        ),
+                        details={
+                            "count": item.count,
+                            "count_exact": item.count_exact,
+                            "bytes": item.bytes,
+                            "oldest_at": item.oldest_at,
+                            "newest_at": item.newest_at,
+                            **item.details,
+                        },
+                    )
                 )
-            )
         else:
+            document_count = int(status.get("documents") or 0)
             checks.append(
                 self._check(
                     "operational-state:size",
                     "operational_state",
                     "state-store",
-                    BootstrapDisposition.READY,
-                    "state_size_within_bootstrap_threshold",
-                    "Canonical state size does not trigger the bootstrap warning threshold.",
+                    (
+                        BootstrapDisposition.WARNING
+                        if document_count >= 50_000
+                        else BootstrapDisposition.READY
+                    ),
+                    (
+                        "large_state_requires_bounded_inspection"
+                        if document_count >= 50_000
+                        else "state_size_within_bootstrap_threshold"
+                    ),
+                    (
+                        "Large canonical state detected; bounded inspection/compaction may be required."
+                        if document_count >= 50_000
+                        else "Canonical state size does not trigger the bootstrap warning threshold."
+                    ),
                     details={"document_count": document_count},
                 )
             )
