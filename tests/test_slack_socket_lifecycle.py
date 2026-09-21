@@ -49,7 +49,11 @@ class _Slack:
 
 
 class _Routing:
-    async def handle_inbound(self, _message):
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def handle_inbound(self, message):
+        self.messages.append(message)
         return {"ok": True}
 
 
@@ -75,13 +79,20 @@ def _connection() -> BotConnection:
     )
 
 
-def _runtime() -> BotRuntime:
+def _runtime(*, routing=None) -> BotRuntime:
     return BotRuntime(
         connections=_Connections(),
-        bindings=SimpleNamespace(),
-        presentation=SimpleNamespace(),
+        bindings=SimpleNamespace(
+            first_for_connection=lambda _provider, _channel: None,
+        ),
+        presentation=SimpleNamespace(
+            strip_slack_mentions=lambda value: str(value).strip(),
+            ambiguous_route_message=lambda _prefixes: "ambiguous",
+            slack_reply_username=lambda _binding: None,
+            slack_reply_icon=lambda _binding: None,
+        ),
         telemetry=_Telemetry(),
-        routing=_Routing(),
+        routing=routing or _Routing(),
         delivery=_Delivery(),
         publish_event=_publish,
         slack_client=_Slack(),
@@ -390,6 +401,53 @@ class SlackSocketLifecycleTests(unittest.IsolatedAsyncioTestCase):
             runtime.telemetry.status[connection.id][
                 "tokenRotationRequired"
             ]
+        )
+
+    async def test_message_and_threaded_reply_route_with_correct_thread_identity(self) -> None:
+        routing = _Routing()
+        runtime = _runtime(routing=routing)
+        connection = _connection()
+
+        await runtime._handle_slack_payload(
+            connection,
+            {
+                "type": "events_api",
+                "event": {
+                    "type": "message",
+                    "channel": "C1",
+                    "user": "U1",
+                    "text": "root",
+                    "ts": "100.1",
+                },
+            },
+        )
+        await runtime._handle_slack_payload(
+            connection,
+            {
+                "type": "events_api",
+                "event": {
+                    "type": "message",
+                    "channel": "C1",
+                    "user": "U2",
+                    "text": "reply",
+                    "ts": "100.2",
+                    "thread_ts": "100.1",
+                },
+            },
+        )
+
+        self.assertEqual(len(routing.messages), 2)
+        self.assertEqual(
+            routing.messages[0].external_thread_id,
+            "100.1",
+        )
+        self.assertEqual(
+            routing.messages[1].external_thread_id,
+            "100.1",
+        )
+        self.assertEqual(
+            routing.messages[1].message_id,
+            "100.2",
         )
 
     async def test_replayed_envelope_stays_deduped_across_reconnect(self) -> None:
