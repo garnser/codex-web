@@ -493,10 +493,11 @@ class RuntimeSupervisor:
                 "restore-thread-names",
                 self.restore_thread_names(),
             )
-            self._spawn_startup_task(
-                "resume-active-threads",
-                self.resume_active_threads(),
-            )
+            if self.stale_turn_recovery is None:
+                self._spawn_startup_task(
+                    "resume-active-threads",
+                    self.resume_active_threads(),
+                )
 
         self.sd_notify("READY=1\nSTATUS=codex-web started")
         if (
