@@ -100,8 +100,12 @@ class BuildMetadataTests(unittest.TestCase):
 
         live_routes = [
             route
-            for route in app.routes
-            if getattr(route, "path", None) == "/api/livez"
+            for route in app.router.routes
+            if (
+                getattr(route, "path", None)
+                or getattr(route, "path_format", None)
+            )
+            == "/api/livez"
         ]
         self.assertEqual(len(live_routes), 1)
 
