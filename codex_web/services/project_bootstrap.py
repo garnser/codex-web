@@ -75,7 +75,7 @@ AuthorizationCheck = Callable[[AuthenticationActor], None]
 
 
 class ProjectBootstrapService:
-    LEASE_SECONDS = 60.0
+    LEASE_SECONDS = 15 * 60.0
 
     def __init__(
         self,
@@ -1189,10 +1189,28 @@ class ProjectBootstrapService:
     def _persist(
         self,
         execution: ProjectBootstrapExecution,
+        *,
+        expected_lease_owner: str | None = None,
     ) -> ProjectBootstrapExecution:
         saved: list[ProjectBootstrapExecution] = []
 
         def mutate(state):
+            if expected_lease_owner is not None:
+                current = next(
+                    (
+                        item
+                        for item in state.executions
+                        if item.id == execution.id
+                    ),
+                    None,
+                )
+                if (
+                    current is None
+                    or current.lease_owner != expected_lease_owner
+                ):
+                    raise ProjectBootstrapConcurrentApply(
+                        "bootstrap apply lease was lost to another executor"
+                    )
             state.executions = [
                 item
                 for item in state.executions
@@ -1290,6 +1308,7 @@ class ProjectBootstrapService:
         provider_execution_id: str | None = None,
         fail_after_operations: int | None = None,
         applied_this_run: list[int],
+        lease_owner: str,
     ) -> ProjectBootstrapExecution:
         if operation.id in execution.completed_operation_ids:
             return execution
@@ -1325,7 +1344,10 @@ class ProjectBootstrapService:
         )
         execution.updated_at = self.clock()
         execution.lease_expires_at = self.clock() + self.LEASE_SECONDS
-        execution = self._persist(execution)
+        execution = self._persist(
+            execution,
+            expected_lease_owner=lease_owner,
+        )
         applied_this_run[0] += 1
         if (
             fail_after_operations is not None
@@ -1457,6 +1479,11 @@ class ProjectBootstrapService:
         execution = self._acquire(plan, actor=actor)
         if execution.status == BootstrapExecutionStatus.APPLIED:
             return execution
+        lease_owner = str(execution.lease_owner or "")
+        if not lease_owner:
+            raise ProjectBootstrapConcurrentApply(
+                "bootstrap execution has no active apply lease"
+            )
 
         applied_this_run = [0]
         try:
@@ -1486,6 +1513,7 @@ class ProjectBootstrapService:
                         provider_execution_id=provider_execution.id,
                         fail_after_operations=fail_after_operations,
                         applied_this_run=applied_this_run,
+                        lease_owner=lease_owner,
                     )
 
             direct_ops = [
@@ -1504,6 +1532,7 @@ class ProjectBootstrapService:
                         actor=actor,
                         fail_after_operations=fail_after_operations,
                         applied_this_run=applied_this_run,
+                        lease_owner=lease_owner,
                     )
 
             legacy_ops = [
@@ -1538,6 +1567,7 @@ class ProjectBootstrapService:
                         provider_execution_id=provider_execution.id,
                         fail_after_operations=fail_after_operations,
                         applied_this_run=applied_this_run,
+                        lease_owner=lease_owner,
                     )
 
             warnings = tuple(
@@ -1561,14 +1591,25 @@ class ProjectBootstrapService:
             execution.updated_at = execution.completed_at
             execution.lease_owner = None
             execution.lease_expires_at = None
-            return self._persist(execution)
+            return self._persist(
+                execution,
+                expected_lease_owner=lease_owner,
+            )
         except Exception as exc:
             execution.status = BootstrapExecutionStatus.PARTIAL
             execution.last_error_code = type(exc).__name__
             execution.updated_at = self.clock()
             execution.lease_owner = None
             execution.lease_expires_at = None
-            self._persist(execution)
+            try:
+                self._persist(
+                    execution,
+                    expected_lease_owner=lease_owner,
+                )
+            except ProjectBootstrapConcurrentApply:
+                # A replacement executor owns the lease/state now. Never let a
+                # stale worker overwrite its progress while unwinding.
+                pass
             raise
 
     def status(
