@@ -9,29 +9,91 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Candidate build or qualified release promotion
+        required: true
+        default: promote
+        type: choice
+        options:
+          - candidate
+          - promote
+      candidate_sha:
+        description: Exact tested main commit to promote
+        required: false
+        type: string
+      qualification_url:
+        description: Base URL of the deployed candidate behind nginx
+        required: false
+        type: string
+      slack_message_ts:
+        description: Slack qualification root-message timestamp/evidence id
+        required: false
+        type: string
+      slack_thread_ts:
+        description: Slack qualification threaded-reply timestamp/evidence id
+        required: false
+        type: string
+      gitlab_delivery_id:
+        description: GitLab webhook delivery/event evidence id
+        required: false
+        type: string
+      socket_window_minutes:
+        description: Observed stable Slack Socket Mode window in minutes
+        required: false
+        default: "15"
+        type: string
+      stale_turns_accounted:
+        description: Number of migrated stale turns reconciled or explicitly blocked
+        required: false
+        default: "3"
+        type: string
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: publish-release
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: dockerhub-release
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+  candidate:
+    name: immutable-recovery-candidate
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.mode == 'candidate')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
-      - name: Check out tested release commit
+      - name: Resolve candidate commit
+        id: candidate
+        shell: bash
+        env:
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_SHA:-}" ]; then
+            sha="$DISPATCH_SHA"
+          elif [ -n "${WORKFLOW_SHA:-}" ]; then
+            sha="$WORKFLOW_SHA"
+          else
+            sha="$GITHUB_SHA"
+          fi
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tested candidate commit
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.candidate.outputs.sha }}
 
-      - name: Resolve and validate release version
+      - name: Resolve release inputs
         id: release
         shell: bash
         run: |
@@ -44,129 +106,498 @@ jobs:
           tag="v${version}"
           existing="$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')"
           if [ -n "$existing" ]; then
-            echo "Release ${tag} already exists; nothing to publish."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${tag} already exists; candidate build is not needed."
+            echo "build=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           codex_version="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"
           test -n "$codex_version"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "codex_version=$codex_version" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
-        if: steps.release.outputs.publish == 'true'
+        if: steps.release.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pull trusted runtime base
-        if: steps.release.outputs.publish == 'true'
-        run: docker pull garnser/codex-web:base
+      - name: Resolve immutable runtime base
+        if: steps.release.outputs.build == 'true'
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull garnser/codex-web:base
+          ref="$(docker inspect --format '{{index .RepoDigests 0}}' garnser/codex-web:base)"
+          test -n "$ref"
+          printf 'base_ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
 
-      - name: Build production image
-        if: steps.release.outputs.publish == 'true'
+      - name: Build local candidate image
+        if: steps.release.outputs.build == 'true'
         shell: bash
         env:
-          IMAGE: garnser/codex-web
+          BASE_IMAGE: ${{ steps.base.outputs.base_ref }}
           VERSION: ${{ steps.release.outputs.version }}
-          TAG: ${{ steps.release.outputs.tag }}
           CODEX_VERSION: ${{ steps.release.outputs.codex_version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
         run: |
           set -euo pipefail
           docker build \
-            --build-arg BASE_IMAGE=garnser/codex-web:base \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
             --build-arg "CODEX_VERSION=${CODEX_VERSION}" \
+            --build-arg "CODEX_WEB_RELEASE_VERSION=${VERSION}" \
+            --build-arg "CODEX_WEB_GIT_REVISION=${CANDIDATE_SHA}" \
+            --build-arg "CODEX_WEB_BUILD_SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=${TAG}" \
-            --tag "${IMAGE}:${VERSION}" \
-            --tag "${IMAGE}:${TAG}" \
-            --tag "${IMAGE}:sha-${GITHUB_SHA}" \
-            --tag "${IMAGE}:latest" \
+            --label "org.opencontainers.image.revision=${CANDIDATE_SHA}" \
+            --label "org.opencontainers.image.version=v${VERSION}" \
+            --tag codex-web:recovery-candidate \
             .
 
-      - name: Verify pinned Codex version
-        if: steps.release.outputs.publish == 'true'
+      - name: Verify candidate runtime metadata and Codex pin
+        if: steps.release.outputs.build == 'true'
         shell: bash
         env:
-          IMAGE: garnser/codex-web
           VERSION: ${{ steps.release.outputs.version }}
           CODEX_VERSION: ${{ steps.release.outputs.codex_version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
         run: |
           set -euo pipefail
-          actual="$(docker run --rm --entrypoint codex "${IMAGE}:${VERSION}" --version)"
-          echo "Expected Codex ${CODEX_VERSION}; production image reports: ${actual}"
+          actual="$(docker run --rm --entrypoint codex codex-web:recovery-candidate --version)"
           printf '%s' "$actual" | grep -F "$CODEX_VERSION"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' codex-web:recovery-candidate)" = "$CANDIDATE_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' codex-web:recovery-candidate)" = "v${VERSION}"
 
-      - name: Smoke-test production image
-        if: steps.release.outputs.publish == 'true'
+      - name: Qualify recovery regressions inside exact candidate image
+        if: steps.release.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint python \
+            codex-web:recovery-candidate \
+            -m unittest \
+            tests.test_slack_socket_lifecycle \
+            tests.test_stale_active_turn_recovery \
+            tests.test_runtime_health_hot_path \
+            tests.test_event_journal_lifecycle
+
+      - name: Qualify candidate through tracked Compose and nginx
+        if: steps.release.outputs.build == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          workspace=/tmp/codex-web-recovery-workspace
+          artifacts=/tmp/codex-web-recovery-evidence
+          rm -rf "$workspace" "$artifacts"
+          mkdir -p \
+            "$workspace/onboarding-single" \
+            "$workspace/onboarding-multi/app" \
+            "$workspace/onboarding-multi/platform" \
+            "$workspace/onboarding-no-worker" \
+            "$artifacts"
+
+          init_repo() {
+            local path="$1"
+            git -C "$path" init -q
+            git -C "$path" config user.name "Codex Web Release CI"
+            git -C "$path" config user.email "codex-web-release@example.invalid"
+            printf '# recovery qualification\n' > "$path/README.md"
+            git -C "$path" add README.md
+            git -C "$path" commit -q -m "recovery qualification fixture"
+          }
+
+          init_repo "$workspace/onboarding-single"
+          init_repo "$workspace/onboarding-multi/app"
+          init_repo "$workspace/onboarding-multi/platform"
+          init_repo "$workspace/onboarding-no-worker"
+          chmod -R a+rX,u+w "$workspace"
+
+          export CODEX_WEB_IMAGE=codex-web:recovery-candidate
+          export CODEX_WORKSPACE="$workspace"
+          export CODEX_WEB_NGINX_PORT=18768
+          export BASE_URL=http://127.0.0.1:18768
+
+          cleanup() {
+            docker compose \
+              -p codex-web-recovery \
+              -f compose.yaml \
+              -f compose.recovery.yaml \
+              logs --no-color > "$artifacts/compose.log" 2>&1 || true
+            docker compose \
+              -p codex-web-recovery \
+              -f compose.yaml \
+              -f compose.recovery.yaml \
+              down -v --remove-orphans >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker compose \
+            -p codex-web-recovery \
+            -f compose.yaml \
+            -f compose.recovery.yaml \
+            up -d --no-build
+
+          BASE_URL="$BASE_URL" \
+            bash scripts/qualify-clean-install-onboarding.sh qualify \
+            | tee "$artifacts/onboarding.json"
+
+          EXPECTED_RELEASE_VERSION="$VERSION" \
+          EXPECTED_REVISION="$CANDIDATE_SHA" \
+          BASE_URL="$BASE_URL" \
+            bash scripts/qualify-recovery-image.sh \
+            | tee "$artifacts/recovery.json"
+
+          docker compose \
+            -p codex-web-recovery \
+            -f compose.yaml \
+            -f compose.recovery.yaml \
+            restart codex-web
+
+          BASE_URL="$BASE_URL" \
+            bash scripts/qualify-clean-install-onboarding.sh verify-restart \
+            | tee "$artifacts/restart.json"
+
+          EXPECTED_RELEASE_VERSION="$VERSION" \
+          EXPECTED_REVISION="$CANDIDATE_SHA" \
+          BASE_URL="$BASE_URL" \
+            bash scripts/qualify-recovery-image.sh \
+            > "$artifacts/recovery-after-restart.json"
+
+      - name: Push immutable candidate with SBOM and provenance attestations
+        if: steps.release.outputs.build == 'true'
+        id: push
+        shell: bash
+        env:
+          IMAGE: garnser/codex-web
+          BASE_IMAGE: ${{ steps.base.outputs.base_ref }}
+          VERSION: ${{ steps.release.outputs.version }}
+          CODEX_VERSION: ${{ steps.release.outputs.codex_version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          candidate_tag="${IMAGE}:sha-${CANDIDATE_SHA}"
+          docker buildx build \
+            --push \
+            --sbom=true \
+            --provenance=mode=max \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            --build-arg "CODEX_VERSION=${CODEX_VERSION}" \
+            --build-arg "CODEX_WEB_RELEASE_VERSION=${VERSION}" \
+            --build-arg "CODEX_WEB_GIT_REVISION=${CANDIDATE_SHA}" \
+            --build-arg "CODEX_WEB_BUILD_SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${CANDIDATE_SHA}" \
+            --label "org.opencontainers.image.version=v${VERSION}" \
+            --tag "${candidate_tag}" \
+            .
+
+          digest="$(docker buildx imagetools inspect "${candidate_tag}" | awk '$1 == "Digest:" {print $2; exit}')"
+          test -n "$digest"
+          echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Record candidate release evidence
+        if: steps.release.outputs.build == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          CANDIDATE_TAG: ${{ steps.push.outputs.candidate_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          BASE_REF: ${{ steps.base.outputs.base_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/codex-web-recovery-evidence
+          config_revision="$(cat compose.yaml compose.recovery.yaml deploy/recovery/nginx.conf | sha256sum | awk '{print $1}')"
+          nginx_ref="$(docker inspect --format '{{index .RepoDigests 0}}' nginx:1.27-alpine 2>/dev/null || true)"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg commit "$CANDIDATE_SHA" \
+            --arg candidate_tag "$CANDIDATE_TAG" \
+            --arg image_digest "$DIGEST" \
+            --arg base_image "$BASE_REF" \
+            --arg config_revision "$config_revision" \
+            --arg nginx_image "$nginx_ref" \
+            '{
+              schema_version: "1.0",
+              stage: "candidate",
+              release_version: $version,
+              commit: $commit,
+              candidate_tag: $candidate_tag,
+              image_digest: $image_digest,
+              base_image: $base_image,
+              deployment_config_sha256: $config_revision,
+              nginx_image: $nginx_image,
+              sbom: "buildkit-attestation",
+              provenance: "buildkit-mode-max",
+              deterministic_qualification: {
+                compose_nginx: true,
+                clean_onboarding: true,
+                restart: true,
+                slack_socket_regression: true,
+                stale_turn_regression: true,
+                health_hot_path_regression: true,
+                event_journal_regression: true
+              },
+              external_provider_qualification: "required-before-promotion"
+            }' > /tmp/codex-web-recovery-evidence/candidate-evidence.json
+
+      - name: Upload candidate release evidence
+        if: steps.release.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-candidate-${{ steps.candidate.outputs.sha }}
+          path: /tmp/codex-web-recovery-evidence/
+          if-no-files-found: error
+
+  promote:
+    name: qualified-release-promotion
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'promote'
+    environment: recovery-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Validate promotion evidence inputs
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          QUALIFICATION_URL: ${{ inputs.qualification_url }}
+          SLACK_MESSAGE_TS: ${{ inputs.slack_message_ts }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          GITLAB_DELIVERY_ID: ${{ inputs.gitlab_delivery_id }}
+          SOCKET_WINDOW: ${{ inputs.socket_window_minutes }}
+          STALE_TURNS: ${{ inputs.stale_turns_accounted }}
+        run: |
+          set -euo pipefail
+          test -n "$CANDIDATE_SHA"
+          test -n "$QUALIFICATION_URL"
+          test -n "$SLACK_MESSAGE_TS"
+          test -n "$SLACK_THREAD_TS"
+          test -n "$GITLAB_DELIVERY_ID"
+          printf '%s' "$CANDIDATE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$SOCKET_WINDOW" | grep -Eq '^[0-9]+([.][0-9]+)?$'
+          printf '%s' "$STALE_TURNS" | grep -Eq '^[0-9]+$'
+          awk -v value="$SOCKET_WINDOW" 'BEGIN { exit !(value >= 15) }'
+          test "$STALE_TURNS" -ge 3
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out candidate source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.candidate.outputs.sha }}
+
+      - name: Verify candidate came from successful main CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          result="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/tests.yml/runs?head_sha=${CANDIDATE_SHA}&status=completed&per_page=20")"
+          jq -e '
+            [.workflow_runs[] | select(.conclusion == "success")] | length > 0
+          ' <<<"$result" >/dev/null
+
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .release-version)"
+          printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          tag="v${version}"
+          existing="$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')"
+          if [ -n "$existing" ] && [ "$existing" != "${{ steps.candidate.outputs.sha }}" ]; then
+            echo "${tag} already points at another commit: ${existing}" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify immutable candidate image identity
+        id: image
         shell: bash
         env:
           IMAGE: garnser/codex-web
           VERSION: ${{ steps.release.outputs.version }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
         run: |
           set -euo pipefail
-          docker run --detach \
-            --name codex-web-release-smoke \
-            --publish 127.0.0.1:18765:8765 \
-            "${IMAGE}:${VERSION}"
-          trap 'docker logs codex-web-release-smoke || true; docker rm --force codex-web-release-smoke >/dev/null 2>&1 || true' EXIT
+          candidate_tag="${IMAGE}:sha-${CANDIDATE_SHA}"
+          docker pull "$candidate_tag"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_tag")" = "$CANDIDATE_SHA"
+          test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$candidate_tag")" = "v${VERSION}"
+          digest="$(docker buildx imagetools inspect "$candidate_tag" | awk '$1 == "Digest:" {print $2; exit}')"
+          test -n "$digest"
+          echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error http://127.0.0.1:18765/api/livez >/dev/null; then
-              exit 0
-            fi
-            if ! docker inspect --format '{{.State.Running}}' codex-web-release-smoke | grep -q true; then
-              echo 'Production image exited before becoming live' >&2
-              exit 1
-            fi
-            sleep 1
+      - name: Verify deployed candidate through nginx
+        shell: bash
+        env:
+          BASE_URL: ${{ inputs.qualification_url }}
+          EXPECTED_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_REVISION: ${{ steps.candidate.outputs.sha }}
+          QUALIFICATION_USER: ${{ secrets.RECOVERY_QUALIFICATION_USER }}
+          QUALIFICATION_PASSWORD: ${{ secrets.RECOVERY_QUALIFICATION_PASSWORD }}
+        run: |
+          set -euo pipefail
+          curl_args=(--fail --silent --show-error)
+          if [ -n "${QUALIFICATION_USER:-}" ] || [ -n "${QUALIFICATION_PASSWORD:-}" ]; then
+            test -n "${QUALIFICATION_USER:-}"
+            test -n "${QUALIFICATION_PASSWORD:-}"
+            curl_args+=(--user "${QUALIFICATION_USER}:${QUALIFICATION_PASSWORD}")
+          fi
+
+          version_json="$(curl "${curl_args[@]}" "${BASE_URL%/}/api/version")"
+          jq -e \
+            --arg version "$EXPECTED_RELEASE_VERSION" \
+            --arg revision "$EXPECTED_REVISION" \
+            '.releaseVersion == $version and .gitRevision == $revision' \
+            <<<"$version_json" >/dev/null
+
+          curl "${curl_args[@]}" "${BASE_URL%/}/api/livez" >/dev/null
+          curl "${curl_args[@]}" "${BASE_URL%/}/api/readyz" >/dev/null
+          curl "${curl_args[@]}" "${BASE_URL%/}/" >/dev/null
+          curl "${curl_args[@]}" "${BASE_URL%/}/static/app.js" >/dev/null
+
+          for _ in $(seq 1 20); do
+            latency="$(curl "${curl_args[@]}" \
+              --output /tmp/status.json \
+              --write-out '%{time_total}' \
+              "${BASE_URL%/}/api/status")"
+            awk -v value="$latency" 'BEGIN { exit !(value <= 2.0) }'
           done
 
-          echo 'Production image did not become live' >&2
-          exit 1
+      - name: Record qualified promotion evidence
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          QUALIFICATION_URL: ${{ inputs.qualification_url }}
+          SLACK_MESSAGE_TS: ${{ inputs.slack_message_ts }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          GITLAB_DELIVERY_ID: ${{ inputs.gitlab_delivery_id }}
+          SOCKET_WINDOW: ${{ inputs.socket_window_minutes }}
+          STALE_TURNS: ${{ inputs.stale_turns_accounted }}
+        run: |
+          set -euo pipefail
+          config_revision="$(cat compose.yaml compose.recovery.yaml deploy/recovery/nginx.conf | sha256sum | awk '{print $1}')"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg commit "$CANDIDATE_SHA" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg config_revision "$config_revision" \
+            --arg qualification_url "$QUALIFICATION_URL" \
+            --arg slack_message_ts "$SLACK_MESSAGE_TS" \
+            --arg slack_thread_ts "$SLACK_THREAD_TS" \
+            --arg gitlab_delivery_id "$GITLAB_DELIVERY_ID" \
+            --arg socket_window "$SOCKET_WINDOW" \
+            --arg stale_turns "$STALE_TURNS" \
+            '{
+              schema_version: "1.0",
+              stage: "qualified",
+              release_version: $version,
+              tag: $tag,
+              commit: $commit,
+              image_digest: $image_digest,
+              deployment_config_sha256: $config_revision,
+              qualification_url: $qualification_url,
+              slack: {
+                stable_socket_window_minutes: ($socket_window | tonumber),
+                root_message_evidence: $slack_message_ts,
+                threaded_reply_evidence: $slack_thread_ts
+              },
+              gitlab: {
+                webhook_delivery_evidence: $gitlab_delivery_id
+              },
+              stale_turns: {
+                accounted: ($stale_turns | tonumber)
+              },
+              health_status_latency_max_seconds: 2.0,
+              sbom: "buildkit-attestation",
+              provenance: "buildkit-mode-max"
+            }' > release-evidence.json
 
-      - name: Push production image tags
-        if: steps.release.outputs.publish == 'true'
+      - name: Promote immutable candidate to release tags
         shell: bash
         env:
           IMAGE: garnser/codex-web
           VERSION: ${{ steps.release.outputs.version }}
           TAG: ${{ steps.release.outputs.tag }}
+          CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
+          EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:${TAG}"
-          docker push "${IMAGE}:sha-${GITHUB_SHA}"
-          docker push "${IMAGE}:latest"
-          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:${TAG}" \
+            --tag "${IMAGE}:latest" \
+            "${CANDIDATE_TAG}"
 
-      - name: Create Git tag
-        if: steps.release.outputs.publish == 'true'
+          for promoted in "${IMAGE}:${VERSION}" "${IMAGE}:${TAG}" "${IMAGE}:latest"; do
+            digest="$(docker buildx imagetools inspect "$promoted" | awk '$1 == "Digest:" {print $2; exit}')"
+            test "$digest" = "$EXPECTED_DIGEST"
+          done
+
+      - name: Create immutable Git tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          existing="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+          if [ -z "$existing" ]; then
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${TAG}" \
+              -f "sha=${CANDIDATE_SHA}"
+          else
+            test "$existing" = "$CANDIDATE_SHA"
+          fi
+
+      - name: Create qualified GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh api \
-            --method POST \
-            "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -f "ref=refs/tags/${TAG}" \
-            -f "sha=${GITHUB_SHA}"
+          cat > /tmp/release-notes.md <<'EOF'
+          This release was promoted from an immutable SHA-tagged recovery
+          candidate after deterministic Compose/nginx qualification and
+          operator-supplied real Slack/GitLab recovery evidence.
 
-      - name: Create GitHub Release
-        if: steps.release.outputs.publish == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
+          See the attached release-evidence.json for the exact source commit,
+          image digest, deployment configuration revision, provider evidence,
+          and qualification thresholds.
+          EOF
           gh release create "$TAG" \
             --verify-tag \
             --title "codex-web ${TAG}" \
-            --generate-notes
+            --notes-file /tmp/release-notes.md \
+            release-evidence.json
