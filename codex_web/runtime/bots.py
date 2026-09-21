@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import random
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
@@ -31,6 +32,14 @@ class SlackPayloadWork:
     enqueued_at: float
     ordering_key: str
     dedupe_key: str | None = None
+
+
+class SlackSocketLifecycleError(RuntimeError):
+    failure_class = "transport_error"
+
+
+class SlackSocketCleanClose(SlackSocketLifecycleError):
+    failure_class = "clean_close"
 
 
 class BotRuntime:
@@ -76,6 +85,8 @@ class BotRuntime:
         self.slack_payload_seen: dict[str, set[str]] = {}
         self.slack_payload_seen_order: dict[str, deque[str]] = {}
         self.slack_payload_stats: dict[str, dict[str, Any]] = {}
+        self.slack_reconnect_counts: dict[str, int] = {}
+        self.slack_reconnect_failures: dict[str, int] = {}
         self.lock = asyncio.Lock()
 
     async def sync(self) -> None:
