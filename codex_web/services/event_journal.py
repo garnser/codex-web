@@ -182,7 +182,6 @@ class EventJournal:
             "linesConsidered": 0,
             "validEvents": 0,
             "fileSize": 0,
-            "segmentsRead": 0,
         }
 
     @staticmethod
@@ -614,8 +613,6 @@ class EventJournal:
                     remaining,
                     chunk_size=chunk_size,
                 )
-                if rows:
-                    metrics["segmentsRead"] += 1
                 values_reverse.extend(rows)
                 metrics["bytesRead"] += item_metrics["bytesRead"]
                 metrics["chunksRead"] += item_metrics["chunksRead"]
