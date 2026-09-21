@@ -653,9 +653,12 @@ class SkillDefinitionService:
             raise SkillDefinitionConflict(
                 "execution reference is not an agent.skill"
             )
-        if not definition_is_effective(record):
+        if record.lifecycle not in {
+            DefinitionLifecycle.PUBLISHED,
+            DefinitionLifecycle.SUPERSEDED,
+        }:
             raise SkillDefinitionConflict(
-                "Skill revision is not effective for execution"
+                "Skill revision is not eligible for pinned execution"
             )
         skill = self.definition(record)
         selection = request or SkillExecutionMaterialRequest()
