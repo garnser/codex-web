@@ -290,6 +290,11 @@ class EventJournalLifecycleTests(unittest.IsolatedAsyncioTestCase):
         assert segment is not None
         self.assertFalse(segment.indexed)
 
+        self.clock.advance(1)
+        journal.append({"type": "fixture", "index": 2})
+        newer = journal.rotate()
+        assert newer is not None
+
         with (
             patch.object(
                 EventJournal,
@@ -299,7 +304,12 @@ class EventJournalLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 EventJournal,
                 "retention_max_segments",
-                return_value=2,
+                return_value=1,
+            ),
+            patch.object(
+                EventJournal,
+                "hot_segments",
+                return_value=1,
             ),
             patch.object(
                 EventJournal,
@@ -307,16 +317,68 @@ class EventJournalLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return_value=False,
             ),
         ):
-            # The same maintenance pass indexes before cleanup, so force an
-            # unknown manifest record and assert the candidate filter itself
-            # fails closed.
             segment.indexed = False
             segment.protected_records = None
             candidates = journal._retention_candidates(
                 self.clock() + 1000
             )
 
-        self.assertEqual(candidates, [])
+        self.assertNotIn(segment.id, {item.id for item in candidates})
+
+    async def test_slow_archive_does_not_block_concurrent_append(self) -> None:
+        journal = self._journal()
+        journal.append({"type": "fixture", "index": 1})
+        journal.rotate()
+        self.clock.advance(1)
+        journal.append({"type": "fixture", "index": 2})
+        journal.rotate()
+
+        original = journal._compress_and_archive
+
+        # Use threading events inside the worker because the compression
+        # function itself is synchronous.
+        import threading
+        entered_thread = threading.Event()
+        release_thread = threading.Event()
+
+        def blocking_archive(segment):
+            entered_thread.set()
+            release_thread.wait(timeout=2.0)
+            return original(segment)
+
+        with (
+            patch.object(
+                journal,
+                "_compress_and_archive",
+                side_effect=blocking_archive,
+            ),
+            patch.object(
+                EventJournal,
+                "hot_segments",
+                return_value=1,
+            ),
+        ):
+            maintenance = asyncio.create_task(
+                asyncio.to_thread(journal.maintain_once)
+            )
+            for _ in range(200):
+                if entered_thread.is_set():
+                    break
+                await asyncio.sleep(0.001)
+            self.assertTrue(entered_thread.is_set())
+
+            started = time.perf_counter()
+            appended = await asyncio.to_thread(
+                journal.append,
+                {"type": "fixture", "index": 99},
+            )
+            elapsed = time.perf_counter() - started
+
+            release_thread.set()
+            await maintenance
+
+        self.assertLess(elapsed, 0.08)
+        self.assertEqual(appended["index"], 99)
 
     async def test_slow_archive_work_offloaded_does_not_starve_event_loop(self) -> None:
         journal = self._journal()
