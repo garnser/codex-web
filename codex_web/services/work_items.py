@@ -1182,9 +1182,16 @@ class WorkItemService:
     async def sync_from_gitlab(
         self,
         scope: TenantScope | None = None,
+        *,
+        progress: Any | None = None,
+        cancelled: Any | None = None,
     ) -> dict[str, Any]:
         try:
-            result = await self._sync_from_gitlab_async(scope)
+            result = await self._sync_from_gitlab_async(
+                scope,
+                progress=progress,
+                cancelled=cancelled,
+            )
         except Exception as exc:
             error = self.truncate_text(str(exc), 500)
             health = self.sync_health.record_failure(error)
