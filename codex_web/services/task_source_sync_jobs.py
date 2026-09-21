@@ -144,7 +144,7 @@ class GitLabSyncJobService:
         self._save(job)
 
         try:
-            result = await self.work_items._sync_from_gitlab_async(
+            result = await self.work_items.sync_from_gitlab(
                 scope,
                 progress=lambda update: self._progress(
                     job_id,
@@ -166,8 +166,6 @@ class GitLabSyncJobService:
             latest.completed_at = self.clock()
             latest.updated_at = latest.completed_at
             self._save(latest)
-            if isinstance(exc, __import__("asyncio").CancelledError):
-                return
             raise
 
         latest = self.store.get(job_id) or job
