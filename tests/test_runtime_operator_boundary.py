@@ -19,8 +19,14 @@ class _RuntimeStub:
     async def status(self):
         return {"ok": True}
 
+    async def livez(self):
+        return {"ok": True, "status": "live"}
+
+    async def readyz(self):
+        return {"ok": True, "status": "ready"}
+
     async def healthz(self):
-        return {"ok": True}
+        return await self.readyz()
 
     def operations(self, *, window_seconds=900.0):
         return {"windowSeconds": window_seconds, "runtime": {"healthy": True}}
@@ -113,7 +119,12 @@ class RuntimeOperatorBoundaryTests(unittest.TestCase):
             self.assertEqual(response.status_code, 403)
 
         self.assertEqual(self.client.get("/api/status").status_code, 200)
-        self.assertEqual(self.client.get("/api/livez").status_code, 200)
+        live = self.client.get("/api/livez")
+        ready = self.client.get("/api/readyz")
+        self.assertEqual(live.status_code, 200)
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(live.json()["status"], "live")
+        self.assertEqual(ready.json()["status"], "ready")
 
     def test_human_admin_can_read_but_recovery_requires_mfa(self) -> None:
         self.actor = self.actor.model_copy(
