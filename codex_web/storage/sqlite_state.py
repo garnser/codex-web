@@ -249,6 +249,28 @@ class SQLiteStateStore:
             payload = self._decode(row)
             return dict(payload) if isinstance(payload, dict) else {}
 
+    def record_count(self, namespace: str) -> int:
+        with self._connection() as connection:
+            if not self._record_collection_exists_in_connection(
+                connection,
+                namespace,
+            ):
+                connection.execute("BEGIN IMMEDIATE")
+                self._ensure_record_collection_in_connection(
+                    connection,
+                    namespace,
+                )
+            prefix = f"{state_record_prefix(namespace)}k/"
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM state_documents
+                WHERE substr(namespace, 1, length(?)) = ?
+                """,
+                (prefix, prefix),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def record_page(
         self,
         namespace: str,
