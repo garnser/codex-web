@@ -594,6 +594,7 @@ class RuntimeHealthService:
         snapshot["maxEventLoopLagSeconds"] = (
             self._max_loop_lag_seconds
         )
+        snapshot["healthMetrics"] = self.metrics()
         return snapshot
 
     def metrics(self) -> dict[str, Any]:
