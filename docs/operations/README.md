@@ -33,3 +33,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Slack missed-message backfill](slack-backfill.md) — polling disable control, bounded incremental reconciliation, durable pagination checkpoints, rate limits, and diagnostics.
 
 - [Slack Socket Mode lifecycle](slack-socket-mode.md) — keepalive settings, transport failure classes, bounded reconnects, dedupe continuity, and operator diagnostics.
+
+- [Stale active-turn recovery](stale-active-turn-recovery.md) — evidence-based active-marker reconciliation, crash-safe recovery, private legacy backups, and operator resolution.
