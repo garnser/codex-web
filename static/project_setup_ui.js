@@ -1,5 +1,5 @@
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-const state = { projectId: "", project: null, readiness: null, bootstrap: null, plan: null, error: null };
+const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null };
 
 function esc(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
@@ -36,9 +36,16 @@ function inferredManifest() {
       organization: state.project.organization_id || "local",
       workspace: state.project.workspace_id || "default"
     },
-    repositories: [],
+    repositories: (state.resources || []).map((resource, index) => {
+      const filesystem = (resource.aliases || []).find((alias) => alias.namespace === "filesystem");
+      return {
+        id: resource.id || ("repository-" + (index + 1)),
+        path: filesystem?.value || resource.path || "",
+        default: (state.resources || []).length === 1
+      };
+    }).filter((item) => item.path),
     execution: {
-      repositorySelection: "explicit",
+      repositorySelection: (state.resources || []).length === 1 ? "single" : "explicit",
       requiredCapabilities: ["command_execution"],
       sandbox: state.project.sandbox || "workspace-write"
     }
@@ -150,11 +157,13 @@ async function refresh() {
     const results = await Promise.all([
       api("/api/projects"),
       api("/api/projects/" + encodeURIComponent(state.projectId) + "/readiness"),
-      api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/status").catch((error) => error.status === 404 ? { items: [] } : Promise.reject(error))
+      api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/status").catch((error) => error.status === 404 ? { items: [] } : Promise.reject(error)),
+      api("/api/projects/" + encodeURIComponent(state.projectId) + "/ui-state?thread_limit=1&include_static=true")
     ]);
-    state.project = (results[0] || []).find((project) => project.id === state.projectId) || null;
+    state.project = (results[0] || []).find((project) => project.id === state.projectId) || results[3]?.project || null;
     state.readiness = results[1];
     state.bootstrap = results[2] || { items: [] };
+    state.resources = results[3]?.resources?.items || [];
   } catch (error) { state.error = error.message; }
   render();
   return state;
