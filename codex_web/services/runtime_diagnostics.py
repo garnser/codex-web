@@ -406,7 +406,10 @@ class RuntimeDiagnosticsService:
             if not raw_page:
                 cursor = None
                 break
-            for key, raw in raw_page.items():
+            batch_items = list(raw_page.items())
+            processed_in_batch = 0
+            for key, raw in batch_items:
+                processed_in_batch += 1
                 cursor = key
                 scanned += 1
                 if (
@@ -424,7 +427,10 @@ class RuntimeDiagnosticsService:
                     selected.append(public)
                 if len(selected) >= page_size or scanned >= budget:
                     break
-            has_more = bool(backend_cursor)
+            has_more = bool(
+                backend_cursor
+                or processed_in_batch < len(batch_items)
+            )
             if len(selected) >= page_size or scanned >= budget:
                 break
             if not backend_cursor:
