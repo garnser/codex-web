@@ -1262,6 +1262,9 @@ class CanonicalMaterializationService:
                                 purpose=(
                                     f"legacy-materialization:{project.id}:task-source"
                                 ),
+                                allowed_identity_ids=[
+                                    "service-task-source-runtime"
+                                ],
                             ),
                             actor=actor,
                         )
