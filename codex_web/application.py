@@ -76,6 +76,7 @@ from codex_web.api.releases import build_releases_router
 from codex_web.api.upgrades import build_upgrades_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
+from codex_web.api.skills import build_skills_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.scheduler import build_scheduler_router
 from codex_web.api.slack import build_slack_router
@@ -230,6 +231,7 @@ from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
+from codex_web.services.skills import install_skill_definitions
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
 from codex_web.services.data_governance import DataGovernanceService
@@ -864,6 +866,11 @@ thread_index_repository = install_thread_index_repository(
     legacy_path=THREAD_INDEX_FILE,
 )
 project_service = ProjectService(project_repository)
+skill_service = install_skill_definitions(
+    definition_registry_service,
+    projects=project_service,
+)
+app.state.skill_service = skill_service
 project_runtime_service = ProjectRuntimeService(project_service)
 app.state.project_runtime_service = project_runtime_service
 # Compatibility names now resolve to the extracted project runtime owner.
@@ -1159,6 +1166,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
             record=False,
         ).model_dump(mode="json")
     ),
+    skills=skill_service,
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
@@ -1315,7 +1323,9 @@ agent_profile_service = AgentProfileService(
 )
 app.state.agent_profile_store = agent_profile_store
 app.state.agent_profile_service = agent_profile_service
+skill_service.profiles = agent_profile_service
 app.include_router(build_agent_profiles_router(agent_profile_service))
+app.include_router(build_skills_router(skill_service))
 
 
 def _agent_profile_definition_usage(reference):
@@ -1368,6 +1378,7 @@ agent_routing_service = AgentRoutingService(
     role_defaults=agent_routing_definition_service,
     provider_capacity=provider_capacity_service,
     profiles=agent_profile_service,
+    skills=skill_service,
 )
 app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service
@@ -2369,6 +2380,7 @@ turn_execution_service = install_turn_execution_service(
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
     bindings_for_thread=bot_binding_selection_service.for_thread,
+    skills=skill_service,
 )
 
 async def _existing_thread_runtime_request(method, params):
