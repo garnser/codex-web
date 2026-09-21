@@ -3133,6 +3133,7 @@ runtime_supervisor = install_runtime_supervisor(
     continuity=work_item_continuity_service,
     codex=codex_runtime,
     bot_runtime=bot_runtime,
+    bot_telemetry=bot_runtime_telemetry,
     runtime_health=runtime_health_service,
     stale_turn_recovery=stale_active_turn_recovery_service,
     event_sink=bot_runtime_telemetry.append,
