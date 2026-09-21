@@ -28,6 +28,7 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.skills import SKILL_DEFINITION_KIND
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.agent_profiles import AgentProfileStore
 
@@ -262,15 +263,22 @@ class AgentProfileService:
         *,
         actor: AuthenticationActor,
     ) -> tuple[DefinitionReference, ...]:
-        values = tuple(
-            self._definition_ref(
+        values: list[DefinitionReference] = []
+        for item in refs:
+            resolved = self._definition_ref(
                 item,
                 actor=actor,
                 label="skill",
             )
-            for item in refs
-        )
-        return tuple(item for item in values if item is not None)
+            if resolved is None:
+                continue
+            record = self.definitions.get_record(resolved.record_id)
+            if record.kind != SKILL_DEFINITION_KIND:
+                raise AgentProfileConflict(
+                    "agent profile skill reference must point to agent.skill"
+                )
+            values.append(resolved)
+        return tuple(values)
 
     def _latest(
         self,
