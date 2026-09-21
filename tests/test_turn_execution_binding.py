@@ -257,6 +257,80 @@ class TurnExecutionBindingTests(unittest.TestCase):
             approval_policy="on-request",
         )
 
+    def test_project_readiness_blocks_before_workspace_creation(self) -> None:
+        self._publish_secret()
+        self.service.project_readiness = lambda project_id, actor: {
+            "execution_ready": False,
+            "correlation_id": "readiness-corr-a",
+            "checks": [
+                {
+                    "id": "repository:resources",
+                    "domain": "repository",
+                    "status": "blocked",
+                    "code": "repository_resource_missing",
+                    "message": "Project repository migration is incomplete.",
+                    "required": True,
+                    "remediation": "Bind the intended repository Resource.",
+                    "remediation_route": "/api/projects/home/resources",
+                }
+            ],
+        }
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(execution_id="turn-readiness-blocked")
+
+        self.assertEqual(
+            raised.exception.code,
+            "project_readiness_blocked",
+        )
+        blocker = raised.exception.public()
+        self.assertEqual(blocker["correlation_id"], "readiness-corr-a")
+        self.assertEqual(
+            blocker["readiness_check_id"],
+            "repository:resources",
+        )
+        self.assertEqual(
+            blocker["readiness_code"],
+            "repository_resource_missing",
+        )
+        self.assertEqual(
+            blocker["readiness_url"],
+            "/api/projects/home/readiness",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_thread_bootstrap_bypasses_project_readiness_gate(self) -> None:
+        self._publish_secret()
+        self.service.project_readiness = lambda project_id, actor: {
+            "execution_ready": False,
+            "correlation_id": "readiness-blocked",
+            "checks": [
+                {
+                    "id": "repository:resources",
+                    "status": "blocked",
+                    "required": True,
+                    "code": "repository_resource_missing",
+                    "message": "Project is not ready.",
+                }
+            ],
+        }
+
+        binding = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-a",
+            execution_id="bootstrap-exec-a",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            session_seconds=60,
+        )
+
+        self.assertEqual(binding.project_id, self.project.id)
+        self.assertEqual(
+            binding.subject.kind,
+            ExecutionSubjectKind.THREAD_BOOTSTRAP,
+        )
+
     def test_missing_command_execution_blocks_before_workspace_creation(self) -> None:
         self._publish_secret()
         self.workers.ensure_local_worker(
