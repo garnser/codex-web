@@ -266,6 +266,63 @@ class SlackIncrementalBackfillTests(unittest.IsolatedAsyncioTestCase):
             300,
         )
 
+    def test_recent_dedupe_and_provider_cursor_survive_journal_rotation(self) -> None:
+        state_store = SQLiteStateStore(
+            self.root / "rotation-cursor.sqlite3"
+        )
+        store = SlackBackfillStore(state_store)
+        telemetry = BotRuntimeTelemetry(
+            events_file=self.root / "rotation-events.jsonl"
+        )
+        key = "home:slack-1:history:C1"
+        store.checkpoint(
+            key,
+            watermark=10.0,
+            provider_cursor="page-2",
+            scan_oldest=1.0,
+            pending_watermark=20.0,
+            completed_at=30.0,
+            processed=2,
+            skipped=0,
+            errors=0,
+        )
+
+        telemetry.journal.append(
+            {
+                "created_at": 1.0,
+                "provider": "slack",
+                "message_id": "before-rotation",
+                "type": "inbound_turn_started",
+            }
+        )
+        telemetry.journal.rotate_if_needed(force=True)
+        telemetry.journal.append(
+            {
+                "created_at": 2.0,
+                "provider": "slack",
+                "message_id": "after-rotation",
+                "type": "inbound_turn_started",
+            }
+        )
+
+        service = _service(
+            self.root,
+            telemetry=telemetry,
+            store=store,
+        )
+        dedupe = service._recent_inbound_message_ids()
+        checkpoint = store.load().checkpoints[key]
+
+        self.assertEqual(
+            checkpoint.provider_cursor,
+            "page-2",
+        )
+        self.assertEqual(checkpoint.watermark, 10.0)
+        self.assertEqual(
+            dedupe,
+            {"before-rotation", "after-rotation"},
+        )
+
     def test_thread_target_discovery_uses_exact_keyed_lookups(self) -> None:
         target = _target()
         loads = []
