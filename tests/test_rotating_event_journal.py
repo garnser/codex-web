@@ -416,6 +416,25 @@ class RotatingJsonlJournalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(elapsed, 0.08)
 
+    def test_recent_has_total_byte_budget_across_malformed_segments(self) -> None:
+        malformed = b"not-json\n" * 700_000
+        self.path.write_bytes(malformed)
+        self.journal.rotate_if_needed(force=True)
+        self.path.write_bytes(malformed)
+
+        values = self.journal.recent(
+            300,
+            chunk_size=64 * 1024,
+            max_bytes=2 * 1024 * 1024,
+        )
+        metrics = self.journal.recent_metrics()
+
+        self.assertEqual(values, [])
+        self.assertLessEqual(
+            metrics["bytesRead"],
+            2 * 1024 * 1024,
+        )
+
     def test_status_is_metadata_only_for_indexed_segments(self) -> None:
         self.journal.append(self._event(1))
         self.journal.rotate_if_needed(force=True)
