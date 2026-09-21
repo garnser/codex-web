@@ -233,6 +233,19 @@ class SkillCreate(BaseModel):
     provenance: SkillProvenance = Field(default_factory=SkillProvenance)
     reason: str | None = Field(default=None, max_length=1000)
 
+    @model_validator(mode="after")
+    def validate_create(self) -> "SkillCreate":
+        if _contains_secret_material(self.instructions):
+            raise ValueError("skill instructions appear to contain raw secret material")
+        if len(self.assets) > SKILL_MAX_ASSETS:
+            raise ValueError("skill contains too many assets")
+        if sum(len(asset.content) for asset in self.assets) > SKILL_MAX_TOTAL_ASSET_CHARS:
+            raise ValueError("skill assets exceed the total content size limit")
+        paths = [asset.path for asset in self.assets]
+        if len(paths) != len(set(paths)):
+            raise ValueError("skill asset paths must be unique")
+        return self
+
 
 class SkillUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
