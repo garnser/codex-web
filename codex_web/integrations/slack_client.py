@@ -139,13 +139,21 @@ class SlackClient:
         *,
         oldest: str,
         limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
+        params = {
+            "channel": channel,
+            "oldest": oldest,
+            "limit": str(limit),
+        }
+        if cursor:
+            params["cursor"] = cursor
         async with self._client() as client:
             return await self._get_with_metadata(
                 client,
                 "conversations.history",
                 token,
-                {"channel": channel, "oldest": oldest, "limit": str(limit)},
+                params,
             )
 
     async def replies(
@@ -156,18 +164,22 @@ class SlackClient:
         *,
         oldest: str,
         limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
+        params = {
+            "channel": channel,
+            "ts": thread_ts,
+            "oldest": oldest,
+            "limit": str(limit),
+        }
+        if cursor:
+            params["cursor"] = cursor
         async with self._client() as client:
             return await self._get_with_metadata(
                 client,
                 "conversations.replies",
                 token,
-                {
-                    "channel": channel,
-                    "ts": thread_ts,
-                    "oldest": oldest,
-                    "limit": str(limit),
-                },
+                params,
             )
 
     async def socket_url(self, app_token: str) -> str:

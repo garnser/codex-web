@@ -354,6 +354,44 @@ class SlackClientBackfillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["_retry_after"], 45.0)
         self.assertEqual(response["error"], "ratelimited")
 
+    async def test_history_and_replies_forward_pagination_cursor(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "messages": [],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+
+        client = SlackClient(transport=httpx.MockTransport(handler))
+        await client.history(
+            "token",
+            "C1",
+            oldest="1.0",
+            cursor="history-cursor",
+        )
+        await client.replies(
+            "token",
+            "C1",
+            "111.22",
+            oldest="1.0",
+            cursor="reply-cursor",
+        )
+
+        self.assertEqual(
+            requests[0].url.params["cursor"],
+            "history-cursor",
+        )
+        self.assertEqual(
+            requests[1].url.params["cursor"],
+            "reply-cursor",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

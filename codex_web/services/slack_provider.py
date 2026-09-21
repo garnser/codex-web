@@ -22,6 +22,7 @@ from codex_web.services.bot_targets import BotTargetService
 from codex_web.services.bot_webhook_security import BotWebhookSecurityService
 from codex_web.services.conversation_channels import ConversationChannelService
 from codex_web.services.secrets import SecretBroker
+from codex_web.storage.slack_backfill import SlackBackfillStore
 
 
 class SlackProviderService:
@@ -41,6 +42,7 @@ class SlackProviderService:
         secret_broker: SecretBroker | None = None,
         conversation_channels: ConversationChannelService | None = None,
         reconciliation_gates: Any | None = None,
+        backfill_store: SlackBackfillStore | None = None,
     ) -> None:
         self.slack = slack_client
         self.routing = routing_service
@@ -53,12 +55,24 @@ class SlackProviderService:
         self.secret_broker = secret_broker
         self.conversation_channels = conversation_channels
         self.reconciliation_gates = reconciliation_gates
+        self.backfill_store = backfill_store
+        self.backfill_lock = asyncio.Lock()
         self.gate_states: dict[str, dict[str, Any]] = {}
         self.task: asyncio.Task[None] | None = None
         self.seen: set[str] = set()
         self.bad_threads: set[tuple[str, str, str]] = set()
-        self.cooldown_until = 0.0
-        self.rate_limit_failures = 0
+        persisted = backfill_store.load() if backfill_store is not None else None
+        self.cooldown_until = float(
+            persisted.cooldown_until or 0.0
+        ) if persisted is not None else 0.0
+        self.rate_limit_failures = int(
+            persisted.rate_limit_failures
+        ) if persisted is not None else 0
+        self._backfill_diagnostics = (
+            persisted.model_dump(mode="json")
+            if persisted is not None
+            else {}
+        )
 
     @staticmethod
     def _credential_identity(
@@ -148,14 +162,56 @@ class SlackProviderService:
     def cooldown_remaining_seconds(self) -> float:
         return max(0.0, self.cooldown_until - time.time())
 
+    def max_provider_calls_per_cycle(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_MAX_CALLS_PER_CYCLE"
+                )
+                or "20"
+            )
+        except ValueError:
+            value = 20
+        return max(1, min(value, 200))
+
+    def max_cycle_seconds(self) -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_MAX_CYCLE_SECONDS"
+                )
+                or "5"
+            )
+        except ValueError:
+            value = 5.0
+        return max(0.1, min(value, 60.0))
+
+    def batch_limit(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_BATCH_LIMIT"
+                )
+                or "50"
+            )
+        except ValueError:
+            value = 50
+        return max(1, min(value, 200))
+
     def health(self) -> dict[str, Any]:
+        diagnostics = dict(self._backfill_diagnostics)
         return {
             "intervalSeconds": self.interval_seconds(),
             "running": bool(self.task and not self.task.done()),
+            "cycleActive": self.backfill_lock.locked(),
+            "maxProviderCallsPerCycle": self.max_provider_calls_per_cycle(),
+            "maxCycleSeconds": self.max_cycle_seconds(),
+            "batchLimit": self.batch_limit(),
             "cooldownRemainingSeconds": self.cooldown_remaining_seconds(),
             "cooldownUntil": self.cooldown_until or None,
             "rateLimitFailures": self.rate_limit_failures,
             "gateStates": dict(self.gate_states),
+            "checkpoint": diagnostics,
         }
 
     async def start(self) -> None:
@@ -242,21 +298,36 @@ class SlackProviderService:
         self,
         limit: int = 2000,
     ) -> set[str]:
-        events_file = self.telemetry.events_file
-        if not events_file.exists():
-            return set()
-        with events_file.open(errors="replace") as handle:
-            lines = deque(handle, maxlen=max(1, limit))
-        message_ids: set[str] = set()
-        for line in lines:
-            with contextlib.suppress(Exception):
-                event = json.loads(line)
-                if (
-                    event.get("provider") == "slack"
-                    and event.get("message_id")
-                ):
-                    message_ids.add(str(event["message_id"]))
-        return message_ids
+        recent = getattr(self.telemetry, "recent", None)
+        if callable(recent):
+            events = recent(max(1, limit))
+        else:
+            events_file = self.telemetry.events_file
+            if not events_file.exists():
+                return set()
+            max_bytes = 4 * 1024 * 1024
+            with events_file.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                end_offset = handle.tell()
+                start_offset = max(0, end_offset - max_bytes)
+                handle.seek(start_offset)
+                raw = handle.read(end_offset - start_offset)
+            lines = raw.splitlines()
+            if start_offset > 0 and lines:
+                lines = lines[1:]
+            events = []
+            for line in lines[-max(1, limit):]:
+                with contextlib.suppress(Exception):
+                    events.append(
+                        json.loads(line.decode("utf-8", errors="replace"))
+                    )
+        return {
+            str(event["message_id"])
+            for event in events
+            if isinstance(event, dict)
+            and event.get("provider") == "slack"
+            and event.get("message_id")
+        }
 
     def _slack_connections(self) -> dict[str, BotConnection]:
         return {
@@ -265,6 +336,31 @@ class SlackProviderService:
             if connection.provider == "slack"
             and self._credential_identity(connection, "bot_token")
         }
+
+    def _bindings_for_projects(
+        self,
+        project_ids: set[str] | None,
+    ) -> list[Any]:
+        if project_ids is not None and callable(
+            getattr(self.bindings, "for_project", None)
+        ):
+            values: dict[str, Any] = {}
+            for project_id in sorted(project_ids):
+                for binding in self.bindings.for_project(
+                    "slack",
+                    project_id,
+                ):
+                    values[binding.id] = binding
+            return list(values.values())
+        return [
+            binding
+            for binding in self.bindings.load_bindings()
+            if binding.provider == "slack"
+            and (
+                project_ids is None
+                or binding.project_id in project_ids
+            )
+        ]
 
     def _channels(
         self,
@@ -281,7 +377,9 @@ class SlackProviderService:
             tuple[str, str],
             tuple[BotConnection, str],
         ] = {}
-        for binding in self.bindings.load_bindings():
+        for binding in self._bindings_for_projects(
+            allowed_project_ids
+        ):
             connection = connections.get(binding.connection_id or "")
             if connection and binding.external_conversation_id:
                 pairs[
@@ -302,7 +400,10 @@ class SlackProviderService:
                         connection.default_external_conversation_id,
                     ),
                 )
-        return list(pairs.values())
+        return [
+            pairs[key]
+            for key in sorted(pairs)
+        ]
 
     def _thread_targets(
         self,
@@ -315,15 +416,64 @@ class SlackProviderService:
                 for key, value in connections.items()
                 if value.project_id in allowed_project_ids
             }
-        all_bindings = self.bindings.load_bindings()
+        bindings = self._bindings_for_projects(
+            allowed_project_ids
+        )
+        exact = all(
+            callable(getattr(self.targets, name, None))
+            for name in (
+                "active_reply_target_for_binding",
+                "reply_target_for_binding",
+                "delivery_target_for_binding",
+            )
+        )
+        pairs: dict[
+            tuple[str, str, str],
+            tuple[BotConnection, str, str],
+        ] = {}
+        if exact:
+            for binding in bindings:
+                connection = connections.get(
+                    binding.connection_id or ""
+                )
+                if connection is None:
+                    continue
+                for getter in (
+                    self.targets.active_reply_target_for_binding,
+                    self.targets.reply_target_for_binding,
+                    self.targets.delivery_target_for_binding,
+                ):
+                    target = getter(binding)
+                    if target is None:
+                        continue
+                    thread_ts = (
+                        target.external_thread_id
+                        or target.message_id
+                    )
+                    if not thread_ts:
+                        continue
+                    key = (
+                        connection.id,
+                        target.external_conversation_id,
+                        str(thread_ts),
+                    )
+                    pairs[key] = (
+                        connection,
+                        target.external_conversation_id,
+                        str(thread_ts),
+                    )
+            return [pairs[key] for key in sorted(pairs)]
+
+        # Compatibility-only fallback for older direct service consumers.
+        # Production composition supplies exact keyed target lookups above.
         binding_map = {
             (
                 binding.provider,
                 binding.thread_id,
                 binding.external_conversation_id,
             ): binding
-            for binding in all_bindings
-            if binding.provider == "slack" and binding.connection_id
+            for binding in bindings
+            if binding.connection_id
         }
         targets: list[Any] = []
         targets.extend(self.targets.load_reply_targets().values())
@@ -333,10 +483,6 @@ class SlackProviderService:
             for active in self.targets.load_active_turns().values()
             if active.reply_target
         )
-        pairs: dict[
-            tuple[str, str, str],
-            tuple[BotConnection, str, str],
-        ] = {}
         for target in targets:
             if (
                 target.provider != "slack"
@@ -353,49 +499,47 @@ class SlackProviderService:
                     target.external_conversation_id,
                 )
             )
-            if not binding:
-                candidates = [
-                    item
-                    for item in all_bindings
-                    if item.provider == "slack"
-                    and item.thread_id == target.thread_id
-                    and item.external_conversation_id
-                    == target.external_conversation_id
-                    and item.connection_id
-                ]
-                binding = candidates[0] if candidates else None
             connection = (
                 connections.get(binding.connection_id or "")
                 if binding
                 else None
             )
-            if not connection:
+            if connection is None:
                 continue
-            pairs[
-                (
-                    connection.id,
-                    target.external_conversation_id,
-                    thread_ts,
-                )
-            ] = (
+            key = (
+                connection.id,
+                target.external_conversation_id,
+                str(thread_ts),
+            )
+            pairs[key] = (
                 connection,
                 target.external_conversation_id,
-                thread_ts,
+                str(thread_ts),
             )
-        return list(pairs.values())
+        return [pairs[key] for key in sorted(pairs)]
 
     async def _history(
         self,
         connection: BotConnection,
         channel_id: str,
         oldest: str,
+        *,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         async def operation(token: str):
+            if cursor:
+                return await self.slack.history(
+                    token,
+                    channel_id,
+                    oldest=oldest,
+                    limit=self.batch_limit(),
+                    cursor=cursor,
+                )
             return await self.slack.history(
                 token,
                 channel_id,
                 oldest=oldest,
-                limit=50,
+                limit=self.batch_limit(),
             )
 
         return await self._with_credential(
@@ -411,14 +555,25 @@ class SlackProviderService:
         channel_id: str,
         thread_ts: str,
         oldest: str,
+        *,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         async def operation(token: str):
+            if cursor:
+                return await self.slack.replies(
+                    token,
+                    channel_id,
+                    thread_ts,
+                    oldest=oldest,
+                    limit=self.batch_limit(),
+                    cursor=cursor,
+                )
             return await self.slack.replies(
                 token,
                 channel_id,
                 thread_ts,
                 oldest=oldest,
-                limit=50,
+                limit=self.batch_limit(),
             )
 
         return await self._with_credential(
@@ -464,133 +619,515 @@ class SlackProviderService:
                 )
         return eligible
 
-    async def run_backfill_cycle(self) -> None:
-        eligible = await self._eligible_backfill_projects()
-        if not eligible:
-            return
-
-        started: dict[str, Any] = {}
-        if self.reconciliation_gates is not None:
-            for project_id, actor in eligible.items():
-                try:
-                    await asyncio.to_thread(
-                        self.reconciliation_gates.record_start,
-                        "slack-backfill",
-                        project_id,
-                        actor=actor,
-                    )
-                    started[project_id] = actor
-                    await asyncio.to_thread(
-                        self._gate_decision,
-                        project_id,
-                    )
-                except Exception as exc:
-                    self.gate_states[project_id] = {
-                        "service_id": "slack-backfill",
-                        "project_id": project_id,
-                        "state": "paused",
-                        "eligible": False,
-                        "reason_code": "gate_start_conflict",
-                        "reason": type(exc).__name__,
-                    }
-
-        allowed = set(eligible) if self.reconciliation_gates is None else set(started)
-        if not allowed:
-            return
-
-        recent_message_ids = await asyncio.to_thread(
-            self._recent_inbound_message_ids
+    @staticmethod
+    def _backfill_work_key(
+        kind: str,
+        connection: BotConnection,
+        channel_id: str,
+        thread_ts: str | None = None,
+    ) -> str:
+        suffix = f":{thread_ts}" if thread_ts else ""
+        return (
+            f"{connection.project_id}:{connection.id}:"
+            f"{kind}:{channel_id}{suffix}"
         )
-        channels = await asyncio.to_thread(self._channels, allowed)
-        thread_targets = await asyncio.to_thread(
-            self._thread_targets,
-            allowed,
-        )
-        oldest = (
-            f"{max(0.0, time.time() - self.window_seconds()):.6f}"
-        )
-        try:
-            for connection, channel_id in channels:
-                response = await self._history(
+
+    def _cycle_work(
+        self,
+        channels: list[tuple[BotConnection, str]],
+        thread_targets: list[tuple[BotConnection, str, str]],
+    ) -> list[tuple[str, str, BotConnection, str, str | None]]:
+        work = [
+            (
+                self._backfill_work_key(
+                    "history",
                     connection,
                     channel_id,
-                    oldest,
-                )
-                if not response.get("ok"):
-                    rate_limited = self._record_failure(
-                        "slack_backfill_failed",
-                        response,
-                        {
-                            "connection_id": connection.id,
-                            "external_conversation_id": channel_id,
-                        },
-                    )
-                    if rate_limited:
-                        return
-                    continue
-                self.rate_limit_failures = 0
-                for event in reversed(response.get("messages") or []):
-                    await self._dispatch_backfill_message(
-                        connection,
-                        channel_id,
-                        event,
-                        recent_message_ids=recent_message_ids,
-                    )
-
-            for connection, channel_id, thread_ts in thread_targets:
-                thread_key = (connection.id, channel_id, thread_ts)
-                if thread_key in self.bad_threads:
-                    continue
-                response = await self._replies(
+                ),
+                "history",
+                connection,
+                channel_id,
+                None,
+            )
+            for connection, channel_id in channels
+        ]
+        work.extend(
+            (
+                self._backfill_work_key(
+                    "replies",
                     connection,
                     channel_id,
                     thread_ts,
-                    oldest,
+                ),
+                "replies",
+                connection,
+                channel_id,
+                thread_ts,
+            )
+            for connection, channel_id, thread_ts in thread_targets
+        )
+        return sorted(work, key=lambda item: item[0])
+
+    def _rotate_work(
+        self,
+        work: list[tuple[str, str, BotConnection, str, str | None]],
+        cursor: str | None,
+    ) -> list[tuple[str, str, BotConnection, str, str | None]]:
+        if not work or not cursor:
+            return work
+        split = next(
+            (
+                index
+                for index, item in enumerate(work)
+                if item[0] > cursor
+            ),
+            len(work),
+        )
+        return work[split:] + work[:split]
+
+    def _mark_cycle_start(self, target_count: int) -> None:
+        if self.backfill_store is None:
+            return
+        now = time.time()
+
+        def apply(state):
+            state.last_start_at = now
+            state.target_count = int(target_count)
+            state.current_cursor = None
+            return state
+
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
+
+    def _mark_cycle_complete(
+        self,
+        *,
+        started_at: float,
+        processed: int,
+        skipped: int,
+        errors: int,
+        successful: bool,
+    ) -> None:
+        if self.backfill_store is None:
+            return
+        now = time.time()
+
+        def apply(state):
+            state.last_completion_at = now
+            state.last_duration_seconds = max(
+                0.0,
+                now - started_at,
+            )
+            state.last_processed = int(processed)
+            state.last_skipped = int(skipped)
+            state.last_errors = int(errors)
+            if successful:
+                state.last_successful_completion_at = now
+            state.cooldown_until = self.cooldown_until or None
+            state.rate_limit_failures = self.rate_limit_failures
+            return state
+
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
+
+    def _mark_coalesced_cycle(self) -> None:
+        if self.backfill_store is None:
+            return
+
+        def apply(state):
+            state.coalesced_cycles += 1
+            return state
+
+        saved = self.backfill_store.update(apply)
+        self._backfill_diagnostics = saved.model_dump(mode="json")
+
+    def _checkpoint_work(
+        self,
+        key: str,
+        *,
+        watermark: float,
+        provider_cursor: str | None = None,
+        scan_oldest: float | None = None,
+        pending_watermark: float = 0.0,
+        processed: int,
+        skipped: int,
+        errors: int,
+    ) -> None:
+        if self.backfill_store is None:
+            return
+        saved = self.backfill_store.checkpoint(
+            key,
+            watermark=watermark,
+            provider_cursor=provider_cursor,
+            scan_oldest=scan_oldest,
+            pending_watermark=pending_watermark,
+            completed_at=time.time(),
+            processed=processed,
+            skipped=skipped,
+            errors=errors,
+        )
+        self._backfill_diagnostics = saved.model_dump(mode="json")
+
+    async def run_backfill_cycle(self) -> None:
+        if self.backfill_lock.locked():
+            await asyncio.to_thread(self._mark_coalesced_cycle)
+            await asyncio.to_thread(
+                self.telemetry.append,
+                {
+                    "type": "slack_backfill_cycle_coalesced",
+                    "provider": "slack",
+                },
+            )
+            return
+
+        async with self.backfill_lock:
+            eligible = await self._eligible_backfill_projects()
+            if not eligible:
+                return
+
+            started: dict[str, Any] = {}
+            if self.reconciliation_gates is not None:
+                for project_id, actor in eligible.items():
+                    try:
+                        await asyncio.to_thread(
+                            self.reconciliation_gates.record_start,
+                            "slack-backfill",
+                            project_id,
+                            actor=actor,
+                        )
+                        started[project_id] = actor
+                        await asyncio.to_thread(
+                            self._gate_decision,
+                            project_id,
+                        )
+                    except Exception as exc:
+                        self.gate_states[project_id] = {
+                            "service_id": "slack-backfill",
+                            "project_id": project_id,
+                            "state": "paused",
+                            "eligible": False,
+                            "reason_code": "gate_start_conflict",
+                            "reason": type(exc).__name__,
+                        }
+
+            allowed = (
+                set(eligible)
+                if self.reconciliation_gates is None
+                else set(started)
+            )
+            if not allowed:
+                return
+
+            recent_message_ids, channels, thread_targets = (
+                await asyncio.gather(
+                    asyncio.to_thread(
+                        self._recent_inbound_message_ids
+                    ),
+                    asyncio.to_thread(self._channels, allowed),
+                    asyncio.to_thread(
+                        self._thread_targets,
+                        allowed,
+                    ),
                 )
-                if not response.get("ok"):
-                    if response.get("error") in {
-                        "thread_not_found",
-                        "channel_not_found",
-                        "not_in_channel",
-                    }:
-                        self.bad_threads.add(thread_key)
-                    rate_limited = self._record_failure(
-                        "slack_thread_backfill_failed",
-                        response,
-                        {
+            )
+            work = self._cycle_work(channels, thread_targets)
+            persisted = (
+                await asyncio.to_thread(self.backfill_store.load)
+                if self.backfill_store is not None
+                else None
+            )
+            work = self._rotate_work(
+                work,
+                (
+                    persisted.last_completed_cursor
+                    if persisted is not None
+                    else None
+                ),
+            )
+            work = work[: self.max_provider_calls_per_cycle()]
+            cycle_started = time.time()
+            await asyncio.to_thread(
+                self._mark_cycle_start,
+                len(channels) + len(thread_targets),
+            )
+            processed_total = 0
+            skipped_total = 0
+            errors_total = 0
+            completed_normally = False
+            base_oldest = max(
+                0.0,
+                cycle_started - self.window_seconds(),
+            )
+
+            try:
+                for (
+                    key,
+                    kind,
+                    connection,
+                    channel_id,
+                    thread_ts,
+                ) in work:
+                    if (
+                        time.time() - cycle_started
+                        >= self.max_cycle_seconds()
+                    ):
+                        break
+                    checkpoint = (
+                        persisted.checkpoints.get(key)
+                        if persisted is not None
+                        else None
+                    )
+                    provider_cursor = (
+                        checkpoint.provider_cursor
+                        if checkpoint is not None
+                        else None
+                    )
+                    if (
+                        provider_cursor
+                        and checkpoint is not None
+                        and checkpoint.scan_oldest is not None
+                    ):
+                        oldest_value = checkpoint.scan_oldest
+                    else:
+                        oldest_value = max(
+                            base_oldest,
+                            checkpoint.watermark
+                            if checkpoint is not None
+                            else 0.0,
+                        )
+                    oldest = f"{oldest_value:.6f}"
+                    if kind == "replies" and thread_ts is not None:
+                        thread_key = (
+                            connection.id,
+                            channel_id,
+                            thread_ts,
+                        )
+                        if thread_key in self.bad_threads:
+                            skipped_total += 1
+                            await asyncio.to_thread(
+                                self._checkpoint_work,
+                                key,
+                                watermark=(
+                                    checkpoint.watermark
+                                    if checkpoint is not None
+                                    else oldest_value
+                                ),
+                                provider_cursor=provider_cursor,
+                                scan_oldest=(
+                                    checkpoint.scan_oldest
+                                    if checkpoint is not None
+                                    else None
+                                ),
+                                pending_watermark=(
+                                    checkpoint.pending_watermark
+                                    if checkpoint is not None
+                                    else 0.0
+                                ),
+                                processed=0,
+                                skipped=1,
+                                errors=0,
+                            )
+                            continue
+                        response = await self._replies(
+                            connection,
+                            channel_id,
+                            thread_ts,
+                            oldest,
+                            cursor=provider_cursor,
+                        )
+                        failure_type = "slack_thread_backfill_failed"
+                    else:
+                        response = await self._history(
+                            connection,
+                            channel_id,
+                            oldest,
+                            cursor=provider_cursor,
+                        )
+                        failure_type = "slack_backfill_failed"
+
+                    if not response.get("ok"):
+                        errors_total += 1
+                        if (
+                            kind == "replies"
+                            and thread_ts is not None
+                            and response.get("error")
+                            in {
+                                "thread_not_found",
+                                "channel_not_found",
+                                "not_in_channel",
+                            }
+                        ):
+                            self.bad_threads.add(
+                                (
+                                    connection.id,
+                                    channel_id,
+                                    thread_ts,
+                                )
+                            )
+                        context = {
                             "connection_id": connection.id,
                             "external_conversation_id": channel_id,
-                            "external_thread_id": thread_ts,
-                        },
-                    )
-                    if rate_limited:
-                        return
-                    continue
-                self.rate_limit_failures = 0
-                for event in reversed(response.get("messages") or []):
-                    message_id = str(event.get("ts") or "").strip()
-                    if message_id == thread_ts:
+                        }
+                        if thread_ts is not None:
+                            context["external_thread_id"] = thread_ts
+                        rate_limited = await asyncio.to_thread(
+                            self._record_failure,
+                            failure_type,
+                            response,
+                            context,
+                        )
+                        await asyncio.to_thread(
+                            self._checkpoint_work,
+                            key,
+                            watermark=(
+                                checkpoint.watermark
+                                if checkpoint is not None
+                                else 0.0
+                            ),
+                            provider_cursor=provider_cursor,
+                            scan_oldest=(
+                                checkpoint.scan_oldest
+                                if checkpoint is not None
+                                else (
+                                    oldest_value
+                                    if provider_cursor
+                                    else None
+                                )
+                            ),
+                            pending_watermark=(
+                                checkpoint.pending_watermark
+                                if checkpoint is not None
+                                else 0.0
+                            ),
+                            processed=0,
+                            skipped=0,
+                            errors=1,
+                        )
+                        if rate_limited:
+                            break
                         continue
-                    await self._dispatch_backfill_message(
-                        connection,
-                        channel_id,
-                        event,
-                        recent_message_ids=recent_message_ids,
-                        fallback_thread_ts=thread_ts,
+
+                    self.rate_limit_failures = 0
+                    messages = response.get("messages") or []
+                    processed = 0
+                    skipped = 0
+                    watermark = oldest_value
+                    for event in reversed(messages):
+                        if not isinstance(event, dict):
+                            skipped += 1
+                            continue
+                        message_id = str(
+                            event.get("ts") or ""
+                        ).strip()
+                        with contextlib.suppress(ValueError):
+                            watermark = max(
+                                watermark,
+                                float(message_id),
+                            )
+                        if (
+                            kind == "replies"
+                            and thread_ts is not None
+                            and message_id == thread_ts
+                        ):
+                            skipped += 1
+                            continue
+                        dispatched = (
+                            await self._dispatch_backfill_message(
+                                connection,
+                                channel_id,
+                                event,
+                                recent_message_ids=recent_message_ids,
+                                fallback_thread_ts=(
+                                    thread_ts
+                                    if kind == "replies"
+                                    else None
+                                ),
+                            )
+                        )
+                        if dispatched:
+                            processed += 1
+                        else:
+                            skipped += 1
+                    processed_total += processed
+                    skipped_total += skipped
+                    response_metadata = (
+                        response.get("response_metadata")
+                        if isinstance(
+                            response.get("response_metadata"),
+                            dict,
+                        )
+                        else {}
                     )
-        finally:
-            if self.reconciliation_gates is not None:
-                for project_id, actor in started.items():
+                    next_cursor = str(
+                        response_metadata.get("next_cursor") or ""
+                    ).strip() or None
+                    previous_pending = (
+                        checkpoint.pending_watermark
+                        if checkpoint is not None
+                        else 0.0
+                    )
+                    pending_watermark = max(
+                        previous_pending,
+                        watermark,
+                    )
+                    completed_watermark = (
+                        (
+                            checkpoint.watermark
+                            if checkpoint is not None
+                            else 0.0
+                        )
+                        if next_cursor
+                        else pending_watermark
+                    )
                     await asyncio.to_thread(
-                        self.reconciliation_gates.record_completion,
-                        "slack-backfill",
-                        project_id,
-                        actor=actor,
+                        self._checkpoint_work,
+                        key,
+                        watermark=completed_watermark,
+                        provider_cursor=next_cursor,
+                        scan_oldest=(
+                            (
+                                checkpoint.scan_oldest
+                                if checkpoint is not None
+                                and checkpoint.scan_oldest is not None
+                                else oldest_value
+                            )
+                            if next_cursor
+                            else None
+                        ),
+                        pending_watermark=(
+                            pending_watermark
+                            if next_cursor
+                            else 0.0
+                        ),
+                        processed=processed,
+                        skipped=skipped,
+                        errors=0,
                     )
-                    await asyncio.to_thread(
-                        self._gate_decision,
-                        project_id,
-                    )
+                completed_normally = True
+            finally:
+                await asyncio.to_thread(
+                    self._mark_cycle_complete,
+                    started_at=cycle_started,
+                    processed=processed_total,
+                    skipped=skipped_total,
+                    errors=errors_total,
+                    successful=(
+                        completed_normally
+                        and errors_total == 0
+                    ),
+                )
+                if self.reconciliation_gates is not None:
+                    for project_id, actor in started.items():
+                        await asyncio.to_thread(
+                            self.reconciliation_gates.record_completion,
+                            "slack-backfill",
+                            project_id,
+                            actor=actor,
+                        )
+                        await asyncio.to_thread(
+                            self._gate_decision,
+                            project_id,
+                        )
 
     async def _dispatch_backfill_message(
         self,
@@ -600,26 +1137,26 @@ class SlackProviderService:
         *,
         recent_message_ids: set[str],
         fallback_thread_ts: str | None = None,
-    ) -> None:
+    ) -> bool:
         message_id = str(event.get("ts") or "").strip()
         if (
             not message_id
             or message_id in self.seen
             or message_id in recent_message_ids
         ):
-            return
+            return False
         if event.get("bot_id") or event.get("subtype") in {
             "bot_message",
             "message_deleted",
         }:
             self.seen.add(message_id)
-            return
+            return False
         text = self.presentation.strip_slack_mentions(
             event.get("text") or ""
         )
         if not text:
             self.seen.add(message_id)
-            return
+            return False
         self.seen.add(message_id)
         result = await self.routing.handle_inbound(
             BotInboundMessage(
@@ -657,7 +1194,11 @@ class SlackProviderService:
         }
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts
-        self.telemetry.append(payload)
+        await asyncio.to_thread(
+            self.telemetry.append,
+            payload,
+        )
+        return True
 
     async def _run_loop(self) -> None:
         interval = self.interval_seconds()
@@ -671,11 +1212,12 @@ class SlackProviderService:
             try:
                 await self.run_backfill_cycle()
             except Exception as exc:
-                self.telemetry.append(
+                await asyncio.to_thread(
+                    self.telemetry.append,
                     {
                         "type": "slack_backfill_loop_failed",
-                        "error": str(exc),
-                    }
+                        "error": type(exc).__name__,
+                    },
                 )
             await asyncio.sleep(interval)
 
@@ -874,9 +1416,31 @@ def install_slack_provider_service(
     webhook_security=None,
     reconciliation_gates=None,
 ) -> SlackProviderService:
+    backfill_store = getattr(
+        app.state,
+        "slack_backfill_store",
+        None,
+    )
+    if backfill_store is None and hasattr(app.state, "state_store"):
+        backfill_store = SlackBackfillStore(app.state.state_store)
+        app.state.slack_backfill_store = backfill_store
+
     existing = getattr(app.state, "slack_provider_service", None)
     if isinstance(existing, SlackProviderService):
         service = existing
+        if service.backfill_store is None:
+            service.backfill_store = backfill_store
+            if backfill_store is not None:
+                persisted = backfill_store.load()
+                service._backfill_diagnostics = persisted.model_dump(
+                    mode="json"
+                )
+                service.cooldown_until = float(
+                    persisted.cooldown_until or 0.0
+                )
+                service.rate_limit_failures = int(
+                    persisted.rate_limit_failures
+                )
         service.conversation_channels = getattr(
             app.state,
             "conversation_channel_service",
@@ -912,6 +1476,7 @@ def install_slack_provider_service(
                 reconciliation_gates
                 or getattr(app.state, "reconciliation_gate_service", None)
             ),
+            backfill_store=backfill_store,
         )
         app.state.slack_provider_service = service
 
@@ -941,6 +1506,7 @@ def install_slack_provider_service(
             webhook_security=service.webhook_security,
             secret_broker=service.secret_broker,
             conversation_channels=service.conversation_channels,
+            backfill_store=service.backfill_store,
         )
         return compatibility._thread_targets()
 
