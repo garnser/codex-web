@@ -523,8 +523,18 @@ class SlackProviderService:
         connection: BotConnection,
         channel_id: str,
         oldest: str,
+        *,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         async def operation(token: str):
+            if cursor:
+                return await self.slack.history(
+                    token,
+                    channel_id,
+                    oldest=oldest,
+                    limit=self.batch_limit(),
+                    cursor=cursor,
+                )
             return await self.slack.history(
                 token,
                 channel_id,
@@ -545,14 +555,25 @@ class SlackProviderService:
         channel_id: str,
         thread_ts: str,
         oldest: str,
+        *,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         async def operation(token: str):
+            if cursor:
+                return await self.slack.replies(
+                    token,
+                    channel_id,
+                    thread_ts,
+                    oldest=oldest,
+                    limit=self.batch_limit(),
+                    cursor=cursor,
+                )
             return await self.slack.replies(
                 token,
                 channel_id,
                 thread_ts,
                 oldest=oldest,
-                limit=50,
+                limit=self.batch_limit(),
             )
 
         return await self._with_credential(
@@ -722,6 +743,9 @@ class SlackProviderService:
         key: str,
         *,
         watermark: float,
+        provider_cursor: str | None = None,
+        scan_oldest: float | None = None,
+        pending_watermark: float = 0.0,
         processed: int,
         skipped: int,
         errors: int,
@@ -731,6 +755,9 @@ class SlackProviderService:
         saved = self.backfill_store.checkpoint(
             key,
             watermark=watermark,
+            provider_cursor=provider_cursor,
+            scan_oldest=scan_oldest,
+            pending_watermark=pending_watermark,
             completed_at=time.time(),
             processed=processed,
             skipped=skipped,
