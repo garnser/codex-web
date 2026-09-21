@@ -161,6 +161,98 @@ class GitLabSyncJobServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(final.processed, 1)
 
+
+    async def test_provider_failure_records_failed_job(self) -> None:
+        class _FailingWorkItems:
+            async def sync_from_gitlab(
+                self,
+                scope,
+                *,
+                progress=None,
+                cancelled=None,
+            ):
+                del scope, progress, cancelled
+                raise RuntimeError("provider unavailable")
+
+        service = GitLabSyncJobService(
+            self.service.store,
+            _FailingWorkItems(),
+        )
+        self.addAsyncCleanup(service.stop)
+        job = service.start(
+            scope=self.scope,
+            actor_id="admin",
+        )
+        await asyncio.gather(
+            *list(service.coordinator._tasks.values())
+        )
+
+        failed = service.get(job.id, scope=self.scope)
+        self.assertEqual(
+            failed.status,
+            GitLabSyncJobStatus.FAILED,
+        )
+        self.assertIn("provider unavailable", failed.last_error or "")
+
+    async def test_persisted_active_job_is_reused_after_service_restart(self) -> None:
+        key = self.service.scope_key(self.scope)
+        candidate = __import__(
+            "codex_web.task_source_sync_jobs",
+            fromlist=["GitLabSyncJob"],
+        ).GitLabSyncJob(
+            organization_id=self.scope.organization_id,
+            workspace_id=self.scope.workspace_id,
+            scope_key=key,
+        )
+        persisted = self.service.store.get_or_create_active(candidate)
+
+        restarted_work = _FakeWorkItems()
+        restarted = GitLabSyncJobService(
+            self.service.store,
+            restarted_work,
+        )
+        self.addAsyncCleanup(restarted.stop)
+        resumed = restarted.start(
+            scope=self.scope,
+            actor_id="admin",
+        )
+
+        self.assertEqual(resumed.id, persisted.id)
+        for _ in range(50):
+            current = restarted.get(resumed.id, scope=self.scope)
+            if current.status == GitLabSyncJobStatus.RUNNING:
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(restarted_work.calls, 1)
+        restarted_work.release.set()
+        await asyncio.gather(
+            *list(restarted.coordinator._tasks.values())
+        )
+        final = restarted.get(resumed.id, scope=self.scope)
+        self.assertEqual(
+            final.status,
+            GitLabSyncJobStatus.COMPLETED,
+        )
+
+    async def test_shutdown_marks_running_job_cancelled(self) -> None:
+        job = self.service.start(
+            scope=self.scope,
+            actor_id="admin",
+        )
+        for _ in range(50):
+            current = self.service.get(job.id, scope=self.scope)
+            if current.status == GitLabSyncJobStatus.RUNNING:
+                break
+            await asyncio.sleep(0)
+
+        await self.service.stop()
+        final = self.service.get(job.id, scope=self.scope)
+        self.assertEqual(
+            final.status,
+            GitLabSyncJobStatus.CANCELLED,
+        )
+        self.assertIsNotNone(final.completed_at)
+
     async def test_job_listing_is_tenant_scoped(self) -> None:
         first = self.service.start(
             scope=self.scope,
