@@ -2437,6 +2437,13 @@ project_ui_state_service = ProjectUiStateService(
     channels=bot_channel_discovery_service,
     execution_profiles=execution_profile_definition_service,
     binding_public=_binding_public,
+    readiness=lambda project_id, actor: (
+        project_readiness_service.evaluate(
+            project_id,
+            actor=actor,
+            record=False,
+        ).model_dump(mode="json")
+    ),
 )
 app.state.project_ui_state_service = project_ui_state_service
 agent_channel_preference_service = (
