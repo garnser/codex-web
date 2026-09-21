@@ -428,6 +428,9 @@ from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.state_store import build_state_store
 from codex_web.storage.work_graph import WorkGraphStore
 from codex_web.storage.work_item_list_index import WorkItemListIndex
+from codex_web.storage.work_item_source_identity_index import (
+    WorkItemSourceIdentityIndex,
+)
 from codex_web.storage.thread_index import install_thread_index_repository
 from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
@@ -506,16 +509,40 @@ runtime_state = RuntimeStateRepositories(
 )
 app.state.runtime_state_repositories = runtime_state
 work_item_list_index = WorkItemListIndex(state_store)
-work_item_list_index.rebuild(runtime_state.work_item_states.load())
+work_item_source_identity_index = WorkItemSourceIdentityIndex(state_store)
+_initial_work_item_states = runtime_state.work_item_states.load()
+work_item_list_index.rebuild(_initial_work_item_states)
+work_item_source_identity_index.rebuild(_initial_work_item_states)
 app.state.work_item_list_index = work_item_list_index
+app.state.work_item_source_identity_index = work_item_source_identity_index
 
 def _save_work_item_states(values):
     runtime_state.work_item_states.save(values)
     work_item_list_index.rebuild(values)
+    work_item_source_identity_index.rebuild(values)
+
+def _get_work_item_state_by_source_identity(identity):
+    ref = work_item_source_identity_index.ref_for_identity(identity)
+    if not ref:
+        return None
+    return runtime_state.work_item_states.get(ref)
 
 def _put_work_item_state_record(state):
+    previous = runtime_state.work_item_states.get(state.ref)
     runtime_state.work_item_states.put(state.ref, state)
-    work_item_list_index.upsert(state)
+    try:
+        work_item_source_identity_index.upsert(state)
+        work_item_list_index.upsert(state)
+    except Exception:
+        if previous is None:
+            runtime_state.work_item_states.delete(state.ref)
+            work_item_source_identity_index.remove(state.ref)
+            work_item_list_index.remove(state.ref)
+        else:
+            runtime_state.work_item_states.put(previous.ref, previous)
+            work_item_source_identity_index.upsert(previous)
+            work_item_list_index.upsert(previous)
+        raise
 
 event_transport = build_event_transport(
     os.environ.get("CODEX_WEB_EVENT_TRANSPORT", "in-process"),
@@ -1583,6 +1610,7 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     default_release_owner=DEFAULT_RELEASE_OWNER,
     non_implementation_owners=NON_IMPLEMENTATION_OWNERS,
     get_state=runtime_state.work_item_states.get,
+    get_state_by_source_identity=_get_work_item_state_by_source_identity,
     save_state=_put_work_item_state_record,
 )
 gitlab_work_item_dependencies = GitLabWorkItemDependencies(
