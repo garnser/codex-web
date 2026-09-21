@@ -61,6 +61,7 @@ from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
 from codex_web.api.project_bootstrap import build_project_bootstrap_router
 from codex_web.api.project_readiness import build_project_readiness_router
+from codex_web.api.reconciliation_gates import build_reconciliation_gates_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
@@ -79,6 +80,7 @@ from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
 from codex_web.canonical_events import CanonicalEventType
+from codex_web.reconciliation_gates import ReconcilerDeclaration, ReconcilerStartupClass
 from codex_web.configuration import ConfigurationContext
 from codex_web.events import EventHub
 from codex_web.executive_integration import install_executive_integrated
@@ -279,6 +281,7 @@ from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
 from codex_web.services.fresh_project_bootstrap import FreshProjectBootstrapService
 from codex_web.services.project_readiness import ProjectReadinessService
+from codex_web.services.reconciliation_gates import ReconciliationGateService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
     ProviderCapacityService,
@@ -1019,6 +1022,73 @@ app.state.project_readiness_store = project_readiness_store
 app.state.project_readiness_service = project_readiness_service
 app.include_router(
     build_project_readiness_router(project_readiness_service)
+)
+
+
+def _reconciliation_readiness(project_id, actor):
+    # First validate that the requesting/runtime actor belongs to the Project
+    # scope. Readiness itself contains administrative worker/secret checks, so
+    # evaluate it through a narrowly scoped internal control-plane principal.
+    project_service.get(project_id, actor.tenant)
+    control_actor = identity_service.bootstrap_service_actor(
+        identity_id="reconciliation-gate-runtime",
+        name="Reconciliation Gate Runtime",
+        scope=actor.tenant,
+        service_scopes=("identity:admin",),
+    )
+    return project_readiness_service.evaluate(
+        project_id,
+        actor=control_actor,
+        record=False,
+    ).model_dump(mode="json")
+
+
+reconciliation_gate_service = ReconciliationGateService(
+    state_store,
+    readiness=_reconciliation_readiness,
+    identity=identity_service,
+)
+for declaration in (
+    ReconcilerDeclaration(
+        service_id="bot-runtime",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Bounded live bot/webhook runtime; safe before Project readiness.",
+    ),
+    ReconcilerDeclaration(
+        service_id="queue-recovery",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Bounded local queue recovery; execution binding remains readiness-gated.",
+    ),
+    ReconcilerDeclaration(
+        service_id="event-transport",
+        startup_class=ReconcilerStartupClass.ALWAYS_SAFE,
+        description="Canonical event transport lifecycle.",
+    ),
+    ReconcilerDeclaration(
+        service_id="scheduler",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Durable scheduler lifecycle; individual actions retain authority gates.",
+    ),
+):
+    reconciliation_gate_service.register(declaration)
+
+reconciliation_gate_service.register(
+    ReconcilerDeclaration(
+        service_id="slack-backfill",
+        startup_class=ReconcilerStartupClass.OPERATOR_APPROVAL_REQUIRED,
+        readiness_required=True,
+        initial_approval_required=True,
+        maintenance_incompatible=True,
+        readiness_check="bootstrap:status",
+        description=(
+            "Slack missed-message historical polling; webhook ingestion is "
+            "independent and remains active while this gate is blocked."
+        ),
+    )
+)
+app.state.reconciliation_gate_service = reconciliation_gate_service
+app.include_router(
+    build_reconciliation_gates_router(reconciliation_gate_service)
 )
 
 turn_execution_binding_service = TurnExecutionBindingService(
@@ -2859,6 +2929,7 @@ slack_provider_service = install_slack_provider_service(
     presentation=bot_presentation_service,
     telemetry=bot_runtime_telemetry,
     webhook_security=bot_webhook_security_service,
+    reconciliation_gates=reconciliation_gate_service,
 )
 bot_service = BotService(
     connections=bot_connection_service,

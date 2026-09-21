@@ -40,6 +40,7 @@ class SlackProviderService:
         webhook_security: BotWebhookSecurityService,
         secret_broker: SecretBroker | None = None,
         conversation_channels: ConversationChannelService | None = None,
+        reconciliation_gates: Any | None = None,
     ) -> None:
         self.slack = slack_client
         self.routing = routing_service
@@ -51,6 +52,8 @@ class SlackProviderService:
         self.webhook_security = webhook_security
         self.secret_broker = secret_broker
         self.conversation_channels = conversation_channels
+        self.reconciliation_gates = reconciliation_gates
+        self.gate_states: dict[str, dict[str, Any]] = {}
         self.task: asyncio.Task[None] | None = None
         self.seen: set[str] = set()
         self.bad_threads: set[tuple[str, str, str]] = set()
@@ -104,6 +107,8 @@ class SlackProviderService:
             )
         except ValueError:
             return 15.0
+        if seconds <= 0:
+            return 0.0
         return max(5.0, seconds)
 
     def window_seconds(self) -> float:
@@ -150,6 +155,7 @@ class SlackProviderService:
             "cooldownRemainingSeconds": self.cooldown_remaining_seconds(),
             "cooldownUntil": self.cooldown_until or None,
             "rateLimitFailures": self.rate_limit_failures,
+            "gateStates": dict(self.gate_states),
         }
 
     async def start(self) -> None:
@@ -260,8 +266,17 @@ class SlackProviderService:
             and self._credential_identity(connection, "bot_token")
         }
 
-    def _channels(self) -> list[tuple[BotConnection, str]]:
+    def _channels(
+        self,
+        allowed_project_ids: set[str] | None = None,
+    ) -> list[tuple[BotConnection, str]]:
         connections = self._slack_connections()
+        if allowed_project_ids is not None:
+            connections = {
+                key: value
+                for key, value in connections.items()
+                if value.project_id in allowed_project_ids
+            }
         pairs: dict[
             tuple[str, str],
             tuple[BotConnection, str],
@@ -291,8 +306,15 @@ class SlackProviderService:
 
     def _thread_targets(
         self,
+        allowed_project_ids: set[str] | None = None,
     ) -> list[tuple[BotConnection, str, str]]:
         connections = self._slack_connections()
+        if allowed_project_ids is not None:
+            connections = {
+                key: value
+                for key, value in connections.items()
+                if value.project_id in allowed_project_ids
+            }
         all_bindings = self.bindings.load_bindings()
         binding_map = {
             (
@@ -406,79 +428,169 @@ class SlackProviderService:
             operation,
         )
 
+    def _gate_decision(self, project_id: str):
+        if self.reconciliation_gates is None:
+            return None
+        actor = self.connections.runtime_actor(project_id)
+        decision = self.reconciliation_gates.decision(
+            "slack-backfill",
+            project_id,
+            actor=actor,
+        )
+        self.gate_states[project_id] = decision.model_dump(mode="json")
+        return decision
+
+    async def _eligible_backfill_projects(self) -> dict[str, Any]:
+        connections = await asyncio.to_thread(self._slack_connections)
+        projects = sorted(
+            {
+                connection.project_id
+                for connection in connections.values()
+                if connection.project_id
+            }
+        )
+        eligible: dict[str, Any] = {}
+        for project_id in projects:
+            if self.reconciliation_gates is None:
+                eligible[project_id] = None
+                continue
+            decision = await asyncio.to_thread(
+                self._gate_decision,
+                project_id,
+            )
+            if decision.eligible:
+                eligible[project_id] = self.connections.runtime_actor(
+                    project_id
+                )
+        return eligible
+
     async def run_backfill_cycle(self) -> None:
-        recent_message_ids = self._recent_inbound_message_ids()
+        eligible = await self._eligible_backfill_projects()
+        if not eligible:
+            return
+
+        started: dict[str, Any] = {}
+        if self.reconciliation_gates is not None:
+            for project_id, actor in eligible.items():
+                try:
+                    await asyncio.to_thread(
+                        self.reconciliation_gates.record_start,
+                        "slack-backfill",
+                        project_id,
+                        actor=actor,
+                    )
+                    started[project_id] = actor
+                    await asyncio.to_thread(
+                        self._gate_decision,
+                        project_id,
+                    )
+                except Exception as exc:
+                    self.gate_states[project_id] = {
+                        "service_id": "slack-backfill",
+                        "project_id": project_id,
+                        "state": "paused",
+                        "eligible": False,
+                        "reason_code": "gate_start_conflict",
+                        "reason": type(exc).__name__,
+                    }
+
+        allowed = set(eligible) if self.reconciliation_gates is None else set(started)
+        if not allowed:
+            return
+
+        recent_message_ids = await asyncio.to_thread(
+            self._recent_inbound_message_ids
+        )
+        channels = await asyncio.to_thread(self._channels, allowed)
+        thread_targets = await asyncio.to_thread(
+            self._thread_targets,
+            allowed,
+        )
         oldest = (
             f"{max(0.0, time.time() - self.window_seconds()):.6f}"
         )
-        for connection, channel_id in self._channels():
-            response = await self._history(
-                connection,
-                channel_id,
-                oldest,
-            )
-            if not response.get("ok"):
-                rate_limited = self._record_failure(
-                    "slack_backfill_failed",
-                    response,
-                    {
-                        "connection_id": connection.id,
-                        "external_conversation_id": channel_id,
-                    },
-                )
-                if rate_limited:
-                    return
-                continue
-            self.rate_limit_failures = 0
-            for event in reversed(response.get("messages") or []):
-                await self._dispatch_backfill_message(
+        try:
+            for connection, channel_id in channels:
+                response = await self._history(
                     connection,
                     channel_id,
-                    event,
-                    recent_message_ids=recent_message_ids,
+                    oldest,
                 )
-
-        for connection, channel_id, thread_ts in self._thread_targets():
-            thread_key = (connection.id, channel_id, thread_ts)
-            if thread_key in self.bad_threads:
-                continue
-            response = await self._replies(
-                connection,
-                channel_id,
-                thread_ts,
-                oldest,
-            )
-            if not response.get("ok"):
-                if response.get("error") in {
-                    "thread_not_found",
-                    "channel_not_found",
-                    "not_in_channel",
-                }:
-                    self.bad_threads.add(thread_key)
-                rate_limited = self._record_failure(
-                    "slack_thread_backfill_failed",
-                    response,
-                    {
-                        "connection_id": connection.id,
-                        "external_conversation_id": channel_id,
-                        "external_thread_id": thread_ts,
-                    },
-                )
-                if rate_limited:
-                    return
-                continue
-            self.rate_limit_failures = 0
-            for event in reversed(response.get("messages") or []):
-                message_id = str(event.get("ts") or "").strip()
-                if message_id == thread_ts:
+                if not response.get("ok"):
+                    rate_limited = self._record_failure(
+                        "slack_backfill_failed",
+                        response,
+                        {
+                            "connection_id": connection.id,
+                            "external_conversation_id": channel_id,
+                        },
+                    )
+                    if rate_limited:
+                        return
                     continue
-                await self._dispatch_backfill_message(
+                self.rate_limit_failures = 0
+                for event in reversed(response.get("messages") or []):
+                    await self._dispatch_backfill_message(
+                        connection,
+                        channel_id,
+                        event,
+                        recent_message_ids=recent_message_ids,
+                    )
+
+            for connection, channel_id, thread_ts in thread_targets:
+                thread_key = (connection.id, channel_id, thread_ts)
+                if thread_key in self.bad_threads:
+                    continue
+                response = await self._replies(
                     connection,
                     channel_id,
-                    event,
-                    recent_message_ids=recent_message_ids,
-                    fallback_thread_ts=thread_ts,
+                    thread_ts,
+                    oldest,
                 )
+                if not response.get("ok"):
+                    if response.get("error") in {
+                        "thread_not_found",
+                        "channel_not_found",
+                        "not_in_channel",
+                    }:
+                        self.bad_threads.add(thread_key)
+                    rate_limited = self._record_failure(
+                        "slack_thread_backfill_failed",
+                        response,
+                        {
+                            "connection_id": connection.id,
+                            "external_conversation_id": channel_id,
+                            "external_thread_id": thread_ts,
+                        },
+                    )
+                    if rate_limited:
+                        return
+                    continue
+                self.rate_limit_failures = 0
+                for event in reversed(response.get("messages") or []):
+                    message_id = str(event.get("ts") or "").strip()
+                    if message_id == thread_ts:
+                        continue
+                    await self._dispatch_backfill_message(
+                        connection,
+                        channel_id,
+                        event,
+                        recent_message_ids=recent_message_ids,
+                        fallback_thread_ts=thread_ts,
+                    )
+        finally:
+            if self.reconciliation_gates is not None:
+                for project_id, actor in started.items():
+                    await asyncio.to_thread(
+                        self.reconciliation_gates.record_completion,
+                        "slack-backfill",
+                        project_id,
+                        actor=actor,
+                    )
+                    await asyncio.to_thread(
+                        self._gate_decision,
+                        project_id,
+                    )
 
     async def _dispatch_backfill_message(
         self,
@@ -760,6 +872,7 @@ def install_slack_provider_service(
     presentation=None,
     telemetry=None,
     webhook_security=None,
+    reconciliation_gates=None,
 ) -> SlackProviderService:
     existing = getattr(app.state, "slack_provider_service", None)
     if isinstance(existing, SlackProviderService):
@@ -768,6 +881,11 @@ def install_slack_provider_service(
             app.state,
             "conversation_channel_service",
             service.conversation_channels,
+        )
+        service.reconciliation_gates = (
+            reconciliation_gates
+            or getattr(app.state, "reconciliation_gate_service", None)
+            or service.reconciliation_gates
         )
     else:
         service = SlackProviderService(
@@ -789,6 +907,10 @@ def install_slack_provider_service(
                 app.state,
                 "conversation_channel_service",
                 None,
+            ),
+            reconciliation_gates=(
+                reconciliation_gates
+                or getattr(app.state, "reconciliation_gate_service", None)
             ),
         )
         app.state.slack_provider_service = service

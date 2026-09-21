@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -105,7 +107,7 @@ class _WebhookSecurity:
         return None
 
 
-def _service(host, slack, routing):
+def _service(host, slack, routing, reconciliation_gates=None):
     return SlackProviderService(
         slack_client=slack,
         routing_service=routing,
@@ -137,6 +139,7 @@ def _service(host, slack, routing):
             append=host._append_bot_event,
         ),
         webhook_security=_WebhookSecurity(),
+        reconciliation_gates=reconciliation_gates,
     )
 
 
@@ -155,6 +158,39 @@ def _request(payload: dict) -> Request:
         {"type": "http", "method": "POST", "path": "/bots/slack/events", "headers": []},
         receive,
     )
+
+
+class _GateDecision:
+    def __init__(self, eligible, reason_code="eligible"):
+        self.eligible = eligible
+        self.reason_code = reason_code
+        self.state = SimpleNamespace(value="eligible" if eligible else "blocked")
+
+    def model_dump(self, mode="json"):
+        return {
+            "service_id": "slack-backfill",
+            "project_id": "home",
+            "state": self.state.value,
+            "eligible": self.eligible,
+            "reason_code": self.reason_code,
+            "reason": self.reason_code,
+        }
+
+
+class _Gate:
+    def __init__(self, eligible=False):
+        self.eligible = eligible
+        self.starts = []
+        self.completions = []
+
+    def decision(self, service_id, project_id, *, actor):
+        return _GateDecision(self.eligible, "eligible" if self.eligible else "bootstrap_incomplete")
+
+    def record_start(self, service_id, project_id, *, actor):
+        self.starts.append((service_id, project_id))
+
+    def record_completion(self, service_id, project_id, *, actor):
+        self.completions.append((service_id, project_id))
 
 
 class SlackProviderServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -185,6 +221,103 @@ class SlackProviderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["threadId"], "thread-1")
         self.assertEqual(len(self.routing.messages), 1)
         self.assertEqual(self.routing.messages[0].message_id, "1.2")
+
+    async def test_interval_zero_and_negative_disable_polling_without_disabling_webhook(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS": "0"},
+            clear=False,
+        ):
+            self.assertEqual(self.service.interval_seconds(), 0.0)
+            await self.service.start()
+            self.assertIsNone(self.service.task)
+            result = await self.service.handle_webhook(
+                _request(
+                    {
+                        "type": "event_callback",
+                        "event": {
+                            "type": "message",
+                            "channel": "C1",
+                            "user": "U1",
+                            "text": "webhook still works",
+                            "ts": "1.3",
+                        },
+                    }
+                )
+            )
+            self.assertTrue(result["accepted"])
+
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS": "-12"},
+            clear=False,
+        ):
+            self.assertEqual(self.service.interval_seconds(), 0.0)
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS": "2"},
+            clear=False,
+        ):
+            self.assertEqual(self.service.interval_seconds(), 5.0)
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_SLACK_BACKFILL_INTERVAL_SECONDS": "invalid"},
+            clear=False,
+        ):
+            self.assertEqual(self.service.interval_seconds(), 15.0)
+
+    async def test_blocked_project_skips_historical_polling_but_webhook_still_routes(self) -> None:
+        gate = _Gate(eligible=False)
+        service = _service(
+            self.host,
+            self.slack,
+            self.routing,
+            reconciliation_gates=gate,
+        )
+        self.slack.history_response = {
+            "ok": True,
+            "messages": [{"ts": "2.0", "user": "U1", "text": "missed"}],
+        }
+
+        await service.run_backfill_cycle()
+        self.assertEqual(self.routing.messages, [])
+        self.assertEqual(gate.starts, [])
+
+        result = await service.handle_webhook(
+            _request(
+                {
+                    "type": "event_callback",
+                    "event": {
+                        "type": "message",
+                        "channel": "C1",
+                        "user": "U1",
+                        "text": "live",
+                        "ts": "2.1",
+                    },
+                }
+            )
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(len(self.routing.messages), 1)
+
+    async def test_approved_eligible_project_runs_and_checkpoints_gate(self) -> None:
+        gate = _Gate(eligible=True)
+        service = _service(
+            self.host,
+            self.slack,
+            self.routing,
+            reconciliation_gates=gate,
+        )
+        self.slack.history_response = {
+            "ok": True,
+            "messages": [{"ts": "3.0", "user": "U1", "text": "recovered"}],
+        }
+
+        await service.run_backfill_cycle()
+
+        self.assertEqual(len(self.routing.messages), 1)
+        self.assertEqual(gate.starts, [("slack-backfill", "home")])
+        self.assertEqual(gate.completions, [("slack-backfill", "home")])
 
     async def test_url_verification_never_enters_routing(self) -> None:
         result = await self.service.handle_webhook(_request({"type": "url_verification", "challenge": "abc"}))

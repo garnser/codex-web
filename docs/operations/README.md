@@ -25,3 +25,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Canonical legacy-state materialization](canonical-materialization.md) — dry-run, apply/resume, tenant/resource/TaskSource/Secret recovery, and rollback boundaries for imported installations.
 
 - [Project bootstrap manifest and CLI](project-bootstrap.md) — versioned desired-state input, safe scaffolding/dry-run, legacy materialization apply, exit codes, and secret/path validation.
+
+- [Background reconciliation gates](reconciliation-gates.md) — readiness-aware service startup, durable approval/pause controls, maintenance exclusion, and Slack polling disable semantics.
