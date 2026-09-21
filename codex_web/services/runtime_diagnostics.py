@@ -405,6 +405,18 @@ class RuntimeHealthService:
                 )
             )
 
+        journal_status = (
+            self._profile(
+                "bot_event_journal.status",
+                self.telemetry.journal_status,
+                refresh_id=refresh_id,
+            )
+            if callable(
+                getattr(self.telemetry, "journal_status", None)
+            )
+            else {}
+        )
+
         gitlab = self._profile(
             "gitlab.health",
             self.gitlab_sync_status,
@@ -465,6 +477,7 @@ class RuntimeHealthService:
             ),
             "bindingCount": len(bindings),
             "stateStore": state_status,
+            "botEventJournal": journal_status,
             "refreshId": refresh_id,
         }
 
@@ -588,6 +601,7 @@ class RuntimeHealthService:
                 "queueThreads": 0,
                 "bindingCount": 0,
                 "stateStore": {},
+                "botEventJournal": {},
                 "refreshId": None,
             }
         evaluated_ok = bool(snapshot.get("ok"))
@@ -1148,4 +1162,15 @@ class RuntimeDiagnosticsService:
                 "bindings": self.bot_binding_index_status(),
             },
             "recentBotEvents": self.recent_events(80),
+            "botEventJournal": (
+                self.telemetry.journal_status()
+                if callable(
+                    getattr(
+                        self.telemetry,
+                        "journal_status",
+                        None,
+                    )
+                )
+                else {}
+            ),
         }
