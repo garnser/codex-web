@@ -1197,7 +1197,6 @@ class ProjectBootstrapService:
                     "id": item.id,
                     "disposition": item.disposition.value,
                     "reason_code": item.reason_code,
-                    "details": item.details,
                 }
                 for item in preflight.checks
             ],
