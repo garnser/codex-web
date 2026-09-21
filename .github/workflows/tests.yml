@@ -285,6 +285,80 @@ jobs:
           echo 'Container did not become live' >&2
           exit 1
 
+      - name: Qualify clean-install onboarding through Compose and public APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace=/tmp/codex-web-onboarding-workspace
+          artifacts=/tmp/codex-web-onboarding-artifacts
+          rm -rf "$workspace" "$artifacts"
+          mkdir -p \
+            "$workspace/onboarding-single" \
+            "$workspace/onboarding-multi/app" \
+            "$workspace/onboarding-multi/platform" \
+            "$workspace/onboarding-no-worker" \
+            "$artifacts"
+
+          init_repo() {
+            local path="$1"
+            git -C "$path" init -q
+            git -C "$path" config user.name "Codex Web CI"
+            git -C "$path" config user.email "codex-web-ci@example.invalid"
+            printf '# qualification\n' > "$path/README.md"
+            git -C "$path" add README.md
+            git -C "$path" commit -q -m "qualification fixture"
+          }
+
+          init_repo "$workspace/onboarding-single"
+          init_repo "$workspace/onboarding-multi/app"
+          init_repo "$workspace/onboarding-multi/platform"
+          init_repo "$workspace/onboarding-no-worker"
+          printf 'must remain unchanged\n' > "$workspace/workspace-sentinel.txt"
+          sentinel_before="$(sha256sum "$workspace/workspace-sentinel.txt" | awk '{print $1}')"
+          chmod -R a+rX,u+w "$workspace"
+
+          export CODEX_WEB_IMAGE=codex-web:test
+          export CODEX_WORKSPACE="$workspace"
+          export CODEX_WEB_BIND=127.0.0.1
+          export CODEX_WEB_PORT=18767
+          export BASE_URL=http://127.0.0.1:18767
+
+          cleanup() {
+            docker compose -p codex-web-onboarding logs --no-color > "$artifacts/compose.log" 2>&1 || true
+            docker compose -p codex-web-onboarding down -v --remove-orphans >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker compose -p codex-web-onboarding up -d --no-build
+          bash scripts/qualify-clean-install-onboarding.sh qualify \
+            | tee "$artifacts/qualification.json"
+
+          sentinel_after="$(sha256sum "$workspace/workspace-sentinel.txt" | awk '{print $1}')"
+          test "$sentinel_before" = "$sentinel_after"
+
+          docker compose -p codex-web-onboarding restart codex-web
+          bash scripts/qualify-clean-install-onboarding.sh verify-restart \
+            | tee "$artifacts/restart.json"
+
+      - name: Qualify deterministic first-thread execution substitute
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint python \
+            codex-web:test \
+            -m unittest \
+            tests.test_fresh_project_bootstrap \
+            tests.test_thread_bootstrap_routing
+
+      - name: Upload clean-install onboarding evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-install-onboarding
+          path: /tmp/codex-web-onboarding-artifacts/
+          if-no-files-found: warn
+
   podman-worker:
     name: rootless-podman-worker
     runs-on: ubuntu-latest
