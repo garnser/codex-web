@@ -579,6 +579,54 @@ class DefinitionRegistryService:
             enforce_approval=True,
         )
 
+    def deprecate(
+        self,
+        record_id: str,
+        *,
+        actor: str,
+        reason: str,
+    ) -> DefinitionRecord:
+        """Archive an active Definition revision without deleting history."""
+
+        changed: list[DefinitionRecord] = []
+        now = time.time()
+
+        def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            selected = next(
+                (record for record in records if record.record_id == record_id),
+                None,
+            )
+            if selected is None:
+                raise DefinitionNotFoundError(
+                    f"definition record not found: {record_id}"
+                )
+            if selected.lifecycle != DefinitionLifecycle.PUBLISHED:
+                raise DefinitionConflictError(
+                    "only a published definition can be deprecated"
+                )
+            current = selected.model_copy(
+                update={
+                    "lifecycle": DefinitionLifecycle.DEPRECATED,
+                    "effective_until": (
+                        min(selected.effective_until, now)
+                        if selected.effective_until is not None
+                        else now
+                    ),
+                    "publish_reason": (
+                        f"deprecated by {actor}: {reason}"
+                    ),
+                }
+            )
+            changed.append(current)
+            return [
+                current if record.record_id == record_id else record
+                for record in records
+            ]
+
+        self.store.update(update)
+        self._notify("definition.deprecated", changed[0])
+        return changed[0]
+
     def quarantine(self, record_id: str, *, actor: str, reason: str) -> DefinitionRecord:
         changed: list[DefinitionRecord] = []
 
