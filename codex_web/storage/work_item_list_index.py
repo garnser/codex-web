@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +19,20 @@ class WorkItemListIndex:
 
     def __init__(self, store: StateStore) -> None:
         self.store = store
+        self._metrics_lock = threading.Lock()
+        self._metrics = {
+            "upserts": 0,
+            "removes": 0,
+            "rebuilds": 0,
+        }
+
+    def _metric(self, name: str) -> None:
+        with self._metrics_lock:
+            self._metrics[name] = int(self._metrics.get(name, 0)) + 1
+
+    def metrics(self) -> dict[str, int]:
+        with self._metrics_lock:
+            return dict(self._metrics)
 
     @staticmethod
     def _scope_key(scope: TenantScope, project_id: str) -> str:
@@ -114,6 +129,7 @@ class WorkItemListIndex:
                 }
             },
         )
+        self._metric("upserts")
 
     def remove(self, ref: str) -> None:
         previous = self.store.record_get(
@@ -135,6 +151,7 @@ class WorkItemListIndex:
             upserts={},
             deletes=(ref,),
         )
+        self._metric("removes")
 
     def rebuild(self, states: dict[str, WorkItemState]) -> None:
         """Reconcile the index during startup/compatibility checkpoints."""
@@ -145,6 +162,7 @@ class WorkItemListIndex:
             self.remove(ref)
         for state in states.values():
             self.upsert(state)
+        self._metric("rebuilds")
 
     def page(
         self,
