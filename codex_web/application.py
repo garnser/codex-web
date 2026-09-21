@@ -1048,6 +1048,30 @@ reconciliation_gate_service = ReconciliationGateService(
     readiness=_reconciliation_readiness,
     identity=identity_service,
 )
+for declaration in (
+    ReconcilerDeclaration(
+        service_id="bot-runtime",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Bounded live bot/webhook runtime; safe before Project readiness.",
+    ),
+    ReconcilerDeclaration(
+        service_id="queue-recovery",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Bounded local queue recovery; execution binding remains readiness-gated.",
+    ),
+    ReconcilerDeclaration(
+        service_id="event-transport",
+        startup_class=ReconcilerStartupClass.ALWAYS_SAFE,
+        description="Canonical event transport lifecycle.",
+    ),
+    ReconcilerDeclaration(
+        service_id="scheduler",
+        startup_class=ReconcilerStartupClass.PRE_READINESS_BOUNDED,
+        description="Durable scheduler lifecycle; individual actions retain authority gates.",
+    ),
+):
+    reconciliation_gate_service.register(declaration)
+
 reconciliation_gate_service.register(
     ReconcilerDeclaration(
         service_id="slack-backfill",
