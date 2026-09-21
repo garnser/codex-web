@@ -400,29 +400,17 @@ class SkillService:
         current = self._latest_record(skill_id, actor=actor)
         skill = SkillDefinition.model_validate(current.payload)
         self._require_mutation(actor, owner_identity_id=skill.owner_identity_id)
-        if skill.lifecycle == lifecycle and current.lifecycle == DefinitionLifecycle.PUBLISHED:
+        if (
+            skill.lifecycle == lifecycle
+            and current.lifecycle == DefinitionLifecycle.PUBLISHED
+        ):
             return self._view(current)
-        draft = self.update(
-            skill_id,
-            SkillUpdate(
-                reason=payload.reason,
-                **{"provenance": skill.provenance},
-            ),
-            actor=actor,
+        next_skill = SkillDefinition.model_validate(
+            skill.model_copy(
+                update={"lifecycle": lifecycle}
+            ).model_dump(mode="python")
         )
-        draft_record = self.definitions.get_record(draft["recordId"])
-        next_skill = SkillDefinition.model_validate(draft_record.payload).model_copy(
-            update={"lifecycle": lifecycle}
-        )
-        # Replace the just-created draft payload deterministically by creating
-        # one derived revision with the lifecycle change and quarantine the
-        # intermediate draft from accidental publication.
-        self.definitions.quarantine(
-            draft_record.record_id,
-            actor=actor.identity_id,
-            reason="superseded by lifecycle-specific draft",
-        )
-        lifecycle_draft = self.definitions.create_draft(
+        draft = self.definitions.create_draft(
             DefinitionDraftCreate(
                 definition_id=skill_id,
                 kind=SKILL_DEFINITION_KIND,
@@ -436,7 +424,7 @@ class SkillService:
             )
         )
         published = self.definitions.publish(
-            lifecycle_draft.record_id,
+            draft.record_id,
             DefinitionPublishRequest(
                 actor=actor.identity_id,
                 reason=payload.reason,
