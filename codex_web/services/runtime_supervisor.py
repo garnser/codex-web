@@ -163,6 +163,7 @@ class RuntimeSupervisor:
         continuity: Any | None = None,
         codex: Any | None = None,
         bot_runtime: Any | None = None,
+        stale_turn_recovery: Any | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         truncate_text: Callable[[str, int], str] | None = None,
         sd_notify: Callable[[str], Any] | None = None,
@@ -187,6 +188,7 @@ class RuntimeSupervisor:
         self.continuity = continuity
         self.codex = codex or getattr(host, "codex", None)
         self.bot_runtime = bot_runtime or getattr(host, "bot_runtime", None)
+        self.stale_turn_recovery = stale_turn_recovery
         self.event_sink = event_sink or getattr(
             host,
             "_append_bot_event",
@@ -394,8 +396,15 @@ class RuntimeSupervisor:
             return
 
         async def recover() -> None:
+            if self.stale_turn_recovery is not None:
+                self.stale_turn_recovery.schedule(
+                    reason="queue-recovery",
+                )
             for thread_id in self.load_turn_queues():
-                if self.thread_is_active(thread_id):
+                if (
+                    self.stale_turn_recovery is None
+                    and self.thread_is_active(thread_id)
+                ):
                     self.release_stale_active_turn(
                         thread_id,
                         "queue-recovery",
@@ -484,12 +493,18 @@ class RuntimeSupervisor:
                 "restore-thread-names",
                 self.restore_thread_names(),
             )
-            self._spawn_startup_task(
-                "resume-active-threads",
-                self.resume_active_threads(),
-            )
+            if self.stale_turn_recovery is None:
+                self._spawn_startup_task(
+                    "resume-active-threads",
+                    self.resume_active_threads(),
+                )
 
         self.sd_notify("READY=1\nSTATUS=codex-web started")
+        if (
+            self.stale_turn_recovery is not None
+            and self._owns("startup-recovery")
+        ):
+            self.stale_turn_recovery.schedule(reason="startup")
         if self.bot_runtime is not None:
             self._spawn(
                 "bot-runtime-owner",
@@ -642,6 +657,8 @@ class RuntimeSupervisor:
                 )
 
         await self.native_recovery.stop()
+        if self.stale_turn_recovery is not None:
+            await self.stale_turn_recovery.stop()
 
         worker_sessions = getattr(
             self.app.state,

@@ -59,6 +59,7 @@ class ThreadRecoveryService:
             if terminal_failures is not None
             else getattr(host, "THREAD_TERMINAL_FAILURES", {})
         )
+        self.stale_active_turn_reconciler = None
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
@@ -353,6 +354,9 @@ class ThreadRecoveryService:
 
     def release_stale_active_turn(self, thread_id: str | None, reason: str) -> None:
         if not thread_id or not self.active_turn_is_stale(thread_id):
+            return
+        if callable(self.stale_active_turn_reconciler):
+            self.stale_active_turn_reconciler(thread_id, reason)
             return
         self.host._append_bot_event(
             {"type": "stale_active_turn_released", "thread_id": thread_id, "reason": reason}
