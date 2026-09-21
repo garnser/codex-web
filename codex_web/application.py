@@ -60,6 +60,7 @@ from codex_web.api.identity import build_identity_router, install_identity_middl
 from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
 from codex_web.api.project_bootstrap import build_project_bootstrap_router
+from codex_web.api.project_readiness import build_project_readiness_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
@@ -276,6 +277,7 @@ from codex_web.services.retrieval_embedding import (
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
+from codex_web.services.project_readiness import ProjectReadinessService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
     ProviderCapacityService,
@@ -383,6 +385,7 @@ from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.incidents import IncidentStore
 from codex_web.storage.legacy_project_migration import LegacyProjectMigrationStore
 from codex_web.storage.project_bootstrap import ProjectBootstrapStore
+from codex_web.storage.project_readiness import ProjectReadinessStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -969,6 +972,50 @@ claude_execution_runtime_binding = ExecutionRuntimeBinding(
     capability_revision=1,
 )
 
+project_bootstrap_store = ProjectBootstrapStore(state_store)
+project_readiness_store = ProjectReadinessStore(state_store)
+
+
+def _project_readiness_environment(project, actor):
+    del actor
+    isolation = local_execution_backend.probe()
+    supported = bool(isolation.ready)
+    return {
+        "available": supported,
+        "code": (
+            "sandbox_profile_supported"
+            if supported
+            else "sandbox_profile_unsupported"
+        ),
+        "reason": (
+            "Local execution isolation supports Project execution."
+            if supported
+            else (
+                isolation.reason
+                or "Local execution isolation is unavailable."
+            )
+        ),
+        "remediation": isolation.remediation,
+    }
+
+
+project_readiness_service = ProjectReadinessService(
+    projects=project_service,
+    resources=resource_catalog_service,
+    secrets=secret_broker,
+    workers=execution_worker_service,
+    bootstrap=project_bootstrap_store,
+    store=project_readiness_store,
+    load_work_items=runtime_state.work_item_states.load,
+    environment_probe=_project_readiness_environment,
+)
+app.state.project_bootstrap_store = project_bootstrap_store
+app.state.project_readiness_store = project_readiness_store
+app.state.project_readiness_service = project_readiness_service
+app.include_router(
+    build_project_readiness_router(project_readiness_service)
+)
+
 turn_execution_binding_service = TurnExecutionBindingService(
     configuration_service,
     project_service,
@@ -984,6 +1031,13 @@ turn_execution_binding_service = TurnExecutionBindingService(
     execution_profiles=execution_profile_definition_service,
     control_plane_available=lambda: (
         control_plane_broker_factory.service is not None
+    ),
+    project_readiness=lambda project_id, actor: (
+        project_readiness_service.evaluate(
+            project_id,
+            actor=actor,
+            record=False,
+        ).model_dump(mode="json")
     ),
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
@@ -2077,7 +2131,6 @@ def _bootstrap_authorization_check(actor):
     IdentityService.require_admin(current)
 
 
-project_bootstrap_store = ProjectBootstrapStore(state_store)
 project_bootstrap_service = ProjectBootstrapService(
     projects=project_service,
     resources=resource_catalog_service,
@@ -2093,6 +2146,13 @@ project_bootstrap_service = ProjectBootstrapService(
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_bootstrap_service = project_bootstrap_service
+project_bootstrap_service.readiness_probe = (
+    lambda project_id, actor: project_readiness_service.evaluate(
+        project_id,
+        actor=actor,
+        record=True,
+    ).model_dump(mode="json")
+)
 app.include_router(build_project_bootstrap_router(project_bootstrap_service))
 
 turn_execution_service = install_turn_execution_service(
