@@ -510,13 +510,29 @@ class SkillService:
             raise SkillConflict("agent profile skill reference must be agent.skill")
         if record.definition_schema_version != SKILL_DEFINITION_SCHEMA_VERSION:
             raise SkillConflict("unsupported skill definition schema")
-        if record.lifecycle != DefinitionLifecycle.PUBLISHED:
-            raise SkillConflict("skill definition must be published")
-        if not definition_is_effective(record):
-            raise SkillConflict("skill definition is not currently effective")
-        skill = SkillDefinition.model_validate(record.payload)
-        if skill.lifecycle != SkillLifecycle.ACTIVE:
-            raise SkillConflict("archived skill cannot be attached to new profile work")
+        if record.lifecycle not in {
+            DefinitionLifecycle.PUBLISHED,
+            DefinitionLifecycle.SUPERSEDED,
+        }:
+            raise SkillConflict("skill definition revision was never published")
+        now = float(self.clock())
+        if (
+            record.effective_from is not None
+            and now < record.effective_from
+        ) or (
+            record.effective_until is not None
+            and now >= record.effective_until
+        ):
+            raise SkillConflict("skill definition revision is outside its effective window")
+        current = self.definitions.resolve(
+            definition_id=record.definition_id,
+            kind=SKILL_DEFINITION_KIND,
+            context=self._context(actor),
+            now=now,
+        )
+        current_skill = SkillDefinition.model_validate(current.payload)
+        if current_skill.lifecycle != SkillLifecycle.ACTIVE:
+            raise SkillConflict("archived skill cannot be used for new execution")
         return actual
 
     def validate_reference_for_scope(
@@ -543,13 +559,32 @@ class SkillService:
             != SKILL_DEFINITION_SCHEMA_VERSION
         ):
             raise SkillConflict("incompatible skill definition reference")
+        if record.lifecycle not in {
+            DefinitionLifecycle.PUBLISHED,
+            DefinitionLifecycle.SUPERSEDED,
+        }:
+            raise SkillConflict("skill definition revision was never published")
+        now = float(self.clock())
         if (
-            record.lifecycle != DefinitionLifecycle.PUBLISHED
-            or not definition_is_effective(record)
+            record.effective_from is not None
+            and now < record.effective_from
+        ) or (
+            record.effective_until is not None
+            and now >= record.effective_until
         ):
-            raise SkillConflict("skill definition is not active/published")
-        skill = SkillDefinition.model_validate(record.payload)
-        if skill.lifecycle != SkillLifecycle.ACTIVE:
+            raise SkillConflict("skill definition revision is outside its effective window")
+        from codex_web.definitions import DefinitionContext
+        current = self.definitions.resolve(
+            definition_id=record.definition_id,
+            kind=SKILL_DEFINITION_KIND,
+            context=DefinitionContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            ),
+            now=now,
+        )
+        current_skill = SkillDefinition.model_validate(current.payload)
+        if current_skill.lifecycle != SkillLifecycle.ACTIVE:
             raise SkillConflict("archived skill cannot be used for new execution")
         return actual
 
