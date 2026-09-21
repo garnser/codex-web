@@ -608,7 +608,6 @@ class DefinitionRegistryService:
                 update={
                     "lifecycle": DefinitionLifecycle.DISABLED,
                     "publish_reason": f"disabled by {actor}: {reason}",
-                    "effective_until": time.time(),
                 }
             )
             changed.append(current)
