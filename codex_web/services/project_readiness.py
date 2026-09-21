@@ -552,6 +552,7 @@ class ProjectReadinessService:
             if item.project_id == project.id
             and item.current_stage != "closed"
         ]
+        bound_resource_ids = {item.id for item in bound}
         unresolved_items = [
             item
             for item in open_items
@@ -559,6 +560,7 @@ class ProjectReadinessService:
                 item.organization_id != actor.organization_id
                 or item.workspace_id != actor.workspace_id
                 or not item.resource_ids
+                or not set(item.resource_ids).intersection(bound_resource_ids)
             )
         ]
         if not open_items:
