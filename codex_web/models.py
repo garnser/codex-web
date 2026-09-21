@@ -240,6 +240,9 @@ class WorkItemState(BaseModel):
     kind: str | None = None
     priority: str | None = None
     current_owner: str | None = None
+    assigned_team_id: str | None = None
+    assigned_team_revision: int | None = Field(default=None, ge=1)
+    team_delegation_id: str | None = None
     current_stage: WorkItemStage = "implementation_active"
     terminal_outcome: WorkItemTerminalOutcome | None = None
     implementation_owner: str | None = None
