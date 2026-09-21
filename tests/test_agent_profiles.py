@@ -8,6 +8,7 @@ from codex_web.agent_profiles import (
     AgentProfileAccessMode,
     AgentProfileAccessPolicy,
     AgentProfileCreate,
+    AgentProfileLifecycle,
     AgentProfileLifecycleChange,
     AgentProfileModelPolicy,
     AgentProfileRuntimePolicy,
@@ -19,6 +20,11 @@ from codex_web.agent_providers import (
     AgentProviderUpsert,
 )
 from codex_web.agent_routing import AgentRoutingRequest
+from codex_web.definitions import (
+    DefinitionDraftCreate,
+    DefinitionPublishRequest,
+    reference_for,
+)
 from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.identity import (
     AuthenticationActor,
@@ -32,9 +38,15 @@ from codex_web.services.agent_profiles import (
     AgentProfileService,
 )
 from codex_web.services.agent_providers import AgentProviderService
-from codex_web.services.agent_routing import AgentRoutingService
+from codex_web.services.agent_routing import (
+    AgentRoutingBlockedError,
+    AgentRoutingService,
+)
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
-from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.definitions import (
+    DefinitionKindSchema,
+    DefinitionRegistryService,
+)
 from codex_web.storage.agent_profiles import AgentProfileStore
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
@@ -120,6 +132,17 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
         self.definitions = DefinitionRegistryService(
             DefinitionRegistryStore(self.sqlite)
         )
+        for kind in (
+            "agent.instructions",
+            "agent.skill",
+        ):
+            self.definitions.register_schema(
+                DefinitionKindSchema(
+                    kind=kind,
+                    schema_version="1.0",
+                    validate=lambda payload: dict(payload),
+                )
+            )
         self.authority = _Authority()
         self.profiles = AgentProfileService(
             AgentProfileStore(self.sqlite),
@@ -138,6 +161,31 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
+
+    def _publish_definition(
+        self,
+        *,
+        definition_id: str,
+        kind: str,
+        payload: dict,
+        expected_active_revision: int | None = None,
+    ):
+        draft = self.definitions.create_draft(
+            DefinitionDraftCreate(
+                definition_id=definition_id,
+                kind=kind,
+                definition_schema_version="1.0",
+                payload=payload,
+                actor=self.admin.identity_id,
+            )
+        )
+        return self.definitions.publish(
+            draft.record_id,
+            DefinitionPublishRequest(
+                actor=self.admin.identity_id,
+                expected_active_revision=expected_active_revision,
+            ),
+        )
 
     def _create(
         self,
@@ -443,6 +491,146 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
         )
         # The old route result remains immutable historical attribution.
         self.assertEqual(result.agent_profile.profile_revision, 1)
+
+    async def test_instruction_and_skill_revisions_are_pinned_in_execution_binding(self) -> None:
+        instructions_v1 = self._publish_definition(
+            definition_id="coder.instructions",
+            kind="agent.instructions",
+            payload={"text": "Use the repository contract."},
+        )
+        skill_v1 = self._publish_definition(
+            definition_id="python",
+            kind="agent.skill",
+            payload={"name": "Python"},
+        )
+        first = self._create(
+            instructions_ref=reference_for(instructions_v1),
+            skill_refs=(reference_for(skill_v1),),
+        )
+        binding = self.profiles.binding_for(
+            first,
+            selected_provider_id="provider-a",
+            selected_runtime_id="runtime-a",
+            selected_provider_revision=2,
+            selected_runtime_capability_revision=5,
+        )
+
+        instructions_v2 = self._publish_definition(
+            definition_id="coder.instructions",
+            kind="agent.instructions",
+            payload={"text": "New instructions for future profiles."},
+            expected_active_revision=instructions_v1.revision,
+        )
+        second = self.profiles.update(
+            "coder",
+            AgentProfileUpdate(
+                description="metadata-only profile revision",
+                reason="clarify collaborator purpose",
+            ),
+            actor=self.admin,
+        )
+
+        self.assertNotEqual(
+            instructions_v1.record_id,
+            instructions_v2.record_id,
+        )
+        self.assertEqual(
+            first.instructions_ref.record_id,
+            instructions_v1.record_id,
+        )
+        self.assertEqual(
+            second.instructions_ref.record_id,
+            instructions_v1.record_id,
+        )
+        self.assertEqual(
+            binding.instructions_ref.record_id,
+            instructions_v1.record_id,
+        )
+        self.assertEqual(
+            binding.skill_refs[0].record_id,
+            skill_v1.record_id,
+        )
+        self.assertEqual(binding.profile_revision, first.revision)
+
+    async def test_disabled_profile_cannot_receive_new_execution(self) -> None:
+        self._create()
+        disabled = self.profiles.lifecycle(
+            "coder",
+            lifecycle=AgentProfileLifecycle.DISABLED,
+            payload=AgentProfileLifecycleChange(
+                reason="temporarily unavailable",
+            ),
+            actor=self.admin,
+        )
+        self.assertEqual(
+            disabled.lifecycle,
+            AgentProfileLifecycle.DISABLED,
+        )
+
+        with self.assertRaises(AgentProfileAccessDenied) as denied:
+            self.profiles.resolve_for_execution(
+                "coder",
+                actor=self.member,
+                project_id="project-a",
+            )
+        self.assertIn(
+            "profile_disabled",
+            denied.exception.decision.reasons,
+        )
+
+    async def test_unavailable_profile_runtime_returns_structured_blocker(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+        )
+        provider_service = AgentProviderService(
+            AgentProviderStore(self.sqlite)
+        )
+        provider_service.upsert(
+            AgentProviderUpsert(
+                id="provider-a",
+                display_name="provider-a",
+                declared_capabilities=capabilities,
+                granted_capabilities=capabilities,
+                health=AgentProviderHealth.HEALTHY,
+            ),
+            actor=self.admin,
+        )
+        self._create(
+            runtime_policy=AgentProfileRuntimePolicy(
+                allowed_provider_ids=("provider-a",),
+                allowed_runtime_ids=("runtime-missing",),
+            ),
+        )
+        routing = AgentRoutingService(
+            provider_service,
+            AgentRuntimeRegistry(),
+            profiles=self.profiles,
+        )
+
+        with self.assertRaises(AgentRoutingBlockedError) as blocked:
+            await routing.route(
+                AgentRoutingRequest(
+                    project_id="project-a",
+                    agent_profile_id="coder",
+                ),
+                actor=self.member,
+            )
+
+        detail = blocked.exception.public()
+        self.assertEqual(
+            detail["code"],
+            "agent_runtime_unavailable",
+        )
+        self.assertEqual(
+            detail["target_type"],
+            "agent_profile",
+        )
+        self.assertEqual(detail["target_id"], "coder")
+        self.assertFalse(detail["retryable"])
+        self.assertEqual(
+            detail["remediation_route"],
+            "/api/agent-profiles",
+        )
 
     async def test_profile_allowlist_cannot_be_broadened_by_route_request(self) -> None:
         capabilities = (
