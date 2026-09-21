@@ -16,6 +16,7 @@ from codex_web.identity import (
 )
 from codex_web.models import Project, TaskSourceConfiguration, WorkItemState
 from codex_web.project_readiness import ReadinessCheckStatus
+from codex_web.resources import ResourceLifecycle, ResourceType
 from codex_web.services.project_readiness import ProjectReadinessService
 from codex_web.services.resources import (
     RepositoryTargetAmbiguousError,
@@ -53,8 +54,8 @@ class _Projects:
 class _Resource:
     def __init__(self, resource_id: str) -> None:
         self.id = resource_id
-        self.resource_type = SimpleNamespace(value="repository")
-        self.lifecycle = SimpleNamespace(value="active")
+        self.resource_type = ResourceType.REPOSITORY
+        self.lifecycle = ResourceLifecycle.ACTIVE
 
 
 class _Resources:
