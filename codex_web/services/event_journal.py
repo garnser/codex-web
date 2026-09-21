@@ -284,7 +284,31 @@ class EventJournal:
         discovered = self._discover_segment_files()
         now = float(self.clock())
 
+        manifest.segments = [
+            item
+            for item in manifest.segments
+            if item.sequence in discovered
+        ]
+        known = {item.sequence: item for item in manifest.segments}
+
         for sequence, (source, archived) in discovered.items():
+            if source is not None and archived is not None:
+                archive_valid = False
+                try:
+                    with gzip.open(archived, "rb") as handle:
+                        handle.read(1)
+                    archive_valid = True
+                except Exception:
+                    archive_valid = False
+                if archive_valid:
+                    with contextlib.suppress(OSError):
+                        source.unlink()
+                    source = None
+                else:
+                    with contextlib.suppress(OSError):
+                        archived.unlink()
+                    archived = None
+
             current = known.get(sequence)
             if current is None:
                 path = source or archived
@@ -351,7 +375,9 @@ class EventJournal:
     def _initialize_active_state(self) -> None:
         self.active_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.active_file.exists():
-            self.active_file.touch()
+            self.active_file.touch(mode=0o600)
+        with contextlib.suppress(OSError):
+            os.chmod(self.active_file, 0o600)
         stat = self.active_file.stat()
         self._active_created_at = float(stat.st_mtime)
         # Existing legacy files may contain millions of events. Do not scan
@@ -401,7 +427,10 @@ class EventJournal:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(self.active_file, segment_path)
-            self.active_file.touch()
+            self.active_file.touch(mode=0o600)
+            with contextlib.suppress(OSError):
+                os.chmod(segment_path, 0o600)
+                os.chmod(self.active_file, 0o600)
             self._fsync_directory(self.active_file.parent)
 
             segment = JournalSegment(
@@ -467,7 +496,7 @@ class EventJournal:
                 exist_ok=True,
             )
             if not self.active_file.exists():
-                self.active_file.touch()
+                self.active_file.touch(mode=0o600)
                 self._active_created_at = float(self.clock())
 
             now = float(self.clock())
@@ -697,21 +726,32 @@ class EventJournal:
         temporary = target.with_name(f"{target.name}.tmp")
 
         try:
-            with source.open("rb") as source_handle:
-                with temporary.open("wb") as raw_output:
-                    with gzip.GzipFile(
-                        fileobj=raw_output,
-                        mode="wb",
-                        mtime=0,
-                    ) as compressed:
-                        while True:
-                            block = source_handle.read(1024 * 1024)
-                            if not block:
-                                break
-                            compressed.write(block)
-                    raw_output.flush()
-                    os.fsync(raw_output.fileno())
-            os.chmod(temporary, 0o600)
+            descriptor = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            try:
+                with source.open("rb") as source_handle:
+                    with os.fdopen(descriptor, "wb") as raw_output:
+                        descriptor = -1
+                        with gzip.GzipFile(
+                            fileobj=raw_output,
+                            mode="wb",
+                            mtime=0,
+                        ) as compressed:
+                            while True:
+                                block = source_handle.read(
+                                    1024 * 1024
+                                )
+                                if not block:
+                                    break
+                                compressed.write(block)
+                        raw_output.flush()
+                        os.fsync(raw_output.fileno())
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
             os.replace(temporary, target)
             self._fsync_directory(self.archive_directory)
             source.unlink()
@@ -896,9 +936,15 @@ class EventJournal:
                         archive_candidate = self._index_segment(
                             archive_candidate
                         )
-                    archived = self._compress_and_archive(
-                        archive_candidate
-                    )
+                    try:
+                        archived = self._compress_and_archive(
+                            archive_candidate
+                        )
+                    except Exception:
+                        with self._lock:
+                            self._manifest.archive_failures += 1
+                            self._persist_manifest()
+                        raise
                     with self._lock:
                         self._replace_segment(archived)
                         self._persist_manifest()
