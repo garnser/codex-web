@@ -8,7 +8,10 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from codex_web.agent_profiles import AgentProfileAccessMode
+from codex_web.agent_profiles import (
+    AgentProfileAccessMode,
+    AgentProfileLifecycle,
+)
 from codex_web.agent_teams import (
     AGENT_TEAM_ROUTING_KIND,
     AGENT_TEAM_ROUTING_SCHEMA_VERSION,
@@ -344,15 +347,22 @@ class AgentTeamService:
         revision: int | None,
         *,
         actor: AuthenticationActor,
-        project_id: str = "home",
     ):
-        profile, _ = self.profiles.resolve_for_execution(
+        current = self.profiles.get(
             profile_id,
             actor=actor,
-            project_id=project_id,
+        )
+        if current.lifecycle != AgentProfileLifecycle.ACTIVE:
+            raise AgentTeamConflict(
+                f"Agent Profile is not active: {profile_id}"
+            )
+        if revision is None:
+            return current
+        return self.profiles.get(
+            profile_id,
+            actor=actor,
             revision=revision,
         )
-        return profile
 
     def _normalize_members(
         self,
@@ -882,7 +892,7 @@ class AgentTeamService:
             ):
                 return item
             if (
-                item.equivalent_decision_key == request_key
+                item.trigger_key == request_key
                 and item.status
                 in {
                     AgentTeamDelegationStatus.PLANNED,
@@ -940,7 +950,7 @@ class AgentTeamService:
                 else None
             ),
             event_id=payload.event_id,
-            equivalent_decision_key=request_key,
+            trigger_key=request_key,
             blocker=(
                 "no eligible Team member"
                 if not eligible
@@ -1227,6 +1237,11 @@ class AgentTeamService:
         decision_key = self._decision_key(member_ids)
         if (
             record.equivalent_decision_key == decision_key
+            and set(member_ids) == set(record.active_member_ids)
+        ):
+            return record
+        if (
+            record.equivalent_decision_key == decision_key
             and any(
                 member_id in set(getattr(record, "failed_member_ids", ()))
                 for member_id in member_ids
@@ -1408,6 +1423,7 @@ class AgentTeamService:
         event_id: str,
         succeeded: bool,
         actor: AuthenticationActor,
+        execution_id: str | None = None,
     ) -> AgentTeamDelegationRecord:
         record = self.store.get_delegation(
             delegation_id,
@@ -1421,6 +1437,20 @@ class AgentTeamService:
             return record
         if member_id not in record.active_member_ids:
             return record
+        if execution_id is not None:
+            latest_link = next(
+                (
+                    link
+                    for link in reversed(record.execution_links)
+                    if link.member_id == member_id
+                ),
+                None,
+            )
+            if (
+                latest_link is None
+                or latest_link.execution_id != execution_id
+            ):
+                return record
 
         active = tuple(
             value
