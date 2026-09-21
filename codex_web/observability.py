@@ -43,6 +43,8 @@ def slow_http_request_seconds() -> float:
     except ValueError:
         value = 1.0
     return max(0.05, min(value, 60.0))
+
+
 SAFE_METRIC_LABELS = frozenset(
     {
         "component",
