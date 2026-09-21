@@ -100,6 +100,7 @@ class ActiveTurnRecoveryReport(BaseModel):
     blocked: int
     planned_recovered: int
     drain_thread_ids: tuple[str, ...] = ()
+    resume_thread_ids: tuple[str, ...] = ()
 
 
 class ActiveTurnResolutionRequest(BaseModel):
@@ -186,16 +187,16 @@ class ActiveTurnRecoveryStore:
 
     def plan(self, record: ActiveTurnRecoveryRecord) -> None:
         with self._lock:
-            meta = self.meta()
-            planned = list(meta.planned_threads)
-            if record.thread_id not in planned:
-                planned.append(record.thread_id)
-            meta.planned_threads = tuple(planned[-500:])
             self.put(
                 record.model_copy(
                     update={"action_state": "planned"}
                 )
             )
+            meta = self.meta()
+            planned = list(meta.planned_threads)
+            if record.thread_id not in planned:
+                planned.append(record.thread_id)
+            meta.planned_threads = tuple(planned[-500:])
             self.save_meta(meta)
 
     def mark_applied(
@@ -267,6 +268,7 @@ class StaleActiveTurnRecoveryService:
         store: ActiveTurnRecoveryStore,
         schedule_queue_drain,
         append_event,
+        resume_active_threads=None,
         clock=time.time,
     ) -> None:
         self.active_turns = active_turns
@@ -275,6 +277,7 @@ class StaleActiveTurnRecoveryService:
         self.store = store
         self.schedule_queue_drain = schedule_queue_drain
         self.append_event = append_event
+        self.resume_active_threads = resume_active_threads
         self.clock = clock
         self._mutation_lock = threading.RLock()
         self.coordinator = KeyedTaskCoordinator(
@@ -383,6 +386,7 @@ class StaleActiveTurnRecoveryService:
         now: float,
     ) -> ActiveTurnInspection:
         age = max(0.0, now - active.updated_at)
+        stale = age > self.stale_after_seconds()
         queue_evidence = self._queue_evidence(queued, active)
         base_evidence: dict[str, Any] = {
             **queue_evidence,
@@ -395,15 +399,6 @@ class StaleActiveTurnRecoveryService:
             "active_fence": active.fence,
             "active_updated_at": active.updated_at,
         }
-        if age <= self.stale_after_seconds():
-            return ActiveTurnInspection(
-                thread_id=active.thread_id,
-                stale=False,
-                age_seconds=age,
-                outcome="fresh",
-                reason_code="within_liveness_window",
-                evidence=base_evidence,
-            )
 
         assignment, ambiguous_assignment = self._assignment_for(
             active,
@@ -482,7 +477,7 @@ class StaleActiveTurnRecoveryService:
                 if lease.expires_at > now and worker_trusted:
                     return ActiveTurnInspection(
                         thread_id=active.thread_id,
-                        stale=True,
+                        stale=stale,
                         age_seconds=age,
                         outcome="live",
                         reason_code="valid_live_assignment_lease",
@@ -507,21 +502,12 @@ class StaleActiveTurnRecoveryService:
                 )
 
             if assignment.status == AssignmentStatus.PENDING:
-                if queued:
-                    return ActiveTurnInspection(
-                        thread_id=active.thread_id,
-                        stale=True,
-                        age_seconds=age,
-                        outcome="requeued",
-                        reason_code="pending_assignment_with_existing_queue",
-                        evidence=evidence,
-                    )
                 return ActiveTurnInspection(
                     thread_id=active.thread_id,
-                    stale=True,
+                    stale=stale,
                     age_seconds=age,
-                    outcome="blocked",
-                    reason_code="pending_assignment_without_queue",
+                    outcome="live",
+                    reason_code="canonical_assignment_pending",
                     evidence=evidence,
                 )
 
@@ -563,6 +549,35 @@ class StaleActiveTurnRecoveryService:
                     evidence=evidence,
                 )
 
+        if active.assignment_id:
+            if queued:
+                return ActiveTurnInspection(
+                    thread_id=active.thread_id,
+                    stale=True,
+                    age_seconds=age,
+                    outcome="requeued",
+                    reason_code="missing_assignment_with_existing_queue",
+                    evidence=base_evidence,
+                )
+            return ActiveTurnInspection(
+                thread_id=active.thread_id,
+                stale=True,
+                age_seconds=age,
+                outcome="interrupted",
+                reason_code="assignment_record_missing",
+                evidence=base_evidence,
+            )
+
+        if not stale:
+            return ActiveTurnInspection(
+                thread_id=active.thread_id,
+                stale=False,
+                age_seconds=age,
+                outcome="fresh",
+                reason_code="within_liveness_window_no_canonical_owner",
+                evidence=base_evidence,
+            )
+
         if queued:
             return ActiveTurnInspection(
                 thread_id=active.thread_id,
@@ -591,16 +606,6 @@ class StaleActiveTurnRecoveryService:
                 age_seconds=age,
                 outcome="interrupted",
                 reason_code="orphaned_queued_turn",
-                evidence=base_evidence,
-            )
-
-        if active.assignment_id:
-            return ActiveTurnInspection(
-                thread_id=active.thread_id,
-                stale=True,
-                age_seconds=age,
-                outcome="interrupted",
-                reason_code="assignment_record_missing",
                 evidence=base_evidence,
             )
 
@@ -820,6 +825,7 @@ class StaleActiveTurnRecoveryService:
             planned_recovered, drain = self._finish_planned(
                 now=started
             )
+            resume: list[str] = []
             worker_state = self.worker_state_loader()
             (
                 assignments_by_id,
@@ -870,6 +876,12 @@ class StaleActiveTurnRecoveryService:
                 if inspection.stale:
                     counts["stale"] += 1
                 counts[inspection.outcome] += 1
+                if (
+                    reason == "startup"
+                    and inspection.outcome == "fresh"
+                    and active.resume_attempts < 3
+                ):
+                    resume.append(active.thread_id)
                 _, should_drain = self._apply_inspection(
                     active,
                     inspection,
@@ -911,6 +923,7 @@ class StaleActiveTurnRecoveryService:
                 completed_at=completed,
                 planned_recovered=planned_recovered,
                 drain_thread_ids=tuple(sorted(set(drain))),
+                resume_thread_ids=tuple(sorted(set(resume))),
                 **counts,
             )
 
@@ -927,6 +940,13 @@ class StaleActiveTurnRecoveryService:
             actor_id=actor_id,
             thread_id=thread_id,
         )
+        if (
+            report.resume_thread_ids
+            and self.resume_active_threads is not None
+        ):
+            await self.resume_active_threads(
+                set(report.resume_thread_ids)
+            )
         for value in report.drain_thread_ids:
             self.schedule_queue_drain(value)
         return report
