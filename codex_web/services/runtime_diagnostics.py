@@ -258,8 +258,10 @@ class RuntimeHealthService:
     def _evaluate(self, refresh_id: str) -> dict[str, Any]:
         now = time.time()
         problems: list[str] = []
-        configured_runtime_ids = set(self.bot_runtime.fingerprints)
-        running_runtime_ids = set(self.bot_runtime.tasks)
+        fingerprints = dict(self.bot_runtime.fingerprints)
+        runtime_tasks = dict(self.bot_runtime.tasks)
+        configured_runtime_ids = set(fingerprints)
+        running_runtime_ids = set(runtime_tasks)
 
         if not self.codex.proc or self.codex.proc.poll() is not None:
             problems.append("codex app-server process is not running")
@@ -274,7 +276,7 @@ class RuntimeHealthService:
             )
 
         runtime_status = self.telemetry.snapshot()
-        for connection_id, task in self.bot_runtime.tasks.items():
+        for connection_id, task in runtime_tasks.items():
             if task.done():
                 problems.append(
                     f"bot runtime task stopped for: {connection_id}"
@@ -306,7 +308,9 @@ class RuntimeHealthService:
         )
         terminal_failures = {
             thread_id: list(failures)
-            for thread_id, failures in self.terminal_failures.items()
+            for thread_id, failures in dict(
+                self.terminal_failures
+            ).items()
             if thread_id in bound_thread_ids
             and failures
             and now - failures[-1][0] < failure_window
@@ -432,7 +436,7 @@ class RuntimeHealthService:
             "codexPid": (
                 self.codex.proc.pid if self.codex.proc else None
             ),
-            "runtimeConnections": len(self.bot_runtime.tasks),
+            "runtimeConnections": len(runtime_tasks),
             "runtimeStatus": list(runtime_status.values()),
             "terminalFailureThreads": len(terminal_failures),
             "terminalRecoveryThreads": len(
