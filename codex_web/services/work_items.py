@@ -16,7 +16,10 @@ from codex_web.models import (
 )
 from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
 from codex_web.services.gitlab_sync_health import GitLabSyncHealth
-from codex_web.services.builtin_task_source_runtime import install_builtin_task_source_runtime
+from codex_web.services.builtin_task_source_runtime import (
+    SecretBoundTaskSource,
+    install_builtin_task_source_runtime,
+)
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.task_source_events import (
@@ -449,6 +452,8 @@ class WorkItemService:
                 "secret_broker",
                 None,
             )
+        self.identity_service = identity_service
+        self.secret_broker = secret_broker
         self.builtin_task_source_runtime = None
         if identity_service is not None and secret_broker is not None:
             self.builtin_task_source_runtime = (
@@ -492,6 +497,60 @@ class WorkItemService:
             if app_state is not None:
                 app_state.work_item_compatibility_service = compatibility
 
+    def _canonical_gitlab_source(
+        self,
+        configuration: TaskSourceConfiguration,
+        *,
+        scope: TenantScope,
+    ) -> TaskSource | None:
+        secret_id = str(
+            configuration.credential_secret_id or ""
+        ).strip()
+        if not secret_id:
+            return None
+        if self.identity_service is None or self.secret_broker is None:
+            raise TaskSourceResolutionError(
+                "canonical GitLab credential runtime is unavailable"
+            )
+        actor = self.identity_service.bootstrap_service_actor(
+            identity_id="service-task-source-runtime",
+            name="Task source runtime",
+            scope=scope,
+            service_scopes=("secret:use",),
+        )
+        try:
+            self.secret_broker.metadata(
+                secret_id,
+                actor=actor,
+                require_use=True,
+            )
+        except Exception as exc:
+            raise TaskSourceResolutionError(
+                "gitlab task-source credential is unavailable"
+            ) from exc
+
+        def builder(secret: str) -> TaskSource:
+            return GitLabTaskSource(
+                configuration.source_instance,
+                secret,
+                client=self.gitlab,
+            )
+
+        projection = GitLabTaskSource(
+            configuration.source_instance,
+            "__credential_not_loaded__",
+            client=self.gitlab,
+        )
+        return SecretBoundTaskSource(
+            source_type="gitlab",
+            source_instance=configuration.source_instance,
+            credential_secret_id=secret_id,
+            actor=actor,
+            secret_broker=self.secret_broker,
+            builder=builder,
+            projection_source=projection,
+        )
+
     def _gitlab_source_for_state(
         self,
         state: Any,
@@ -499,6 +558,37 @@ class WorkItemService:
         project_id = getattr(state, "project_id", None)
         if not project_id:
             return None
+        scope = TenantScope(
+            organization_id=getattr(
+                state,
+                "organization_id",
+                "local",
+            ),
+            workspace_id=getattr(
+                state,
+                "workspace_id",
+                "default",
+            ),
+        )
+        try:
+            project = self._project_for_scope(project_id, scope)
+        except LookupError:
+            project = None
+        configuration = getattr(
+            project,
+            "authoritative_task_source",
+            None,
+        )
+        if (
+            configuration is not None
+            and configuration.source_type.casefold() == "gitlab"
+            and configuration.credential_secret_id
+        ):
+            return self._canonical_gitlab_source(
+                configuration,
+                scope=scope,
+            )
+
         token = self.gitlab_dependencies.token_for_project(project_id)
         if not token:
             return None
@@ -514,9 +604,17 @@ class WorkItemService:
         project_id: str,
         scope: TenantScope,
     ) -> TaskSource | None:
-        del scope
         if configuration.source_type.casefold() != "gitlab":
             return None
+        if configuration.credential_secret_id:
+            return self._canonical_gitlab_source(
+                configuration,
+                scope=scope,
+            )
+
+        # Compatibility-only fallback for Projects not yet materialized by
+        # canonical legacy migration. Once a SecretReference is present the
+        # raw legacy credential path is never consulted.
         token = self.gitlab_dependencies.token_for_project(project_id)
         if not token:
             return None
