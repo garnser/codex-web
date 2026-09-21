@@ -771,11 +771,12 @@ class SlackProviderService:
     async def run_backfill_cycle(self) -> None:
         if self.backfill_lock.locked():
             await asyncio.to_thread(self._mark_coalesced_cycle)
-            self.telemetry.append(
+            await asyncio.to_thread(
+                self.telemetry.append,
                 {
                     "type": "slack_backfill_cycle_coalesced",
                     "provider": "slack",
-                }
+                },
             )
             return
 
@@ -969,7 +970,8 @@ class SlackProviderService:
                         }
                         if thread_ts is not None:
                             context["external_thread_id"] = thread_ts
-                        rate_limited = self._record_failure(
+                        rate_limited = await asyncio.to_thread(
+                            self._record_failure,
                             failure_type,
                             response,
                             context,
@@ -1192,7 +1194,10 @@ class SlackProviderService:
         }
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts
-        self.telemetry.append(payload)
+        await asyncio.to_thread(
+            self.telemetry.append,
+            payload,
+        )
         return True
 
     async def _run_loop(self) -> None:
@@ -1207,11 +1212,12 @@ class SlackProviderService:
             try:
                 await self.run_backfill_cycle()
             except Exception as exc:
-                self.telemetry.append(
+                await asyncio.to_thread(
+                    self.telemetry.append,
                     {
                         "type": "slack_backfill_loop_failed",
-                        "error": str(exc),
-                    }
+                        "error": type(exc).__name__,
+                    },
                 )
             await asyncio.sleep(interval)
 
