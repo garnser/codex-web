@@ -29,7 +29,10 @@ from codex_web.identity import (
 )
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.identity import AuthorizationError, IdentityService
-from codex_web.skills import SKILL_DEFINITION_KIND
+from codex_web.skills import (
+    SKILL_DEFINITION_KIND,
+    SkillDefinition,
+)
 from codex_web.storage.agent_profiles import AgentProfileStore
 
 
@@ -799,7 +802,33 @@ class AgentProfileService:
             "available": True,
         }
 
-    @staticmethod
+    def skill_requirements(
+        self,
+        profile: AgentProfileRevision,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        provider: list[str] = []
+        worker: list[str] = []
+        for reference in profile.skill_refs:
+            record = self.definitions.get_record(reference.record_id)
+            if record.kind != SKILL_DEFINITION_KIND:
+                raise AgentProfileConflict(
+                    "agent profile contains a non-Skill skill reference"
+                )
+            if reference_for(record) != reference:
+                raise AgentProfileConflict(
+                    "agent profile Skill reference no longer matches canonical revision"
+                )
+            definition = SkillDefinition.model_validate(record.payload)
+            provider.extend(definition.required_provider_capabilities)
+            worker.extend(
+                str(value)
+                for value in definition.required_worker_capabilities
+            )
+        return (
+            tuple(dict.fromkeys(provider)),
+            tuple(dict.fromkeys(worker)),
+        )
+
     def binding_for(
         profile: AgentProfileRevision,
         *,
@@ -811,12 +840,15 @@ class AgentProfileService:
         model_provider_id: str | None = None,
         model_id: str | None = None,
     ) -> AgentProfileExecutionBinding:
+        provider_caps, worker_caps = self.skill_requirements(profile)
         return AgentProfileExecutionBinding(
             profile_id=profile.profile_id,
             profile_revision=profile.revision,
             profile_record_id=profile.record_id,
             instructions_ref=profile.instructions_ref,
             skill_refs=profile.skill_refs,
+            skill_required_provider_capabilities=provider_caps,
+            skill_required_worker_capabilities=worker_caps,
             role_id=profile.role_id,
             role_definition_ref=profile.role_definition_ref,
             authority_role_id=profile.authority_role_id,
