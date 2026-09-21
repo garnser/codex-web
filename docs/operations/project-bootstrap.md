@@ -77,9 +77,20 @@ The starter manifest uses `workspace-write`, requires `command_execution`, and u
 
 Use `--output json` for stable machine-readable output. A successful current dry-run proves the v1 manifest and approved repository paths are valid; Project-wide reconciliation/preflight is a separate bootstrap phase and is not inferred from this validation result.
 
-## Apply the supported legacy materialization slice
+## Full preflight and reconciliation
 
-The current apply bridge deliberately reuses the canonical materializer rather than introducing a parallel migration engine:
+The CLI `--dry-run` remains the zero-runtime-composition manifest/path validation edge. Full Project preflight runs through the canonical bootstrap service on a running Codex Web instance:
+
+- `POST /api/projects/{project_id}/bootstrap/preflight` validates current database/schema state, tenant ownership, repository topology, execution-target policy, SecretReference authorization, TaskSource health, worker capabilities, sandbox/isolation support, operational-state size, and canonical/legacy migration blockers.
+- `POST /api/projects/{project_id}/bootstrap/plan` returns the deterministic desired/current reconciliation plan.
+- `POST /api/projects/{project_id}/bootstrap/apply` applies a reviewed plan identity.
+- `GET /api/projects/{project_id}/bootstrap/status` returns durable execution/checkpoint/audit state.
+
+Plan operations use `ready`, `create`, `migrate`, `update`, `skip`, `warning`, or `blocked`, with stable reason codes, dependencies, approval requirements, and rollback classifications. An ambiguous tenant, repository, TaskSource, or credential mapping is blocked rather than guessed.
+
+A partial TaskSource/provider outage can be reported as a warning while local reconciliation remains possible. This does not make the Project execution-ready; the post-apply readiness handoff remains authoritative.
+
+## Apply
 
 ```bash
 ./codex-web bootstrap \
@@ -89,13 +100,29 @@ The current apply bridge deliberately reuses the canonical materializer rather t
   --apply
 ```
 
-Apply resolves the local administrator in the manifest Organization/Workspace and therefore requires an existing authorized membership for that scope. It refuses to fabricate tenant authority.
+Apply resolves the local administrator in the manifest Organization/Workspace and therefore requires an existing authorized membership for that scope. It refuses to fabricate tenant authority and re-evaluates authorization at execution/checkpoint boundaries.
 
-Before mutation, the command verifies that the manifest Project name, sandbox, repository topology, and TaskSource intent align with the deterministic canonical materialization plan. Any mismatch is returned as a typed `blocked` result instead of silently rewriting the manifest or choosing a repository.
+The bootstrap engine delegates canonical Project/Resource/Work Item/Secret migration to the canonical materializer and delegates legacy thread/profile conversion to the legacy migration service. It does not maintain a second domain-specific migration implementation.
 
-The underlying canonical materialization execution is durable, idempotent, and resumable. Its execution ID is returned as `bootstrapExecutionId`. Re-running a converged materialization does not duplicate Resources, Project bindings, SecretReferences, or Work Item associations.
+Bootstrap execution state is durable. Stable operation IDs and checkpoints allow interrupted runs to resume without duplicating bootstrap audit records or canonical resources/bindings. A Project-scoped lease prevents simultaneous applies; lease-owner fencing prevents a stale executor from overwriting a replacement executor after lease expiry.
 
-Desired-state changes that require the broader reconciliation planner—such as changing canonical Project fields, non-GitLab TaskSource conversion, or Slack integration reconciliation—fail closed rather than being silently ignored.
+The execution ID is returned as `bootstrapExecutionId`. Re-running a converged plan returns the existing successful execution.
+
+Material execution-authority changes require explicit approval. For example:
+
+```bash
+./codex-web bootstrap \
+  --project my-project \
+  --manifest .codex/project.yaml \
+  --apply \
+  --approve-authority-changes
+```
+
+Use that flag only after reviewing the plan. It is required for changes such as adopting `danger-full-access`.
+
+When a valid canonical GitLab `secretRef` is supplied, bootstrap can use that reference directly instead of copying a legacy token. The provider instance/scope must still be deterministically derivable; conflicting authoritative providers or ambiguous scopes remain blocked.
+
+Slack desired state is preserved in the plan as explicitly delegated/skipped until the dedicated integration reconciliation lifecycle owns that mutation. It is never silently applied by bootstrap.
 
 ## Exit codes
 

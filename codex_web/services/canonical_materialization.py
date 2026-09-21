@@ -345,6 +345,46 @@ class CanonicalMaterializationService:
             return None, "task_source_scope_missing"
         return None, "task_source_scope_ambiguous"
 
+    def derived_gitlab_task_source(
+        self,
+        project_id: str,
+    ) -> tuple[TaskSourceConfiguration | None, str | None]:
+        """Return a credential-free deterministic GitLab TaskSource candidate.
+
+        Bootstrap/reconciliation may supply an already-authorized canonical
+        SecretReference explicitly. This helper exposes only the source
+        instance/scope derivation owned by the canonical materializer and never
+        resolves or returns credential material.
+        """
+        project = self._legacy_project(project_id)
+        routing_paths = self._routing_paths(project.id)
+        work_items = tuple(
+            item
+            for item in self.work_items.load().values()
+            if item.project_id == project.id
+        )
+        has_gitlab_evidence = bool(routing_paths) or any(
+            item.source_identity is not None
+            and item.source_identity.source_type.casefold() == "gitlab"
+            for item in work_items
+        )
+        if not has_gitlab_evidence:
+            return None, "task_source_not_configured"
+        scope, error = self._task_source_scope(
+            routing_paths,
+            work_items,
+        )
+        if error is not None:
+            return None, error
+        return (
+            TaskSourceConfiguration(
+                source_type="gitlab",
+                source_instance=self.gitlab_api_base,
+                scope=str(scope or ""),
+            ),
+            None,
+        )
+
     @staticmethod
     def _repo_for_work_item(
         item: WorkItemState,
@@ -422,6 +462,7 @@ class CanonicalMaterializationService:
         *,
         actor: AuthenticationActor,
         confirm_generic_target: bool = False,
+        preferred_gitlab_secret_id: str | None = None,
     ) -> CanonicalMaterializationPlan:
         self._require_admin(actor)
         project = self._legacy_project(project_id)
@@ -664,8 +705,13 @@ class CanonicalMaterializationService:
             ),
             actor=actor,
         )
+        preferred_secret = self._secret_by_id(
+            preferred_gitlab_secret_id,
+            actor=actor,
+        )
         secret = (
             bound_secret
+            or preferred_secret
             or self._secret_reference(project.id, actor=actor)
         )
         token_available = False
@@ -1086,6 +1132,18 @@ class CanonicalMaterializationService:
             None,
         )
         if existing is None:
+            planned_secret_ids = {
+                str(item.metadata.get("secret_reference_id") or "").strip()
+                for item in plan.operations
+                if item.domain in {"secret_reference", "task_source"}
+            }
+            planned_secret_ids.discard("")
+            planned_secret_ids.discard("planned")
+            preferred_gitlab_secret_id = (
+                next(iter(planned_secret_ids))
+                if len(planned_secret_ids) == 1
+                else None
+            )
             current = self.plan(
                 plan.project_id,
                 actor=actor,
@@ -1093,6 +1151,7 @@ class CanonicalMaterializationService:
                     plan.target_organization_id == "local"
                     and plan.target_workspace_id == "default"
                 ),
+                preferred_gitlab_secret_id=preferred_gitlab_secret_id,
             )
             if current.id != plan.id:
                 raise CanonicalMaterializationPlanStale(
@@ -1277,9 +1336,20 @@ class CanonicalMaterializationService:
                         }
                     )
                 elif operation.apply_kind == "gitlab_task_source":
-                    reference = self._secret_reference(
-                        project.id,
-                        actor=actor,
+                    requested_secret_id = str(
+                        operation.metadata.get("secret_reference_id") or ""
+                    ).strip()
+                    reference = (
+                        self._secret_by_id(
+                            requested_secret_id,
+                            actor=actor,
+                        )
+                        if requested_secret_id
+                        and requested_secret_id != "planned"
+                        else self._secret_reference(
+                            project.id,
+                            actor=actor,
+                        )
                     )
                     if reference is None:
                         raise CanonicalMaterializationBlocked(

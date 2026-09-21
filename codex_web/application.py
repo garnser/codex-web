@@ -59,6 +59,7 @@ from codex_web.api.organizational_memory import build_organizational_memory_rout
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
+from codex_web.api.project_bootstrap import build_project_bootstrap_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
 from codex_web.api.resources import build_resources_router
 from codex_web.api.recovery import build_recovery_router
@@ -274,6 +275,7 @@ from codex_web.services.retrieval_embedding import (
 )
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
+from codex_web.services.project_bootstrap import ProjectBootstrapService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
     ProviderCapacityService,
@@ -380,6 +382,7 @@ from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingSt
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.incidents import IncidentStore
 from codex_web.storage.legacy_project_migration import LegacyProjectMigrationStore
+from codex_web.storage.project_bootstrap import ProjectBootstrapStore
 from codex_web.storage.model_gateway import ModelGatewayStore
 from codex_web.storage.organizational_memory import OrganizationalMemoryStore
 from codex_web.storage.secret_state import SecretStateStore
@@ -2020,6 +2023,77 @@ app.state.legacy_project_migration_service = legacy_project_migration_service
 app.include_router(
     build_legacy_project_migration_router(legacy_project_migration_service)
 )
+
+
+def _bootstrap_task_source_health(project_id, manifest, actor):
+    source = manifest.task_source
+    if source is None:
+        return {"available": True, "code": "task_source_not_configured"}
+    if source.type.casefold() != "gitlab":
+        return {
+            "available": False,
+            "code": "task_source_health_probe_unsupported",
+        }
+    snapshot = gitlab_sync_health.snapshot()
+    failures = int(snapshot.get("consecutive_failures") or 0)
+    return {
+        "available": failures == 0,
+        "code": (
+            "gitlab_sync_healthy"
+            if failures == 0
+            else "gitlab_sync_degraded"
+        ),
+    }
+
+
+def _bootstrap_environment_health(project_id, manifest, actor):
+    isolation = local_execution_backend.probe()
+    return {
+        "available": bool(isolation.ready),
+        "code": (
+            "local_execution_environment_ready"
+            if isolation.ready
+            else "local_execution_environment_unavailable"
+        ),
+        "reason": (
+            "Local execution isolation is ready."
+            if isolation.ready
+            else (
+                isolation.reason
+                or "Local execution isolation is unavailable."
+            )
+        ),
+    }
+
+
+def _bootstrap_authorization_check(actor):
+    if actor.principal_kind.value == "service":
+        IdentityService.require_admin(actor)
+        return
+    current = identity_service.actor_for_identity(
+        actor.identity_id,
+        scope=actor.tenant,
+    )
+    IdentityService.require_admin(current)
+
+
+project_bootstrap_store = ProjectBootstrapStore(state_store)
+project_bootstrap_service = ProjectBootstrapService(
+    projects=project_service,
+    resources=resource_catalog_service,
+    secrets=secret_broker,
+    workers=execution_worker_service,
+    state_store=state_store,
+    canonical_materialization=canonical_materialization_service,
+    legacy_migration=legacy_project_migration_service,
+    store=project_bootstrap_store,
+    task_source_health=_bootstrap_task_source_health,
+    environment_health=_bootstrap_environment_health,
+    authorization_check=_bootstrap_authorization_check,
+)
+app.state.project_bootstrap_store = project_bootstrap_store
+app.state.project_bootstrap_service = project_bootstrap_service
+app.include_router(build_project_bootstrap_router(project_bootstrap_service))
 
 turn_execution_service = install_turn_execution_service(
     app,
