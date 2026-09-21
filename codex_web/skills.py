@@ -6,6 +6,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.agent_providers import AgentProviderCapability
+from codex_web.execution_workers import WorkerCapability
+
 
 SKILL_DEFINITION_KIND = "agent.skill"
 SKILL_DEFINITION_SCHEMA_VERSION = "1.0"
@@ -153,6 +156,20 @@ class SkillDefinition(BaseModel):
             self.required_worker_capabilities,
             label="worker capability",
         )
+        provider_values = {item.value for item in AgentProviderCapability}
+        worker_values = {item.value for item in WorkerCapability}
+        unknown_provider = set(self.required_provider_capabilities) - provider_values
+        unknown_worker = set(self.required_worker_capabilities) - worker_values
+        if unknown_provider:
+            raise ValueError(
+                "unknown Skill provider capabilities: "
+                + ", ".join(sorted(unknown_provider))
+            )
+        if unknown_worker:
+            raise ValueError(
+                "unknown Skill worker capabilities: "
+                + ", ".join(sorted(unknown_worker))
+            )
         paths = [asset.path for asset in self.assets]
         if len(paths) != len(set(paths)):
             raise ValueError("skill asset paths must be unique")
