@@ -62,6 +62,11 @@ def _parser() -> argparse.ArgumentParser:
         help="allow canonical legacy-state materialization during apply",
     )
     bootstrap.add_argument(
+        "--approve-authority-changes",
+        action="store_true",
+        help="approve material execution-authority changes in the reviewed plan",
+    )
+    bootstrap.add_argument(
         "--output",
         choices=("human", "json"),
         default="human",
@@ -161,145 +166,74 @@ def _actor_for_manifest(application: Any, manifest: ProjectBootstrapManifest):
         ) from exc
 
 
-def _validate_apply_alignment(
-    *,
-    application: Any,
-    project_id: str,
-    manifest: ProjectBootstrapManifest,
-    paths: dict[str, Path],
-    plan: Any,
-) -> None:
-    project = next(
-        (
-            item
-            for item in application.project_service.repository.load()
-            if item.id == project_id
-        ),
-        None,
-    )
-    if project is None:
-        raise ProjectBootstrapBlocked(
-            "project_not_found",
-            "the requested Project does not exist",
-        )
-    if project.name != manifest.project.name:
-        raise ProjectBootstrapBlocked(
-            "project_name_mismatch",
-            "manifest Project name differs from canonical Project state; "
-            "Project field reconciliation is handled by the bootstrap planner",
-        )
-    if project.sandbox != manifest.execution.sandbox:
-        raise ProjectBootstrapBlocked(
-            "sandbox_reconciliation_required",
-            "manifest sandbox differs from canonical Project state; "
-            "reconcile it before materialization",
-        )
-
-    manifest_paths = {path.resolve() for path in paths.values()}
-    plan_paths = {
-        Path(str(item.metadata["filesystem_path"])).resolve()
-        for item in plan.operations
-        if item.domain == "repository_resource"
-        and item.metadata.get("filesystem_path")
-    }
-    if manifest_paths != plan_paths:
-        raise ProjectBootstrapBlocked(
-            "repository_topology_mismatch",
-            "manifest repository topology differs from deterministic repository "
-            "discovery; explicit reconciliation is required",
-        )
-
-    provider_ops = {
-        item.domain
-        for item in plan.operations
-        if item.domain in {"secret_reference", "task_source"}
-        and item.disposition != MaterializationDisposition.SKIPPED
-    }
-    if provider_ops and manifest.task_source is None:
-        raise ProjectBootstrapBlocked(
-            "task_source_manifest_missing",
-            "legacy TaskSource state exists but taskSource is absent from the manifest",
-        )
-    if manifest.task_source is not None:
-        if manifest.task_source.type.casefold() != "gitlab":
-            raise ProjectBootstrapBlocked(
-                "task_source_materializer_unsupported",
-                "the current canonical legacy materializer supports GitLab TaskSource "
-                "conversion only",
-            )
-        current = project.authoritative_task_source
-        if (
-            current is not None
-            and manifest.task_source.secret_ref
-            and current.credential_secret_id
-            and manifest.task_source.secret_ref != current.credential_secret_id
-        ):
-            raise ProjectBootstrapBlocked(
-                "secret_reference_mismatch",
-                "manifest secretRef differs from the canonical TaskSource credential "
-                "reference; explicit reconciliation is required",
-            )
-
-    if manifest.integrations.slack is not None:
-        raise ProjectBootstrapBlocked(
-            "integration_reconciliation_required",
-            "Slack desired-state reconciliation is handled by the bootstrap planner; "
-            "the legacy materializer will not silently change it",
-        )
-
-
 def apply_project_bootstrap(
     *,
     project_id: str,
     manifest: ProjectBootstrapManifest,
     paths: dict[str, Path],
     migrate_legacy: bool,
+    approve_authority_changes: bool = False,
 ) -> dict[str, Any]:
-    if not migrate_legacy:
-        raise ProjectBootstrapBlocked(
-            "bootstrap_planner_required",
-            "apply without --migrate-legacy requires the canonical reconciliation "
-            "planner; use dry-run or request legacy materialization",
-        )
-
-    # Importing application composes mutable runtime state, so this path is
-    # deliberately lazy and is never reached by --dry-run or --scaffold.
+    del paths
+    # Runtime composition is intentionally lazy: manifest-only dry-run and
+    # scaffold remain free of server/provider startup side effects.
     from codex_web import application
+    from codex_web.services.project_bootstrap import (
+        ProjectBootstrapApprovalRequired as EngineApprovalRequired,
+        ProjectBootstrapBlocked as EngineBlocked,
+        ProjectBootstrapConcurrentApply as EngineConcurrentApply,
+        ProjectBootstrapPlanStale as EnginePlanStale,
+    )
 
     actor = _actor_for_manifest(application, manifest)
-    service = application.canonical_materialization_service
-    confirm_generic = (
-        manifest.project.organization == "local"
-        and manifest.project.workspace == "default"
-    )
-    plan = service.plan(
-        project_id,
-        actor=actor,
-        confirm_generic_target=confirm_generic,
-    )
-    _validate_apply_alignment(
-        application=application,
-        project_id=project_id,
-        manifest=manifest,
-        paths=paths,
-        plan=plan,
-    )
-
-    if plan.blockers:
-        raise ProjectBootstrapBlocked(
-            "canonical_materialization_blocked",
-            "canonical materialization contains unresolved or operator-action-required "
-            "records",
+    service = application.project_bootstrap_service
+    try:
+        plan = service.plan(
+            project_id,
+            manifest,
+            actor=actor,
+            migrate_legacy=migrate_legacy,
         )
+        if plan.blockers:
+            blocker = plan.blockers[0]
+            raise ProjectBootstrapBlocked(
+                blocker.reason_code,
+                blocker.message,
+            )
+        execution = service.apply(
+            plan,
+            actor=actor,
+            approve_authority_changes=approve_authority_changes,
+        )
+    except EngineApprovalRequired as exc:
+        raise ProjectBootstrapBlocked(
+            "bootstrap_authority_approval_required",
+            str(exc),
+        ) from exc
+    except EngineConcurrentApply as exc:
+        raise ProjectBootstrapBlocked(
+            "bootstrap_apply_conflict",
+            str(exc),
+        ) from exc
+    except EnginePlanStale as exc:
+        raise ProjectBootstrapBlocked(
+            "bootstrap_plan_stale",
+            str(exc),
+        ) from exc
+    except EngineBlocked as exc:
+        raise ProjectBootstrapBlocked(
+            "bootstrap_blocked",
+            str(exc),
+        ) from exc
 
-    execution = service.apply(plan, actor=actor)
     return {
         "status": "ready",
         "bootstrapExecutionId": execution.id,
-        "materializationPlanId": plan.id,
-        "materializationVersion": execution.version,
-        "counts": execution.counts(),
-        "warnings": [],
+        "bootstrapPlanId": plan.id,
+        "bootstrapVersion": plan.version,
+        "counts": plan.counts(),
+        "warnings": list(execution.warnings),
+        "readiness": execution.readiness,
         "blockers": [],
     }
 
@@ -414,6 +348,7 @@ def _bootstrap(
             manifest=manifest,
             paths=paths,
             migrate_legacy=args.migrate_legacy,
+            approve_authority_changes=args.approve_authority_changes,
         )
     except ProjectBootstrapBlocked as exc:
         result.update(
