@@ -922,33 +922,36 @@ class RotatingJsonlJournal:
         except FileNotFoundError:
             pass
 
+        chunks: list[list[dict[str, Any]]] = []
+        remaining = requested
+        # Keep rotation/archive/cleanup from replacing a selected path while
+        # this bounded read is in progress. Append shares the same lock, so
+        # the maximum writer pause is bounded by read_budget rather than by
+        # total historical journal size.
         with self._lock:
             self._discover_segments_locked()
             sources = list(self._recent_sources_locked())
-
-        chunks: list[list[dict[str, Any]]] = []
-        remaining = requested
-        for path, compressed in sources:
-            if remaining <= 0:
-                break
-            if compressed:
-                values = self._read_compressed_tail_fallback(
-                    path,
-                    remaining,
-                    metrics,
-                    read_budget,
-                )
-            else:
-                values = self._read_plain_tail(
-                    path,
-                    remaining,
-                    chunk_size,
-                    metrics,
-                    read_budget,
-                )
-            if values:
-                chunks.append(values)
-                remaining -= len(values)
+            for path, compressed in sources:
+                if remaining <= 0:
+                    break
+                if compressed:
+                    values = self._read_compressed_tail_fallback(
+                        path,
+                        remaining,
+                        metrics,
+                        read_budget,
+                    )
+                else:
+                    values = self._read_plain_tail(
+                        path,
+                        remaining,
+                        chunk_size,
+                        metrics,
+                        read_budget,
+                    )
+                if values:
+                    chunks.append(values)
+                    remaining -= len(values)
 
         result: list[dict[str, Any]] = []
         for values in reversed(chunks):
@@ -1134,28 +1137,33 @@ class RotatingJsonlJournal:
             if not self._segment_can_delete(segment, now=now):
                 continue
 
-            removed_bytes = self._delete_segment_files(segment)
-            total_bytes = max(0, total_bytes - removed_bytes)
-            remaining = [
-                item
-                for item in remaining
-                if item.id != segment.id
-            ]
-            deleted.append(
-                {
-                    "segmentId": segment.id,
-                    "bytes": removed_bytes,
-                    "protectedRecords": segment.protected_records,
-                    "reason": (
-                        "age"
-                        if over_age
-                        else "count"
-                        if over_count
-                        else "bytes"
-                    ),
-                }
-            )
             with self._lock:
+                if not any(
+                    item.id == segment.id
+                    for item in self._manifest.segments
+                ):
+                    continue
+                removed_bytes = self._delete_segment_files(segment)
+                total_bytes = max(0, total_bytes - removed_bytes)
+                remaining = [
+                    item
+                    for item in remaining
+                    if item.id != segment.id
+                ]
+                deleted.append(
+                    {
+                        "segmentId": segment.id,
+                        "bytes": removed_bytes,
+                        "protectedRecords": segment.protected_records,
+                        "reason": (
+                            "age"
+                            if over_age
+                            else "count"
+                            if over_count
+                            else "bytes"
+                        ),
+                    }
+                )
                 self._manifest.segments = [
                     item
                     for item in self._manifest.segments
