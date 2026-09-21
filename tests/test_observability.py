@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import unittest
+from unittest.mock import patch
 from unittest.mock import patch
 
 from fastapi import FastAPI, Request
@@ -473,6 +475,46 @@ class RuntimeLogApiTests(unittest.TestCase):
                 service_scopes=("observability:read",),
             )
             self.assertEqual(client.get("/api/logs/recent").status_code, 200)
+
+
+class SlowRequestObservabilityTests(unittest.TestCase):
+    def test_slow_http_request_is_traced_with_path_and_correlation(self) -> None:
+        app = FastAPI()
+        install_observability(app, _Host())
+
+        @app.get("/slow")
+        async def slow_endpoint():
+            time.sleep(0.06)
+            return {"ok": True}
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_SLOW_HTTP_REQUEST_SECONDS": "0.05"},
+            clear=False,
+        ):
+            with TestClient(app) as client:
+                response = client.get(
+                    "/slow",
+                    headers={CORRELATION_HEADER: "corr-slow"},
+                )
+                self.assertEqual(response.status_code, 200)
+
+        spans = app.state.runtime_tracer.snapshot()
+        request_spans = [
+            item
+            for item in spans
+            if item["name"] == "http.request"
+            and item["attributes"].get("path") == "/slow"
+        ]
+        self.assertEqual(len(request_spans), 1)
+        self.assertEqual(
+            request_spans[0]["correlationId"],
+            "corr-slow",
+        )
+        self.assertGreaterEqual(
+            request_spans[0]["durationSeconds"],
+            0.05,
+        )
 
 
 class CorrelationAndHealthTests(unittest.TestCase):
