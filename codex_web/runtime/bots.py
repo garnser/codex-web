@@ -191,6 +191,172 @@ class BotRuntime:
         return max(0.0, min(value, 60.0))
 
     @staticmethod
+    def slack_socket_ping_interval() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_SOCKET_PING_INTERVAL_SECONDS"
+                )
+                or "20"
+            )
+        except ValueError:
+            value = 20.0
+        return max(5.0, min(value, 120.0))
+
+    @staticmethod
+    def slack_socket_ping_timeout() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_SOCKET_PING_TIMEOUT_SECONDS"
+                )
+                or "10"
+            )
+        except ValueError:
+            value = 10.0
+        return max(2.0, min(value, 60.0))
+
+    @staticmethod
+    def slack_socket_open_timeout() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_SOCKET_OPEN_TIMEOUT_SECONDS"
+                )
+                or "10"
+            )
+        except ValueError:
+            value = 10.0
+        return max(2.0, min(value, 60.0))
+
+    @staticmethod
+    def slack_reconnect_min_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_RECONNECT_MIN_SECONDS"
+                )
+                or "2"
+            )
+        except ValueError:
+            value = 2.0
+        return max(0.1, min(value, 60.0))
+
+    @classmethod
+    def slack_reconnect_max_seconds(cls) -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_RECONNECT_MAX_SECONDS"
+                )
+                or "60"
+            )
+        except ValueError:
+            value = 60.0
+        return max(
+            cls.slack_reconnect_min_seconds(),
+            min(value, 600.0),
+        )
+
+    @staticmethod
+    def slack_reconnect_jitter_ratio() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_RECONNECT_JITTER_RATIO"
+                )
+                or "0.2"
+            )
+        except ValueError:
+            value = 0.2
+        return max(0.0, min(value, 0.5))
+
+    @staticmethod
+    def slack_reconnect_stable_reset_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_RECONNECT_STABLE_RESET_SECONDS"
+                )
+                or "60"
+            )
+        except ValueError:
+            value = 60.0
+        return max(5.0, min(value, 3600.0))
+
+    @classmethod
+    def slack_reconnect_delay(cls, failures: int) -> float:
+        minimum = cls.slack_reconnect_min_seconds()
+        maximum = cls.slack_reconnect_max_seconds()
+        base = min(
+            maximum,
+            minimum * (2 ** max(0, min(int(failures) - 1, 10))),
+        )
+        jitter = base * cls.slack_reconnect_jitter_ratio()
+        return min(
+            maximum,
+            base + random.uniform(0.0, jitter),
+        )
+
+    @staticmethod
+    def slack_socket_failure_class(exc: Exception) -> str:
+        if isinstance(exc, SlackSocketLifecycleError):
+            return exc.failure_class
+        text = str(exc).casefold()
+        if any(
+            marker in text
+            for marker in (
+                "invalid_auth",
+                "not_authed",
+                "account_inactive",
+                "token_revoked",
+                "missing slack_app_token",
+                "missing bot_token",
+            )
+        ):
+            return "authentication_configuration"
+        if (
+            "opening handshake" in text
+            or "open timeout" in text
+            or "timed out during opening handshake" in text
+        ):
+            return "handshake_timeout"
+        if (
+            "keepalive ping timeout" in text
+            or "ping timeout" in text
+            or "pong timeout" in text
+        ):
+            return "keepalive_timeout"
+        if (
+            "no close frame received" in text
+            or "connection reset" in text
+            or "connectionreseterror" in text
+            or "eof" in text
+        ):
+            return "transport_reset"
+        if isinstance(exc, ConnectionClosed):
+            rcvd = getattr(exc, "rcvd", None)
+            code = getattr(rcvd, "code", None)
+            if code in {1000, 1001}:
+                return "clean_close"
+            return "transport_reset"
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            return "handshake_timeout"
+        return "transport_error"
+
+    @staticmethod
+    def slack_socket_failure_is_transport(
+        failure_class: str,
+    ) -> bool:
+        return failure_class in {
+            "handshake_timeout",
+            "keepalive_timeout",
+            "clean_close",
+            "transport_reset",
+            "transport_error",
+        }
+
+    @staticmethod
     def _slack_payload_ordering_key(
         connection: BotConnection,
         payload: dict[str, Any],
