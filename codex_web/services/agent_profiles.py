@@ -697,14 +697,12 @@ class AgentProfileService:
         AgentProfileRevision,
         AgentProfileAccessDecision,
     ]:
-        profile = self.get(
-            profile_id,
-            actor=actor,
-            revision=revision,
-            require_visible=False,
-        )
+        # Current lifecycle/access governs whether new work may start. An
+        # explicit older configuration revision can be replayed only while the
+        # logical profile itself remains active and invokable.
+        current = self._latest(profile_id, actor=actor)
         decision = self.access_decision(
-            profile,
+            current,
             actor=actor,
             project_id=project_id,
         )
@@ -713,6 +711,16 @@ class AgentProfileService:
                 "agent profile cannot be invoked",
                 decision=decision,
             )
+        profile = (
+            self.get(
+                profile_id,
+                actor=actor,
+                revision=revision,
+                require_visible=False,
+            )
+            if revision is not None
+            else current
+        )
         return profile, decision
 
     @staticmethod
