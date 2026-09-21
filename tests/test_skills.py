@@ -31,11 +31,17 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.runtime.execution import TurnExecutionService
-from codex_web.services.agent_profiles import AgentProfileService
+from codex_web.services.agent_profiles import (
+    AgentProfileConflict,
+    AgentProfileService,
+)
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing import AgentRoutingError, AgentRoutingService
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
-from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.definitions import (
+    DefinitionKindSchema,
+    DefinitionRegistryService,
+)
 from codex_web.services.skills import (
     SkillNotFoundError,
     install_skill_definitions,
@@ -563,12 +569,8 @@ class SkillServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker, (WorkerCapability.NETWORK.value,))
 
     async def test_non_skill_definition_cannot_be_attached_as_profile_skill(self) -> None:
-        self.registry.schemas.register(
-            # Deliberately separate kind to exercise AgentProfile kind check.
-            __import__(
-                "codex_web.services.definitions",
-                fromlist=["DefinitionKindSchema"],
-            ).DefinitionKindSchema(
+        self.registry.register_schema(
+            DefinitionKindSchema(
                 kind="other.definition",
                 schema_version="1.0",
                 validate=lambda payload: dict(payload),
@@ -596,7 +598,7 @@ class SkillServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(
-            ValueError,
+            AgentProfileConflict,
             "must point to agent.skill",
         ):
             self.profiles.create(
