@@ -68,6 +68,7 @@ class TurnExecutionService:
         provider_capacity: ProviderCapacityService | None = None,
         ownership: ReplicatedOwnershipService | None = None,
         bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
+        actor_resolver: Callable[[str, Project], AuthenticationActor] | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -85,6 +86,7 @@ class TurnExecutionService:
             bindings_for_thread
             or getattr(host, "_bindings_for_thread", lambda _thread_id: [])
         )
+        self.actor_resolver = actor_resolver
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -136,18 +138,24 @@ class TurnExecutionService:
         *,
         project_id: str,
         sandbox: str,
-    ) -> ExecutionRuntimeBinding | None:
+        actor: AuthenticationActor | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+    ):
         if self.routing_service is None or self.control_actor is None:
-            return None
+            return None, None
+        routing_actor = actor or self.control_actor
         try:
             routed = await self.routing_service.route(
                 AgentRoutingRequest(
                     project_id=project_id,
+                    agent_profile_id=agent_profile_id,
+                    agent_profile_revision=agent_profile_revision,
                     require_persistent_session=True,
                     required_sandbox_profile=sandbox,
                     required_network_profile="brokered-model-egress",
                 ),
-                actor=self.control_actor,
+                actor=routing_actor,
             )
         except AgentCapacityRoutingError:
             raise
@@ -160,6 +168,9 @@ class TurnExecutionService:
             elif "network_profile_mismatch" in lowered:
                 code = "network_policy_unsupported"
                 remediation = "/api/agent-providers"
+            elif "agent profile" in lowered:
+                code = "agent_profile_incompatible"
+                remediation = "/api/agent-profiles"
             else:
                 code = "execution_profile_incompatible"
                 remediation = "/api/agent-providers"
@@ -173,14 +184,22 @@ class TurnExecutionService:
                             "code": code,
                             "message": detail,
                             "retryable": False,
-                            "target_type": "agent_runtime",
+                            "target_type": (
+                                "agent_profile"
+                                if agent_profile_id
+                                else "agent_runtime"
+                            ),
+                            "target_id": agent_profile_id,
                             "remediation_route": remediation,
                         }
                     ],
                     "retryable": False,
                 },
             ) from exc
-        return routed.selected_runtime.execution_binding()
+        return (
+            routed.selected_runtime.execution_binding(),
+            routed.agent_profile,
+        )
 
     def _manager_for_binding(
         self,
@@ -408,6 +427,9 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        agent_profile_actor_id: str | None = None,
     ) -> QueuedTurn:
         h = self.host
         selected: dict[str, QueuedTurn] = {}
@@ -488,6 +510,9 @@ class TurnExecutionService:
                     read_only_repository_resource_ids
                 ),
                 execution_profile_id=execution_profile_id,
+                agent_profile_id=agent_profile_id,
+                agent_profile_revision=agent_profile_revision,
+                agent_profile_actor_id=agent_profile_actor_id,
                 source=source,
                 reply_target=reply_target,
                 created_at=time.time(),
@@ -669,6 +694,8 @@ class TurnExecutionService:
         fence: int | None = None,
         repository_resource_id: str | None = None,
         execution_profile_id: str | None = None,
+        agent_profile=None,
+        agent_profile_actor_id: str | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -707,6 +734,18 @@ class TurnExecutionService:
                 execution_profile_id
                 or settings.execution_profile_id
                 or (current.execution_profile_id if current else None)
+            ),
+            agent_profile=(
+                agent_profile
+                or (current.agent_profile if current else None)
+            ),
+            agent_profile_actor_id=(
+                agent_profile_actor_id
+                or (
+                    current.agent_profile_actor_id
+                    if current
+                    else None
+                )
             ),
             started_at=current.started_at if current else now,
             updated_at=now,
@@ -853,6 +892,10 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
+        actor: AuthenticationActor | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        agent_profile_actor_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
         binding_service, default_session_manager = self._require_worker_routing()
@@ -883,12 +926,46 @@ class TurnExecutionService:
                 )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             canonical_repository_resource_id: str | None = None
+            agent_profile_binding = None
             if bootstrap is not None:
                 session_manager, session = self._session_for_assignment(
                     bootstrap.assignment_id
                 )
                 assignment = session.validate_current()
                 runtime_binding = getattr(assignment, "runtime_binding", None)
+                agent_profile_binding = getattr(
+                    assignment,
+                    "agent_profile",
+                    None,
+                )
+                if agent_profile_id:
+                    if (
+                        agent_profile_binding is None
+                        or agent_profile_binding.profile_id != agent_profile_id
+                        or (
+                            agent_profile_revision is not None
+                            and agent_profile_binding.profile_revision
+                            != agent_profile_revision
+                        )
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "thread_agent_profile_immutable",
+                                "threadId": thread_id,
+                                "requestedAgentProfileId": agent_profile_id,
+                                "requestedAgentProfileRevision": (
+                                    agent_profile_revision
+                                ),
+                                "effectiveAgentProfile": (
+                                    agent_profile_binding.model_dump(
+                                        mode="json"
+                                    )
+                                    if agent_profile_binding is not None
+                                    else None
+                                ),
+                            },
+                        )
                 if (
                     assignment.id != bootstrap.assignment_id
                     or assignment.execution_id != bootstrap.execution_id
@@ -979,10 +1056,40 @@ class TurnExecutionService:
                 assignment_id = bootstrap.assignment_id
                 workspace_id = bootstrap.execution_workspace_id
             else:
-                runtime_binding = await self._select_runtime_binding(
-                    project_id=project.id,
-                    sandbox=effective_sandbox,
+                runtime_binding, agent_profile_binding = (
+                    await self._select_runtime_binding(
+                        project_id=project.id,
+                        sandbox=effective_sandbox,
+                        actor=actor,
+                        agent_profile_id=agent_profile_id,
+                        agent_profile_revision=agent_profile_revision,
+                    )
                 )
+                if (
+                    agent_profile_binding is not None
+                    and agent_profile_binding.execution_profile_id
+                ):
+                    if (
+                        effective_execution_profile_id
+                        and effective_execution_profile_id
+                        != agent_profile_binding.execution_profile_id
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "agent_profile_execution_profile_conflict",
+                                "threadId": thread_id,
+                                "requestedExecutionProfileId": (
+                                    effective_execution_profile_id
+                                ),
+                                "agentProfileExecutionProfileId": (
+                                    agent_profile_binding.execution_profile_id
+                                ),
+                            },
+                        )
+                    effective_execution_profile_id = (
+                        agent_profile_binding.execution_profile_id
+                    )
                 if runtime_binding is not None and (
                     runtime_binding.provider_id != "openai"
                     or runtime_binding.runtime_id != "codex"
@@ -1013,6 +1120,7 @@ class TurnExecutionService:
                             or settings.read_only_repository_resource_ids
                         ),
                         execution_profile_id=effective_execution_profile_id,
+                        agent_profile=agent_profile_binding,
                     )
                 except TurnExecutionBindingError as exc:
                     raise HTTPException(
@@ -1124,6 +1232,12 @@ class TurnExecutionService:
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
                 execution_profile_id=effective_execution_profile_id,
+                agent_profile=agent_profile_binding,
+                agent_profile_actor_id=(
+                    actor.identity_id
+                    if actor is not None
+                    else agent_profile_actor_id
+                ),
             )
 
             params: dict[str, Any] = {
@@ -1248,6 +1362,27 @@ class TurnExecutionService:
                 "worker_id": status.worker_id,
                 "fence": status.fence,
                 "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
+                "agent_profile_id": (
+                    agent_profile_binding.profile_id
+                    if agent_profile_binding is not None
+                    else None
+                ),
+                "agent_profile_revision": (
+                    agent_profile_binding.profile_revision
+                    if agent_profile_binding is not None
+                    else None
+                ),
+                "agent_provider_id": (
+                    agent_profile_binding.selected_provider_id
+                    if agent_profile_binding is not None
+                    else None
+                ),
+                "agent_runtime_id": (
+                    agent_profile_binding.selected_runtime_id
+                    if agent_profile_binding is not None
+                    else None
+                ),
+                "worker_id": status.worker_id,
             }
         )
         await self.publish_queue_status(thread_id)
@@ -1288,6 +1423,24 @@ class TurnExecutionService:
         reschedule_queue = True
         try:
             project = h._project(queued.project_id)
+            queued_actor = None
+            if queued.agent_profile_id:
+                if (
+                    not queued.agent_profile_actor_id
+                    or self.actor_resolver is None
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "agent_profile_actor_unavailable",
+                            "threadId": thread_id,
+                            "agentProfileId": queued.agent_profile_id,
+                        },
+                    )
+                queued_actor = self.actor_resolver(
+                    queued.agent_profile_actor_id,
+                    project,
+                )
             await self.start_thread_turn_now(
                 thread_id,
                 project=project,
@@ -1302,6 +1455,10 @@ class TurnExecutionService:
                 repository_resource_id=queued.repository_resource_id,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                 execution_profile_id=queued.execution_profile_id,
+                actor=queued_actor,
+                agent_profile_id=queued.agent_profile_id,
+                agent_profile_revision=queued.agent_profile_revision,
+                agent_profile_actor_id=queued.agent_profile_actor_id,
             )
             h._append_bot_event(
                 {
@@ -1530,6 +1687,29 @@ class TurnExecutionService:
                         active.repository_resource_id
                     ),
                     execution_profile_id=active.execution_profile_id,
+                    actor=(
+                        self.actor_resolver(
+                            active.agent_profile_actor_id,
+                            project,
+                        )
+                        if (
+                            active.agent_profile is not None
+                            and active.agent_profile_actor_id
+                            and self.actor_resolver is not None
+                        )
+                        else None
+                    ),
+                    agent_profile_id=(
+                        active.agent_profile.profile_id
+                        if active.agent_profile is not None
+                        else None
+                    ),
+                    agent_profile_revision=(
+                        active.agent_profile.profile_revision
+                        if active.agent_profile is not None
+                        else None
+                    ),
+                    agent_profile_actor_id=active.agent_profile_actor_id,
                 )
                 self.mark_thread_active(
                     thread_id,
