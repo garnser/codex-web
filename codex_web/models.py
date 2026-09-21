@@ -9,6 +9,7 @@ from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
 ApprovalPolicy: TypeAlias = Literal["on-request", "untrusted", "never"]
+RepositorySelectionPolicy: TypeAlias = Literal["deterministic", "explicit"]
 ApprovalDecisionValue: TypeAlias = Literal[
     "accept",
     "acceptForSession",
@@ -151,6 +152,7 @@ class Project(BaseModel):
     model: str | None = None
     sandbox: SandboxMode = "workspace-write"
     approval_policy: ApprovalPolicy = "on-request"
+    repository_selection_policy: RepositorySelectionPolicy = "deterministic"
     authoritative_task_source: TaskSourceConfiguration | None = None
 
 
@@ -160,6 +162,7 @@ class ProjectCreate(BaseModel):
     model: str | None = None
     sandbox: SandboxMode = "workspace-write"
     approval_policy: ApprovalPolicy = "on-request"
+    repository_selection_policy: RepositorySelectionPolicy = "deterministic"
     authoritative_task_source: TaskSourceConfiguration | None = None
 
 
