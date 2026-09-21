@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -9,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_profiles import build_agent_profiles_router
+from codex_web.api.agent_teams import build_agent_teams_router
 from codex_web.api.skills import build_skills_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
@@ -87,6 +90,7 @@ from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
+from codex_web.agent_teams import AgentTeamExecutionLink
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.reconciliation_gates import ReconcilerDeclaration, ReconcilerStartupClass
 from codex_web.configuration import ConfigurationContext
@@ -108,7 +112,7 @@ from codex_web.devstatus import (
     build_context as build_devstatus_context,
     render_html as render_devstatus_html,
 )
-from codex_web.models import GitLabProjectRoutingSettings
+from codex_web.models import GitLabProjectRoutingSettings, TurnCreate
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
@@ -144,6 +148,7 @@ from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_profiles import AgentProfileService
+from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.skills import SkillService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -382,6 +387,7 @@ from codex_web.services.work_items import (
 from codex_web.services.work_graph import WorkGraphService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.agent_profiles import AgentProfileStore
+from codex_web.storage.agent_teams import AgentTeamStore
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
@@ -1814,6 +1820,83 @@ app.state.task_source_writeback_service = (
     work_item_service.task_source_writeback
 )
 
+
+def _assign_work_item_team(
+    ref: str,
+    team_id: str,
+    team_revision: int,
+    delegation_id: str,
+    actor_id: str,
+) -> None:
+    state = work_item_state_machine._work_item_state(ref)
+    now = time.time()
+    work_item_state_machine._save_work_item_state(
+        state.model_copy(
+            update={
+                "assigned_team_id": team_id,
+                "assigned_team_revision": team_revision,
+                "team_delegation_id": delegation_id,
+                "updated_at": now,
+                "last_meaningful_update_at": now,
+            }
+        )
+    )
+
+
+def _agent_team_work_item_event(
+    ref: str,
+    event_type: str,
+    payload: dict[str, object],
+    actor_id: str,
+) -> None:
+    work_item_state_machine._append_work_item_event(
+        work_item_state_machine._work_item_event(
+            ref,
+            event_type,
+            actor=actor_id,
+            payload=payload,
+        )
+    )
+
+
+agent_team_store = AgentTeamStore(state_store)
+agent_team_service = AgentTeamService(
+    agent_team_store,
+    definitions=definition_registry_service,
+    profiles=agent_profile_service,
+    authority=authority_role_service,
+    attention=attention_service,
+    work_item_getter=work_item_state_machine._work_item_state,
+    work_item_assigner=_assign_work_item_team,
+    work_item_event=_agent_team_work_item_event,
+)
+app.state.agent_team_store = agent_team_store
+app.state.agent_team_service = agent_team_service
+app.include_router(build_agent_teams_router(agent_team_service))
+
+
+def _agent_team_definition_usage(reference):
+    items = []
+    for team in agent_team_store.load().revisions:
+        if team.routing_definition_ref.record_id != reference.record_id:
+            continue
+        items.append(
+            {
+                "object_type": "agent_team",
+                "object_id": team.team_id,
+                "revision": team.revision,
+                "lifecycle": team.lifecycle.value,
+                "organization_id": team.organization_id,
+                "workspace_id": team.workspace_id,
+            }
+        )
+    return items
+
+
+definition_registry_service.register_usage_provider(
+    _agent_team_definition_usage
+)
+
 gitlab_sync_job_store = GitLabSyncJobStore(state_store)
 gitlab_sync_job_service = GitLabSyncJobService(
     gitlab_sync_job_store,
@@ -2596,9 +2679,79 @@ turn_service = TurnService(
     truncate_text=lambda value, limit: str(value)[:limit],
     binding_public=_binding_public,
     preflight=execution_preflight_service,
+    agent_profiles=agent_profile_service,
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+
+
+async def _dispatch_agent_team_profile(
+    profile_id: str,
+    profile_revision: int,
+    objective: str,
+    project_id: str,
+    actor,
+    context: dict[str, object] | None,
+    coordinator: bool,
+) -> AgentTeamExecutionLink:
+    created = await thread_service.create(project_id=project_id)
+    thread_payload = (
+        created.get("thread", created)
+        if isinstance(created, dict)
+        else {}
+    )
+    thread_id = (
+        thread_payload.get("id")
+        if isinstance(thread_payload, dict)
+        else None
+    )
+    if not thread_id:
+        raise RuntimeError("Team member thread bootstrap returned no thread ID")
+    message = objective
+    if context:
+        message = (
+            f"{objective}\\n\\n"
+            "Team delegation context (bounded structured JSON):\\n"
+            + json.dumps(
+                context,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    result = await turn_service.start(
+        thread_id,
+        TurnCreate(
+            message=message,
+            project_id=project_id,
+            agent_profile_id=profile_id,
+            agent_profile_revision=profile_revision,
+        ),
+        actor=actor,
+    )
+    return AgentTeamExecutionLink(
+        member_id=(
+            "__coordinator__" if coordinator else profile_id
+        ),
+        profile_id=profile_id,
+        profile_revision=profile_revision,
+        thread_id=thread_id,
+        execution_id=(
+            result.get("executionId")
+            or result.get("execution_id")
+            if isinstance(result, dict)
+            else None
+        ),
+        assignment_id=(
+            result.get("assignmentId")
+            or result.get("assignment_id")
+            if isinstance(result, dict)
+            else None
+        ),
+    )
+
+
+agent_team_service.bind_dispatcher(_dispatch_agent_team_profile)
+app.add_event_handler("shutdown", agent_team_service.stop)
 
 # Preserve the small historical direct-import surface through dynamic
 # compatibility proxies. Production routers continue to use thread_service and
