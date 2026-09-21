@@ -1430,6 +1430,17 @@ def install_slack_provider_service(
         service = existing
         if service.backfill_store is None:
             service.backfill_store = backfill_store
+            if backfill_store is not None:
+                persisted = backfill_store.load()
+                service._backfill_diagnostics = persisted.model_dump(
+                    mode="json"
+                )
+                service.cooldown_until = float(
+                    persisted.cooldown_until or 0.0
+                )
+                service.rate_limit_failures = int(
+                    persisted.rate_limit_failures
+                )
         service.conversation_channels = getattr(
             app.state,
             "conversation_channel_service",
