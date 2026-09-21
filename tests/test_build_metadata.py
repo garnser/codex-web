@@ -87,6 +87,16 @@ class BuildMetadataTests(unittest.TestCase):
         )
 
     def test_livez_has_one_canonical_owner_when_runtime_router_is_composed_first(self) -> None:
+        runtime_only = FastAPI()
+        runtime_only.include_router(
+            build_runtime_router(SimpleNamespace())
+        )
+        with TestClient(runtime_only) as client:
+            self.assertEqual(
+                client.get("/api/livez").status_code,
+                404,
+            )
+
         app = FastAPI()
         app.include_router(build_runtime_router(SimpleNamespace()))
         app.include_router(
@@ -97,17 +107,6 @@ class BuildMetadataTests(unittest.TestCase):
                 _Routing(),
             )
         )
-
-        live_routes = [
-            route
-            for route in app.router.routes
-            if (
-                getattr(route, "path", None)
-                or getattr(route, "path_format", None)
-            )
-            == "/api/livez"
-        ]
-        self.assertEqual(len(live_routes), 1)
 
         with patch.dict(
             os.environ,
@@ -121,6 +120,7 @@ class BuildMetadataTests(unittest.TestCase):
                 response = client.get("/api/livez")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "alive")
         self.assertEqual(
             response.json()["build"]["releaseVersion"],
             "0.2.0",
