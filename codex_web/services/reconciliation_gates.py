@@ -165,6 +165,27 @@ class ReconciliationGateService:
                 last_completion_at=control.last_completion_at,
                 cursor=control.last_cursor,
             )
+        if (
+            control.running_until is not None
+            and control.running_until > self.clock()
+        ):
+            return ReconciliationGateDecision(
+                service_id=service_id,
+                project_id=project_id,
+                state=ReconciliationGateState.RUNNING,
+                eligible=False,
+                reason_code="reconciliation_already_running",
+                reason="A bounded reconciliation cycle is already active.",
+                readiness_check=declaration.readiness_check,
+                approval_required=declaration.initial_approval_required,
+                approved=control.approved,
+                paused=False,
+                maintenance_blocked=False,
+                last_start_at=control.last_start_at,
+                last_stop_at=control.last_stop_at,
+                last_completion_at=control.last_completion_at,
+                cursor=control.last_cursor,
+            )
         if maintenance is not None:
             return ReconciliationGateDecision(
                 service_id=service_id,
@@ -443,18 +464,68 @@ class ReconciliationGateService:
         project_id: str,
         *,
         actor: AuthenticationActor,
+        activity_ttl_seconds: float = 300.0,
     ) -> None:
-        self._mutate_control(
-            service_id,
-            project_id,
-            actor,
-            lambda current: current.model_copy(
+        declaration = self._declarations.get(service_id)
+        if declaration is None:
+            raise ReconciliationGateError("reconciler is not declared")
+        now = self.clock()
+
+        def update(state: ReconciliationGateStoreState):
+            if declaration.maintenance_incompatible:
+                maintenance = next(
+                    (
+                        item
+                        for item in state.maintenance
+                        if item.project_id == project_id
+                        and self._same_scope(item, actor)
+                        and item.expires_at > now
+                    ),
+                    None,
+                )
+                if maintenance is not None:
+                    raise ReconciliationGateConflict(
+                        "maintenance lease became active before reconciliation start"
+                    )
+            index = next(
+                (
+                    i
+                    for i, item in enumerate(state.controls)
+                    if item.service_id == service_id
+                    and item.project_id == project_id
+                    and self._same_scope(item, actor)
+                ),
+                None,
+            )
+            current = (
+                state.controls[index]
+                if index is not None
+                else ReconciliationProjectControl(
+                    service_id=service_id,
+                    project_id=project_id,
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                )
+            )
+            if current.running_until is not None and current.running_until > now:
+                raise ReconciliationGateConflict(
+                    "reconciliation cycle already active"
+                )
+            changed = current.model_copy(
                 update={
-                    "last_start_at": self.clock(),
+                    "last_start_at": now,
+                    "running_until": now + max(1.0, activity_ttl_seconds),
                     "last_reason": "running",
+                    "updated_at": now,
                 }
-            ),
-        )
+            )
+            if index is None:
+                state.controls.append(changed)
+            else:
+                state.controls[index] = changed
+            return state
+
+        self._update(update)
 
     def record_completion(
         self,
@@ -472,6 +543,7 @@ class ReconciliationGateService:
                 update={
                     "last_completion_at": self.clock(),
                     "last_stop_at": self.clock(),
+                    "running_until": None,
                     "last_cursor": cursor or current.last_cursor,
                     "last_reason": "completed",
                 }
@@ -518,6 +590,23 @@ class ReconciliationGateService:
             if conflict is not None:
                 raise ReconciliationGateConflict(
                     "Project already has an active maintenance lease"
+                )
+            running = next(
+                (
+                    item
+                    for item in state.controls
+                    if item.project_id == project_id
+                    and self._same_scope(item, actor)
+                    and item.running_until is not None
+                    and item.running_until > now
+                    and self._declarations.get(item.service_id) is not None
+                    and self._declarations[item.service_id].maintenance_incompatible
+                ),
+                None,
+            )
+            if running is not None:
+                raise ReconciliationGateConflict(
+                    f"reconciler is active: {running.service_id}"
                 )
             state.maintenance = [
                 item
