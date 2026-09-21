@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from codex_web.agent_providers import (
+    AgentProviderCapability,
     AgentProviderHealth,
 )
 from codex_web.agent_routing import (
@@ -31,6 +32,7 @@ from codex_web.services.agent_runtime import AgentRuntimeRegistry
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.provider_capacity import ProviderCapacityService
+from codex_web.services.skills import SkillConflictError, SkillService
 
 
 class AgentRoutingError(RuntimeError):
@@ -95,6 +97,7 @@ class AgentRoutingService:
         role_defaults: AgentRoutingDefinitionService | None = None,
         provider_capacity: ProviderCapacityService | None = None,
         profiles: AgentProfileService | None = None,
+        skills: SkillService | None = None,
     ) -> None:
         self.providers = providers
         self.runtimes = runtimes
@@ -103,6 +106,7 @@ class AgentRoutingService:
         self.role_defaults = role_defaults
         self.provider_capacity = provider_capacity
         self.profiles = profiles
+        self.skills = skills
 
     @staticmethod
     def _ordered(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -154,6 +158,34 @@ class AgentRoutingService:
             revision=request.agent_profile_revision,
         )
         runtime = profile.runtime_policy
+        skill_provider_capabilities: tuple[AgentProviderCapability, ...] = ()
+        if profile.skill_refs:
+            if self.skills is None:
+                raise AgentRoutingBlockedError(
+                    "Agent Profile references Skills but Skill service is unavailable",
+                    code="skill_definition_incompatible",
+                    target_type="agent_profile",
+                    target_id=profile.profile_id,
+                    retryable=False,
+                    remediation_route="/api/skills",
+                )
+            try:
+                provider_requirements, _worker_requirements = (
+                    self.skills.requirements(profile.skill_refs)
+                )
+                skill_provider_capabilities = tuple(
+                    AgentProviderCapability(value)
+                    for value in provider_requirements
+                )
+            except (SkillConflictError, ValueError) as exc:
+                raise AgentRoutingBlockedError(
+                    str(exc),
+                    code="skill_definition_incompatible",
+                    target_type="agent_profile",
+                    target_id=profile.profile_id,
+                    retryable=False,
+                    remediation_route="/api/skills",
+                ) from exc
 
         if (
             request.role_id
@@ -236,6 +268,7 @@ class AgentRoutingService:
                         (
                             *request.required_capabilities,
                             *runtime.required_capabilities,
+                            *skill_provider_capabilities,
                         )
                     )
                 ),
