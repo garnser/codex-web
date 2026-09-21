@@ -1,3 +1,4 @@
+from codex_web.agent_providers import AgentProviderCapability
 from __future__ import annotations
 
 from codex_web.agent_providers import (
@@ -154,6 +155,18 @@ class AgentRoutingService:
             revision=request.agent_profile_revision,
         )
         runtime = profile.runtime_policy
+        skill_provider_capabilities, _skill_worker_capabilities = (
+            self.profiles.skill_requirements(profile)
+        )
+        try:
+            skill_required_capabilities = tuple(
+                AgentProviderCapability(value)
+                for value in skill_provider_capabilities
+            )
+        except ValueError as exc:
+            raise AgentRoutingError(
+                f"Agent Profile Skill requires unsupported provider capability: {exc}"
+            ) from exc
 
         if (
             request.role_id
@@ -236,6 +249,7 @@ class AgentRoutingService:
                         (
                             *request.required_capabilities,
                             *runtime.required_capabilities,
+                            *skill_required_capabilities,
                         )
                     )
                 ),
