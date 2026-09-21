@@ -443,7 +443,7 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
             patch.object(
                 execution_service,
                 "_select_runtime_binding",
-                new=AsyncMock(return_value=None),
+                new=AsyncMock(return_value=(None, None)),
             ),
             patch.object(execution_service.binding_service, "prepare", return_value=binding),
             patch.object(execution_service.session_manager, "start", new=AsyncMock(return_value=session)),
