@@ -99,7 +99,16 @@ class TaskSourceProvenanceTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service._sync_from_gitlab_async()
 
-        self.assertEqual(result, {"synced": 1, "refs": 1})
+        self.assertEqual(
+            result,
+            {
+                "discovered": 1,
+                "processed": 1,
+                "synced": 1,
+                "refs": 1,
+                "cancelled": False,
+            },
+        )
         self.assertIsNotNone(projector.saved)
         saved = projector.saved
         self.assertEqual(saved.ref, "canonical-work-123")
