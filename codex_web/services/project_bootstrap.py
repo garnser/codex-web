@@ -503,12 +503,6 @@ class ProjectBootstrapService:
                 )
             )
 
-        effective_canonical = canonical.model_copy(
-            update={
-                "operations": tuple(canonical_provider_operations),
-            }
-        )
-
         if manifest.task_source is not None:
             provider_health = (
                 self.task_source_health(project_id, manifest, actor)
@@ -926,6 +920,12 @@ class ProjectBootstrapService:
                     provider_operation_id=item.id,
                 )
             )
+
+        effective_canonical = canonical.model_copy(
+            update={
+                "operations": tuple(canonical_provider_operations),
+            }
+        )
 
         if manifest.task_source is not None:
             desired_type = manifest.task_source.type.casefold()
