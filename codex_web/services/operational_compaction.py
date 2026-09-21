@@ -124,6 +124,7 @@ class OperationalCompactionService:
         load_bindings: Callable[[], list[BotBinding]],
         event_journal: Path,
         backup_directory: Path,
+        event_journal_status: Callable[[], dict[str, Any]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.state_store = state_store
@@ -133,6 +134,7 @@ class OperationalCompactionService:
         self.load_bindings = load_bindings
         self.event_journal = event_journal
         self.backup_directory = backup_directory
+        self.event_journal_status = event_journal_status
         self.clock = clock
         self._mutation_lock = threading.RLock()
 
@@ -192,12 +194,26 @@ class OperationalCompactionService:
         now = float(self.clock())
         event_bytes = 0
         event_mtime: float | None = None
+        journal_status: dict[str, Any] = {}
+        if self.event_journal_status is not None:
+            try:
+                journal_status = dict(
+                    self.event_journal_status()
+                )
+            except Exception:
+                journal_status = {}
         try:
             stat = self.event_journal.stat()
-            event_bytes = int(stat.st_size)
+            event_bytes = int(
+                journal_status.get("activeBytes")
+                if journal_status.get("activeBytes") is not None
+                else stat.st_size
+            )
             event_mtime = float(stat.st_mtime)
         except FileNotFoundError:
-            pass
+            event_bytes = int(
+                journal_status.get("activeBytes") or 0
+            )
 
         delivery_count = self.delivery_targets.count()
         reply_count = self.reply_targets.count()
@@ -221,6 +237,41 @@ class OperationalCompactionService:
                 details={
                     "inspection": "metadata_only",
                     "full_scan_performed": False,
+                    "segment_count": journal_status.get(
+                        "segmentCount"
+                    ),
+                    "archived_segment_count": journal_status.get(
+                        "archivedSegmentCount"
+                    ),
+                    "archive_backlog": journal_status.get(
+                        "archiveBacklog"
+                    ),
+                    "retained_bytes": journal_status.get(
+                        "retainedBytes"
+                    ),
+                    "oldest_retained_at": journal_status.get(
+                        "oldestRetainedAt"
+                    ),
+                    "newest_retained_at": journal_status.get(
+                        "newestRetainedAt"
+                    ),
+                    "rotation_failures": journal_status.get(
+                        "rotationFailures"
+                    ),
+                    "archive_failures": journal_status.get(
+                        "archiveFailures"
+                    ),
+                    "cleanup_failures": journal_status.get(
+                        "cleanupFailures"
+                    ),
+                    "protected_segment_count": journal_status.get(
+                        "protectedSegmentCount"
+                    ),
+                    "unknown_protection_segment_count": (
+                        journal_status.get(
+                            "unknownProtectionSegmentCount"
+                        )
+                    ),
                 },
             ),
             OperationalStoreInspection(
