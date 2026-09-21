@@ -421,49 +421,78 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
         with self.assertRaises(ProjectBootstrapPlanStale):
             service.apply(plan, actor=_actor())
 
-    def test_crash_resume_and_repeat_apply_are_idempotent(self):
+    def test_crash_after_each_operation_boundary_resumes_idempotently(self):
         self.canonical.repository_apply = True
-        service = self.service(
-            readiness_probe=lambda *_args: {
-                "ready": False,
-                "code": "semantic_readiness_pending",
-            }
-        )
-        plan = service.plan(
-            self.project.id,
-            self.manifest(),
-            actor=_actor(),
-            migrate_legacy=False,
+        manifest = self.manifest(
+            name="Updated",
+            sandbox="read-only",
         )
 
-        with self.assertRaises(ProjectBootstrapError):
-            service.apply(
-                plan,
-                actor=_actor(),
-                fail_after_operations=1,
-            )
+        for fail_after in (1, 2, 3):
+            with self.subTest(fail_after=fail_after):
+                self.repository.values = [self.project]
+                self.repository.save_calls = 0
+                self.sqlite.delete(ProjectBootstrapStore.NAMESPACE)
+                self.canonical.apply_calls = 0
+                service = self.service(
+                    readiness_probe=lambda *_args: {
+                        "ready": False,
+                        "code": "semantic_readiness_pending",
+                    }
+                )
+                plan = service.plan(
+                    self.project.id,
+                    manifest,
+                    actor=_actor(),
+                    migrate_legacy=False,
+                )
+                self.assertEqual(
+                    len(plan.applicable_operations),
+                    3,
+                )
 
-        partial = service.status(
-            self.project.id,
-            actor=_actor(),
-        )[0]
-        self.assertEqual(
-            partial.status,
-            BootstrapExecutionStatus.PARTIAL,
-        )
-        self.assertEqual(len(partial.completed_operation_ids), 1)
-        self.assertEqual(len(partial.audit_events), 1)
+                with self.assertRaises(ProjectBootstrapError):
+                    service.apply(
+                        plan,
+                        actor=_actor(),
+                        fail_after_operations=fail_after,
+                    )
 
-        resumed = service.apply(plan, actor=_actor())
-        repeated = service.apply(plan, actor=_actor())
-        self.assertEqual(
-            resumed.status,
-            BootstrapExecutionStatus.APPLIED,
-        )
-        self.assertEqual(repeated.id, resumed.id)
-        self.assertEqual(self.canonical.apply_calls, 1)
-        self.assertEqual(len(resumed.audit_events), 1)
-        self.assertFalse(resumed.readiness["ready"])
+                partial = service.status(
+                    self.project.id,
+                    actor=_actor(),
+                )[0]
+                self.assertEqual(
+                    partial.status,
+                    BootstrapExecutionStatus.PARTIAL,
+                )
+                self.assertEqual(
+                    len(partial.completed_operation_ids),
+                    fail_after,
+                )
+                self.assertEqual(
+                    len(partial.audit_events),
+                    fail_after,
+                )
+
+                resumed = service.apply(plan, actor=_actor())
+                repeated = service.apply(plan, actor=_actor())
+                self.assertEqual(
+                    resumed.status,
+                    BootstrapExecutionStatus.APPLIED,
+                )
+                self.assertEqual(repeated.id, resumed.id)
+                self.assertEqual(self.canonical.apply_calls, 1)
+                self.assertEqual(len(resumed.audit_events), 3)
+                self.assertEqual(
+                    self.repository.load()[0].name,
+                    "Updated",
+                )
+                self.assertEqual(
+                    self.repository.load()[0].sandbox,
+                    "read-only",
+                )
+                self.assertFalse(resumed.readiness["ready"])
 
     def test_concurrent_apply_is_rejected(self):
         service = self.service()
