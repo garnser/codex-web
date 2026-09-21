@@ -155,8 +155,10 @@ multi_id="$(jq -r '.id' <<<"$multi")"
 multi_readiness="$(json_get "$BASE_URL/api/projects/$multi_id/readiness")"
 jq -e '.execution_ready == false' <<<"$multi_readiness" >/dev/null
 jq -e '
-  [.blockers[].code]
-  | any(. == "repository_target_ambiguous")
+  [.checks[]
+    | select(.status == "blocked")
+    | .code
+  ] | any(. == "repository_target_ambiguous")
 ' <<<"$multi_readiness" >/dev/null
 json_get "$BASE_URL/api/livez" >/dev/null
 
@@ -201,8 +203,10 @@ no_worker_id="$(jq -r '.id' <<<"$no_worker")"
 no_worker_readiness="$(json_get   "$BASE_URL/api/projects/$no_worker_id/readiness")"
 jq -e '.execution_ready == false' <<<"$no_worker_readiness" >/dev/null
 jq -e '
-  [.blockers[].code]
-  | any(
+  [.checks[]
+    | select(.status == "blocked")
+    | .code
+  ] | any(
       . == "worker_capability_missing"
       or . == "worker_unavailable"
     )
