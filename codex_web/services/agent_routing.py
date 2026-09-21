@@ -37,6 +37,38 @@ class AgentRoutingError(RuntimeError):
     pass
 
 
+class AgentRoutingBlockedError(AgentRoutingError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        rejected_reasons: tuple[str, ...] = (),
+        target_type: str = "agent_runtime",
+        target_id: str | None = None,
+        retryable: bool = False,
+        remediation_route: str = "/api/agent-providers",
+    ) -> None:
+        self.code = code
+        self.rejected_reasons = rejected_reasons
+        self.target_type = target_type
+        self.target_id = target_id
+        self.retryable = retryable
+        self.remediation_route = remediation_route
+        super().__init__(message)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "retryable": self.retryable,
+            "target_type": self.target_type,
+            "target_id": self.target_id,
+            "rejected_reasons": list(self.rejected_reasons),
+            "remediation_route": self.remediation_route,
+        }
+
+
 class AgentCapacityRoutingError(AgentRoutingError):
     def __init__(
         self,
@@ -660,7 +692,25 @@ class AgentRoutingService:
                         dict.fromkeys(item.key for item in capacity_blocks)
                     ),
                 )
-            raise AgentRoutingError(f"no eligible agent runtime: {detail}")
+            raise AgentRoutingBlockedError(
+                f"no eligible agent runtime: {detail}",
+                code="agent_runtime_unavailable",
+                rejected_reasons=tuple(
+                    dict.fromkeys(rejected)
+                ),
+                target_type=(
+                    "agent_profile"
+                    if request.agent_profile_id
+                    else "agent_runtime"
+                ),
+                target_id=request.agent_profile_id,
+                retryable=False,
+                remediation_route=(
+                    "/api/agent-profiles"
+                    if request.agent_profile_id
+                    else "/api/agent-providers"
+                ),
+            )
 
         if not request.allow_fallback:
             candidates = (candidates[0],)
