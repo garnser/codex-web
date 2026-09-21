@@ -31,7 +31,7 @@ from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.skill_definitions import (
     SKILL_BUNDLE_FORMAT,
     SKILL_BUNDLE_VERSION,
-    SKILL_CONTEXT_CHARS,
+    MAX_SKILL_CONTEXT_CHARS,
     SKILL_DEFINITION_KIND,
     SKILL_SCHEMA_VERSION,
     SkillAsset,
