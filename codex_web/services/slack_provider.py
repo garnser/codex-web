@@ -1001,26 +1001,26 @@ class SlackProviderService:
         *,
         recent_message_ids: set[str],
         fallback_thread_ts: str | None = None,
-    ) -> None:
+    ) -> bool:
         message_id = str(event.get("ts") or "").strip()
         if (
             not message_id
             or message_id in self.seen
             or message_id in recent_message_ids
         ):
-            return
+            return False
         if event.get("bot_id") or event.get("subtype") in {
             "bot_message",
             "message_deleted",
         }:
             self.seen.add(message_id)
-            return
+            return False
         text = self.presentation.strip_slack_mentions(
             event.get("text") or ""
         )
         if not text:
             self.seen.add(message_id)
-            return
+            return False
         self.seen.add(message_id)
         result = await self.routing.handle_inbound(
             BotInboundMessage(
@@ -1059,6 +1059,7 @@ class SlackProviderService:
         if fallback_thread_ts:
             payload["external_thread_id"] = fallback_thread_ts
         self.telemetry.append(payload)
+        return True
 
     async def _run_loop(self) -> None:
         interval = self.interval_seconds()
