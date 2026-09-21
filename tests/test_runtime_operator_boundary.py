@@ -123,7 +123,7 @@ class RuntimeOperatorBoundaryTests(unittest.TestCase):
         ready = self.client.get("/api/readyz")
         self.assertEqual(live.status_code, 200)
         self.assertEqual(ready.status_code, 200)
-        self.assertEqual(live.json()["status"], "live")
+        self.assertEqual(live.json()["status"], "alive")
         self.assertEqual(ready.json()["status"], "ready")
 
     def test_human_admin_can_read_but_recovery_requires_mfa(self) -> None:
