@@ -10,7 +10,9 @@ from codex_web.configuration import (
     ConfigurationScope,
     SecretReference,
 )
+from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import ExecutionSubjectKind
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
 from codex_web.execution_workspaces import LeaseMode, WorkspaceQuota
 from codex_web.execution_workers import (
@@ -330,6 +332,53 @@ class TurnExecutionBindingTests(unittest.TestCase):
             binding.subject.kind,
             ExecutionSubjectKind.THREAD_BOOTSTRAP,
         )
+
+    def test_skill_worker_requirement_tightens_assignment_eligibility(self) -> None:
+        self._publish_secret()
+        self.service.skill_worker_requirements = (
+            lambda _refs, _project: (WorkerCapability.CONTAINER,)
+        )
+        profile = AgentProfileExecutionBinding(
+            profile_id="coder",
+            profile_revision=1,
+            profile_record_id="agent-profile-rev-1",
+            skill_refs=(
+                DefinitionReference(
+                    definition_id="container-helper",
+                    kind="agent.skill",
+                    revision=1,
+                    record_id="skill-rev-1",
+                    checksum="a" * 64,
+                    definition_schema_version="1.0",
+                ),
+            ),
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self.service.prepare(
+                thread_id="thread-skill-worker",
+                execution_id="turn-skill-worker",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                agent_profile=profile,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "worker_capability_missing",
+        )
+        blocker = raised.exception.public()
+        self.assertIn(
+            "container",
+            blocker["required_capabilities"],
+        )
+        self.assertNotIn(
+            "container",
+            blocker["available_capabilities"],
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
 
     def test_missing_command_execution_blocks_before_workspace_creation(self) -> None:
         self._publish_secret()

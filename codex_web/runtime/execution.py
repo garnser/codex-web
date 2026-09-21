@@ -71,6 +71,9 @@ class TurnExecutionService:
         ownership: ReplicatedOwnershipService | None = None,
         bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
         actor_resolver: Callable[[str, Project], AuthenticationActor] | None = None,
+        skill_context_resolver: Callable[
+            [tuple, Project, str], Any
+        ] | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -89,6 +92,7 @@ class TurnExecutionService:
             or getattr(host, "_bindings_for_thread", lambda _thread_id: [])
         )
         self.actor_resolver = actor_resolver
+        self.skill_context_resolver = skill_context_resolver
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -1154,6 +1158,74 @@ class TurnExecutionService:
                 assignment_id = binding.assignment_id
                 workspace_id = binding.workspace_id
 
+            skill_context_selection = None
+            if (
+                agent_profile_binding is not None
+                and agent_profile_binding.skill_refs
+            ):
+                if self.skill_context_resolver is None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "code": "execution_preflight_blocked",
+                            "message": (
+                                "Agent Profile references Skills but Skill "
+                                "context resolution is unavailable"
+                            ),
+                            "blockers": [
+                                {
+                                    "code": "skill_definition_unavailable",
+                                    "message": (
+                                        "Skill context resolution is unavailable"
+                                    ),
+                                    "retryable": False,
+                                    "target_type": "agent_profile",
+                                    "target_id": agent_profile_binding.profile_id,
+                                    "remediation_route": "/api/skills",
+                                }
+                            ],
+                            "retryable": False,
+                        },
+                    )
+                try:
+                    skill_context_selection = self.skill_context_resolver(
+                        agent_profile_binding.skill_refs,
+                        project,
+                        message,
+                    )
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "code": "execution_preflight_blocked",
+                            "message": str(exc),
+                            "blockers": [
+                                {
+                                    "code": "skill_definition_unavailable",
+                                    "message": str(exc),
+                                    "retryable": False,
+                                    "target_type": "agent_profile",
+                                    "target_id": agent_profile_binding.profile_id,
+                                    "remediation_route": "/api/skills",
+                                }
+                            ],
+                            "retryable": False,
+                        },
+                    ) from exc
+                skill_text = str(
+                    getattr(skill_context_selection, "text", "")
+                    or ""
+                ).strip()
+                if skill_text:
+                    effective_developer_instructions = "\n\n".join(
+                        item
+                        for item in (
+                            effective_developer_instructions,
+                            skill_text,
+                        )
+                        if item
+                    )
+
             status = session.status()
             workspace_path = session.workspace_path
             if workspace_path is None or status.fence is None:
@@ -1340,6 +1412,12 @@ class TurnExecutionService:
                     requested_execution_id
                     if bootstrap is not None
                     and requested_execution_id != canonical_execution_id
+                    else None
+                ),
+                "skill_context": (
+                    skill_context_selection.model_dump(mode="json")
+                    if skill_context_selection is not None
+                    and hasattr(skill_context_selection, "model_dump")
                     else None
                 ),
             }
@@ -1893,6 +1971,9 @@ def install_turn_execution_service(
     ownership: ReplicatedOwnershipService | None = None,
     bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
     actor_resolver: Callable[[str, Project], AuthenticationActor] | None = None,
+    skill_context_resolver: Callable[
+        [tuple, Project, str], Any
+    ] | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1915,6 +1996,8 @@ def install_turn_execution_service(
             service.bindings_for_thread = bindings_for_thread
         if actor_resolver is not None:
             service.actor_resolver = actor_resolver
+        if skill_context_resolver is not None:
+            service.skill_context_resolver = skill_context_resolver
     else:
         service = TurnExecutionService(
             host,
@@ -1929,6 +2012,7 @@ def install_turn_execution_service(
             ownership=ownership,
             bindings_for_thread=bindings_for_thread,
             actor_resolver=actor_resolver,
+            skill_context_resolver=skill_context_resolver,
         )
         app.state.turn_execution_service = service
 

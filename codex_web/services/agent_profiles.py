@@ -59,6 +59,10 @@ RoleResolver = Callable[
     [str, AuthenticationActor],
     DefinitionReference,
 ]
+SkillReferenceValidator = Callable[
+    [DefinitionReference, AuthenticationActor],
+    DefinitionReference,
+]
 
 
 class AgentProfileService:
@@ -73,6 +77,7 @@ class AgentProfileService:
         assignment_history: Callable[
             [AuthenticationActor], list[Any]
         ] | None = None,
+        skill_reference_validator: SkillReferenceValidator | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -81,6 +86,7 @@ class AgentProfileService:
         self.execution_profiles = execution_profiles
         self.role_resolver = role_resolver
         self.assignment_history = assignment_history
+        self.skill_reference_validator = skill_reference_validator
         self.clock = clock
 
     @staticmethod
@@ -262,15 +268,27 @@ class AgentProfileService:
         *,
         actor: AuthenticationActor,
     ) -> tuple[DefinitionReference, ...]:
-        values = tuple(
-            self._definition_ref(
+        values: list[DefinitionReference] = []
+        for item in refs:
+            if self.skill_reference_validator is not None:
+                values.append(
+                    self.skill_reference_validator(item, actor)
+                )
+                continue
+            resolved = self._definition_ref(
                 item,
                 actor=actor,
                 label="skill",
             )
-            for item in refs
-        )
-        return tuple(item for item in values if item is not None)
+            if resolved is None:
+                continue
+            record = self.definitions.get_record(resolved.record_id)
+            if record.kind != "agent.skill":
+                raise AgentProfileConflict(
+                    "agent profile skill reference must be agent.skill"
+                )
+            values.append(resolved)
+        return tuple(values)
 
     def _latest(
         self,
