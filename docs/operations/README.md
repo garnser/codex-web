@@ -35,3 +35,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Slack Socket Mode lifecycle](slack-socket-mode.md) — keepalive settings, transport failure classes, bounded reconnects, dedupe continuity, and operator diagnostics.
 
 - [Stale active-turn recovery](stale-active-turn-recovery.md) — evidence-based active-marker reconciliation, crash-safe recovery, private legacy backups, and operator resolution.
+
+- [Bot/runtime event journal lifecycle](bot-event-journal.md) — bounded rotation, retention, optional compression, crash recovery, protected records, and segment-aware tail reads.
