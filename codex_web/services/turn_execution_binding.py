@@ -56,6 +56,7 @@ from codex_web.services.resources import (
     RepositoryTargetSelectionError,
     ResourceCatalogService,
 )
+from codex_web.services.skills import SkillConflictError, SkillService
 
 
 THREAD_TURN_EXECUTION_CONTRACT_VERSION = "thread-turn/1.0"
@@ -165,6 +166,7 @@ class TurnExecutionBindingService:
         project_readiness: Callable[
             [str, AuthenticationActor], dict[str, object]
         ] | None = None,
+        skills: SkillService | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -177,6 +179,7 @@ class TurnExecutionBindingService:
         self.execution_profiles = execution_profiles
         self.control_plane_available = control_plane_available or (lambda: True)
         self.project_readiness = project_readiness
+        self.skills = skills
         self.runtime_credential_configs = dict(
             runtime_credential_configs
             or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
@@ -788,6 +791,51 @@ class TurnExecutionBindingService:
                 WorkerCapability.COMMAND_EXECUTION,
             )
         )
+        if agent_profile is not None and agent_profile.skill_refs:
+            if self.skills is None:
+                raise TurnExecutionBindingError(
+                    "Agent Profile references Skills but Skill service is unavailable",
+                    code="skill_definition_incompatible",
+                    blocker={
+                        "code": "skill_definition_incompatible",
+                        "message": (
+                            "Agent Profile references Skills but Skill service "
+                            "is unavailable"
+                        ),
+                        "retryable": False,
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile.profile_id,
+                        "remediation_route": "/api/skills",
+                    },
+                )
+            try:
+                _provider_requirements, worker_requirements = (
+                    self.skills.requirements(agent_profile.skill_refs)
+                )
+                required_capabilities = tuple(
+                    dict.fromkeys(
+                        (
+                            *required_capabilities,
+                            *(
+                                WorkerCapability(value)
+                                for value in worker_requirements
+                            ),
+                        )
+                    )
+                )
+            except (SkillConflictError, ValueError) as exc:
+                raise TurnExecutionBindingError(
+                    str(exc),
+                    code="skill_definition_incompatible",
+                    blocker={
+                        "code": "skill_definition_incompatible",
+                        "message": str(exc),
+                        "retryable": False,
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile.profile_id,
+                        "remediation_route": "/api/skills",
+                    },
+                ) from exc
         worker_readiness = self.workers.execution_readiness(
             required_capabilities=required_capabilities,
             execution_contract_version=execution_contract_version,
