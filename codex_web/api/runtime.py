@@ -53,6 +53,14 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
     async def status() -> dict[str, Any]:
         return await service.status()
 
+    @router.get("/api/livez")
+    async def livez() -> dict[str, Any]:
+        return await service.livez()
+
+    @router.get("/api/readyz")
+    async def readyz() -> dict[str, Any]:
+        return await service.readyz()
+
     @router.get("/api/healthz")
     async def healthz() -> dict[str, Any]:
         return await service.healthz()
