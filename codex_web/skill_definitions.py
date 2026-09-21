@@ -229,6 +229,21 @@ class SkillDefinition(BaseModel):
             ("required_worker_capabilities", MAX_SKILL_CAPABILITIES),
             ("compatibility_tags", MAX_SKILL_CAPABILITIES),
         ):
+            values = tuple(
+                sorted(
+                    {
+                        str(value).strip()
+                        for value in getattr(self, field_name)
+                        if str(value).strip()
+                    }
+                )
+            )
+            if len(values) > maximum:
+                raise ValueError(
+                    f"skill {field_name} cannot exceed {maximum} values"
+                )
+            setattr(self, field_name, values)
+
         provider_capabilities = {
             item.value for item in AgentProviderCapability
         }
@@ -252,28 +267,16 @@ class SkillDefinition(BaseModel):
                 + ", ".join(unknown_worker)
             )
 
-            values = tuple(
-                sorted(
-                    {
-                        str(value).strip()
-                        for value in getattr(self, field_name)
-                        if str(value).strip()
-                    }
-                )
-            )
-            if len(values) > maximum:
-                raise ValueError(
-                    f"skill {field_name} cannot exceed {maximum} values"
-                )
-            setattr(self, field_name, values)
-
         if len(self.assets) > MAX_SKILL_ASSETS:
             raise ValueError(
                 f"skill assets cannot exceed {MAX_SKILL_ASSETS}"
             )
         if len({item.id for item in self.assets}) != len(self.assets):
             raise ValueError("skill asset ids must be unique")
-        if sum(len(item.content) for item in self.assets) > MAX_SKILL_TOTAL_ASSET_CHARS:
+        if (
+            sum(len(item.content) for item in self.assets)
+            > MAX_SKILL_TOTAL_ASSET_CHARS
+        ):
             raise ValueError(
                 "skill assets exceed total content size limit"
             )
