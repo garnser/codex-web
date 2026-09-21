@@ -27,6 +27,7 @@ MAX_SKILL_IO_FIELDS = 32
 MAX_SKILL_CAPABILITIES = 32
 MAX_SKILL_BUNDLE_FILES = 32
 MAX_SKILL_BUNDLE_TOTAL_CHARS = 384_000
+MAX_SKILL_CONTEXT_CHARS = 96_000
 
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -123,12 +124,24 @@ class SkillApplicability(BaseModel):
         model_class: str | None = None,
         capability_tags: tuple[str, ...] = (),
     ) -> bool:
-        if self.purposes and str(purpose or "") not in self.purposes:
+        if (
+            purpose is not None
+            and self.purposes
+            and str(purpose) not in self.purposes
+        ):
             return False
-        if self.model_classes and str(model_class or "") not in self.model_classes:
+        if (
+            model_class is not None
+            and self.model_classes
+            and str(model_class) not in self.model_classes
+        ):
             return False
-        if self.capability_tags and not set(self.capability_tags).issubset(
-            set(capability_tags)
+        if (
+            capability_tags
+            and self.capability_tags
+            and not set(self.capability_tags).issubset(
+                set(capability_tags)
+            )
         ):
             return False
         return True
