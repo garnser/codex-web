@@ -18,7 +18,7 @@ from codex_web.identity import (
 )
 from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.definitions import DefinitionRegistryService
-from codex_web.services.skills import SkillConflict, SkillService
+from codex_web.services.skills import SkillConflict, SkillNotFound, SkillService
 from codex_web.skills import (
     SkillAsset,
     SkillAssetContextMode,
@@ -356,7 +356,7 @@ class SkillServiceTests(unittest.TestCase):
             imported["skill"]["provenance"]["source_type"],
             "import",
         )
-        with self.assertRaises(SkillConflict):
+        with self.assertRaises(SkillNotFound):
             self.skills.validate_reference(
                 reference_for(
                     self.definitions.get_record(
