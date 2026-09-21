@@ -351,6 +351,7 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
         name: str = "Demo",
         sandbox: str = "workspace-write",
         task_source: bool = False,
+        repository_selection: str = "single",
     ):
         payload = {
             "apiVersion": "codex-web/v1",
@@ -368,7 +369,7 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
                 }
             ],
             "execution": {
-                "repositorySelection": "single",
+                "repositorySelection": repository_selection,
                 "requiredCapabilities": ["command_execution"],
                 "sandbox": sandbox,
             },
@@ -730,6 +731,79 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
             sort_keys=True,
         )
         self.assertNotIn(self.secrets.raw_value, serialized)
+
+    def test_explicit_repository_policy_round_trips_through_bootstrap(self):
+        service = self.service()
+        manifest = self.manifest(repository_selection="explicit")
+
+        plan = service.plan(
+            self.project.id,
+            manifest,
+            actor=_actor(),
+            migrate_legacy=False,
+        )
+
+        policy = next(
+            item
+            for item in plan.operations
+            if item.id == "project:settings:repository-selection"
+        )
+        self.assertEqual(policy.disposition.value, "update")
+        self.assertEqual(
+            policy.desired["repository_selection_policy"],
+            "explicit",
+        )
+
+        execution = service.apply(plan, actor=_actor())
+        self.assertEqual(
+            execution.status,
+            BootstrapExecutionStatus.APPLIED,
+        )
+        project = self.repository.load()[0]
+        self.assertEqual(
+            project.repository_selection_policy,
+            "explicit",
+        )
+
+        repeat = service.plan(
+            self.project.id,
+            manifest,
+            actor=_actor(),
+            migrate_legacy=False,
+        )
+        policy = next(
+            item
+            for item in repeat.operations
+            if item.id == "project:settings:repository-selection"
+        )
+        self.assertEqual(policy.disposition.value, "ready")
+
+    def test_single_and_default_manifest_modes_persist_deterministic_policy(self):
+        self.repository.values[0] = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        service = self.service()
+
+        for mode in ("single", "default"):
+            with self.subTest(mode=mode):
+                plan = service.plan(
+                    self.project.id,
+                    self.manifest(repository_selection=mode),
+                    actor=_actor(),
+                    migrate_legacy=False,
+                )
+                service.apply(plan, actor=_actor())
+                self.assertEqual(
+                    self.repository.load()[0].repository_selection_policy,
+                    "deterministic",
+                )
+                self.repository.values[0] = (
+                    self.repository.values[0].model_copy(
+                        update={
+                            "repository_selection_policy": "explicit"
+                        }
+                    )
+                )
 
     def test_danger_full_access_requires_explicit_approval(self):
         service = self.service()
