@@ -1282,9 +1282,20 @@ def install_slack_provider_service(
     webhook_security=None,
     reconciliation_gates=None,
 ) -> SlackProviderService:
+    backfill_store = getattr(
+        app.state,
+        "slack_backfill_store",
+        None,
+    )
+    if backfill_store is None and hasattr(app.state, "state_store"):
+        backfill_store = SlackBackfillStore(app.state.state_store)
+        app.state.slack_backfill_store = backfill_store
+
     existing = getattr(app.state, "slack_provider_service", None)
     if isinstance(existing, SlackProviderService):
         service = existing
+        if service.backfill_store is None:
+            service.backfill_store = backfill_store
         service.conversation_channels = getattr(
             app.state,
             "conversation_channel_service",
@@ -1320,6 +1331,7 @@ def install_slack_provider_service(
                 reconciliation_gates
                 or getattr(app.state, "reconciliation_gate_service", None)
             ),
+            backfill_store=backfill_store,
         )
         app.state.slack_provider_service = service
 
@@ -1349,6 +1361,7 @@ def install_slack_provider_service(
             webhook_security=service.webhook_security,
             secret_broker=service.secret_broker,
             conversation_channels=service.conversation_channels,
+            backfill_store=service.backfill_store,
         )
         return compatibility._thread_targets()
 
