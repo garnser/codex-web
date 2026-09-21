@@ -298,6 +298,22 @@ class ProjectBootstrapService:
             )
         )
 
+        checks.append(
+            self._check(
+                "bootstrap:versions",
+                "bootstrap_contract",
+                project_id,
+                BootstrapDisposition.READY,
+                "bootstrap_versions_supported",
+                "Manifest/bootstrap engine versions are supported.",
+                details={
+                    "manifest_api_version": manifest.api_version,
+                    "bootstrap_engine_version": "1.0",
+                    "canonical_materialization_version": "1.0",
+                },
+            )
+        )
+
         source_scope = TenantScope(
             organization_id=project.organization_id,
             workspace_id=project.workspace_id,
@@ -405,6 +421,48 @@ class ProjectBootstrapService:
                     "discovered_count": len(discovered_paths),
                 },
                 operator_action_required=not topology_ok,
+            )
+        )
+
+        selection = manifest.execution.repository_selection
+        default_ids = [
+            item.id for item in manifest.repositories if item.default
+        ]
+        selection_ready = bool(manifest.repositories)
+        if selection == "single":
+            selection_ready = len(manifest.repositories) == 1
+        elif selection == "default":
+            selection_ready = len(default_ids) == 1
+        elif selection == "explicit":
+            # Multi-repository explicit mode is deterministic because callers
+            # must name an execution target; bootstrap never guesses a default.
+            selection_ready = bool(manifest.repositories)
+        checks.append(
+            self._check(
+                "execution:repository-selection",
+                "execution_target",
+                project_id,
+                (
+                    BootstrapDisposition.READY
+                    if selection_ready
+                    else BootstrapDisposition.BLOCKED
+                ),
+                (
+                    "execution_target_policy_deterministic"
+                    if selection_ready
+                    else "execution_target_policy_ambiguous"
+                ),
+                (
+                    "Repository execution-target policy is deterministic."
+                    if selection_ready
+                    else "Repository execution-target policy is ambiguous."
+                ),
+                details={
+                    "repository_selection": selection,
+                    "repository_count": len(manifest.repositories),
+                    "default_repository_ids": default_ids,
+                },
+                operator_action_required=not selection_ready,
             )
         )
 
