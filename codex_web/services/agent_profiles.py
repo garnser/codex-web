@@ -270,7 +270,20 @@ class AgentProfileService:
             )
             for item in refs
         )
-        return tuple(item for item in values if item is not None)
+        normalized = tuple(
+            item for item in values if item is not None
+        )
+        invalid = [
+            item
+            for item in normalized
+            if item.kind != "agent.skill"
+        ]
+        if invalid:
+            raise AgentProfileConflict(
+                "Agent Profile skill_refs must reference agent.skill "
+                "Definition records"
+            )
+        return normalized
 
     def _latest(
         self,
