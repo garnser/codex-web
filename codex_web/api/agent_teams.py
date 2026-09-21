@@ -32,6 +32,7 @@ class AgentTeamMemberResultRequest(BaseModel):
 
     member_id: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
     succeeded: bool
 
 
@@ -138,6 +139,7 @@ def build_agent_teams_router(service: AgentTeamService) -> APIRouter:
                     event_id=payload.event_id,
                     succeeded=payload.succeeded,
                     actor=request_actor(request),
+                    execution_id=payload.execution_id,
                 )
             }
         except Exception as exc:
