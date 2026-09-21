@@ -978,8 +978,11 @@ project_readiness_store = ProjectReadinessStore(state_store)
 
 def _project_readiness_environment(project, actor):
     del actor
-    isolation = local_execution_backend.probe()
-    supported = bool(isolation.ready)
+    supported = project.sandbox in {
+        "workspace-write",
+        "read-only",
+        "danger-full-access",
+    }
     return {
         "available": supported,
         "code": (
@@ -988,14 +991,15 @@ def _project_readiness_environment(project, actor):
             else "sandbox_profile_unsupported"
         ),
         "reason": (
-            "Local execution isolation supports Project execution."
+            "Project sandbox is supported by the canonical execution contract."
             if supported
-            else (
-                isolation.reason
-                or "Local execution isolation is unavailable."
-            )
+            else "Project sandbox is not supported by the execution contract."
         ),
-        "remediation": isolation.remediation,
+        "remediation": (
+            None
+            if supported
+            else "Select a supported canonical sandbox/profile."
+        ),
     }
 
 
