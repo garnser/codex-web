@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_profiles import build_agent_profiles_router
+from codex_web.api.skills import build_skills_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
@@ -143,6 +144,7 @@ from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_profiles import AgentProfileService
+from codex_web.services.skills import SkillService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
@@ -675,6 +677,8 @@ definition_registry_service = DefinitionRegistryService(
     definition_registry_store,
     notifier=_definition_change_notifier,
 )
+skill_service = SkillService(definition_registry_service)
+app.state.skill_service = skill_service
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
@@ -1159,6 +1163,13 @@ turn_execution_binding_service = TurnExecutionBindingService(
             record=False,
         ).model_dump(mode="json")
     ),
+    skill_worker_requirements=lambda refs, project: (
+        skill_service.requirements_for_refs_scoped(
+            refs,
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+        )[1]
+    ),
 )
 app.state.turn_execution_binding_service = turn_execution_binding_service
 
@@ -1312,10 +1323,15 @@ agent_profile_service = AgentProfileService(
     execution_profiles=execution_profile_definition_service,
     role_resolver=_agent_profile_role_ref,
     assignment_history=_agent_profile_assignment_history,
+    skill_reference_validator=lambda ref, actor: (
+        skill_service.validate_reference(ref, actor=actor)
+    ),
 )
+skill_service.bind_profiles(agent_profile_service)
 app.state.agent_profile_store = agent_profile_store
 app.state.agent_profile_service = agent_profile_service
 app.include_router(build_agent_profiles_router(agent_profile_service))
+app.include_router(build_skills_router(skill_service))
 
 
 def _agent_profile_definition_usage(reference):
@@ -1368,6 +1384,7 @@ agent_routing_service = AgentRoutingService(
     role_defaults=agent_routing_definition_service,
     provider_capacity=provider_capacity_service,
     profiles=agent_profile_service,
+    skills=skill_service,
 )
 app.include_router(build_agent_routing_router(agent_routing_service))
 app.state.agent_routing_service = agent_routing_service
@@ -2369,6 +2386,14 @@ turn_execution_service = install_turn_execution_service(
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
     bindings_for_thread=bot_binding_selection_service.for_thread,
+    skill_context_resolver=lambda refs, project, objective: (
+        skill_service.context_for_refs_scoped(
+            refs,
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+            objective=objective,
+        )
+    ),
 )
 
 async def _existing_thread_runtime_request(method, params):
