@@ -23,6 +23,20 @@ class _FakeWorkItems:
         self.calls = 0
         self.release = asyncio.Event()
 
+    async def sync_from_gitlab(
+        self,
+        scope,
+        *,
+        progress=None,
+        cancelled=None,
+    ):
+        result = await self._sync_from_gitlab_async(
+            scope,
+            progress=progress,
+            cancelled=cancelled,
+        )
+        return {"ok": True, **result}
+
     async def _sync_from_gitlab_async(
         self,
         scope,
