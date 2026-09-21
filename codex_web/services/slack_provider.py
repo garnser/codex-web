@@ -720,6 +720,8 @@ class SlackProviderService:
             state.last_processed = int(processed)
             state.last_skipped = int(skipped)
             state.last_errors = int(errors)
+            if int(errors) == 0:
+                state.last_successful_completion_at = now
             state.cooldown_until = self.cooldown_until or None
             state.rate_limit_failures = self.rate_limit_failures
             return state
@@ -872,12 +874,24 @@ class SlackProviderService:
                         if persisted is not None
                         else None
                     )
-                    oldest_value = max(
-                        base_oldest,
-                        checkpoint.watermark
+                    provider_cursor = (
+                        checkpoint.provider_cursor
                         if checkpoint is not None
-                        else 0.0,
+                        else None
                     )
+                    if (
+                        provider_cursor
+                        and checkpoint is not None
+                        and checkpoint.scan_oldest is not None
+                    ):
+                        oldest_value = checkpoint.scan_oldest
+                    else:
+                        oldest_value = max(
+                            base_oldest,
+                            checkpoint.watermark
+                            if checkpoint is not None
+                            else 0.0,
+                        )
                     oldest = f"{oldest_value:.6f}"
                     if kind == "replies" and thread_ts is not None:
                         thread_key = (
@@ -890,7 +904,22 @@ class SlackProviderService:
                             await asyncio.to_thread(
                                 self._checkpoint_work,
                                 key,
-                                watermark=oldest_value,
+                                watermark=(
+                                    checkpoint.watermark
+                                    if checkpoint is not None
+                                    else oldest_value
+                                ),
+                                provider_cursor=provider_cursor,
+                                scan_oldest=(
+                                    checkpoint.scan_oldest
+                                    if checkpoint is not None
+                                    else None
+                                ),
+                                pending_watermark=(
+                                    checkpoint.pending_watermark
+                                    if checkpoint is not None
+                                    else 0.0
+                                ),
                                 processed=0,
                                 skipped=1,
                                 errors=0,
@@ -901,6 +930,7 @@ class SlackProviderService:
                             channel_id,
                             thread_ts,
                             oldest,
+                            cursor=provider_cursor,
                         )
                         failure_type = "slack_thread_backfill_failed"
                     else:
@@ -908,6 +938,7 @@ class SlackProviderService:
                             connection,
                             channel_id,
                             oldest,
+                            cursor=provider_cursor,
                         )
                         failure_type = "slack_backfill_failed"
 
@@ -944,7 +975,26 @@ class SlackProviderService:
                         await asyncio.to_thread(
                             self._checkpoint_work,
                             key,
-                            watermark=oldest_value,
+                            watermark=(
+                                checkpoint.watermark
+                                if checkpoint is not None
+                                else 0.0
+                            ),
+                            provider_cursor=provider_cursor,
+                            scan_oldest=(
+                                checkpoint.scan_oldest
+                                if checkpoint is not None
+                                else (
+                                    oldest_value
+                                    if provider_cursor
+                                    else None
+                                )
+                            ),
+                            pending_watermark=(
+                                checkpoint.pending_watermark
+                                if checkpoint is not None
+                                else 0.0
+                            ),
                             processed=0,
                             skipped=0,
                             errors=1,
@@ -996,10 +1046,55 @@ class SlackProviderService:
                             skipped += 1
                     processed_total += processed
                     skipped_total += skipped
+                    response_metadata = (
+                        response.get("response_metadata")
+                        if isinstance(
+                            response.get("response_metadata"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    next_cursor = str(
+                        response_metadata.get("next_cursor") or ""
+                    ).strip() or None
+                    previous_pending = (
+                        checkpoint.pending_watermark
+                        if checkpoint is not None
+                        else 0.0
+                    )
+                    pending_watermark = max(
+                        previous_pending,
+                        watermark,
+                    )
+                    completed_watermark = (
+                        (
+                            checkpoint.watermark
+                            if checkpoint is not None
+                            else 0.0
+                        )
+                        if next_cursor
+                        else pending_watermark
+                    )
                     await asyncio.to_thread(
                         self._checkpoint_work,
                         key,
-                        watermark=watermark,
+                        watermark=completed_watermark,
+                        provider_cursor=next_cursor,
+                        scan_oldest=(
+                            (
+                                checkpoint.scan_oldest
+                                if checkpoint is not None
+                                and checkpoint.scan_oldest is not None
+                                else oldest_value
+                            )
+                            if next_cursor
+                            else None
+                        ),
+                        pending_watermark=(
+                            pending_watermark
+                            if next_cursor
+                            else 0.0
+                        ),
                         processed=processed,
                         skipped=skipped,
                         errors=0,
