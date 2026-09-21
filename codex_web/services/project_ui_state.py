@@ -42,6 +42,9 @@ class ProjectUiStateService:
         channels: BotChannelDiscoveryService,
         execution_profiles: Any,
         binding_public: Callable[[BotBinding], dict[str, Any]],
+        readiness: Callable[
+            [str, AuthenticationActor], dict[str, Any]
+        ] | None = None,
     ) -> None:
         self.projects = projects
         self.resources = resources
@@ -51,6 +54,7 @@ class ProjectUiStateService:
         self.channels = channels
         self.execution_profiles = execution_profiles
         self.binding_public = binding_public
+        self.readiness = readiness
 
     @staticmethod
     def _enum_value(value: Any) -> str:
@@ -291,6 +295,11 @@ class ProjectUiStateService:
             if include_static
             else None
         )
+        readiness = (
+            self.readiness(project.id, actor)
+            if include_static and self.readiness is not None
+            else None
+        )
         section_versions = {
             "resources": self._version(resources),
             "threads": str(thread_page.get("revision") or ""),
@@ -303,6 +312,7 @@ class ProjectUiStateService:
             section_versions["executionProfiles"] = self._version(
                 execution_profiles
             )
+            section_versions["readiness"] = self._version(readiness)
 
         return {
             "project": project_summary,
@@ -325,6 +335,7 @@ class ProjectUiStateService:
                 "discovery": self.channels.status(project.id),
             },
             "executionProfiles": execution_profiles,
+            "readiness": readiness,
             "meta": {
                 "projectId": project.id,
                 "threadCount": len(thread_rows),

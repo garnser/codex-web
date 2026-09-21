@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -242,11 +243,48 @@ class RuntimeService:
     def health(self) -> dict[str, Any]:
         return self.runtime_health()
 
-    async def healthz(self) -> dict[str, Any]:
+    async def livez(self) -> dict[str, Any]:
+        """Process liveness only; no provider or Project semantic checks."""
+        return {
+            "ok": True,
+            "status": "live",
+            "pid": os.getpid(),
+        }
+
+    async def readyz(self) -> dict[str, Any]:
+        """Application/runtime readiness, deliberately excluding Project readiness."""
         health = self.health()
-        if not health["ok"]:
-            raise HTTPException(status_code=503, detail=health)
-        return health
+        state = (
+            self.state_store.status()
+            if self.state_store is not None
+            else None
+        )
+        state_ready = bool(
+            state is None
+            or (
+                state.get("ok", True)
+                and (
+                    state.get("schemaVersion") is None
+                    or state.get("supportedSchemaVersion") is None
+                    or int(state["schemaVersion"])
+                    <= int(state["supportedSchemaVersion"])
+                )
+            )
+        )
+        ready = bool(health.get("ok")) and state_ready
+        payload = {
+            "ok": ready,
+            "status": "ready" if ready else "not_ready",
+            "runtime": health,
+            "stateStore": state,
+        }
+        if not ready:
+            raise HTTPException(status_code=503, detail=payload)
+        return payload
+
+    async def healthz(self) -> dict[str, Any]:
+        """Compatibility alias for application/runtime readiness."""
+        return await self.readyz()
 
     async def recovery_resume(self) -> dict[str, Any]:
         try:

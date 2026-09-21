@@ -145,3 +145,18 @@ Canonical materialization uses the SecretBroker/SecretReference boundary. Secret
 ## Relationship to semantic readiness
 
 A successful manifest validation or materialization execution is not equivalent to Project semantic/execution readiness. Readiness additionally depends on canonical repository bindings, TaskSource and SecretReference state, worker capabilities, sandbox/profile compatibility, unresolved Work Item associations, and other bootstrap checks. Operators should use the Project readiness/bootstrap status surfaces as those phases are enabled.
+
+
+## Readiness after bootstrap
+
+Bootstrap completion is not the same as Project execution readiness. Operators should distinguish three levels:
+
+- `GET /api/livez` confirms only that the web process is alive.
+- `GET /api/readyz` verifies application/runtime readiness and StateStore health.
+- `GET /api/projects/<project-id>/readiness` evaluates Project semantic and execution readiness.
+
+Project readiness is derived from canonical state. It checks repository Resources/bindings and deterministic execution targeting, required TaskSource and SecretReference state, worker capability, sandbox compatibility, unresolved bootstrap state, and open Work Item Resource associations. Optional domains are reported as `not_applicable` when the Project does not use them.
+
+Executable thread turns are rejected with a structured `project_readiness_blocked` preflight blocker when Project readiness is unresolved. The response includes the readiness correlation ID, failing check ID/code, remediation route, and the Project readiness URL. Thread-bootstrap execution is intentionally exempt so bootstrap can repair an unready Project.
+
+Readiness diagnostics expose SecretReference identifiers only; raw credential values are never included.
