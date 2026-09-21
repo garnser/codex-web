@@ -38,3 +38,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Stale active-turn recovery](stale-active-turn-recovery.md) — evidence-based active-marker reconciliation, crash-safe recovery, private legacy backups, and operator resolution.
 
 - [Runtime event-journal lifecycle](event-journal-lifecycle.md) — active-file rotation, cross-segment tail reads, crash recovery, protected retention, archive/compression, and lifecycle diagnostics.
+
+- [Recovery release v0.2.0](recovery-release-v0.2.0.md) — immutable candidate build, nginx qualification, real-provider promotion evidence, v0.1 emergency-mount upgrade, and rollback.
