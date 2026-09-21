@@ -172,6 +172,7 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
         write_access=ApiAccessMode.ADMIN,
     ),
     "status": ApiDomainPolicy(),
+    "skills": ApiDomainPolicy(),
     "task-sources": ApiDomainPolicy(),
     "thread-settings": ApiDomainPolicy(),
     "threads": ApiDomainPolicy(),
@@ -188,6 +189,36 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    (
+        "POST",
+        "/api/skills/{record_id}/publish",
+    ): ApiAuthorizationPolicy(
+        capability="skills.publish",
+        level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description="Publish a reusable Skill revision with administrator authority.",
+    ),
+    (
+        "POST",
+        "/api/skills/{record_id}/archive",
+    ): ApiAuthorizationPolicy(
+        capability="skills.archive",
+        level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description="Archive a published Skill revision with administrator authority.",
+    ),
+    (
+        "POST",
+        "/api/skills/definitions/{skill_id}/rollback",
+    ): ApiAuthorizationPolicy(
+        capability="skills.rollback",
+        level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description="Rollback a Skill definition with administrator authority.",
+    ),
     (
         "POST",
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry",
