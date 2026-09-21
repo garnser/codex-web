@@ -33,6 +33,7 @@ WORKDIR /app
 COPY . .
 
 RUN mkdir -p /app/data /workspace /home/codex/.codex \
+    && ln -sf /app/codex-web /usr/local/bin/codex-web \
     && chown -R codex:codex /app/data /workspace /home/codex
 
 USER codex
