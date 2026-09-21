@@ -491,7 +491,21 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different execution profile"
             )
-        if assignment.agent_profile != agent_profile:
+        comparable_agent_profile = agent_profile
+        if (
+            assignment.agent_profile is not None
+            and comparable_agent_profile is not None
+            and assignment.agent_profile.selected_worker_id
+            and comparable_agent_profile.selected_worker_id is None
+        ):
+            comparable_agent_profile = comparable_agent_profile.model_copy(
+                update={
+                    "selected_worker_id": (
+                        assignment.agent_profile.selected_worker_id
+                    )
+                }
+            )
+        if assignment.agent_profile != comparable_agent_profile:
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different Agent Profile revision"
             )
