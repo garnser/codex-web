@@ -5,6 +5,7 @@ import uuid
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 
 from codex_web.compatibility import ContractSpec
 from codex_web.definitions import DefinitionReference
@@ -169,6 +170,7 @@ class ExecutionAssignmentCreate(BaseModel):
     repository_target: RepositoryExecutionTarget | None = None
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -248,6 +250,7 @@ class ExecutionAssignment(BaseModel):
     repository_target: RepositoryExecutionTarget | None = None
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None
