@@ -1295,6 +1295,15 @@ def _agent_profile_role_ref(role_id, actor):
     return definition_ref
 
 
+def _agent_profile_assignment_history(actor):
+    return [
+        item
+        for item in execution_worker_store.load().assignments
+        if item.organization_id == actor.organization_id
+        and item.workspace_id == actor.workspace_id
+    ]
+
+
 agent_profile_store = AgentProfileStore(state_store)
 agent_profile_service = AgentProfileService(
     agent_profile_store,
@@ -1302,6 +1311,7 @@ agent_profile_service = AgentProfileService(
     authority=authority_role_service,
     execution_profiles=execution_profile_definition_service,
     role_resolver=_agent_profile_role_ref,
+    assignment_history=_agent_profile_assignment_history,
 )
 app.state.agent_profile_store = agent_profile_store
 app.state.agent_profile_service = agent_profile_service
