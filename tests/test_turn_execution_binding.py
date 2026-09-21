@@ -830,10 +830,13 @@ class TurnExecutionBindingTests(unittest.TestCase):
             explicit.repository_target,
         )
 
-    def test_work_item_repository_target_precedes_explicit_target(self) -> None:
+    def test_conflicting_work_item_and_explicit_targets_fail_before_mutation(self) -> None:
         self._publish_secret()
         second = self.resources.create(
-            ResourceCreate(resource_type=ResourceType.REPOSITORY, name="Repository 2"),
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+            ),
             actor=self.actor,
         )
         self.resources.bind_project(
@@ -842,25 +845,245 @@ class TurnExecutionBindingTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        work_item = self.service.prepare(
-            thread_id="thread-work-item",
-            execution_id="exec-work-item",
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-work-item-conflict",
+                execution_id="exec-work-item-conflict",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                work_item_resource_ids=(self.repository.id,),
+                work_item_ref="group/app#42",
+                explicit_repository_id=second.id,
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "repository_target_conflict",
+        )
+        self.assertEqual(
+            caught.exception.public()["code"],
+            "repository_target_conflict",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(
+            self.workers.list_assignments(self.actor),
+            [],
+        )
+        self.assertEqual(self.backend.provisioned, [])
+
+    def test_converging_work_item_and_explicit_targets_persist_provenance(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-work-item-converged",
+            execution_id="exec-work-item-converged",
             project_id=self.project.id,
             sandbox="workspace-write",
             approval_policy="on-request",
-            work_item_resource_ids=(self.repository.id,),
+            work_item_resource_ids=(second.id,),
             work_item_ref="group/app#42",
             explicit_repository_id=second.id,
         )
-        self.assertEqual(work_item.repository_resource_id, self.repository.id)
-        self.assertEqual(work_item.resource_ids, (self.repository.id,))
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+
         self.assertEqual(
-            work_item.repository_target.source,
+            binding.repository_resource_id,
+            second.id,
+        )
+        self.assertEqual(
+            binding.repository_target.source,
             RepositoryTargetSource.WORK_ITEM,
         )
         self.assertEqual(
-            work_item.repository_target.source_ref,
-            "group/app#42",
+            [
+                item.source
+                for item in binding.repository_target.selection_evidence
+            ],
+            [
+                RepositoryTargetSource.WORK_ITEM,
+                RepositoryTargetSource.EXPLICIT,
+            ],
+        )
+        self.assertEqual(
+            assignment.repository_target,
+            binding.repository_target,
+        )
+
+    def test_explicit_policy_requires_contextual_target_before_mutation(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        self.projects.project = self.project
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-explicit-missing",
+                execution_id="exec-explicit-missing",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "repository_target_missing",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(
+            self.workers.list_assignments(self.actor),
+            [],
+        )
+        self.assertEqual(self.backend.provisioned, [])
+
+        selected = self.service.prepare(
+            thread_id="thread-explicit-selected",
+            execution_id="exec-explicit-selected",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            explicit_repository_id=second.id,
+        )
+        self.assertEqual(
+            selected.repository_resource_id,
+            second.id,
+        )
+
+    def test_explicit_target_resolves_before_non_repository_readiness_blocker(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        self.projects.project = self.project
+        self.service.project_readiness = lambda project_id, actor: {
+            "execution_ready": False,
+            "correlation_id": "readiness-worker-blocked",
+            "checks": [
+                {
+                    "id": "execution:worker",
+                    "domain": "execution_worker",
+                    "status": "blocked",
+                    "code": "worker_capability_missing",
+                    "message": "command_execution is unavailable",
+                    "required": True,
+                    "remediation": "Start a qualified worker.",
+                }
+            ],
+        }
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-explicit-worker-blocked",
+                execution_id="exec-explicit-worker-blocked",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                explicit_repository_id=second.id,
+            )
+
+        self.assertEqual(
+            caught.exception.code,
+            "project_readiness_blocked",
+        )
+        self.assertEqual(
+            caught.exception.public()["readiness_code"],
+            "worker_capability_missing",
+        )
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(
+            self.workers.list_assignments(self.actor),
+            [],
+        )
+
+    def test_explicit_policy_readiness_required_per_turn_allows_selected_target(self) -> None:
+        self._publish_secret()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "explicit"}
+        )
+        self.projects.project = self.project
+        self.service.project_readiness = lambda project_id, actor: {
+            "execution_ready": True,
+            "correlation_id": "readiness-explicit-ready",
+            "checks": [
+                {
+                    "id": "repository:execution-target",
+                    "domain": "execution_target",
+                    "status": "ready",
+                    "code": "repository_target_required_per_turn",
+                    "required": True,
+                }
+            ],
+        }
+
+        binding = self.service.prepare(
+            thread_id="thread-explicit-ready",
+            execution_id="exec-explicit-ready",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            explicit_repository_id=second.id,
+        )
+
+        self.assertEqual(
+            binding.repository_resource_id,
+            second.id,
+        )
+        self.assertEqual(
+            binding.repository_target.source,
+            RepositoryTargetSource.EXPLICIT,
         )
 
     def test_read_only_context_is_recorded_without_changing_mutable_repository(self) -> None:

@@ -34,6 +34,23 @@ If more than one repository remains eligible and no canonical target resolves th
 
 Changing an existing Project policy is an explicit administrator configuration action through the Project repository-selection API or ProjectBootstrap reconciliation. It does not add/remove Resource bindings or infer authority from filesystem paths.
 
+### Contextual target convergence
+
+For an `explicit` Project, repository authority is resolved during turn preflight before any ExecutionWorkspace, lease, assignment, credential use, or provider mutation.
+
+Canonical mutable-target selectors are validated independently:
+
+1. Work Item repository Resource;
+2. explicit turn repository selection;
+3. thread/execution-profile repository binding;
+4. authorized routing/default repository.
+
+If several selectors are present, they must resolve to the same active Project-bound repository. Matching selectors converge and their provenance is retained on the canonical `RepositoryExecutionTarget.selection_evidence`.
+
+Contradictory selectors fail closed with `repository_target_conflict`; precedence never hides contradictory authority. Missing contextual selection under an explicit Project policy fails with `repository_target_missing`. Wrong-tenant, wrong-type, inactive, or unbound targets fail before execution with a typed repository-target blocker.
+
+After repository selection succeeds, all remaining Project readiness checks still apply, including worker capability, sandbox/profile, SecretReference, migration, and workspace prerequisites.
+
 ### Read-only sibling repositories
 
 Add sibling repositories only when the task needs them. They remain separate canonical Resources and are provisioned as read-only execution members below /mnt/codex-context/<resource-id>.
