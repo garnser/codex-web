@@ -7,6 +7,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.agent_providers import AgentProviderCapability
+from codex_web.definitions import DefinitionReference, DefinitionScope
+from codex_web.execution_workers import WorkerCapability
+
 
 SKILL_DEFINITION_KIND = "agent.skill"
 SKILL_SCHEMA_VERSION = "1.0"
@@ -225,6 +229,29 @@ class SkillDefinition(BaseModel):
             ("required_worker_capabilities", MAX_SKILL_CAPABILITIES),
             ("compatibility_tags", MAX_SKILL_CAPABILITIES),
         ):
+        provider_capabilities = {
+            item.value for item in AgentProviderCapability
+        }
+        unknown_provider = sorted(
+            set(self.required_provider_capabilities) - provider_capabilities
+        )
+        if unknown_provider:
+            raise ValueError(
+                "unknown AgentProvider capabilities: "
+                + ", ".join(unknown_provider)
+            )
+        worker_capabilities = {
+            item.value for item in WorkerCapability
+        }
+        unknown_worker = sorted(
+            set(self.required_worker_capabilities) - worker_capabilities
+        )
+        if unknown_worker:
+            raise ValueError(
+                "unknown worker capabilities: "
+                + ", ".join(unknown_worker)
+            )
+
             values = tuple(
                 sorted(
                     {
@@ -417,3 +444,68 @@ def skill_definition_from_bundle(
             imported_at=imported_at or time.time(),
         ),
     )
+
+
+class SkillDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9][a-z0-9._-]*$",
+    )
+    skill: SkillDefinition
+    reason: str | None = Field(default=None, max_length=1000)
+    scope_type: DefinitionScope = DefinitionScope.WORKSPACE
+
+
+class SkillEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill: SkillDefinition
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SkillPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_active_revision: int | None = Field(default=None, ge=1)
+    approval_metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class SkillRollbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    expected_active_revision: int | None = Field(default=None, ge=1)
+    approval_metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class SkillAttachmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SkillExecutionMaterialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    purpose: str | None = Field(default=None, max_length=200)
+    model_class: str | None = Field(default=None, max_length=200)
+    capability_tags: tuple[str, ...] = ()
+    include_asset_ids: tuple[str, ...] = ()
+
+
+class SkillExecutionMaterial(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reference: DefinitionReference
+    name: str
+    description: str
+    body: str
+    passive_assets: tuple[SkillAsset, ...] = ()
+    helper_assets: tuple[SkillAsset, ...] = ()
+    required_provider_capabilities: tuple[str, ...] = ()
+    required_worker_capabilities: tuple[str, ...] = ()
