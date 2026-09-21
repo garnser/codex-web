@@ -38,6 +38,22 @@ def build_stale_active_turn_router(
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 
+    @router.get("/records")
+    async def records(
+        request: Request,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        try:
+            admin(request)
+            return await asyncio.to_thread(
+                service.audit_records,
+                after=after,
+                limit=max(1, min(limit, 500)),
+            )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
     @router.get("/inspect")
     async def inspect(
         request: Request,
