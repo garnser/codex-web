@@ -860,16 +860,39 @@ class SkillService:
         }
         for asset in skill.assets:
             files[asset.path] = asset.content
+        manifest = SkillCreate(
+            skill_id=skill_id,
+            name=skill.name,
+            description=skill.description,
+            instructions=skill.instructions,
+            applicability_tags=skill.applicability_tags,
+            capability_tags=skill.capability_tags,
+            assets=skill.assets,
+            required_provider_capabilities=(
+                skill.required_provider_capabilities
+            ),
+            required_worker_capabilities=(
+                skill.required_worker_capabilities
+            ),
+            input_expectations=skill.input_expectations,
+            output_expectations=skill.output_expectations,
+            provenance=skill.provenance.model_copy(
+                update={
+                    "source_ref": (
+                        skill.provenance.source_ref
+                        or f"definition:{record.record_id}"
+                    )
+                }
+            ),
+            reason=(
+                f"import exported Skill {skill_id}@{record.revision} "
+                f"({record.checksum})"
+            ),
+        )
         return {
             "format": "codex-web-skill-bundle",
             "version": "1.0",
-            "manifest": {
-                "skillId": skill_id,
-                "revision": record.revision,
-                "recordId": record.record_id,
-                "checksum": record.checksum,
-                "skill": skill.model_dump(mode="json"),
-            },
+            "manifest": manifest.model_dump(mode="json"),
             "files": files,
         }
 
