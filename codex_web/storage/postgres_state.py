@@ -273,6 +273,30 @@ class PostgresStateStore:
                 payload = self._decode(cursor.fetchone())
                 return dict(payload) if isinstance(payload, dict) else {}
 
+    def record_count(self, namespace: str) -> int:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(
+                    cursor,
+                    namespace,
+                ):
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(
+                        cursor,
+                        namespace,
+                    )
+                prefix = f"{state_record_prefix(namespace)}k/"
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM codex_state_documents
+                    WHERE LEFT(namespace, LENGTH(%s)) = %s
+                    """,
+                    (prefix, prefix),
+                )
+                row = cursor.fetchone()
+        return int(row[0] or 0) if row else 0
+
     def record_page(
         self,
         namespace: str,
