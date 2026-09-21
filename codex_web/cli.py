@@ -213,6 +213,7 @@ def _validate_apply_alignment(
         item.domain
         for item in plan.operations
         if item.domain in {"secret_reference", "task_source"}
+        and item.disposition != MaterializationDisposition.SKIPPED
     }
     if provider_ops and manifest.task_source is None:
         raise ProjectBootstrapBlocked(
