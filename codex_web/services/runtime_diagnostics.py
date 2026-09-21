@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import os
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 
 class StaticAssetVersionService:
-    """Generate stable cache-busting versions outside the legacy runtime."""
+    """Generate a stable cache-busting version once, outside hot paths."""
 
     def __init__(self, static_dir: Path, repository_root: Path) -> None:
         self.static_dir = static_dir
         self.repository_root = repository_root
+        self._lock = threading.Lock()
+        self._version = self._compute_version()
 
-    def version(self) -> str:
+    def _compute_version(self) -> str:
         mtimes = [
             path.stat().st_mtime
             for path in (
@@ -26,7 +31,9 @@ class StaticAssetVersionService:
             )
             if path.exists()
         ]
-        mtime_version = str(int(max(mtimes) if mtimes else time.time()))
+        mtime_version = str(
+            int(max(mtimes) if mtimes else time.time())
+        )
         with contextlib.suppress(Exception):
             commit = subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"],
@@ -38,9 +45,19 @@ class StaticAssetVersionService:
                 return f"{commit}-{mtime_version}"
         return mtime_version
 
+    def refresh(self) -> str:
+        value = self._compute_version()
+        with self._lock:
+            self._version = value
+        return value
+
+    def version(self) -> str:
+        with self._lock:
+            return self._version
+
 
 class RuntimeHealthService:
-    """Evaluate daemon/provider health from explicit runtime collaborators."""
+    """Cache expensive runtime health evaluation away from request hot paths."""
 
     def __init__(
         self,
@@ -56,6 +73,9 @@ class RuntimeHealthService:
         slack_provider_health: Callable[[], dict[str, Any]],
         gitlab_sync_status: Callable[[], dict[str, Any]],
         execution_readiness: Callable[[], dict[str, Any]] | None = None,
+        count_active_turns: Callable[[], int] | None = None,
+        state_store_status: Callable[[], dict[str, Any]] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.codex = codex
         self.bot_runtime = bot_runtime
@@ -63,13 +83,176 @@ class RuntimeHealthService:
         self.load_bindings = load_bindings
         self.terminal_failures = terminal_failures
         self.terminal_recovery_tasks = terminal_recovery_tasks
-        self.terminal_failure_window_seconds = terminal_failure_window_seconds
+        self.terminal_failure_window_seconds = (
+            terminal_failure_window_seconds
+        )
         self.load_queues = load_queues
         self.slack_provider_health = slack_provider_health
         self.gitlab_sync_status = gitlab_sync_status
         self.execution_readiness = execution_readiness or (lambda: {})
+        self.count_active_turns = count_active_turns or (lambda: 0)
+        self.state_store_status = state_store_status or (lambda: {})
+        self.event_sink = event_sink
 
-    def health(self) -> dict[str, Any]:
+        self._snapshot_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
+        self._async_refresh_lock = asyncio.Lock()
+        self._snapshot: dict[str, Any] | None = None
+        self._generated_at: float | None = None
+        self._last_refresh_started_at: float | None = None
+        self._last_refresh_completed_at: float | None = None
+        self._last_refresh_duration = 0.0
+        self._last_refresh_error_class: str | None = None
+        self._refresh_count = 0
+        self._refresh_failures = 0
+        self._loop_lag_seconds = 0.0
+        self._max_loop_lag_seconds = 0.0
+        self._operation_metrics: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def refresh_interval_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_RUNTIME_HEALTH_REFRESH_SECONDS"
+                )
+                or "5"
+            )
+        except ValueError:
+            value = 5.0
+        return max(1.0, min(value, 60.0))
+
+    @staticmethod
+    def cache_max_age_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_RUNTIME_HEALTH_CACHE_MAX_AGE_SECONDS"
+                )
+                or "20"
+            )
+        except ValueError:
+            value = 20.0
+        return max(2.0, min(value, 300.0))
+
+    @staticmethod
+    def slow_operation_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_RUNTIME_SLOW_OPERATION_SECONDS"
+                )
+                or "0.25"
+            )
+        except ValueError:
+            value = 0.25
+        return max(0.01, min(value, 30.0))
+
+    @staticmethod
+    def event_loop_lag_warning_seconds() -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_EVENT_LOOP_LAG_WARNING_SECONDS"
+                )
+                or "0.25"
+            )
+        except ValueError:
+            value = 0.25
+        return max(0.01, min(value, 10.0))
+
+    @staticmethod
+    def _record_count(value: Any) -> int | None:
+        if isinstance(value, dict):
+            return len(value)
+        if isinstance(value, (list, tuple, set)):
+            return len(value)
+        return None
+
+    def _record_operation(
+        self,
+        name: str,
+        *,
+        elapsed: float,
+        records: int | None,
+        bytes_read: int | None,
+        refresh_id: str,
+        error_class: str | None = None,
+    ) -> None:
+        with self._metrics_lock:
+            current = dict(self._operation_metrics.get(name, {}))
+            current["calls"] = int(current.get("calls", 0)) + 1
+            current["lastSeconds"] = elapsed
+            current["maxSeconds"] = max(
+                float(current.get("maxSeconds", 0.0)),
+                elapsed,
+            )
+            current["lastRecords"] = records
+            current["lastBytes"] = bytes_read
+            current["lastRefreshId"] = refresh_id
+            current["lastErrorClass"] = error_class
+            if elapsed >= self.slow_operation_seconds():
+                current["slowCalls"] = (
+                    int(current.get("slowCalls", 0)) + 1
+                )
+            self._operation_metrics[name] = current
+
+        if (
+            elapsed >= self.slow_operation_seconds()
+            and self.event_sink is not None
+        ):
+            self.event_sink(
+                {
+                    "type": "runtime_slow_operation",
+                    "operation": name,
+                    "duration_seconds": elapsed,
+                    "records": records,
+                    "bytes_read": bytes_read,
+                    "refresh_id": refresh_id,
+                    "error_class": error_class,
+                }
+            )
+
+    def _profile(
+        self,
+        name: str,
+        callback: Callable[[], Any],
+        *,
+        refresh_id: str,
+        record_counter: Callable[[Any], int | None] | None = None,
+        bytes_counter: Callable[[Any], int | None] | None = None,
+    ) -> Any:
+        started = time.perf_counter()
+        error_class: str | None = None
+        value: Any = None
+        try:
+            value = callback()
+            return value
+        except Exception as exc:
+            error_class = type(exc).__name__
+            raise
+        finally:
+            elapsed = max(0.0, time.perf_counter() - started)
+            records = (
+                record_counter(value)
+                if record_counter is not None
+                else self._record_count(value)
+            )
+            bytes_read = (
+                bytes_counter(value)
+                if bytes_counter is not None
+                else None
+            )
+            self._record_operation(
+                name,
+                elapsed=elapsed,
+                records=records,
+                bytes_read=bytes_read,
+                refresh_id=refresh_id,
+                error_class=error_class,
+            )
+
+    def _evaluate(self, refresh_id: str) -> dict[str, Any]:
         now = time.time()
         problems: list[str] = []
         configured_runtime_ids = set(self.bot_runtime.fingerprints)
@@ -107,10 +290,17 @@ class RuntimeHealthService:
                         f"{int(now - error_at)}s: {connection_id}"
                     )
 
+        bindings = self._profile(
+            "bindings.load",
+            self.load_bindings,
+            refresh_id=refresh_id,
+        )
         bound_thread_ids = {
-            binding.thread_id for binding in self.load_bindings()
+            binding.thread_id for binding in bindings
         }
-        failure_window = float(self.terminal_failure_window_seconds())
+        failure_window = float(
+            self.terminal_failure_window_seconds()
+        )
         terminal_failures = {
             thread_id: list(failures)
             for thread_id, failures in self.terminal_failures.items()
@@ -124,7 +314,17 @@ class RuntimeHealthService:
                 f"{len(terminal_failures)} bound thread(s)"
             )
 
-        queues = self.load_queues()
+        queues = self._profile(
+            "turn_queues.load",
+            self.load_queues,
+            refresh_id=refresh_id,
+            record_counter=lambda values: sum(
+                len(items) for items in values.values()
+            ),
+        )
+        queued_turn_count = sum(
+            len(items) for items in queues.values()
+        )
         stale_queues = {
             thread_id: len(items)
             for thread_id, items in queues.items()
@@ -137,9 +337,24 @@ class RuntimeHealthService:
                 f"{len(stale_queues)} thread(s)"
             )
 
+        recent_events = self._profile(
+            "telemetry.recent",
+            lambda: self.telemetry.recent(120),
+            refresh_id=refresh_id,
+            bytes_counter=lambda _value: int(
+                self.telemetry.recent_metrics().get(
+                    "bytesRead",
+                    0,
+                )
+            )
+            if callable(
+                getattr(self.telemetry, "recent_metrics", None)
+            )
+            else None,
+        )
         recent_delivery_failures = [
             event
-            for event in self.telemetry.recent(120)
+            for event in recent_events
             if now - float(event.get("created_at") or 0) < 300
             and isinstance(event.get("delivery"), dict)
             and event["delivery"].get("sent") is False
@@ -150,7 +365,11 @@ class RuntimeHealthService:
                 "failed in the last 300s"
             )
 
-        slack_health = self.slack_provider_health()
+        slack_health = self._profile(
+            "slack.health",
+            self.slack_provider_health,
+            refresh_id=refresh_id,
+        )
         slack_backfill_cooldown = float(
             slack_health.get("cooldownRemainingSeconds") or 0.0
         )
@@ -163,8 +382,15 @@ class RuntimeHealthService:
                 f"{int(slack_backfill_cooldown)}s"
             )
 
-        execution_readiness = self.execution_readiness()
-        if execution_readiness and not execution_readiness.get("ready", False):
+        execution_readiness = self._profile(
+            "execution.readiness",
+            self.execution_readiness,
+            refresh_id=refresh_id,
+        )
+        if (
+            execution_readiness
+            and not execution_readiness.get("ready", False)
+        ):
             problems.append(
                 str(
                     execution_readiness.get("reason")
@@ -172,35 +398,249 @@ class RuntimeHealthService:
                 )
             )
 
-        gitlab = self.gitlab_sync_status()
+        gitlab = self._profile(
+            "gitlab.health",
+            self.gitlab_sync_status,
+            refresh_id=refresh_id,
+        )
         failures = int(gitlab.get("consecutive_failures") or 0)
         if failures >= 2:
             problems.append(
                 f"GitLab sync failed {failures} consecutive times"
             )
 
+        active_turn_count = int(
+            self._profile(
+                "active_turns.count",
+                self.count_active_turns,
+                refresh_id=refresh_id,
+            )
+        )
+        state_status = self._profile(
+            "state_store.status",
+            self.state_store_status,
+            refresh_id=refresh_id,
+        )
+
         return {
             "ok": not problems,
             "problems": problems,
             "codexReady": self.codex.ready.is_set(),
-            "codexPid": self.codex.proc.pid if self.codex.proc else None,
+            "codexPid": (
+                self.codex.proc.pid if self.codex.proc else None
+            ),
             "runtimeConnections": len(self.bot_runtime.tasks),
             "runtimeStatus": list(runtime_status.values()),
             "terminalFailureThreads": len(terminal_failures),
-            "terminalRecoveryThreads": len(self.terminal_recovery_tasks),
+            "terminalRecoveryThreads": len(
+                self.terminal_recovery_tasks
+            ),
             "staleQueueThreads": stale_queues,
-            "recentDeliveryFailures": len(recent_delivery_failures),
+            "recentDeliveryFailures": len(
+                recent_delivery_failures
+            ),
             "slackBackfillCooldownRemainingSeconds": (
                 slack_backfill_cooldown
             ),
             "gitlabSyncConsecutiveFailures": failures,
             "gitlabSyncLastError": gitlab.get("last_error"),
-            "gitlabSyncLastErrorAt": gitlab.get("last_error_at") or None,
+            "gitlabSyncLastErrorAt": (
+                gitlab.get("last_error_at") or None
+            ),
             "gitlabSyncLastSuccessAt": (
                 gitlab.get("last_success_at") or None
             ),
             "executionReadiness": execution_readiness,
+            "activeTurns": active_turn_count,
+            "queuedTurns": queued_turn_count,
+            "queueThreads": sum(
+                1 for items in queues.values() if items
+            ),
+            "bindingCount": len(bindings),
+            "stateStore": state_status,
+            "refreshId": refresh_id,
         }
+
+    def _commit_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        started_at: float,
+        completed_at: float,
+    ) -> None:
+        with self._snapshot_lock:
+            self._snapshot = snapshot
+            self._generated_at = completed_at
+            self._last_refresh_started_at = started_at
+            self._last_refresh_completed_at = completed_at
+            self._last_refresh_duration = max(
+                0.0,
+                completed_at - started_at,
+            )
+            self._last_refresh_error_class = None
+            self._refresh_count += 1
+
+    def refresh_sync(self) -> dict[str, Any]:
+        started_at = time.time()
+        refresh_id = f"health-{uuid.uuid4().hex}"
+        try:
+            snapshot = self._evaluate(refresh_id)
+        except Exception as exc:
+            completed_at = time.time()
+            with self._snapshot_lock:
+                self._last_refresh_started_at = started_at
+                self._last_refresh_completed_at = completed_at
+                self._last_refresh_duration = max(
+                    0.0,
+                    completed_at - started_at,
+                )
+                self._last_refresh_error_class = type(exc).__name__
+                self._refresh_failures += 1
+            return self.health()
+        completed_at = time.time()
+        self._commit_snapshot(
+            snapshot,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        return self.health()
+
+    async def refresh(self) -> dict[str, Any]:
+        async with self._async_refresh_lock:
+            return await asyncio.to_thread(self.refresh_sync)
+
+    def health(self) -> dict[str, Any]:
+        now = time.time()
+        with self._snapshot_lock:
+            snapshot = (
+                dict(self._snapshot)
+                if self._snapshot is not None
+                else None
+            )
+            generated_at = self._generated_at
+            last_started = self._last_refresh_started_at
+            last_completed = self._last_refresh_completed_at
+            duration = self._last_refresh_duration
+            error_class = self._last_refresh_error_class
+            refresh_count = self._refresh_count
+            refresh_failures = self._refresh_failures
+
+        age = (
+            max(0.0, now - generated_at)
+            if generated_at is not None
+            else None
+        )
+        stale = bool(
+            generated_at is None
+            or age is None
+            or age > self.cache_max_age_seconds()
+        )
+        if snapshot is None:
+            snapshot = {
+                "ok": False,
+                "problems": [
+                    "runtime health snapshot has not been generated"
+                ],
+                "codexReady": self.codex.ready.is_set(),
+                "codexPid": (
+                    self.codex.proc.pid if self.codex.proc else None
+                ),
+                "runtimeConnections": len(
+                    self.bot_runtime.tasks
+                ),
+                "runtimeStatus": list(
+                    self.telemetry.snapshot().values()
+                ),
+                "terminalFailureThreads": 0,
+                "terminalRecoveryThreads": len(
+                    self.terminal_recovery_tasks
+                ),
+                "staleQueueThreads": {},
+                "recentDeliveryFailures": 0,
+                "slackBackfillCooldownRemainingSeconds": 0.0,
+                "gitlabSyncConsecutiveFailures": 0,
+                "gitlabSyncLastError": None,
+                "gitlabSyncLastErrorAt": None,
+                "gitlabSyncLastSuccessAt": None,
+                "executionReadiness": {},
+                "activeTurns": 0,
+                "queuedTurns": 0,
+                "queueThreads": 0,
+                "bindingCount": 0,
+                "stateStore": {},
+                "refreshId": None,
+            }
+        evaluated_ok = bool(snapshot.get("ok"))
+        problems = list(snapshot.get("problems") or [])
+        if stale and "runtime health snapshot is stale" not in problems:
+            problems.append("runtime health snapshot is stale")
+        snapshot["evaluatedOk"] = evaluated_ok
+        snapshot["ok"] = evaluated_ok and not stale
+        snapshot["problems"] = problems
+        snapshot["healthCache"] = {
+            "generatedAt": generated_at,
+            "ageSeconds": age,
+            "maxAgeSeconds": self.cache_max_age_seconds(),
+            "stale": stale,
+            "refreshInProgress": self._async_refresh_lock.locked(),
+            "lastRefreshStartedAt": last_started,
+            "lastRefreshCompletedAt": last_completed,
+            "lastRefreshDurationSeconds": duration,
+            "lastRefreshErrorClass": error_class,
+            "refreshCount": refresh_count,
+            "refreshFailures": refresh_failures,
+        }
+        snapshot["eventLoopLagSeconds"] = self._loop_lag_seconds
+        snapshot["maxEventLoopLagSeconds"] = (
+            self._max_loop_lag_seconds
+        )
+        return snapshot
+
+    def metrics(self) -> dict[str, Any]:
+        with self._metrics_lock:
+            operations = {
+                key: dict(value)
+                for key, value in self._operation_metrics.items()
+            }
+        return {
+            "operations": operations,
+            "eventLoopLagSeconds": self._loop_lag_seconds,
+            "maxEventLoopLagSeconds": (
+                self._max_loop_lag_seconds
+            ),
+            "refreshIntervalSeconds": (
+                self.refresh_interval_seconds()
+            ),
+            "cacheMaxAgeSeconds": self.cache_max_age_seconds(),
+        }
+
+    async def run_forever(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            await self.refresh()
+            interval = self.refresh_interval_seconds()
+            target = loop.time() + interval
+            await asyncio.sleep(interval)
+            lag = max(0.0, loop.time() - target)
+            self._loop_lag_seconds = lag
+            self._max_loop_lag_seconds = max(
+                self._max_loop_lag_seconds,
+                lag,
+            )
+            if (
+                lag >= self.event_loop_lag_warning_seconds()
+                and self.event_sink is not None
+            ):
+                await asyncio.to_thread(
+                    self.event_sink,
+                    {
+                        "type": "runtime_event_loop_lag",
+                        "lag_seconds": lag,
+                        "threshold_seconds": (
+                            self.event_loop_lag_warning_seconds()
+                        ),
+                    },
+                )
 
 
 class RuntimeDiagnosticsService:
