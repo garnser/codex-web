@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurnRequest
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
@@ -694,7 +695,7 @@ class TurnExecutionService:
         fence: int | None = None,
         repository_resource_id: str | None = None,
         execution_profile_id: str | None = None,
-        agent_profile=None,
+        agent_profile: AgentProfileExecutionBinding | None = None,
         agent_profile_actor_id: str | None = None,
     ) -> None:
         if not thread_id:
@@ -1348,6 +1349,12 @@ class TurnExecutionService:
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
                 execution_profile_id=effective_execution_profile_id,
+                agent_profile=agent_profile_binding,
+                agent_profile_actor_id=(
+                    actor.identity_id
+                    if actor is not None
+                    else agent_profile_actor_id
+                ),
             )
         h._append_bot_event(
             {
@@ -1382,7 +1389,6 @@ class TurnExecutionService:
                     if agent_profile_binding is not None
                     else None
                 ),
-                "worker_id": status.worker_id,
             }
         )
         await self.publish_queue_status(thread_id)
@@ -1875,6 +1881,7 @@ def install_turn_execution_service(
     provider_capacity: ProviderCapacityService | None = None,
     ownership: ReplicatedOwnershipService | None = None,
     bindings_for_thread: Callable[[str], list[BotBinding]] | None = None,
+    actor_resolver: Callable[[str, Project], AuthenticationActor] | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -1895,6 +1902,8 @@ def install_turn_execution_service(
         service.ownership = ownership or service.ownership
         if bindings_for_thread is not None:
             service.bindings_for_thread = bindings_for_thread
+        if actor_resolver is not None:
+            service.actor_resolver = actor_resolver
     else:
         service = TurnExecutionService(
             host,
@@ -1908,6 +1917,7 @@ def install_turn_execution_service(
             provider_capacity=provider_capacity,
             ownership=ownership,
             bindings_for_thread=bindings_for_thread,
+            actor_resolver=actor_resolver,
         )
         app.state.turn_execution_service = service
 
