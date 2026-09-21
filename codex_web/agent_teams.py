@@ -346,6 +346,9 @@ class AgentTeamDelegationRecord(BaseModel):
     event_id: str | None = None
     equivalent_decision_key: str | None = None
     execution_links: tuple[AgentTeamExecutionLink, ...] = ()
+    completed_member_ids: tuple[str, ...] = ()
+    failed_member_ids: tuple[str, ...] = ()
+    result_event_ids: tuple[str, ...] = ()
     coordinator_input_tokens: int = Field(default=0, ge=0)
     coordinator_output_tokens: int = Field(default=0, ge=0)
     coordinator_cost_usd: float = Field(default=0.0, ge=0.0)
