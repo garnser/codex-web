@@ -58,6 +58,7 @@ class RotatingJsonlJournal:
     """Crash-safe segmented JSONL journal with bounded hot-tail reads."""
 
     TAIL_RECORDS = 300
+    RECENT_READ_BUDGET_BYTES = 4 * 1024 * 1024
 
     def __init__(
         self,
@@ -793,6 +794,7 @@ class RotatingJsonlJournal:
         requested: int,
         chunk_size: int,
         metrics: dict[str, int],
+        read_budget: int,
     ) -> list[dict[str, Any]]:
         if requested <= 0 or not path.exists():
             return []
@@ -802,7 +804,17 @@ class RotatingJsonlJournal:
             position = handle.tell()
             carry = b""
             while position > 0 and len(events_reverse) < requested:
-                read_size = min(chunk_size, position)
+                remaining_budget = max(
+                    0,
+                    read_budget - metrics["bytesRead"],
+                )
+                if remaining_budget <= 0:
+                    break
+                read_size = min(
+                    chunk_size,
+                    position,
+                    remaining_budget,
+                )
                 position -= read_size
                 handle.seek(position)
                 block = handle.read(read_size)
@@ -841,11 +853,20 @@ class RotatingJsonlJournal:
         path: Path,
         requested: int,
         metrics: dict[str, int],
+        read_budget: int,
     ) -> list[dict[str, Any]]:
         rows: deque[dict[str, Any]] = deque(maxlen=requested)
         with gzip.open(path, "rb") as handle:
             for raw in handle:
-                metrics["bytesRead"] += len(raw)
+                if metrics["bytesRead"] >= read_budget:
+                    break
+                allowed = min(
+                    len(raw),
+                    read_budget - metrics["bytesRead"],
+                )
+                metrics["bytesRead"] += allowed
+                if allowed < len(raw):
+                    break
                 metrics["linesConsidered"] += 1
                 value = self._decode_event(raw)
                 if value is not None:
@@ -885,9 +906,14 @@ class RotatingJsonlJournal:
         limit: int = 80,
         *,
         chunk_size: int = 64 * 1024,
+        max_bytes: int = RECENT_READ_BUDGET_BYTES,
     ) -> list[dict[str, Any]]:
         requested = max(1, min(int(limit), self.TAIL_RECORDS))
         chunk_size = max(1024, int(chunk_size))
+        read_budget = max(
+            chunk_size,
+            min(int(max_bytes), 64 * 1024 * 1024),
+        )
         metrics = self._empty_recent_metrics()
         try:
             metrics["fileSize"] = int(
@@ -910,6 +936,7 @@ class RotatingJsonlJournal:
                     path,
                     remaining,
                     metrics,
+                    read_budget,
                 )
             else:
                 values = self._read_plain_tail(
@@ -917,6 +944,7 @@ class RotatingJsonlJournal:
                     remaining,
                     chunk_size,
                     metrics,
+                    read_budget,
                 )
             if values:
                 chunks.append(values)
