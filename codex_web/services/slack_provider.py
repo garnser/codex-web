@@ -706,6 +706,7 @@ class SlackProviderService:
         processed: int,
         skipped: int,
         errors: int,
+        successful: bool,
     ) -> None:
         if self.backfill_store is None:
             return
@@ -720,7 +721,7 @@ class SlackProviderService:
             state.last_processed = int(processed)
             state.last_skipped = int(skipped)
             state.last_errors = int(errors)
-            if int(errors) == 0:
+            if successful:
                 state.last_successful_completion_at = now
             state.cooldown_until = self.cooldown_until or None
             state.rate_limit_failures = self.rate_limit_failures
@@ -851,6 +852,7 @@ class SlackProviderService:
             processed_total = 0
             skipped_total = 0
             errors_total = 0
+            completed_normally = False
             base_oldest = max(
                 0.0,
                 cycle_started - self.window_seconds(),
@@ -1099,6 +1101,7 @@ class SlackProviderService:
                         skipped=skipped,
                         errors=0,
                     )
+                completed_normally = True
             finally:
                 await asyncio.to_thread(
                     self._mark_cycle_complete,
@@ -1106,6 +1109,10 @@ class SlackProviderService:
                     processed=processed_total,
                     skipped=skipped_total,
                     errors=errors_total,
+                    successful=(
+                        completed_normally
+                        and errors_total == 0
+                    ),
                 )
                 if self.reconciliation_gates is not None:
                     for project_id, actor in started.items():
