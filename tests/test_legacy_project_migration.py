@@ -210,12 +210,23 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             platform_repo.resolve(),
         )
         self.assertEqual(proposal.proposed_sandbox, "workspace-write")
-        self.assertFalse(
+        self.assertTrue(
             proposal.authority_difference.requires_operator_approval
         )
+        self.assertEqual(
+            proposal.disposition,
+            MigrationDisposition.APPROVAL_REQUIRED,
+        )
+        with self.assertRaises(LegacyProjectMigrationApprovalRequired):
+            self.service.apply(plan, actor=self.actor)
 
-        result = self.service.apply(plan, actor=self.actor)
+        result = self.service.apply(
+            plan,
+            actor=self.actor,
+            approve_material_authority_changes=True,
+        )
         self.assertEqual(result.status, MigrationApplyStatus.APPLIED)
+        self.assertEqual(result.approved_by, self.actor.identity_id)
         migrated = self.settings.values["thread-dev"]
         self.assertEqual(migrated.sandbox, "workspace-write")
         self.assertEqual(migrated.developer_instructions, malicious)
