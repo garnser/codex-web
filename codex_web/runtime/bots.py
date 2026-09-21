@@ -813,12 +813,70 @@ class BotRuntime:
 
     @staticmethod
     def is_transient_websocket_disconnect(exc: Exception) -> bool:
-        text = str(exc).lower()
-        return (
-            isinstance(exc, ConnectionClosed)
-            or "keepalive ping timeout" in text
-            or "no close frame received" in text
+        return BotRuntime.slack_socket_failure_is_transport(
+            BotRuntime.slack_socket_failure_class(exc)
         )
+
+    def _instrument_slack_ping(
+        self,
+        websocket: Any,
+        connection: BotConnection,
+    ) -> None:
+        original_ping = getattr(websocket, "ping", None)
+        if not callable(original_ping):
+            self.telemetry.set_status(
+                connection,
+                "connected",
+                pingTelemetryInstrumented=False,
+            )
+            return
+
+        async def instrumented_ping(data=None):
+            sent_at = time.time()
+            self.telemetry.set_status(
+                connection,
+                "connected",
+                lastPingAt=sent_at,
+                pingTelemetryInstrumented=True,
+            )
+            waiter = await original_ping(data)
+
+            async def observe_pong() -> None:
+                try:
+                    latency = await waiter
+                except Exception:
+                    return
+                self.telemetry.set_status(
+                    connection,
+                    "connected",
+                    lastPongAt=time.time(),
+                    lastPongLatencySeconds=(
+                        float(latency)
+                        if isinstance(latency, (int, float))
+                        else None
+                    ),
+                )
+
+            asyncio.create_task(
+                observe_pong(),
+                name=f"slack-pong-observer-{connection.id}",
+            )
+            return waiter
+
+        try:
+            websocket.ping = instrumented_ping
+        except Exception:
+            self.telemetry.set_status(
+                connection,
+                "connected",
+                pingTelemetryInstrumented=False,
+            )
+        else:
+            self.telemetry.set_status(
+                connection,
+                "connected",
+                pingTelemetryInstrumented=True,
+            )
 
     async def _run_connection(self, connection: BotConnection) -> None:
         if connection.provider == "slack":
@@ -829,6 +887,9 @@ class BotRuntime:
                     self.telemetry.set_status(
                         connection,
                         "starting",
+                        connectedSince=None,
+                        nextRetryAt=None,
+                        reconnectDelaySeconds=None,
                         lastError=None,
                     )
                     if connection.provider == "slack":
@@ -840,97 +901,192 @@ class BotRuntime:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    if (
-                        connection.provider == "slack"
-                        and self.is_transient_websocket_disconnect(exc)
-                    ):
+                    now = time.time()
+                    if connection.provider != "slack":
                         self.telemetry.set_status(
                             connection,
-                            "reconnecting",
-                            lastDisconnect=str(exc),
-                            lastDisconnectAt=time.time(),
-                            lastError=None,
+                            "error",
+                            lastErrorClass=type(exc).__name__,
+                            lastErrorAt=now,
                         )
-                        self.telemetry.append(
+                        await asyncio.to_thread(
+                            self.telemetry.append,
                             {
-                                "type": "runtime_reconnect",
+                                "type": "runtime_error",
                                 "provider": connection.provider,
                                 "connection_id": connection.id,
-                                "reason": str(exc),
-                            }
+                                "error_class": type(exc).__name__,
+                            },
                         )
                         await self.publish_event(
                             {
                                 "type": "bot.runtime",
                                 "provider": connection.provider,
                                 "connectionId": connection.id,
-                                "status": "reconnecting",
-                                "reason": str(exc),
+                                "status": "error",
+                                "errorClass": type(exc).__name__,
                             }
                         )
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(10)
                         continue
+
+                    failure_class = self.slack_socket_failure_class(
+                        exc
+                    )
+                    previous = self.telemetry.status.get(
+                        connection.id,
+                        {},
+                    )
+                    connected_since = previous.get("connectedSince")
+                    previous_failures = self.slack_reconnect_failures.get(
+                        connection.id,
+                        0,
+                    )
+                    if (
+                        isinstance(connected_since, (int, float))
+                        and now - float(connected_since)
+                        >= self.slack_reconnect_stable_reset_seconds()
+                    ):
+                        previous_failures = 0
+                    failures = previous_failures + 1
+                    self.slack_reconnect_failures[
+                        connection.id
+                    ] = failures
+                    reconnect_count = (
+                        self.slack_reconnect_counts.get(
+                            connection.id,
+                            0,
+                        )
+                        + 1
+                    )
+                    self.slack_reconnect_counts[
+                        connection.id
+                    ] = reconnect_count
+                    delay = self.slack_reconnect_delay(failures)
+                    if (
+                        failure_class
+                        == "authentication_configuration"
+                    ):
+                        delay = max(delay, 30.0)
+                    delay = min(
+                        delay,
+                        self.slack_reconnect_max_seconds(),
+                    )
+                    next_retry = now + delay
+                    transport_failure = (
+                        self.slack_socket_failure_is_transport(
+                            failure_class
+                        )
+                    )
+                    status = (
+                        "reconnecting"
+                        if transport_failure
+                        else "configuration_error"
+                    )
                     self.telemetry.set_status(
                         connection,
-                        "error",
-                        lastError=str(exc),
-                        lastErrorAt=time.time(),
+                        status,
+                        connectedSince=None,
+                        lastDisconnectAt=now,
+                        lastDisconnectClass=failure_class,
+                        lastErrorClass=type(exc).__name__,
+                        reconnectCount=reconnect_count,
+                        consecutiveReconnectFailures=failures,
+                        reconnectDelaySeconds=delay,
+                        nextRetryAt=next_retry,
+                        tokenRotationRequired=False,
                     )
-                    self.telemetry.append(
+                    await asyncio.to_thread(
+                        self.telemetry.append,
                         {
-                            "type": "runtime_error",
-                            "provider": connection.provider,
+                            "type": "runtime_reconnect",
+                            "provider": "slack",
                             "connection_id": connection.id,
-                            "error": str(exc),
-                        }
+                            "failure_class": failure_class,
+                            "error_class": type(exc).__name__,
+                            "reconnect_count": reconnect_count,
+                            "failure_count": failures,
+                            "delay_seconds": delay,
+                            "next_retry_at": next_retry,
+                        },
                     )
                     await self.publish_event(
                         {
                             "type": "bot.runtime",
-                            "provider": connection.provider,
+                            "provider": "slack",
                             "connectionId": connection.id,
-                            "status": "error",
-                            "error": str(exc),
+                            "status": status,
+                            "failureClass": failure_class,
+                            "reconnectCount": reconnect_count,
+                            "nextRetryAt": next_retry,
                         }
                     )
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(delay)
         finally:
             if connection.provider == "slack":
                 await self._stop_slack_payload_workers(connection)
 
     async def _run_slack(self, connection: BotConnection) -> None:
-        socket_url = await self._with_credential(
-            connection,
-            "slack_app_token",
-            "slack.socket_url",
-            self.slack.socket_url,
-        )
         self.telemetry.set_status(
             connection,
             "connecting",
+            connectedSince=None,
             lastError=None,
+            pingIntervalSeconds=self.slack_socket_ping_interval(),
+            pingTimeoutSeconds=self.slack_socket_ping_timeout(),
+            openTimeoutSeconds=self.slack_socket_open_timeout(),
         )
         await self.publish_event(
             {
                 "type": "bot.runtime",
                 "provider": "slack",
                 "connectionId": connection.id,
-                "status": "connected",
+                "status": "connecting",
             }
+        )
+        socket_url = await self._with_credential(
+            connection,
+            "slack_app_token",
+            "slack.socket_url",
+            self.slack.socket_url,
         )
         async with websockets.connect(
             socket_url,
-            ping_interval=60,
-            ping_timeout=None,
+            ping_interval=self.slack_socket_ping_interval(),
+            ping_timeout=self.slack_socket_ping_timeout(),
+            open_timeout=self.slack_socket_open_timeout(),
             close_timeout=5,
         ) as websocket:
+            connected_at = time.time()
             self.telemetry.set_status(
                 connection,
                 "connected",
-                connectedAt=time.time(),
+                connectedSince=connected_at,
+                connectedAt=connected_at,
                 lastError=None,
+                nextRetryAt=None,
+                reconnectDelaySeconds=None,
+                pingIntervalSeconds=self.slack_socket_ping_interval(),
+                pingTimeoutSeconds=self.slack_socket_ping_timeout(),
+                openTimeoutSeconds=self.slack_socket_open_timeout(),
+                lastPingAt=None,
+                lastPongAt=None,
+            )
+            self._instrument_slack_ping(
+                websocket,
+                connection,
+            )
+            await self.publish_event(
+                {
+                    "type": "bot.runtime",
+                    "provider": "slack",
+                    "connectionId": connection.id,
+                    "status": "connected",
+                    "connectedSince": connected_at,
+                }
             )
             async for raw in websocket:
+                received_at = time.time()
                 envelope = json.loads(raw)
                 envelope_id = str(
                     envelope.get("envelope_id") or ""
@@ -943,10 +1099,6 @@ class BotRuntime:
                     payload,
                     envelope_id=envelope_id,
                 )
-                # Ack only after bounded admission succeeds, or when replay is
-                # safely deduplicated. A saturated queue deliberately leaves
-                # the envelope unacked so Slack can retry instead of losing a
-                # user message after we reported success.
                 if envelope_id and admission in {
                     "accepted",
                     "deduped",
@@ -957,10 +1109,14 @@ class BotRuntime:
                 self.telemetry.set_status(
                     connection,
                     "connected",
-                    lastEnvelopeAt=time.time(),
+                    lastFrameAt=received_at,
+                    lastEnvelopeAt=received_at,
                     lastPayloadType=payload.get("type"),
                     lastPayloadAdmission=admission,
                 )
+        raise SlackSocketCleanClose(
+            "Slack Socket Mode connection closed cleanly"
+        )
 
     def _schedule_slack_payload(
         self,
