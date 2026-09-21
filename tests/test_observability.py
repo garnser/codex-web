@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -265,6 +267,55 @@ class RuntimeMetricsTests(unittest.TestCase):
             self.assertIn("metrics", snapshot)
             self.assertIn("health", snapshot)
             self.assertGreaterEqual(snapshot["traceCount"], 1)
+
+    def test_slow_http_request_is_correlated_and_path_is_traced(self) -> None:
+        app = FastAPI()
+        host = _Host()
+        install_observability(app, host)
+
+        @app.get("/slow-probe")
+        async def slow_probe() -> dict[str, bool]:
+            await asyncio.sleep(0.06)
+            return {"ok": True}
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_SLOW_HTTP_REQUEST_SECONDS": "0.05"},
+            clear=False,
+        ), patch(
+            "codex_web.observability.log_event",
+        ) as emitted:
+            with TestClient(app) as client:
+                response = client.get(
+                    "/slow-probe",
+                    headers={CORRELATION_HEADER: "corr-slow"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers[CORRELATION_HEADER],
+            "corr-slow",
+        )
+        emitted.assert_called_once()
+        args = emitted.call_args.args
+        fields = emitted.call_args.kwargs
+        self.assertEqual(
+            args[2],
+            "runtime.slow_http_request",
+        )
+        self.assertEqual(fields["path"], "/slow-probe")
+        self.assertEqual(fields["correlation_id"], "corr-slow")
+        traces = app.state.runtime_tracer.snapshot()
+        matching = [
+            item
+            for item in traces
+            if item["attributes"].get("path") == "/slow-probe"
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(
+            matching[0]["correlationId"],
+            "corr-slow",
+        )
 
     def test_observability_endpoints_require_admin_or_scoped_service(self) -> None:
         app = FastAPI()

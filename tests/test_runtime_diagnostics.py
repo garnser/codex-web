@@ -40,6 +40,25 @@ class StaticAssetVersionServiceTests(unittest.TestCase):
                 str(int(max(index.stat().st_mtime, app.stat().st_mtime))),
             )
 
+    def test_version_hot_path_is_cached_after_construction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            static = root / "static"
+            static.mkdir()
+            (static / "index.html").write_text("<html></html>")
+            with patch(
+                "codex_web.services.runtime_diagnostics.subprocess.check_output",
+                return_value="abc123\n",
+            ) as git:
+                service = StaticAssetVersionService(static, root)
+                first = service.version()
+                second = service.version()
+                third = service.version()
+
+            self.assertEqual(first, second)
+            self.assertEqual(second, third)
+            self.assertEqual(git.call_count, 1)
+
 
 class BotRuntimeTelemetryDiagnosticsTests(unittest.TestCase):
     def test_recent_activity_and_event_counts_use_event_journal(self) -> None:
@@ -129,7 +148,7 @@ class RuntimeHealthServiceTests(unittest.TestCase):
                 },
             )
 
-            snapshot = service.health()
+            snapshot = service.refresh_sync()
 
         self.assertTrue(snapshot["ok"])
         self.assertTrue(snapshot["codexReady"])

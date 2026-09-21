@@ -220,23 +220,23 @@ class RuntimeService:
             host.recovery_resume = self.recovery_resume
 
     async def status(self) -> dict[str, Any]:
-        try:
-            await CodexAgentRuntimeAdapter(self.codex).recover()
-        except Exception:
-            pass
+        health = self.health()
         return {
-            "ok": self.codex.ready.is_set(),
+            "ok": bool(health.get("ok")),
             "pid": self.codex.proc.pid if self.codex.proc else None,
             "error": (
-                None if self.codex.ready.is_set() else self.codex.last_error
+                None
+                if self.codex.ready.is_set()
+                else self.codex.last_error
             ),
             "version": self.static_version(),
             "pendingApprovals": list(
                 self.codex.pending_approvals.values()
             ),
-            "activeTurns": len(self.load_active_turns()),
-            "queuedTurns": sum(
-                len(items) for items in self.load_turn_queues().values()
+            "activeTurns": int(health.get("activeTurns") or 0),
+            "queuedTurns": int(health.get("queuedTurns") or 0),
+            "healthCache": dict(
+                health.get("healthCache") or {}
             ),
         }
 
@@ -254,11 +254,9 @@ class RuntimeService:
     async def readyz(self) -> dict[str, Any]:
         """Application/runtime readiness, deliberately excluding Project readiness."""
         health = self.health()
-        state = (
-            self.state_store.status()
-            if self.state_store is not None
-            else None
-        )
+        state = health.get("stateStore")
+        if not isinstance(state, dict) or not state:
+            state = None
         state_ready = bool(
             state is None
             or (
@@ -292,7 +290,10 @@ class RuntimeService:
         except Exception:
             pass
         now = time.time()
-        active_turns = self.load_active_turns()
+        active_turns, queues = await asyncio.gather(
+            asyncio.to_thread(self.load_active_turns),
+            asyncio.to_thread(self.load_turn_queues),
+        )
         stale_thread_ids = {
             thread_id
             for thread_id, active in active_turns.items()
@@ -304,7 +305,6 @@ class RuntimeService:
                     stale_thread_ids
                 )
             )
-        queues = self.load_turn_queues()
         for thread_id in queues:
             self.schedule_queue_drain(thread_id)
         return {

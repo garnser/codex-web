@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -71,7 +72,10 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
         window_seconds: float = 900.0,
     ) -> dict[str, Any]:
         require_runtime_reader(request)
-        return service.operations(window_seconds=window_seconds)
+        return await asyncio.to_thread(
+            service.operations,
+            window_seconds=window_seconds,
+        )
 
     @router.get("/api/operations/distributed")
     async def distributed_operations(

@@ -3086,6 +3086,9 @@ runtime_health_service = RuntimeHealthService(
     slack_provider_health=slack_provider_service.health,
     gitlab_sync_status=gitlab_sync_health.snapshot,
     execution_readiness=_execution_readiness_health,
+    count_active_turns=runtime_state.active_turns.count,
+    state_store_status=state_store.status,
+    event_sink=bot_runtime_telemetry.append,
 )
 app.state.static_asset_version_service = static_asset_version_service
 app.state.runtime_health_service = runtime_health_service
@@ -3130,6 +3133,7 @@ runtime_supervisor = install_runtime_supervisor(
     continuity=work_item_continuity_service,
     codex=codex_runtime,
     bot_runtime=bot_runtime,
+    runtime_health=runtime_health_service,
     stale_turn_recovery=stale_active_turn_recovery_service,
     event_sink=bot_runtime_telemetry.append,
     truncate_text=lambda value, limit: str(value)[:limit],
@@ -3324,7 +3328,10 @@ def _compat_daemon_health():
         "BOT_RUNTIME_STATUS",
         bot_runtime_telemetry.status,
     )
-    return compatibility_health.health()
+    # Legacy devhealth callers expect an immediate point-in-time
+    # evaluation. This compatibility path is explicitly diagnostic and is not
+    # used by the lightweight HTTP health/status endpoints.
+    return compatibility_health.refresh_sync()
 
 
 async def _compat_healthz():
