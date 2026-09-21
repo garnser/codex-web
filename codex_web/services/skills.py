@@ -606,11 +606,13 @@ class SkillService:
         profile = self.profiles.get(profile_id, actor=actor)
         reference = reference_for(record)
         refs = tuple(
-            dict.fromkeys(
-                (
-                    *profile.skill_refs,
-                    reference,
-                )
+            (
+                *(
+                    item
+                    for item in profile.skill_refs
+                    if item.definition_id != record.definition_id
+                ),
+                reference,
             )
         )
         return self.profiles.update(
