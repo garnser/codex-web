@@ -96,7 +96,7 @@ class RuntimeHealthService:
 
         self._snapshot_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
-        self._async_refresh_lock = asyncio.Lock()
+        self._refresh_task: asyncio.Task[dict[str, Any]] | None = None
         self._snapshot: dict[str, Any] | None = None
         self._generated_at: float | None = None
         self._last_refresh_started_at: float | None = None
@@ -201,17 +201,18 @@ class RuntimeHealthService:
             elapsed >= self.slow_operation_seconds()
             and self.event_sink is not None
         ):
-            self.event_sink(
-                {
-                    "type": "runtime_slow_operation",
-                    "operation": name,
-                    "duration_seconds": elapsed,
-                    "records": records,
-                    "bytes_read": bytes_read,
-                    "refresh_id": refresh_id,
-                    "error_class": error_class,
-                }
-            )
+            with contextlib.suppress(Exception):
+                self.event_sink(
+                    {
+                        "type": "runtime_slow_operation",
+                        "operation": name,
+                        "duration_seconds": elapsed,
+                        "records": records,
+                        "bytes_read": bytes_read,
+                        "refresh_id": refresh_id,
+                        "error_class": error_class,
+                    }
+                )
 
     def _profile(
         self,
@@ -233,16 +234,18 @@ class RuntimeHealthService:
             raise
         finally:
             elapsed = max(0.0, time.perf_counter() - started)
-            records = (
-                record_counter(value)
-                if record_counter is not None
-                else self._record_count(value)
-            )
-            bytes_read = (
-                bytes_counter(value)
-                if bytes_counter is not None
-                else None
-            )
+            records: int | None = None
+            bytes_read: int | None = None
+            if error_class is None:
+                with contextlib.suppress(Exception):
+                    records = (
+                        record_counter(value)
+                        if record_counter is not None
+                        else self._record_count(value)
+                    )
+                if bytes_counter is not None:
+                    with contextlib.suppress(Exception):
+                        bytes_read = bytes_counter(value)
             self._record_operation(
                 name,
                 elapsed=elapsed,
@@ -506,8 +509,21 @@ class RuntimeHealthService:
         return self.health()
 
     async def refresh(self) -> dict[str, Any]:
-        async with self._async_refresh_lock:
-            return await asyncio.to_thread(self.refresh_sync)
+        task = self._refresh_task
+        if task is None or task.done():
+            task = asyncio.create_task(
+                asyncio.to_thread(self.refresh_sync),
+                name="runtime-health-refresh-once",
+            )
+            self._refresh_task = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if (
+                task.done()
+                and self._refresh_task is task
+            ):
+                self._refresh_task = None
 
     def health(self) -> dict[str, Any]:
         now = time.time()
@@ -582,7 +598,10 @@ class RuntimeHealthService:
             "ageSeconds": age,
             "maxAgeSeconds": self.cache_max_age_seconds(),
             "stale": stale,
-            "refreshInProgress": self._async_refresh_lock.locked(),
+            "refreshInProgress": bool(
+                self._refresh_task is not None
+                and not self._refresh_task.done()
+            ),
             "lastRefreshStartedAt": last_started,
             "lastRefreshCompletedAt": last_completed,
             "lastRefreshDurationSeconds": duration,
