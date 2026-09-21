@@ -480,6 +480,10 @@ class SlackProviderService:
                         actor=actor,
                     )
                     started[project_id] = actor
+                    await asyncio.to_thread(
+                        self._gate_decision,
+                        project_id,
+                    )
                 except Exception as exc:
                     self.gate_states[project_id] = {
                         "service_id": "slack-backfill",
