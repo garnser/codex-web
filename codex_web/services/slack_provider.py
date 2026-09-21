@@ -22,6 +22,7 @@ from codex_web.services.bot_targets import BotTargetService
 from codex_web.services.bot_webhook_security import BotWebhookSecurityService
 from codex_web.services.conversation_channels import ConversationChannelService
 from codex_web.services.secrets import SecretBroker
+from codex_web.storage.slack_backfill import SlackBackfillStore
 
 
 class SlackProviderService:
@@ -41,6 +42,7 @@ class SlackProviderService:
         secret_broker: SecretBroker | None = None,
         conversation_channels: ConversationChannelService | None = None,
         reconciliation_gates: Any | None = None,
+        backfill_store: SlackBackfillStore | None = None,
     ) -> None:
         self.slack = slack_client
         self.routing = routing_service
@@ -53,12 +55,19 @@ class SlackProviderService:
         self.secret_broker = secret_broker
         self.conversation_channels = conversation_channels
         self.reconciliation_gates = reconciliation_gates
+        self.backfill_store = backfill_store
+        self.backfill_lock = asyncio.Lock()
         self.gate_states: dict[str, dict[str, Any]] = {}
         self.task: asyncio.Task[None] | None = None
         self.seen: set[str] = set()
         self.bad_threads: set[tuple[str, str, str]] = set()
-        self.cooldown_until = 0.0
-        self.rate_limit_failures = 0
+        persisted = backfill_store.load() if backfill_store is not None else None
+        self.cooldown_until = float(
+            persisted.cooldown_until or 0.0
+        ) if persisted is not None else 0.0
+        self.rate_limit_failures = int(
+            persisted.rate_limit_failures
+        ) if persisted is not None else 0
 
     @staticmethod
     def _credential_identity(
@@ -148,14 +157,60 @@ class SlackProviderService:
     def cooldown_remaining_seconds(self) -> float:
         return max(0.0, self.cooldown_until - time.time())
 
+    def max_provider_calls_per_cycle(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_MAX_CALLS_PER_CYCLE"
+                )
+                or "20"
+            )
+        except ValueError:
+            value = 20
+        return max(1, min(value, 200))
+
+    def max_cycle_seconds(self) -> float:
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_MAX_CYCLE_SECONDS"
+                )
+                or "5"
+            )
+        except ValueError:
+            value = 5.0
+        return max(0.1, min(value, 60.0))
+
+    def batch_limit(self) -> int:
+        try:
+            value = int(
+                os.environ.get(
+                    "CODEX_WEB_SLACK_BACKFILL_BATCH_LIMIT"
+                )
+                or "50"
+            )
+        except ValueError:
+            value = 50
+        return max(1, min(value, 200))
+
     def health(self) -> dict[str, Any]:
+        diagnostics = (
+            self.backfill_store.diagnostics()
+            if self.backfill_store is not None
+            else {}
+        )
         return {
             "intervalSeconds": self.interval_seconds(),
             "running": bool(self.task and not self.task.done()),
+            "cycleActive": self.backfill_lock.locked(),
+            "maxProviderCallsPerCycle": self.max_provider_calls_per_cycle(),
+            "maxCycleSeconds": self.max_cycle_seconds(),
+            "batchLimit": self.batch_limit(),
             "cooldownRemainingSeconds": self.cooldown_remaining_seconds(),
             "cooldownUntil": self.cooldown_until or None,
             "rateLimitFailures": self.rate_limit_failures,
             "gateStates": dict(self.gate_states),
+            "checkpoint": diagnostics,
         }
 
     async def start(self) -> None:
