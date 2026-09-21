@@ -543,6 +543,59 @@ class TurnExecutionBindingService:
             execution_profile_definition=assignment.execution_profile_definition,
         )
 
+    def _require_project_readiness(
+        self,
+        project: Project,
+        execution_contract_version: str,
+    ) -> None:
+        if (
+            execution_contract_version
+            != THREAD_TURN_EXECUTION_CONTRACT_VERSION
+            or self.project_readiness is None
+        ):
+            return
+        readiness = self.project_readiness(
+            project.id,
+            self.control_actor,
+        )
+        if bool(readiness.get("execution_ready")):
+            return
+        blockers = [
+            item
+            for item in readiness.get("checks", [])
+            if isinstance(item, dict)
+            and item.get("status") == "blocked"
+            and item.get("required", True)
+        ]
+        primary = blockers[0] if blockers else {}
+        correlation_id = readiness.get("correlation_id")
+        raise TurnExecutionBindingError(
+            "Project is not execution-ready.",
+            code="project_readiness_blocked",
+            blocker={
+                "code": "project_readiness_blocked",
+                "message": (
+                    str(primary.get("message"))
+                    if primary.get("message")
+                    else "Project semantic/execution readiness is blocked."
+                ),
+                "retryable": False,
+                "target_type": "project",
+                "target_id": project.id,
+                "correlation_id": correlation_id,
+                "readiness_url": (
+                    f"/api/projects/{project.id}/readiness"
+                ),
+                "readiness_check_id": primary.get("id"),
+                "readiness_code": primary.get("code"),
+                "remediation": primary.get("remediation"),
+                "remediation_route": (
+                    primary.get("remediation_route")
+                    or f"/api/projects/{project.id}/readiness"
+                ),
+            },
+        )
+
     def _prepare_subject(
         self,
         *,
@@ -576,48 +629,6 @@ class TurnExecutionBindingService:
             )
 
         project = self._project(project_id)
-        if (
-            execution_contract_version
-            == THREAD_TURN_EXECUTION_CONTRACT_VERSION
-            and self.project_readiness is not None
-        ):
-            readiness = self.project_readiness(project.id, self.control_actor)
-            if not bool(readiness.get("execution_ready")):
-                blockers = [
-                    item
-                    for item in readiness.get("checks", [])
-                    if isinstance(item, dict)
-                    and item.get("status") == "blocked"
-                    and item.get("required", True)
-                ]
-                primary = blockers[0] if blockers else {}
-                correlation_id = readiness.get("correlation_id")
-                raise TurnExecutionBindingError(
-                    "Project is not execution-ready.",
-                    code="project_readiness_blocked",
-                    blocker={
-                        "code": "project_readiness_blocked",
-                        "message": (
-                            str(primary.get("message"))
-                            if primary.get("message")
-                            else "Project semantic/execution readiness is blocked."
-                        ),
-                        "retryable": False,
-                        "target_type": "project",
-                        "target_id": project.id,
-                        "correlation_id": correlation_id,
-                        "readiness_url": (
-                            f"/api/projects/{project.id}/readiness"
-                        ),
-                        "readiness_check_id": primary.get("id"),
-                        "readiness_code": primary.get("code"),
-                        "remediation": primary.get("remediation"),
-                        "remediation_route": (
-                            primary.get("remediation_route")
-                            or f"/api/projects/{project.id}/readiness"
-                        ),
-                    },
-                )
         effective_runtime_binding = runtime_binding or self.runtime_binding
         execution_profile, execution_profile_definition = self._execution_profile(
             project,
@@ -713,6 +724,10 @@ class TurnExecutionBindingService:
                 None if effective_orchestration_only else routing_repository_id
             ),
             orchestration_only=effective_orchestration_only,
+        )
+        self._require_project_readiness(
+            project,
+            execution_contract_version,
         )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
         effective_profile_id = (
