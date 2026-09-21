@@ -579,6 +579,48 @@ class DefinitionRegistryService:
             enforce_approval=True,
         )
 
+    def disable(
+        self,
+        record_id: str,
+        *,
+        actor: str,
+        reason: str,
+    ) -> DefinitionRecord:
+        changed: list[DefinitionRecord] = []
+
+        def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            selected = next(
+                (record for record in records if record.record_id == record_id),
+                None,
+            )
+            if selected is None:
+                raise DefinitionNotFoundError(
+                    f"definition record not found: {record_id}"
+                )
+            if selected.lifecycle == DefinitionLifecycle.SUPERSEDED:
+                raise DefinitionConflictError(
+                    "superseded definitions are immutable historical revisions"
+                )
+            if selected.lifecycle == DefinitionLifecycle.DISABLED:
+                changed.append(selected)
+                return records
+            current = selected.model_copy(
+                update={
+                    "lifecycle": DefinitionLifecycle.DISABLED,
+                    "publish_reason": f"disabled by {actor}: {reason}",
+                    "effective_until": time.time(),
+                }
+            )
+            changed.append(current)
+            return [
+                current if record.record_id == record_id else record
+                for record in records
+            ]
+
+        self.store.update(update)
+        self._notify("definition.disabled", changed[0])
+        return changed[0]
+
     def quarantine(self, record_id: str, *, actor: str, reason: str) -> DefinitionRecord:
         changed: list[DefinitionRecord] = []
 
