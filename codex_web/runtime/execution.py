@@ -1431,16 +1431,32 @@ class TurnExecutionService:
             name=f"turn-queue-drain-{thread_id}",
         )
 
-    async def resume_active_threads_after_startup(self, thread_ids: set[str] | None = None) -> None:
+    async def resume_active_threads_after_startup(
+        self,
+        thread_ids: set[str] | None = None,
+    ) -> None:
         h = self.host
-        active_turns = h._load_active_turns()
+        if thread_ids is None:
+            active_turns = h._load_active_turns()
+        else:
+            loader = getattr(h, "_get_active_turn_record", None)
+            active_turns = {}
+            for thread_id in sorted(thread_ids):
+                active = (
+                    loader(thread_id)
+                    if callable(loader)
+                    else h._load_active_turns().get(thread_id)
+                )
+                if active is not None:
+                    active_turns[thread_id] = active
+
         if not active_turns:
-            for thread_id in h._load_turn_queues():
-                self.schedule_queue_drain(thread_id)
+            if thread_ids is None:
+                for thread_id in h._load_turn_queues():
+                    self.schedule_queue_drain(thread_id)
             return
+
         for thread_id, active in list(active_turns.items()):
-            if thread_ids is not None and thread_id not in thread_ids:
-                continue
             if active.resume_attempts >= 3:
                 continue
             project = None
@@ -1461,18 +1477,35 @@ class TurnExecutionService:
                     )
                     project = h._project_for_cwd(thread.get("cwd"))
             if project is None:
-                self.clear_thread_active(thread_id)
+                h._append_bot_event(
+                    {
+                        "type": "active_thread_resume_blocked",
+                        "thread_id": thread_id,
+                        "reason_code": "project_unresolved",
+                    }
+                )
                 continue
+
             settings = h._thread_run_settings(thread_id)
-            sandbox = active.sandbox or settings.sandbox or project.sandbox
-            approval_policy = active.approval_policy or settings.approval_policy or project.approval_policy
+            sandbox = (
+                active.sandbox
+                or settings.sandbox
+                or project.sandbox
+            )
+            approval_policy = (
+                active.approval_policy
+                or settings.approval_policy
+                or project.approval_policy
+            )
             model = active.model or settings.model or project.model
-            reasoning_effort = active.reasoning_effort or settings.reasoning_effort
+            reasoning_effort = (
+                active.reasoning_effort
+                or settings.reasoning_effort
+            )
             active.resume_attempts += 1
             active.last_resume_at = time.time()
             active.updated_at = time.time()
-            active_turns[thread_id] = active
-            h._save_active_turns(active_turns)
+            self._save_active_turn(active)
             try:
                 response = await self.start_thread_turn_now(
                     thread_id,
@@ -1487,33 +1520,63 @@ class TurnExecutionService:
                     approval_policy=approval_policy,
                     model=model,
                     reasoning_effort=reasoning_effort,
-                    source=f"restart-recovery:{active.source or 'unknown'}",
+                    source=(
+                        f"restart-recovery:"
+                        f"{active.source or 'unknown'}"
+                    ),
                     reply_target=active.reply_target,
                     execution_id=active.execution_id,
-                    repository_resource_id=active.repository_resource_id,
+                    repository_resource_id=(
+                        active.repository_resource_id
+                    ),
                     execution_profile_id=active.execution_profile_id,
                 )
                 self.mark_thread_active(
                     thread_id,
-                    turn_id=(response.get("turn") or {}).get("id") if isinstance(response, dict) else active.turn_id,
+                    turn_id=(
+                        (response.get("turn") or {}).get("id")
+                        if isinstance(response, dict)
+                        else active.turn_id
+                    ),
                     project_id=project.id,
                     sandbox=sandbox,
                     approval_policy=approval_policy,
                     model=model,
                     reasoning_effort=reasoning_effort,
-                    source=f"restart-recovery:{active.source or 'unknown'}",
+                    source=(
+                        f"restart-recovery:"
+                        f"{active.source or 'unknown'}"
+                    ),
                     reply_target=active.reply_target,
                     execution_profile_id=active.execution_profile_id,
                 )
                 h._append_bot_event(
-                    {"type": "active_thread_resumed", "thread_id": thread_id, "project_id": project.id}
+                    {
+                        "type": "active_thread_resumed",
+                        "thread_id": thread_id,
+                        "project_id": project.id,
+                    }
                 )
             except Exception as exc:
                 h._append_bot_event(
-                    {"type": "active_thread_resume_failed", "thread_id": thread_id, "error": str(exc)}
+                    {
+                        "type": "active_thread_resume_failed",
+                        "thread_id": thread_id,
+                        "error": str(exc),
+                    }
                 )
-        for thread_id in h._load_turn_queues():
-            self.schedule_queue_drain(thread_id)
+
+        if thread_ids is None:
+            queue_ids = h._load_turn_queues()
+        else:
+            queue_ids = (
+                thread_id
+                for thread_id in thread_ids
+                if h._thread_queue_depth(thread_id)
+            )
+        for thread_id in queue_ids:
+            if not self.thread_is_active(thread_id):
+                self.schedule_queue_drain(thread_id)
 
     @staticmethod
     def terminal_failure_window_seconds() -> float:
