@@ -1,7 +1,7 @@
-from codex_web.agent_providers import AgentProviderCapability
 from __future__ import annotations
 
 from codex_web.agent_providers import (
+    AgentProviderCapability,
     AgentProviderHealth,
 )
 from codex_web.agent_routing import (
