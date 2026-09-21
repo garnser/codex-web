@@ -312,6 +312,7 @@ from codex_web.services.native_recovery import (
 )
 from codex_web.services.slack_provider import install_slack_provider_service
 from codex_web.services.task_source_action_provider import TaskSourceActionProvider
+from codex_web.services.task_source_sync_jobs import GitLabSyncJobService
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.thread_resume import ThreadResumeService
@@ -385,6 +386,7 @@ from codex_web.storage.goals import GoalStore
 from codex_web.storage.metrics import MetricStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
+from codex_web.storage.task_source_sync_jobs import GitLabSyncJobStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.incidents import IncidentStore
 from codex_web.storage.legacy_project_migration import LegacyProjectMigrationStore
@@ -1711,6 +1713,14 @@ app.state.task_source_registry = work_item_service.task_source_registry
 app.state.task_source_writeback_service = (
     work_item_service.task_source_writeback
 )
+
+gitlab_sync_job_store = GitLabSyncJobStore(state_store)
+gitlab_sync_job_service = GitLabSyncJobService(
+    gitlab_sync_job_store,
+    work_item_service,
+)
+app.state.gitlab_sync_job_store = gitlab_sync_job_store
+app.state.gitlab_sync_job_service = gitlab_sync_job_service
 
 control_plane_broker_audit_store = ControlPlaneBrokerAuditStore(state_store)
 control_plane_broker_service = ControlPlaneBrokerService(
@@ -3379,7 +3389,10 @@ EXTRACTED_ROUTE_COUNTS = {
         )
     ),
     "work-items": _include_domain_router(
-        build_work_items_router(work_item_service)
+        build_work_items_router(
+            work_item_service,
+            gitlab_sync_jobs=gitlab_sync_job_service,
+        )
     ),
     "ui": _include_domain_router(
         build_ui_router(operator_ui_service)

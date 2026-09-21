@@ -146,7 +146,7 @@ class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channels[0]["id"], "C123")
         self.assertFalse(host.legacy_called)
 
-    async def test_gitlab_work_item_fetch_and_projection_stay_on_event_loop(self) -> None:
+    async def test_gitlab_fetch_stays_async_while_projection_runs_off_event_loop(self) -> None:
         host = _WorkItemHost()
         gitlab = _GitLabClient()
         state_machine = _StateMachine()
@@ -161,9 +161,22 @@ class AsyncDomainServiceTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.sync_from_gitlab()
 
-        self.assertEqual(result, {"ok": True, "synced": 1, "refs": 1})
+        self.assertEqual(
+            result,
+            {
+                "ok": True,
+                "discovered": 1,
+                "processed": 1,
+                "synced": 1,
+                "refs": 1,
+                "cancelled": False,
+            },
+        )
         self.assertEqual(gitlab.event_loop_thread_id, event_loop_thread)
-        self.assertEqual(projector.projection_thread_id, event_loop_thread)
+        self.assertNotEqual(
+            projector.projection_thread_id,
+            event_loop_thread,
+        )
         self.assertEqual(host.hub.events[-1]["type"], "work-item.sync")
 
     async def test_progress_uses_extracted_state_machine_and_async_task_source_writeback(self) -> None:

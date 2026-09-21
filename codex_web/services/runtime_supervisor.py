@@ -659,6 +659,14 @@ class RuntimeSupervisor:
         if task_source_writeback is not None:
             await task_source_writeback.stop()
 
+        gitlab_sync_jobs = getattr(
+            self.app.state,
+            "gitlab_sync_job_service",
+            None,
+        )
+        if gitlab_sync_jobs is not None:
+            await gitlab_sync_jobs.stop()
+
         if self.bot_runtime is not None:
             await self.bot_runtime.stop()
         if self.codex is not None:

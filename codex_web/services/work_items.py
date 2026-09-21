@@ -957,11 +957,45 @@ class WorkItemService:
             "revision": current_revision,
         }
 
-    async def _sync_from_gitlab_async(self, scope: TenantScope | None = None) -> dict[str, int]:
-        """Compatibility entrypoint backed by the provider-neutral TaskSource path."""
+    async def _sync_from_gitlab_async(
+        self,
+        scope: TenantScope | None = None,
+        *,
+        progress: Any | None = None,
+        cancelled: Any | None = None,
+    ) -> dict[str, int | bool]:
+        """Provider-neutral GitLab discovery with off-loop projection.
+
+        Provider I/O remains asynchronous. Deterministic projection and
+        synchronous StateStore/index mutation run in worker threads so a large
+        import cannot monopolize the Uvicorn event loop.
+        """
 
         synced = 0
+        processed = 0
+        discovered = 0
         seen_refs: set[str] = set()
+        was_cancelled = False
+
+        async def report(current_external_id: str | None = None) -> None:
+            if progress is None:
+                return
+            await asyncio.to_thread(
+                progress,
+                {
+                    "discovered": discovered,
+                    "processed": processed,
+                    "synced": synced,
+                    "unique_refs": len(seen_refs),
+                    "current_external_id": current_external_id,
+                },
+            )
+
+        async def cancellation_requested() -> bool:
+            if cancelled is None:
+                return False
+            return bool(await asyncio.to_thread(cancelled))
+
         settings = self.gitlab_dependencies.load_routing_settings()
         allowed_project_ids: set[str] | None = None
         if scope is not None:
@@ -976,6 +1010,9 @@ class WorkItemService:
                 continue
             if not project_settings.enabled:
                 continue
+            if await cancellation_requested():
+                was_cancelled = True
+                break
             token = self.gitlab_dependencies.token_for_project(project_id)
             group = self.gitlab_dependencies.group_path(project_settings)
             if not token or not group:
@@ -987,15 +1024,34 @@ class WorkItemService:
                 client=self.gitlab,
             )
             snapshots = await source.discover(scope=group)
+            discovered += len(snapshots)
+            await report()
             for snapshot in snapshots:
-                state = self.task_source_projector.upsert(
+                if await cancellation_requested():
+                    was_cancelled = True
+                    break
+                external_id = snapshot.identity.external_id
+                await report(external_id)
+                state = await asyncio.to_thread(
+                    self.task_source_projector.upsert,
                     source,
                     snapshot,
                     project_id=project_id,
                 )
+                processed += 1
                 synced += 1
                 seen_refs.add(state.ref)
-        return {"synced": synced, "refs": len(seen_refs)}
+                await report(external_id)
+            if was_cancelled:
+                break
+        await report()
+        return {
+            "discovered": discovered,
+            "processed": processed,
+            "synced": synced,
+            "refs": len(seen_refs),
+            "cancelled": was_cancelled,
+        }
 
     def reconcile_task_source_event(
         self,
@@ -1126,9 +1182,16 @@ class WorkItemService:
     async def sync_from_gitlab(
         self,
         scope: TenantScope | None = None,
+        *,
+        progress: Any | None = None,
+        cancelled: Any | None = None,
     ) -> dict[str, Any]:
         try:
-            result = await self._sync_from_gitlab_async(scope)
+            result = await self._sync_from_gitlab_async(
+                scope,
+                progress=progress,
+                cancelled=cancelled,
+            )
         except Exception as exc:
             error = self.truncate_text(str(exc), 500)
             health = self.sync_health.record_failure(error)
