@@ -378,8 +378,11 @@ class EventJournal:
             self.active_file.touch(mode=0o600)
         with contextlib.suppress(OSError):
             os.chmod(self.active_file, 0o600)
-        stat = self.active_file.stat()
-        self._active_created_at = float(stat.st_mtime)
+        # Treat service initialization as the active segment's logical
+        # lifecycle start. Filesystem mtime is not a reliable policy clock
+        # (restores/copies and injected qualification clocks may differ), and
+        # large legacy journals are still bounded immediately by size.
+        self._active_created_at = float(self.clock())
         # Existing legacy files may contain millions of events. Do not scan
         # them during startup; exact metadata is computed after rotation in
         # the maintenance worker.
