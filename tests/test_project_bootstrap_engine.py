@@ -143,7 +143,14 @@ class _Canonical:
             return None, "task_source_not_configured"
         return self.candidate, None
 
-    def plan(self, project_id, *, actor, confirm_generic_target=False):
+    def plan(
+        self,
+        project_id,
+        *,
+        actor,
+        confirm_generic_target=False,
+        preferred_gitlab_secret_id=None,
+    ):
         del confirm_generic_target
         operations = [
             CanonicalMaterializationOperation(
@@ -184,26 +191,59 @@ class _Canonical:
             ),
         ]
         if self.credential_blocked:
-            operations.extend(
-                [
-                    CanonicalMaterializationOperation(
-                        id="secret:gitlab",
-                        domain="secret_reference",
-                        record_ref=project_id,
-                        disposition=MaterializationDisposition.UNRESOLVED,
-                        reason_code="gitlab_credential_missing",
-                        message="GitLab credential is unresolved.",
-                    ),
-                    CanonicalMaterializationOperation(
-                        id="task-source:gitlab",
-                        domain="task_source",
-                        record_ref=project_id,
-                        disposition=MaterializationDisposition.UNRESOLVED,
-                        reason_code="task_source_credential_unresolved",
-                        message="TaskSource credential is unresolved.",
-                    ),
-                ]
-            )
+            if preferred_gitlab_secret_id:
+                operations.extend(
+                    [
+                        CanonicalMaterializationOperation(
+                            id="secret:gitlab",
+                            domain="secret_reference",
+                            record_ref=project_id,
+                            disposition=MaterializationDisposition.UNCHANGED,
+                            reason_code="gitlab_secret_reference_exists",
+                            message="Canonical GitLab SecretReference exists.",
+                            metadata={
+                                "secret_reference_id": preferred_gitlab_secret_id,
+                            },
+                        ),
+                        CanonicalMaterializationOperation(
+                            id="task-source:gitlab",
+                            domain="task_source",
+                            record_ref=project_id,
+                            disposition=MaterializationDisposition.MIGRATED,
+                            reason_code="task_source_binding_missing",
+                            message="TaskSource will be materialized.",
+                            apply_kind="gitlab_task_source",
+                            dependencies=("secret:gitlab",),
+                            metadata={
+                                "source_type": "gitlab",
+                                "source_instance": "https://gitlab.example/api/v4",
+                                "scope": "group",
+                                "secret_reference_id": preferred_gitlab_secret_id,
+                            },
+                        ),
+                    ]
+                )
+            else:
+                operations.extend(
+                    [
+                        CanonicalMaterializationOperation(
+                            id="secret:gitlab",
+                            domain="secret_reference",
+                            record_ref=project_id,
+                            disposition=MaterializationDisposition.UNRESOLVED,
+                            reason_code="gitlab_credential_missing",
+                            message="GitLab credential is unresolved.",
+                        ),
+                        CanonicalMaterializationOperation(
+                            id="task-source:gitlab",
+                            domain="task_source",
+                            record_ref=project_id,
+                            disposition=MaterializationDisposition.UNRESOLVED,
+                            reason_code="task_source_credential_unresolved",
+                            message="TaskSource credential is unresolved.",
+                        ),
+                    ]
+                )
         return CanonicalMaterializationPlan(
             id=(
                 "materialization-plan-"
@@ -644,14 +684,16 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
             for item in plan.operations
             if item.id == "task-source:manifest"
         )
-        self.assertEqual(direct.disposition.value, "create")
-        superseded = [
+        self.assertEqual(direct.disposition.value, "ready")
+        delegated_task_source = next(
             item
             for item in plan.operations
-            if item.reason_code
-            == "manifest_secret_reference_supersedes_legacy_credential"
-        ]
-        self.assertEqual(len(superseded), 2)
+            if item.id == "canonical:task-source:gitlab"
+        )
+        self.assertEqual(
+            delegated_task_source.disposition.value,
+            "migrate",
+        )
 
         execution = service.apply(plan, actor=_actor())
         delegated = self.canonical.last_applied_plan
@@ -662,17 +704,20 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
         self.assertIsNone(
             delegated_by_id["secret:gitlab"].apply_kind
         )
-        self.assertIsNone(
-            delegated_by_id["task-source:gitlab"].apply_kind
+        self.assertEqual(
+            delegated_by_id["secret:gitlab"].metadata[
+                "secret_reference_id"
+            ],
+            "gitlab-primary",
         )
         self.assertEqual(
-            delegated_by_id["secret:gitlab"].disposition,
-            MaterializationDisposition.SKIPPED,
+            delegated_by_id["task-source:gitlab"].apply_kind,
+            "gitlab_task_source",
         )
-        current = self.repository.load()[0]
-        self.assertIsNotNone(current.authoritative_task_source)
         self.assertEqual(
-            current.authoritative_task_source.credential_secret_id,
+            delegated_by_id["task-source:gitlab"].metadata[
+                "secret_reference_id"
+            ],
             "gitlab-primary",
         )
         self.assertIn(
