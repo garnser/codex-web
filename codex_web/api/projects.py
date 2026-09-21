@@ -4,7 +4,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from codex_web.models import ProjectCreate, TaskSourceConfiguration
+from codex_web.models import (
+    ProjectCreate,
+    ProjectRepositorySelectionUpdate,
+    TaskSourceConfiguration,
+)
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
 from codex_web.services.projects import (
     InvalidProjectPathError,
@@ -59,6 +63,24 @@ def build_projects_router(
                 project_id,
                 actor=request.state.identity_actor,
             )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/api/projects/{project_id}/repository-selection-policy")
+    async def set_repository_selection_policy(
+        project_id: str,
+        payload: ProjectRepositorySelectionUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            IdentityService.require_admin(request.state.identity_actor)
+            return service.set_repository_selection_policy(
+                project_id,
+                payload,
+                request.state.tenant_scope,
+            ).model_dump()
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:

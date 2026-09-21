@@ -264,50 +264,102 @@ class ProjectReadinessService:
                 )
             )
 
-        try:
-            target = self.resources.resolve_repository_target(
-                project,
-                actor=actor,
-            )
+        if project.repository_selection_policy == "explicit":
             checks.append(
                 self._check(
                     "repository:execution-target",
                     "execution_target",
-                    ReadinessCheckStatus.READY,
-                    "repository_execution_target_ready",
-                    "Project has a deterministic repository execution target.",
-                    affected_type="repository",
-                    affected_id=target.mutable_repository_id,
+                    (
+                        ReadinessCheckStatus.READY
+                        if repositories
+                        else ReadinessCheckStatus.BLOCKED
+                    ),
+                    (
+                        "repository_target_required_per_turn"
+                        if repositories
+                        else "repository_target_missing"
+                    ),
+                    (
+                        "Project repository policy requires each executable "
+                        "turn to provide a contextual repository target."
+                        if repositories
+                        else (
+                            "Project has no active canonical repository "
+                            "Resource for explicit per-turn targeting."
+                        )
+                    ),
+                    affected_type="project",
+                    affected_id=project.id,
+                    remediation=(
+                        None
+                        if repositories
+                        else "Bootstrap or bind at least one repository Resource."
+                    ),
                     remediation_route=(
                         f"/api/projects/{project.id}/resources"
                     ),
                     details={
-                        "mutable_repository_id": target.mutable_repository_id,
-                        "source": str(
-                            getattr(target.source, "value", target.source)
-                        ),
+                        "policy": "explicit",
+                        "target_resolution": "required_per_turn",
+                        "repository_count": len(repositories),
+                        "repository_ids": [
+                            item.id for item in repositories[:20]
+                        ],
                     },
                 )
             )
-        except RepositoryTargetSelectionError as exc:
-            checks.append(
-                self._check(
-                    "repository:execution-target",
-                    "execution_target",
-                    ReadinessCheckStatus.BLOCKED,
-                    exc.code,
-                    str(exc),
-                    affected_type="project",
-                    affected_id=project.id,
-                    remediation=(
-                        "Bind/select one deterministic repository execution "
-                        "target for the Project."
-                    ),
-                    remediation_route=(
-                        f"/api/projects/{project.id}/resources"
-                    ),
+        else:
+            try:
+                target = self.resources.resolve_repository_target(
+                    project,
+                    actor=actor,
                 )
-            )
+                checks.append(
+                    self._check(
+                        "repository:execution-target",
+                        "execution_target",
+                        ReadinessCheckStatus.READY,
+                        "repository_execution_target_ready",
+                        "Project has a deterministic repository execution target.",
+                        affected_type="repository",
+                        affected_id=target.mutable_repository_id,
+                        remediation_route=(
+                            f"/api/projects/{project.id}/resources"
+                        ),
+                        details={
+                            "policy": "deterministic",
+                            "target_resolution": "project_default",
+                            "mutable_repository_id": target.mutable_repository_id,
+                            "source": str(
+                                getattr(target.source, "value", target.source)
+                            ),
+                        },
+                    )
+                )
+            except RepositoryTargetSelectionError as exc:
+                checks.append(
+                    self._check(
+                        "repository:execution-target",
+                        "execution_target",
+                        ReadinessCheckStatus.BLOCKED,
+                        exc.code,
+                        str(exc),
+                        affected_type="project",
+                        affected_id=project.id,
+                        remediation=(
+                            "Bind/select one deterministic repository execution "
+                            "target for the Project or change repository selection "
+                            "policy to explicit."
+                        ),
+                        remediation_route=(
+                            f"/api/projects/{project.id}/resources"
+                        ),
+                        details={
+                            "policy": "deterministic",
+                            "target_resolution": "project_default",
+                        },
+                    )
+                )
 
         bootstrap_task_source_required = bool(
             latest_bootstrap is not None

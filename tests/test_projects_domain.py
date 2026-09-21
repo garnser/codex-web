@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_web.models import ProjectCreate
+from codex_web.models import (
+    ProjectCreate,
+    ProjectRepositorySelectionUpdate,
+)
 from codex_web.services.projects import LastProjectDeletionError, ProjectService
 from codex_web.storage.projects import ProjectRepository
 
@@ -30,6 +33,48 @@ class ProjectDomainTests(unittest.TestCase):
 
             service.delete(created.id)
             self.assertEqual([project.id for project in service.list()], ["home"])
+
+    def test_repository_selection_policy_persists_on_create_and_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = ProjectRepository(root / "data" / "projects.json")
+            service = ProjectService(repository)
+            service.list()
+
+            workspace = root / "workspace"
+            workspace.mkdir()
+            created = service.create(
+                ProjectCreate(
+                    name="Multi",
+                    path=str(workspace),
+                    repository_selection_policy="explicit",
+                )
+            )
+            self.assertEqual(
+                created.repository_selection_policy,
+                "explicit",
+            )
+
+            updated = service.set_repository_selection_policy(
+                created.id,
+                ProjectRepositorySelectionUpdate(
+                    repository_selection_policy="deterministic"
+                ),
+            )
+            self.assertEqual(
+                updated.repository_selection_policy,
+                "deterministic",
+            )
+
+            reloaded = ProjectRepository(repository.path).load()
+            persisted = next(
+                item for item in reloaded
+                if item.id == created.id
+            )
+            self.assertEqual(
+                persisted.repository_selection_policy,
+                "deterministic",
+            )
 
     def test_last_project_cannot_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

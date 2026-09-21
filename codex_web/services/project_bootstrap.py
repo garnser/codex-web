@@ -824,6 +824,61 @@ class ProjectBootstrapService:
                 )
             )
 
+        desired_repository_policy = (
+            "explicit"
+            if manifest.execution.repository_selection == "explicit"
+            else "deterministic"
+        )
+        operations.append(
+            self._operation(
+                "project:settings:repository-selection",
+                "execution_policy",
+                project_id,
+                (
+                    BootstrapDisposition.UPDATE
+                    if project.repository_selection_policy
+                    != desired_repository_policy
+                    else BootstrapDisposition.READY
+                ),
+                (
+                    "project_repository_selection_policy_update"
+                    if project.repository_selection_policy
+                    != desired_repository_policy
+                    else "project_repository_selection_policy_ready"
+                ),
+                (
+                    "Project repository-selection policy will be reconciled "
+                    "to manifest desired state."
+                    if project.repository_selection_policy
+                    != desired_repository_policy
+                    else (
+                        "Project repository-selection policy matches manifest "
+                        "desired state."
+                    )
+                ),
+                current={
+                    "repository_selection_policy": (
+                        project.repository_selection_policy
+                    )
+                },
+                desired={
+                    "repository_selection_policy": desired_repository_policy
+                },
+                rollback=(
+                    BootstrapRollbackClass.REVERSIBLE
+                    if project.repository_selection_policy
+                    != desired_repository_policy
+                    else BootstrapRollbackClass.NOT_APPLICABLE
+                ),
+                provider=(
+                    "bootstrap"
+                    if project.repository_selection_policy
+                    != desired_repository_policy
+                    else "none"
+                ),
+            )
+        )
+
         sandbox_approval = (
             project.sandbox != manifest.execution.sandbox
             and manifest.execution.sandbox == "danger-full-access"
@@ -1216,6 +1271,9 @@ class ProjectBootstrapService:
                 "workspace_id": project.workspace_id,
                 "name": project.name,
                 "sandbox": project.sandbox,
+                "repository_selection_policy": (
+                    project.repository_selection_policy
+                ),
                 "task_source": (
                     project.authoritative_task_source.model_dump(mode="json")
                     if project.authoritative_task_source
@@ -1500,6 +1558,11 @@ class ProjectBootstrapService:
                 update={
                     "name": desired.project.name,
                     "sandbox": desired.execution.sandbox,
+                    "repository_selection_policy": (
+                        "explicit"
+                        if desired.execution.repository_selection == "explicit"
+                        else "deterministic"
+                    ),
                     "authoritative_task_source": source,
                 }
             )

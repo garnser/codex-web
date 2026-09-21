@@ -16,14 +16,23 @@ Do not use a host path, repository text, task text, or model response as a subst
 
 When a Project has exactly one active repository Resource, Codex Web may use the single-repository compatibility fallback as the deterministic mutable target.
 
-For a multi-repository Project, make the mutable target deterministic through one of the canonical sources, in precedence order:
+Projects persist one repository-selection policy:
+
+- `deterministic` — the existing/default behavior. Project readiness requires a Project-level target to resolve deterministically before execution.
+- `explicit` — valid multi-repository topology may have no Project-wide default. Project readiness reports `repository_target_required_per_turn` and remains non-blocking as long as active repository Resources exist. Each executable turn must later provide enough canonical context to resolve one mutable repository.
+
+Bootstrap `repositorySelection: single` and `repositorySelection: default` map to the deterministic Project policy. Bootstrap `repositorySelection: explicit` maps to the explicit Project policy.
+
+For deterministic multi-repository Projects, make the mutable target resolvable through one of the canonical sources, in precedence order:
 
 1. repository Resource attached to the Work Item;
 2. explicit repository selection for the thread/turn;
 3. thread execution-profile repository binding;
 4. Project execution-default routing binding.
 
-If more than one repository remains eligible and no canonical target resolves the ambiguity, execution stops with repository_target_ambiguous. Do not choose the first filesystem directory and do not ask a model to decide authority.
+If more than one repository remains eligible and no canonical target resolves the ambiguity, execution stops with `repository_target_ambiguous`. Do not choose the first filesystem directory and do not ask a model to decide authority.
+
+Changing an existing Project policy is an explicit administrator configuration action through the Project repository-selection API or ProjectBootstrap reconciliation. It does not add/remove Resource bindings or infer authority from filesystem paths.
 
 ### Read-only sibling repositories
 

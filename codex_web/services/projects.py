@@ -3,7 +3,12 @@ from __future__ import annotations
 import uuid
 
 from codex_web.identity import TenantScope
-from codex_web.models import Project, ProjectCreate, TaskSourceConfiguration
+from codex_web.models import (
+    Project,
+    ProjectCreate,
+    ProjectRepositorySelectionUpdate,
+    TaskSourceConfiguration,
+)
 from codex_web.storage.projects import ProjectRepository
 from codex_web.workspaces import WorkspacePathError
 
@@ -64,11 +69,39 @@ class ProjectService:
             model=payload.model,
             sandbox=payload.sandbox,
             approval_policy=payload.approval_policy,
+            repository_selection_policy=payload.repository_selection_policy,
             authoritative_task_source=payload.authoritative_task_source,
         )
         projects.append(project)
         self.repository.save(projects)
         return project
+
+    def set_repository_selection_policy(
+        self,
+        project_id: str,
+        payload: ProjectRepositorySelectionUpdate,
+        scope: TenantScope | None = None,
+    ) -> Project:
+        projects = self.repository.load()
+        for index, project in enumerate(projects):
+            if project.id != project_id:
+                continue
+            if scope is not None and (
+                project.organization_id != scope.organization_id
+                or project.workspace_id != scope.workspace_id
+            ):
+                raise ProjectNotFoundError("Project not found")
+            updated = project.model_copy(
+                update={
+                    "repository_selection_policy": (
+                        payload.repository_selection_policy
+                    )
+                }
+            )
+            projects[index] = updated
+            self.repository.save(projects)
+            return updated
+        raise ProjectNotFoundError("Project not found")
 
     def set_authoritative_task_source(
         self,
