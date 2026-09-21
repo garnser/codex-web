@@ -344,6 +344,7 @@ class AgentTeamDelegationRecord(BaseModel):
     coordinator_round: int = Field(default=0, ge=0)
     handoff_count: int = Field(default=0, ge=0)
     event_id: str | None = None
+    trigger_key: str | None = None
     equivalent_decision_key: str | None = None
     execution_links: tuple[AgentTeamExecutionLink, ...] = ()
     completed_member_ids: tuple[str, ...] = ()
