@@ -10,8 +10,11 @@ json_get() {
 
 json_post() {
   local url="$1"
-  local body="${2:-{}}"
-  curl --fail --silent --show-error \
+  local body="${2-}"
+  if [[ -z "$body" ]]; then
+    body='{}'
+  fi
+  curl --fail-with-body --silent --show-error \
     -H 'Content-Type: application/json' \
     -X POST \
     --data "$body" \
