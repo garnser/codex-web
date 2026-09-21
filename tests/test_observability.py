@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import unittest
@@ -274,15 +275,13 @@ class RuntimeMetricsTests(unittest.TestCase):
 
         @app.get("/slow-probe")
         async def slow_probe() -> dict[str, bool]:
+            await asyncio.sleep(0.06)
             return {"ok": True}
 
         with patch.dict(
             "os.environ",
             {"CODEX_WEB_SLOW_HTTP_REQUEST_SECONDS": "0.05"},
             clear=False,
-        ), patch(
-            "codex_web.observability.time.monotonic",
-            side_effect=[0.0, 0.1],
         ), patch(
             "codex_web.observability.log_event",
         ) as emitted:
