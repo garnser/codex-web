@@ -49,6 +49,20 @@ class RepositoryTargetSource(StrEnum):
     ORCHESTRATION_ONLY = "orchestration_only"
 
 
+class RepositoryTargetEvidence(BaseModel):
+    """One canonical selector that contributed to repository authority."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    source: RepositoryTargetSource
+    repository_id: str = Field(min_length=1)
+    source_ref: str | None = None
+
+
 class RepositoryExecutionTarget(BaseModel):
     """Canonical repository authority selected for one execution."""
 
@@ -61,6 +75,7 @@ class RepositoryExecutionTarget(BaseModel):
     read_only_repository_ids: tuple[str, ...] = ()
     source: RepositoryTargetSource
     source_ref: str | None = None
+    selection_evidence: tuple[RepositoryTargetEvidence, ...] = ()
 
     @model_validator(mode="after")
     def normalize(self) -> "RepositoryExecutionTarget":
