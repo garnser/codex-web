@@ -186,6 +186,7 @@ class GitLabSyncJobServiceTests(unittest.IsolatedAsyncioTestCase):
 class GitLabSyncEventLoopIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_projection_does_not_starve_event_loop(self) -> None:
         service = WorkItemService.__new__(WorkItemService)
+        service.gitlab = object()
         service.gitlab_dependencies = SimpleNamespace(
             load_routing_settings=lambda: SimpleNamespace(
                 projects={
