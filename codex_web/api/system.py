@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hmac
 import os
@@ -60,7 +61,7 @@ def build_system_router(
 ) -> APIRouter:
     router = APIRouter(tags=["system"])
 
-    def require_runtime_reader(request: Request) -> None:
+    def require_runtime_reader(request: Request):
         actor = request_actor(request)
         if actor.principal_kind == PrincipalKind.SERVICE:
             if not any(
@@ -71,11 +72,25 @@ def build_system_router(
                     status_code=403,
                     detail="runtime:read or runtime:admin service scope required",
                 )
-            return
+            return actor
         try:
             IdentityService.require_admin(actor)
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return actor
+
+    def require_project_scope(actor, project_id: str | None) -> None:
+        if not project_id:
+            return
+        try:
+            project = diagnostics_service.project_lookup(project_id)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Project not found") from exc
+        if (
+            getattr(project, "organization_id", None) != actor.organization_id
+            or getattr(project, "workspace_id", None) != actor.workspace_id
+        ):
+            raise HTTPException(status_code=404, detail="Project not found")
 
     @router.get("/api/livez")
     async def livez() -> dict[str, Any]:
@@ -137,8 +152,43 @@ def build_system_router(
         request: Request,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        require_runtime_reader(request)
-        return diagnostics_service.snapshot(project_id)
+        actor = require_runtime_reader(request)
+        require_project_scope(actor, project_id)
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="client disconnected")
+        result = await asyncio.to_thread(
+            diagnostics_service.snapshot,
+            project_id,
+        )
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="client disconnected")
+        return result
+
+    @router.get("/api/diagnostics/targets")
+    async def diagnostics_targets(
+        request: Request,
+        kind: str,
+        project_id: str | None = None,
+        after: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        actor = require_runtime_reader(request)
+        require_project_scope(actor, project_id)
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="client disconnected")
+        try:
+            result = await asyncio.to_thread(
+                diagnostics_service.target_page,
+                kind,
+                project_id=project_id,
+                after=after,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="client disconnected")
+        return result
 
     @router.post("/api/diagnostics/route-test")
     async def diagnostics_route_test(
