@@ -155,6 +155,9 @@ class TurnExecutionBindingService:
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
         execution_profiles: ExecutionProfileDefinitionService | None = None,
         control_plane_available: Callable[[], bool] | None = None,
+        project_readiness: Callable[
+            [str, AuthenticationActor], dict[str, object]
+        ] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.configuration = configuration
@@ -166,6 +169,7 @@ class TurnExecutionBindingService:
         self.runtime_binding = runtime_binding
         self.execution_profiles = execution_profiles
         self.control_plane_available = control_plane_available or (lambda: True)
+        self.project_readiness = project_readiness
         self.runtime_credential_configs = dict(
             runtime_credential_configs
             or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
@@ -572,6 +576,48 @@ class TurnExecutionBindingService:
             )
 
         project = self._project(project_id)
+        if (
+            execution_contract_version
+            == THREAD_TURN_EXECUTION_CONTRACT_VERSION
+            and self.project_readiness is not None
+        ):
+            readiness = self.project_readiness(project.id, self.control_actor)
+            if not bool(readiness.get("execution_ready")):
+                blockers = [
+                    item
+                    for item in readiness.get("checks", [])
+                    if isinstance(item, dict)
+                    and item.get("status") == "blocked"
+                    and item.get("required", True)
+                ]
+                primary = blockers[0] if blockers else {}
+                correlation_id = readiness.get("correlation_id")
+                raise TurnExecutionBindingError(
+                    "Project is not execution-ready.",
+                    code="project_readiness_blocked",
+                    blocker={
+                        "code": "project_readiness_blocked",
+                        "message": (
+                            str(primary.get("message"))
+                            if primary.get("message")
+                            else "Project semantic/execution readiness is blocked."
+                        ),
+                        "retryable": False,
+                        "target_type": "project",
+                        "target_id": project.id,
+                        "correlation_id": correlation_id,
+                        "readiness_url": (
+                            f"/api/projects/{project.id}/readiness"
+                        ),
+                        "readiness_check_id": primary.get("id"),
+                        "readiness_code": primary.get("code"),
+                        "remediation": primary.get("remediation"),
+                        "remediation_route": (
+                            primary.get("remediation_route")
+                            or f"/api/projects/{project.id}/readiness"
+                        ),
+                    },
+                )
         effective_runtime_binding = runtime_binding or self.runtime_binding
         execution_profile, execution_profile_definition = self._execution_profile(
             project,
