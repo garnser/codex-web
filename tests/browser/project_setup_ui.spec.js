@@ -40,7 +40,7 @@ test('plan/apply uses canonical bootstrap API and normalized resource topology',
   await dialog.locator('[data-setup-tab="plan"]').click();
   await dialog.locator('[data-setup-plan]').click();
   await expect(dialog.locator('.project-setup-plan-summary')).toContainText('bootstrap-plan-1');
-  await expect(dialog.locator('[data-project-setup-manifest]')).toHaveValue(/\\/workspace\\/project-a/);
+  expect(await dialog.locator('[data-project-setup-manifest]').inputValue()).toContain('/workspace/project-a');
 
   await dialog.locator('[data-setup-apply]').click();
   await expect(page.locator('#project-setup-launch')).toHaveText('Project ready');
