@@ -263,6 +263,12 @@ class SlackProviderService:
             self.cooldown_until,
             time.time() + delay,
         )
+        if self.backfill_store is not None:
+            def persist_rate_limit(state):
+                state.cooldown_until = self.cooldown_until
+                state.rate_limit_failures = self.rate_limit_failures
+                return state
+            self.backfill_store.update(persist_rate_limit)
         self.telemetry.append(
             {
                 "type": "slack_backfill_cooldown_set",
