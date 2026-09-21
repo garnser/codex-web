@@ -53,6 +53,7 @@ class ReconciliationProjectControl(BaseModel):
     approved_at: float | None = None
     approval_correlation_id: str | None = None
     last_start_at: float | None = None
+    running_until: float | None = None
     last_stop_at: float | None = None
     last_completion_at: float | None = None
     last_cursor: str | None = None
