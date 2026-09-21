@@ -70,6 +70,24 @@ class RecoveryReleaseConfigurationTests(unittest.TestCase):
             f"{path} must be executable",
         )
 
+    def test_failed_candidate_qualification_preserves_diagnostics(self) -> None:
+        workflow = (
+            self.root / ".github/workflows/publish-release.yml"
+        ).read_text(encoding="utf-8")
+        script = (
+            self.root / "scripts/qualify-recovery-image.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "if: always() && steps.release.outputs.build == 'true'",
+            workflow,
+        )
+        self.assertIn('EVIDENCE_DIR="$artifacts"', workflow)
+        self.assertIn("qualification-failed-stage.txt", script)
+        self.assertIn("qualification stage:", script)
+        self.assertIn("status-failed.json", script)
+        self.assertIn("{releaseVersion, gitRevision, staticVersion}", script)
+
     def test_recovery_runbook_forbids_python_compatibility_mounts(self) -> None:
         runbook = (
             self.root
