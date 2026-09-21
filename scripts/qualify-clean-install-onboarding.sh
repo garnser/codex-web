@@ -118,9 +118,13 @@ if [[ "$MODE" == "verify-restart" ]]; then
 fi
 
 wait_endpoint "/api/livez"
+
+# The clean container's built-in Bubblewrap worker can correctly fail its
+# isolation probe. Register the test-safe canonical qualification worker
+# before asserting application/runtime readiness.
+worker_id="$(register_qualification_worker)"
 wait_endpoint "/api/readyz"
 
-worker_id="$(register_qualification_worker)"
 worker_readiness="$(json_get   "$BASE_URL/api/execution-workers/readiness?required_capability=git&required_capability=command_execution&execution_contract_version=thread-turn%2F1.0")"
 jq -e '.execution.ready == true' <<<"$worker_readiness" >/dev/null
 
