@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from codex_web.api.execution_workers import _operator_assignment, build_execution_workers_router
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
@@ -349,6 +350,52 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertTrue(ready.ready)
         self.assertEqual(ready.code, "ready")
         self.assertEqual(len(ready.eligible_worker_ids), 1)
+
+    def test_claim_pins_worker_into_agent_profile_execution_provenance(self) -> None:
+        profile = AgentProfileExecutionBinding(
+            profile_id="coder",
+            profile_revision=3,
+            profile_record_id="agent-profile-rev-3",
+            selected_provider_id="openai",
+            selected_runtime_id="codex",
+            selected_provider_revision=4,
+            selected_runtime_capability_revision=7,
+        )
+        assignment = self._assignment(
+            execution_id="exec-agent-profile",
+            agent_profile=profile,
+        )
+
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.assigned_worker_id, self.worker.id)
+        self.assertIsNotNone(claimed.agent_profile)
+        self.assertEqual(
+            claimed.agent_profile.profile_id,
+            "coder",
+        )
+        self.assertEqual(
+            claimed.agent_profile.profile_revision,
+            3,
+        )
+        self.assertEqual(
+            claimed.agent_profile.selected_provider_id,
+            "openai",
+        )
+        self.assertEqual(
+            claimed.agent_profile.selected_runtime_id,
+            "codex",
+        )
+        self.assertEqual(
+            claimed.agent_profile.selected_worker_id,
+            self.worker.id,
+        )
 
     def test_worker_can_claim_start_and_complete_with_fenced_lease(self) -> None:
         assignment = self._assignment()
