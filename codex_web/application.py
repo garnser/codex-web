@@ -2950,6 +2950,7 @@ operational_compaction_service = OperationalCompactionService(
     load_bindings=bot_binding_repository.all,
     event_journal=BOTS_EVENTS_FILE,
     backup_directory=DATA_DIR / "compaction-backups",
+    event_journal_status=bot_runtime_telemetry.journal_status,
 )
 app.state.operational_compaction_service = operational_compaction_service
 project_bootstrap_service.operational_state_inspection = (

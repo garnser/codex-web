@@ -507,6 +507,23 @@ class RuntimeSupervisor:
                 self.runtime_health.run_forever(),
             )
 
+        telemetry = getattr(
+            self.app.state,
+            "bot_runtime_telemetry",
+            None,
+        )
+        if telemetry is not None and callable(
+            getattr(
+                telemetry,
+                "run_journal_maintenance_forever",
+                None,
+            )
+        ):
+            self._spawn(
+                "event-journal-maintenance",
+                telemetry.run_journal_maintenance_forever(),
+            )
+
         self.sd_notify("READY=1\nSTATUS=codex-web started")
         if (
             self.stale_turn_recovery is not None
