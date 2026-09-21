@@ -597,133 +597,401 @@ class SlackProviderService:
                 )
         return eligible
 
-    async def run_backfill_cycle(self) -> None:
-        eligible = await self._eligible_backfill_projects()
-        if not eligible:
-            return
-
-        started: dict[str, Any] = {}
-        if self.reconciliation_gates is not None:
-            for project_id, actor in eligible.items():
-                try:
-                    await asyncio.to_thread(
-                        self.reconciliation_gates.record_start,
-                        "slack-backfill",
-                        project_id,
-                        actor=actor,
-                    )
-                    started[project_id] = actor
-                    await asyncio.to_thread(
-                        self._gate_decision,
-                        project_id,
-                    )
-                except Exception as exc:
-                    self.gate_states[project_id] = {
-                        "service_id": "slack-backfill",
-                        "project_id": project_id,
-                        "state": "paused",
-                        "eligible": False,
-                        "reason_code": "gate_start_conflict",
-                        "reason": type(exc).__name__,
-                    }
-
-        allowed = set(eligible) if self.reconciliation_gates is None else set(started)
-        if not allowed:
-            return
-
-        recent_message_ids = await asyncio.to_thread(
-            self._recent_inbound_message_ids
+    @staticmethod
+    def _backfill_work_key(
+        kind: str,
+        connection: BotConnection,
+        channel_id: str,
+        thread_ts: str | None = None,
+    ) -> str:
+        suffix = f":{thread_ts}" if thread_ts else ""
+        return (
+            f"{connection.project_id}:{connection.id}:"
+            f"{kind}:{channel_id}{suffix}"
         )
-        channels = await asyncio.to_thread(self._channels, allowed)
-        thread_targets = await asyncio.to_thread(
-            self._thread_targets,
-            allowed,
-        )
-        oldest = (
-            f"{max(0.0, time.time() - self.window_seconds()):.6f}"
-        )
-        try:
-            for connection, channel_id in channels:
-                response = await self._history(
+
+    def _cycle_work(
+        self,
+        channels: list[tuple[BotConnection, str]],
+        thread_targets: list[tuple[BotConnection, str, str]],
+    ) -> list[tuple[str, str, BotConnection, str, str | None]]:
+        work = [
+            (
+                self._backfill_work_key(
+                    "history",
                     connection,
                     channel_id,
-                    oldest,
-                )
-                if not response.get("ok"):
-                    rate_limited = self._record_failure(
-                        "slack_backfill_failed",
-                        response,
-                        {
-                            "connection_id": connection.id,
-                            "external_conversation_id": channel_id,
-                        },
-                    )
-                    if rate_limited:
-                        return
-                    continue
-                self.rate_limit_failures = 0
-                for event in reversed(response.get("messages") or []):
-                    await self._dispatch_backfill_message(
-                        connection,
-                        channel_id,
-                        event,
-                        recent_message_ids=recent_message_ids,
-                    )
-
-            for connection, channel_id, thread_ts in thread_targets:
-                thread_key = (connection.id, channel_id, thread_ts)
-                if thread_key in self.bad_threads:
-                    continue
-                response = await self._replies(
+                ),
+                "history",
+                connection,
+                channel_id,
+                None,
+            )
+            for connection, channel_id in channels
+        ]
+        work.extend(
+            (
+                self._backfill_work_key(
+                    "replies",
                     connection,
                     channel_id,
                     thread_ts,
-                    oldest,
+                ),
+                "replies",
+                connection,
+                channel_id,
+                thread_ts,
+            )
+            for connection, channel_id, thread_ts in thread_targets
+        )
+        return sorted(work, key=lambda item: item[0])
+
+    def _rotate_work(
+        self,
+        work: list[tuple[str, str, BotConnection, str, str | None]],
+        cursor: str | None,
+    ) -> list[tuple[str, str, BotConnection, str, str | None]]:
+        if not work or not cursor:
+            return work
+        split = next(
+            (
+                index
+                for index, item in enumerate(work)
+                if item[0] > cursor
+            ),
+            len(work),
+        )
+        return work[split:] + work[:split]
+
+    def _mark_cycle_start(self, target_count: int) -> None:
+        if self.backfill_store is None:
+            return
+        now = time.time()
+
+        def apply(state):
+            state.last_start_at = now
+            state.target_count = int(target_count)
+            state.current_cursor = None
+            return state
+
+        self.backfill_store.update(apply)
+
+    def _mark_cycle_complete(
+        self,
+        *,
+        started_at: float,
+        processed: int,
+        skipped: int,
+        errors: int,
+    ) -> None:
+        if self.backfill_store is None:
+            return
+        now = time.time()
+
+        def apply(state):
+            state.last_completion_at = now
+            state.last_duration_seconds = max(
+                0.0,
+                now - started_at,
+            )
+            state.last_processed = int(processed)
+            state.last_skipped = int(skipped)
+            state.last_errors = int(errors)
+            state.cooldown_until = self.cooldown_until or None
+            state.rate_limit_failures = self.rate_limit_failures
+            return state
+
+        self.backfill_store.update(apply)
+
+    def _mark_coalesced_cycle(self) -> None:
+        if self.backfill_store is None:
+            return
+
+        def apply(state):
+            state.coalesced_cycles += 1
+            return state
+
+        self.backfill_store.update(apply)
+
+    def _checkpoint_work(
+        self,
+        key: str,
+        *,
+        watermark: float,
+        processed: int,
+        skipped: int,
+        errors: int,
+    ) -> None:
+        if self.backfill_store is None:
+            return
+        self.backfill_store.checkpoint(
+            key,
+            watermark=watermark,
+            completed_at=time.time(),
+            processed=processed,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    async def run_backfill_cycle(self) -> None:
+        if self.backfill_lock.locked():
+            await asyncio.to_thread(self._mark_coalesced_cycle)
+            self.telemetry.append(
+                {
+                    "type": "slack_backfill_cycle_coalesced",
+                    "provider": "slack",
+                }
+            )
+            return
+
+        async with self.backfill_lock:
+            eligible = await self._eligible_backfill_projects()
+            if not eligible:
+                return
+
+            started: dict[str, Any] = {}
+            if self.reconciliation_gates is not None:
+                for project_id, actor in eligible.items():
+                    try:
+                        await asyncio.to_thread(
+                            self.reconciliation_gates.record_start,
+                            "slack-backfill",
+                            project_id,
+                            actor=actor,
+                        )
+                        started[project_id] = actor
+                        await asyncio.to_thread(
+                            self._gate_decision,
+                            project_id,
+                        )
+                    except Exception as exc:
+                        self.gate_states[project_id] = {
+                            "service_id": "slack-backfill",
+                            "project_id": project_id,
+                            "state": "paused",
+                            "eligible": False,
+                            "reason_code": "gate_start_conflict",
+                            "reason": type(exc).__name__,
+                        }
+
+            allowed = (
+                set(eligible)
+                if self.reconciliation_gates is None
+                else set(started)
+            )
+            if not allowed:
+                return
+
+            recent_message_ids, channels, thread_targets = (
+                await asyncio.gather(
+                    asyncio.to_thread(
+                        self._recent_inbound_message_ids
+                    ),
+                    asyncio.to_thread(self._channels, allowed),
+                    asyncio.to_thread(
+                        self._thread_targets,
+                        allowed,
+                    ),
                 )
-                if not response.get("ok"):
-                    if response.get("error") in {
-                        "thread_not_found",
-                        "channel_not_found",
-                        "not_in_channel",
-                    }:
-                        self.bad_threads.add(thread_key)
-                    rate_limited = self._record_failure(
-                        "slack_thread_backfill_failed",
-                        response,
-                        {
+            )
+            work = self._cycle_work(channels, thread_targets)
+            persisted = (
+                await asyncio.to_thread(self.backfill_store.load)
+                if self.backfill_store is not None
+                else None
+            )
+            work = self._rotate_work(
+                work,
+                (
+                    persisted.last_completed_cursor
+                    if persisted is not None
+                    else None
+                ),
+            )
+            work = work[: self.max_provider_calls_per_cycle()]
+            cycle_started = time.time()
+            await asyncio.to_thread(
+                self._mark_cycle_start,
+                len(channels) + len(thread_targets),
+            )
+            processed_total = 0
+            skipped_total = 0
+            errors_total = 0
+            base_oldest = max(
+                0.0,
+                cycle_started - self.window_seconds(),
+            )
+
+            try:
+                for (
+                    key,
+                    kind,
+                    connection,
+                    channel_id,
+                    thread_ts,
+                ) in work:
+                    if (
+                        time.time() - cycle_started
+                        >= self.max_cycle_seconds()
+                    ):
+                        break
+                    checkpoint = (
+                        persisted.checkpoints.get(key)
+                        if persisted is not None
+                        else None
+                    )
+                    oldest_value = max(
+                        base_oldest,
+                        checkpoint.watermark
+                        if checkpoint is not None
+                        else 0.0,
+                    )
+                    oldest = f"{oldest_value:.6f}"
+                    if kind == "replies" and thread_ts is not None:
+                        thread_key = (
+                            connection.id,
+                            channel_id,
+                            thread_ts,
+                        )
+                        if thread_key in self.bad_threads:
+                            skipped_total += 1
+                            await asyncio.to_thread(
+                                self._checkpoint_work,
+                                key,
+                                watermark=oldest_value,
+                                processed=0,
+                                skipped=1,
+                                errors=0,
+                            )
+                            continue
+                        response = await self._replies(
+                            connection,
+                            channel_id,
+                            thread_ts,
+                            oldest,
+                        )
+                        failure_type = "slack_thread_backfill_failed"
+                    else:
+                        response = await self._history(
+                            connection,
+                            channel_id,
+                            oldest,
+                        )
+                        failure_type = "slack_backfill_failed"
+
+                    if not response.get("ok"):
+                        errors_total += 1
+                        if (
+                            kind == "replies"
+                            and thread_ts is not None
+                            and response.get("error")
+                            in {
+                                "thread_not_found",
+                                "channel_not_found",
+                                "not_in_channel",
+                            }
+                        ):
+                            self.bad_threads.add(
+                                (
+                                    connection.id,
+                                    channel_id,
+                                    thread_ts,
+                                )
+                            )
+                        context = {
                             "connection_id": connection.id,
                             "external_conversation_id": channel_id,
-                            "external_thread_id": thread_ts,
-                        },
-                    )
-                    if rate_limited:
-                        return
-                    continue
-                self.rate_limit_failures = 0
-                for event in reversed(response.get("messages") or []):
-                    message_id = str(event.get("ts") or "").strip()
-                    if message_id == thread_ts:
+                        }
+                        if thread_ts is not None:
+                            context["external_thread_id"] = thread_ts
+                        rate_limited = self._record_failure(
+                            failure_type,
+                            response,
+                            context,
+                        )
+                        await asyncio.to_thread(
+                            self._checkpoint_work,
+                            key,
+                            watermark=oldest_value,
+                            processed=0,
+                            skipped=0,
+                            errors=1,
+                        )
+                        if rate_limited:
+                            break
                         continue
-                    await self._dispatch_backfill_message(
-                        connection,
-                        channel_id,
-                        event,
-                        recent_message_ids=recent_message_ids,
-                        fallback_thread_ts=thread_ts,
-                    )
-        finally:
-            if self.reconciliation_gates is not None:
-                for project_id, actor in started.items():
+
+                    self.rate_limit_failures = 0
+                    messages = response.get("messages") or []
+                    processed = 0
+                    skipped = 0
+                    watermark = oldest_value
+                    for event in reversed(messages):
+                        if not isinstance(event, dict):
+                            skipped += 1
+                            continue
+                        message_id = str(
+                            event.get("ts") or ""
+                        ).strip()
+                        with contextlib.suppress(ValueError):
+                            watermark = max(
+                                watermark,
+                                float(message_id),
+                            )
+                        if (
+                            kind == "replies"
+                            and thread_ts is not None
+                            and message_id == thread_ts
+                        ):
+                            skipped += 1
+                            continue
+                        dispatched = (
+                            await self._dispatch_backfill_message(
+                                connection,
+                                channel_id,
+                                event,
+                                recent_message_ids=recent_message_ids,
+                                fallback_thread_ts=(
+                                    thread_ts
+                                    if kind == "replies"
+                                    else None
+                                ),
+                            )
+                        )
+                        if dispatched:
+                            processed += 1
+                        else:
+                            skipped += 1
+                    processed_total += processed
+                    skipped_total += skipped
                     await asyncio.to_thread(
-                        self.reconciliation_gates.record_completion,
-                        "slack-backfill",
-                        project_id,
-                        actor=actor,
+                        self._checkpoint_work,
+                        key,
+                        watermark=watermark,
+                        processed=processed,
+                        skipped=skipped,
+                        errors=0,
                     )
-                    await asyncio.to_thread(
-                        self._gate_decision,
-                        project_id,
-                    )
+            finally:
+                await asyncio.to_thread(
+                    self._mark_cycle_complete,
+                    started_at=cycle_started,
+                    processed=processed_total,
+                    skipped=skipped_total,
+                    errors=errors_total,
+                )
+                if self.reconciliation_gates is not None:
+                    for project_id, actor in started.items():
+                        await asyncio.to_thread(
+                            self.reconciliation_gates.record_completion,
+                            "slack-backfill",
+                            project_id,
+                            actor=actor,
+                        )
+                        await asyncio.to_thread(
+                            self._gate_decision,
+                            project_id,
+                        )
 
     async def _dispatch_backfill_message(
         self,
