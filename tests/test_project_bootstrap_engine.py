@@ -19,13 +19,13 @@ from codex_web.execution_workers import WorkerCapability
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
-    AuthorizationError,
     MembershipRole,
     PrincipalKind,
 )
 from codex_web.legacy_project_migration import LegacyMigrationPlan
 from codex_web.models import Project, TaskSourceConfiguration
 from codex_web.project_bootstrap import parse_project_bootstrap_manifest
+from codex_web.services.identity import AuthorizationError
 from codex_web.services.project_bootstrap import (
     ProjectBootstrapApprovalRequired,
     ProjectBootstrapBlocked,
