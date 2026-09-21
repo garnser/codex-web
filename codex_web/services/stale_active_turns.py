@@ -1152,6 +1152,26 @@ class StaleActiveTurnRecoveryService:
             self.schedule_queue_drain(thread_id)
         return record
 
+    def audit_records(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        items, cursor = self.store.page(
+            after=after,
+            limit=max(1, min(int(limit), 500)),
+        )
+        return {
+            "items": [
+                item.model_dump(mode="json")
+                for item in items
+            ],
+            "next_cursor": cursor,
+            "count": self.store.count(),
+            "bounded": True,
+        }
+
     def status(self) -> dict[str, Any]:
         meta = self.store.meta()
         return {
