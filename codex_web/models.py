@@ -180,6 +180,8 @@ class TurnCreate(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
 
 
 class ApprovalDecision(BaseModel):
@@ -365,6 +367,9 @@ class ExecutionPreflightAttempt(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    agent_profile_actor_id: str | None = None
     source: str = "web"
     status: ExecutionPreflightStatus = "blocked"
     blockers: tuple[ExecutionPreflightBlocker, ...] = ()
@@ -395,6 +400,8 @@ class ActiveThreadTurn(BaseModel):
     fence: int | None = None
     repository_resource_id: str | None = None
     execution_profile_id: str | None = None
+    agent_profile: AgentProfileExecutionBinding | None = None
+    agent_profile_actor_id: str | None = None
     started_at: float
     updated_at: float
     resume_attempts: int = 0
@@ -414,6 +421,9 @@ class QueuedTurn(BaseModel):
     repository_resource_id: str | None = None
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    agent_profile_actor_id: str | None = None
     source: str = "web"
     reply_target: BotReplyTarget | None = None
     attempts: int = 0
