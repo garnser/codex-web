@@ -76,6 +76,7 @@ from codex_web.api.releases import build_releases_router
 from codex_web.api.upgrades import build_upgrades_router
 from codex_web.api.secrets import build_secrets_router
 from codex_web.api.security import build_security_router
+from codex_web.api.skills import build_skills_router
 from codex_web.api.runtime import build_runtime_router
 from codex_web.api.scheduler import build_scheduler_router
 from codex_web.api.slack import build_slack_router
@@ -229,6 +230,7 @@ from codex_web.services.control_plane_broker import (
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
+from codex_web.services.skills import install_skill_definitions
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
@@ -1348,6 +1350,58 @@ def _agent_profile_definition_usage(reference):
 
 definition_registry_service.register_usage_provider(
     _agent_profile_definition_usage
+)
+
+
+def _skill_execution_lookup(execution_id, actor):
+    return next(
+        (
+            assignment
+            for assignment in execution_worker_store.load().assignments
+            if assignment.execution_id == execution_id
+            and assignment.organization_id == actor.organization_id
+            and assignment.workspace_id == actor.workspace_id
+        ),
+        None,
+    )
+
+
+skill_service = install_skill_definitions(
+    definition_registry_service,
+    profiles=agent_profile_service,
+    execution_lookup=_skill_execution_lookup,
+)
+app.state.skill_service = skill_service
+app.include_router(build_skills_router(skill_service))
+
+
+def _skill_execution_definition_usage(reference):
+    items = []
+    for assignment in execution_worker_store.load().assignments:
+        profile = assignment.agent_profile
+        if profile is None or not any(
+            item.record_id == reference.record_id
+            for item in profile.skill_refs
+        ):
+            continue
+        items.append(
+            {
+                "object_type": "execution_assignment",
+                "object_id": assignment.id,
+                "execution_id": assignment.execution_id,
+                "project_id": assignment.project_id,
+                "status": assignment.status.value,
+                "organization_id": assignment.organization_id,
+                "workspace_id": assignment.workspace_id,
+                "agent_profile_id": profile.profile_id,
+                "agent_profile_revision": profile.profile_revision,
+            }
+        )
+    return items
+
+
+definition_registry_service.register_usage_provider(
+    _skill_execution_definition_usage
 )
 
 agent_provider_store = AgentProviderStore(state_store)
