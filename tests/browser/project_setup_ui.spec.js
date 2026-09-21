@@ -1,3 +1,19 @@
+test('clean first-run surface exposes setup immediately without an indefinite loading state', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
+
+  const launch = page.locator('#project-setup-launch');
+  await expect(launch).toBeVisible();
+  await expect(launch).toHaveText('Project setup');
+
+  await launch.click();
+  const dialog = page.locator('#project-setup-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.project-setup-summary')).toBeVisible();
+  await expect(dialog.locator('[role="progressbar"]')).toHaveCount(0);
+  await expect(page.locator('#new-thread')).toBeDisabled();
+  await expect(page.locator('#send')).toBeDisabled();
+});
+
 const { test, expect } = require('@playwright/test');
 
 test('blocked Project exposes setup, exact readiness blocker, and gates execution controls', async ({ page }) => {
