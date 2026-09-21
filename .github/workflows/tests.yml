@@ -49,6 +49,29 @@ jobs:
             node --check "$script"
           done
 
+
+  gitlab-sync-qualification:
+    name: gitlab-sync-qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install locked Python dependencies
+        run: python -m pip install -r requirements.lock
+
+      - name: Qualify large-state GitLab sync complexity and responsiveness
+        run: python -m unittest tests.test_gitlab_sync_scaling
+
   distributed:
     name: distributed-backends
     runs-on: ubuntu-latest
