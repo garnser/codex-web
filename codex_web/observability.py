@@ -32,6 +32,17 @@ MAX_LOG_QUERY_LIMIT = 100
 MAX_LOG_QUERY_BYTES = 64 * 1024
 MAX_LOG_FIELD_COUNT = 24
 MAX_LOG_STRING_LENGTH = 512
+
+
+def slow_http_request_seconds() -> float:
+    try:
+        value = float(
+            os.environ.get("CODEX_WEB_SLOW_HTTP_REQUEST_SECONDS")
+            or "1.0"
+        )
+    except ValueError:
+        value = 1.0
+    return max(0.05, min(value, 60.0))
 SAFE_METRIC_LABELS = frozenset(
     {
         "component",
@@ -732,6 +743,7 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
                     "http.request",
                     method=request.method,
                     operation="http",
+                    path=request.url.path,
                 ):
                     response = await call_next(request)
                     status_code = int(response.status_code)
@@ -746,11 +758,27 @@ def install_observability(app: FastAPI, host: Any) -> RuntimeMetrics:
                 )
                 raise
             finally:
+                elapsed = time.monotonic() - started
                 metrics.observe(
                     "http.request.duration",
-                    time.monotonic() - started,
+                    elapsed,
                     labels={"method": request.method, "operation": "http"},
                 )
+                if elapsed >= slow_http_request_seconds():
+                    log_event(
+                        logging.getLogger(__name__),
+                        logging.WARNING,
+                        "runtime.slow_http_request",
+                        "HTTP request exceeded the slow-request threshold",
+                        method=request.method,
+                        path=request.url.path,
+                        status_code=status_code,
+                        duration_seconds=elapsed,
+                        slow_threshold_seconds=(
+                            slow_http_request_seconds()
+                        ),
+                        **correlation_fields(context),
+                    )
             metrics.increment(
                 "http.requests",
                 labels={
