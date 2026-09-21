@@ -77,6 +77,7 @@ class EventJournal:
         )
         self.clock = clock
         self._lock = threading.RLock()
+        self._maintenance_lock = threading.Lock()
         self._recent_metrics = self._empty_recent_metrics()
         self._maintenance_runs = 0
         self._maintenance_error_class: str | None = None
@@ -722,10 +723,20 @@ class EventJournal:
             segment.compression_bytes = int(target.stat().st_size)
             return segment
         except Exception:
-            self._manifest.archive_failures += 1
             with contextlib.suppress(FileNotFoundError):
                 temporary.unlink()
             raise
+
+    def _replace_segment(self, replacement: JournalSegment) -> None:
+        self._manifest.segments = [
+            item
+            for item in self._manifest.segments
+            if item.sequence != replacement.sequence
+        ]
+        self._manifest.segments.append(replacement)
+        self._manifest.segments.sort(
+            key=lambda item: item.sequence
+        )
 
     def _archive_backlog(self) -> list[JournalSegment]:
         hot_sequences = {
@@ -830,63 +841,88 @@ class EventJournal:
         return removed
 
     def maintain_once(self) -> dict[str, Any]:
-        with self._lock:
+        with self._maintenance_lock:
             now = float(self.clock())
-            rotated = None
-            indexed = None
-            archived = None
+            rotated: JournalSegment | None = None
+            indexed: JournalSegment | None = None
+            archived: JournalSegment | None = None
             removed: list[str] = []
-            try:
-                if self._rotation_due(now):
-                    rotated = self._rotate_locked(now)
 
-                unindexed = next(
-                    (
-                        item
-                        for item in sorted(
-                            self._manifest.segments,
-                            key=lambda item: item.sequence,
-                        )
-                        if (
-                            not item.indexed
-                            and not item.archived
-                            and (
-                                self.active_file.parent
-                                / item.filename
-                            ).exists()
-                        )
-                    ),
-                    None,
-                )
+            try:
+                # Rotation is the only maintenance operation that shares the
+                # append lock. It consists solely of fsync/rename/touch and
+                # manifest replacement; long scans never hold this lock.
+                with self._lock:
+                    if self._rotation_due(now):
+                        rotated = self._rotate_locked(now)
+                    unindexed = next(
+                        (
+                            item.model_copy(deep=True)
+                            for item in sorted(
+                                self._manifest.segments,
+                                key=lambda item: item.sequence,
+                            )
+                            if (
+                                not item.indexed
+                                and not item.archived
+                                and (
+                                    self.active_file.parent
+                                    / item.filename
+                                ).exists()
+                            )
+                        ),
+                        None,
+                    )
+
                 if unindexed is not None:
                     indexed = self._index_segment(unindexed)
+                    with self._lock:
+                        self._replace_segment(indexed)
+                        self._persist_manifest()
 
-                if self.compression_enabled():
+                with self._lock:
                     backlog = self._archive_backlog()
-                    if backlog:
-                        candidate = backlog[0]
-                        if not candidate.indexed:
-                            candidate = self._index_segment(
-                                candidate
-                            )
-                        archived = self._compress_and_archive(
-                            candidate
+                    archive_candidate = (
+                        backlog[0].model_copy(deep=True)
+                        if backlog
+                        else None
+                    )
+
+                if (
+                    self.compression_enabled()
+                    and archive_candidate is not None
+                ):
+                    if not archive_candidate.indexed:
+                        archive_candidate = self._index_segment(
+                            archive_candidate
                         )
+                    archived = self._compress_and_archive(
+                        archive_candidate
+                    )
+                    with self._lock:
+                        self._replace_segment(archived)
+                        self._persist_manifest()
 
-                for candidate in self._retention_candidates(now):
-                    self._delete_segment(candidate)
-                    removed.append(candidate.id)
+                with self._lock:
+                    candidates = [
+                        item.model_copy(deep=True)
+                        for item in self._retention_candidates(now)
+                    ]
+                    for candidate in candidates:
+                        self._delete_segment(candidate)
+                        removed.append(candidate.id)
 
-                self._manifest.last_maintenance_at = now
-                self._maintenance_runs += 1
-                self._maintenance_error_class = None
-                self._persist_manifest()
-            except Exception as exc:
-                self._maintenance_error_class = type(exc).__name__
-                self._manifest.cleanup_failures += 1
-                self._manifest.last_maintenance_at = now
-                with contextlib.suppress(Exception):
+                    self._manifest.last_maintenance_at = now
+                    self._maintenance_runs += 1
+                    self._maintenance_error_class = None
                     self._persist_manifest()
+            except Exception as exc:
+                with self._lock:
+                    self._maintenance_error_class = type(exc).__name__
+                    self._manifest.cleanup_failures += 1
+                    self._manifest.last_maintenance_at = now
+                    with contextlib.suppress(Exception):
+                        self._persist_manifest()
                 raise
 
             return {
