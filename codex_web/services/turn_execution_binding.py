@@ -777,7 +777,7 @@ class TurnExecutionBindingService:
                 agent_profile=agent_profile,
             )
 
-        required_capabilities = (
+        profile_capabilities = (
             tuple(
                 WorkerCapability(value)
                 for value in execution_profile.required_worker_capabilities
@@ -787,6 +787,17 @@ class TurnExecutionBindingService:
                 WorkerCapability.GIT,
                 WorkerCapability.COMMAND_EXECUTION,
             )
+        )
+        skill_capabilities = (
+            tuple(
+                WorkerCapability(value)
+                for value in agent_profile.skill_required_worker_capabilities
+            )
+            if agent_profile is not None
+            else ()
+        )
+        required_capabilities = tuple(
+            dict.fromkeys((*profile_capabilities, *skill_capabilities))
         )
         worker_readiness = self.workers.execution_readiness(
             required_capabilities=required_capabilities,
