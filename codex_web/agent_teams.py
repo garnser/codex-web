@@ -16,6 +16,14 @@ TEAM_INSTRUCTIONS_KIND = "agent.team.instructions"
 TEAM_INSTRUCTIONS_SCHEMA_VERSION = "1.0"
 
 
+class TeamInstructionsDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    instructions: str = Field(min_length=1, max_length=12000)
+    routing_notes: tuple[str, ...] = ()
+    escalation_notes: tuple[str, ...] = ()
+
+
 class AgentTeamLifecycle(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"
