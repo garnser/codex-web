@@ -204,8 +204,11 @@ class LegacyProjectMigrationTests(unittest.TestCase):
             for item in plan.repositories
             if item.key == proposal.proposed_repository_key
         )
-        self.assertEqual(Path(selected.path), app_repo.resolve())
-        self.assertNotEqual(Path(selected.path), platform_repo.resolve())
+        self.assertEqual(Path(selected.absolute_path), app_repo.resolve())
+        self.assertNotEqual(
+            Path(selected.absolute_path),
+            platform_repo.resolve(),
+        )
         self.assertEqual(proposal.proposed_sandbox, "workspace-write")
         self.assertFalse(
             proposal.authority_difference.requires_operator_approval
@@ -420,6 +423,7 @@ class LegacyProjectMigrationTests(unittest.TestCase):
         self.service.apply(
             plan,
             actor=self.actor,
+            approve_material_authority_changes=True,
             compatibility_window_seconds=3600,
         )
 
