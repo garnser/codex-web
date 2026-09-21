@@ -3328,7 +3328,10 @@ def _compat_daemon_health():
         "BOT_RUNTIME_STATUS",
         bot_runtime_telemetry.status,
     )
-    return compatibility_health.health()
+    # Legacy devhealth callers expect an immediate point-in-time
+    # evaluation. This compatibility path is explicitly diagnostic and is not
+    # used by the lightweight HTTP health/status endpoints.
+    return compatibility_health.refresh_sync()
 
 
 async def _compat_healthz():
