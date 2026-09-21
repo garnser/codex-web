@@ -13,6 +13,7 @@ from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.provider_capacity import ProviderCapacityStatus
 from codex_web.configuration import ConfigurationContext
 from codex_web.identity import AuthenticationActor
+from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing_configuration import (
     AGENT_ROUTING_ALLOW_FALLBACK,
@@ -61,6 +62,7 @@ class AgentRoutingService:
         configuration: ConfigurationService | None = None,
         role_defaults: AgentRoutingDefinitionService | None = None,
         provider_capacity: ProviderCapacityService | None = None,
+        profiles: AgentProfileService | None = None,
     ) -> None:
         self.providers = providers
         self.runtimes = runtimes
@@ -68,6 +70,7 @@ class AgentRoutingService:
         self.configuration = configuration
         self.role_defaults = role_defaults
         self.provider_capacity = provider_capacity
+        self.profiles = profiles
 
     @staticmethod
     def _ordered(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -100,6 +103,175 @@ class AgentRoutingService:
             if item in allowed
         ]
         return tuple(dict.fromkeys(ordered))
+
+    def _apply_profile(
+        self,
+        request: AgentRoutingRequest,
+        actor: AuthenticationActor,
+    ):
+        if request.agent_profile_id is None:
+            return request, None
+        if self.profiles is None:
+            raise AgentRoutingError(
+                "agent profile routing requested but Agent Profile service is unavailable"
+            )
+        profile, decision = self.profiles.resolve_for_execution(
+            request.agent_profile_id,
+            actor=actor,
+            project_id=request.project_id,
+            revision=request.agent_profile_revision,
+        )
+        runtime = profile.runtime_policy
+
+        if (
+            request.role_id
+            and profile.role_id
+            and request.role_id != profile.role_id
+        ):
+            raise AgentRoutingError(
+                "routing request role conflicts with Agent Profile role"
+            )
+
+        def exact_optional(label: str, requested, profiled):
+            if requested and profiled and requested != profiled:
+                raise AgentRoutingError(
+                    f"routing request {label} conflicts with Agent Profile"
+                )
+            return requested or profiled
+
+        allowed_providers = self._allowlist(
+            "provider",
+            request.allowed_provider_ids,
+            runtime.allowed_provider_ids,
+        )
+        allowed_runtimes = self._allowlist(
+            "runtime",
+            request.allowed_runtime_ids,
+            runtime.allowed_runtime_ids,
+        )
+
+        model_request = request.model_request
+        if model_request is not None:
+            policy = profile.model_policy
+            if (
+                policy.model_class
+                and model_request.model_class != policy.model_class
+            ):
+                raise AgentRoutingError(
+                    "model request class conflicts with Agent Profile model policy"
+                )
+            max_input = model_request.max_input_tokens
+            if profile.budgets.max_input_tokens is not None:
+                max_input = (
+                    min(max_input, profile.budgets.max_input_tokens)
+                    if max_input is not None
+                    else profile.budgets.max_input_tokens
+                )
+            max_output = model_request.max_output_tokens
+            if profile.budgets.max_output_tokens is not None:
+                max_output = min(
+                    max_output,
+                    profile.budgets.max_output_tokens,
+                )
+            max_cost = model_request.max_cost_usd
+            if profile.budgets.max_cost_usd is not None:
+                max_cost = (
+                    min(max_cost, profile.budgets.max_cost_usd)
+                    if max_cost is not None
+                    else profile.budgets.max_cost_usd
+                )
+            model_request = model_request.model_copy(
+                update={
+                    "preferred_provider_ids": self._ordered(
+                        model_request.preferred_provider_ids,
+                        policy.preferred_provider_ids,
+                    ),
+                    "max_input_tokens": max_input,
+                    "max_output_tokens": max_output,
+                    "max_cost_usd": max_cost,
+                    "allow_fallback": (
+                        model_request.allow_fallback
+                        and policy.allow_fallback
+                    ),
+                }
+            )
+
+        effective = request.model_copy(
+            update={
+                "role_id": request.role_id or profile.role_id,
+                "required_capabilities": tuple(
+                    dict.fromkeys(
+                        (
+                            *request.required_capabilities,
+                            *runtime.required_capabilities,
+                        )
+                    )
+                ),
+                "allowed_provider_ids": allowed_providers,
+                "allowed_runtime_ids": allowed_runtimes,
+                "preferred_provider_ids": self._ordered(
+                    request.preferred_provider_ids,
+                    runtime.preferred_provider_ids,
+                ),
+                "preferred_runtime_ids": self._ordered(
+                    request.preferred_runtime_ids,
+                    runtime.preferred_runtime_ids,
+                ),
+                "required_residency_tags": self._ordered(
+                    request.required_residency_tags,
+                    runtime.required_residency_tags,
+                ),
+                "required_compliance_tags": self._ordered(
+                    request.required_compliance_tags,
+                    runtime.required_compliance_tags,
+                ),
+                "required_sandbox_profile": exact_optional(
+                    "sandbox profile",
+                    request.required_sandbox_profile,
+                    (
+                        runtime.required_sandbox_profile
+                        or profile.sandbox_requirement
+                    ),
+                ),
+                "required_network_profile": exact_optional(
+                    "network profile",
+                    request.required_network_profile,
+                    runtime.required_network_profile,
+                ),
+                "require_persistent_session": (
+                    request.require_persistent_session
+                    or runtime.require_persistent_session
+                ),
+                "max_runtime_cost_usd": (
+                    min(
+                        value
+                        for value in (
+                            request.max_runtime_cost_usd,
+                            runtime.max_runtime_cost_usd,
+                            profile.budgets.max_cost_usd,
+                        )
+                        if value is not None
+                    )
+                    if any(
+                        value is not None
+                        for value in (
+                            request.max_runtime_cost_usd,
+                            runtime.max_runtime_cost_usd,
+                            profile.budgets.max_cost_usd,
+                        )
+                    )
+                    else None
+                ),
+                "allow_fallback": (
+                    request.allow_fallback
+                    and runtime.allow_fallback
+                ),
+                "model_request": model_request,
+            }
+        )
+        return AgentRoutingRequest.model_validate(
+            effective.model_dump(mode="python")
+        ), profile
 
     def _effective_request(
         self,
@@ -241,6 +413,10 @@ class AgentRoutingService:
         *,
         actor: AuthenticationActor,
     ) -> AgentRoutingResult:
+        request, profile = self._apply_profile(
+            request,
+            actor,
+        )
         request, configuration_sources, role_definition_ref = self._effective_request(
             request,
             actor,
@@ -515,4 +691,29 @@ class AgentRoutingService:
             rejected_reasons=tuple(dict.fromkeys(rejected)),
             configuration_sources=configuration_sources,
             role_definition_ref=role_definition_ref,
+            agent_profile=(
+                self.profiles.binding_for(
+                    profile,
+                    selected_provider_id=candidates[0].provider_id,
+                    selected_runtime_id=candidates[0].runtime_id,
+                    selected_provider_revision=candidates[0].provider_revision,
+                    selected_runtime_capability_revision=(
+                        candidates[0].capability_revision
+                    ),
+                    model_provider_id=(
+                        model_route.candidates[0].provider_id
+                        if model_route is not None
+                        and model_route.candidates
+                        else None
+                    ),
+                    model_id=(
+                        model_route.candidates[0].model_id
+                        if model_route is not None
+                        and model_route.candidates
+                        else None
+                    ),
+                )
+                if profile is not None and self.profiles is not None
+                else None
+            ),
         )
