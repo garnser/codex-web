@@ -191,15 +191,13 @@ class GitLabSyncJobService:
     ) -> GitLabSyncJob:
         del actor_id
         key = self.scope_key(scope)
-        active = self.store.active_for_scope(key)
-        if active is None:
-            active = GitLabSyncJob(
-                organization_id=scope.organization_id,
-                workspace_id=scope.workspace_id,
-                scope_key=key,
-                updated_at=self.clock(),
-            )
-            active = self._save(active)
+        candidate = GitLabSyncJob(
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            scope_key=key,
+            updated_at=self.clock(),
+        )
+        active = self.store.get_or_create_active(candidate)
 
         self.coordinator.schedule(
             key,
