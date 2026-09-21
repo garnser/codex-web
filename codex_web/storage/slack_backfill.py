@@ -12,6 +12,9 @@ class SlackBackfillCheckpoint(BaseModel):
 
     key: str
     watermark: float = 0.0
+    provider_cursor: str | None = None
+    scan_oldest: float | None = None
+    pending_watermark: float = 0.0
     completed_at: float | None = None
     processed: int = 0
     skipped: int = 0
@@ -27,6 +30,7 @@ class SlackBackfillState(BaseModel):
     )
     last_start_at: float | None = None
     last_completion_at: float | None = None
+    last_successful_completion_at: float | None = None
     last_duration_seconds: float | None = None
     last_processed: int = 0
     last_skipped: int = 0
@@ -68,6 +72,9 @@ class SlackBackfillStore:
         key: str,
         *,
         watermark: float,
+        provider_cursor: str | None = None,
+        scan_oldest: float | None = None,
+        pending_watermark: float = 0.0,
         completed_at: float,
         processed: int,
         skipped: int,
@@ -80,6 +87,20 @@ class SlackBackfillStore:
                 watermark=max(
                     float(watermark),
                     previous.watermark if previous else 0.0,
+                ),
+                provider_cursor=provider_cursor or None,
+                scan_oldest=(
+                    float(scan_oldest)
+                    if scan_oldest is not None
+                    else None
+                ),
+                pending_watermark=max(
+                    float(pending_watermark),
+                    (
+                        previous.pending_watermark
+                        if previous and provider_cursor
+                        else 0.0
+                    ),
                 ),
                 completed_at=float(completed_at),
                 processed=(
