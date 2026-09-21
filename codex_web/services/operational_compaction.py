@@ -199,6 +199,26 @@ class OperationalCompactionService:
         except FileNotFoundError:
             pass
 
+        manifest_path = self.event_journal.with_suffix(
+            self.event_journal.suffix + ".manifest.json"
+        )
+        segment_count: int | None = None
+        retained_bytes: int | None = None
+        try:
+            raw_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            raw_segments = raw_manifest.get("segments")
+            if isinstance(raw_segments, list):
+                segment_count = len(raw_segments)
+                retained_bytes = event_bytes + sum(
+                    int(item.get("bytes") or 0)
+                    for item in raw_segments
+                    if isinstance(item, dict)
+                )
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            pass
+
         delivery_count = self.delivery_targets.count()
         reply_count = self.reply_targets.count()
         queue_threads = self.turn_queues.store.record_count(
@@ -221,6 +241,8 @@ class OperationalCompactionService:
                 details={
                     "inspection": "metadata_only",
                     "full_scan_performed": False,
+                    "segment_count": segment_count,
+                    "total_retained_bytes": retained_bytes,
                 },
             ),
             OperationalStoreInspection(
