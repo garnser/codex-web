@@ -227,6 +227,49 @@ class RotatingJsonlJournalTests(unittest.IsolatedAsyncioTestCase):
             [1, 2, 3, 4, 5, 6, 7],
         )
 
+    def test_archive_crash_before_manifest_discards_uncommitted_archive_on_restart(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_BOT_EVENT_COMPRESS": "1"},
+            clear=False,
+        ):
+            self.journal.append(self._event(1))
+            segment = self.journal.rotate_if_needed(force=True)
+            assert segment is not None
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "after archive files",
+            ):
+                self.journal._compress_segment(
+                    segment,
+                    fail_at="after_archive_files",
+                )
+
+            restarted = RotatingJsonlJournal(
+                self.path,
+                clock=self.clock,
+            )
+            status = restarted.status()
+            values = restarted.recent(10)
+
+        self.assertEqual([item["index"] for item in values], [1])
+        self.assertEqual(status["segmentCount"], 1)
+        segment_files = list(
+            (self.root / "bot_events.segments").glob(
+                f"{segment.id}.jsonl*"
+            )
+        )
+        self.assertTrue(
+            any(path.name == f"{segment.id}.jsonl" for path in segment_files)
+        )
+        self.assertFalse(
+            any(path.name.endswith(".jsonl.gz") for path in segment_files)
+        )
+        self.assertFalse(
+            any(path.name.endswith(".tail.jsonl") for path in segment_files)
+        )
+
     def test_archive_crash_after_manifest_recovers_and_removes_duplicate_source(self) -> None:
         with patch.dict(
             os.environ,
@@ -331,6 +374,11 @@ class RotatingJsonlJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(
             status["protectedSegments"],
             1,
+        )
+        self.assertGreaterEqual(len(status["lastCleanup"]), 1)
+        self.assertIn(
+            status["lastCleanup"][-1]["reason"],
+            {"age", "count", "bytes"},
         )
 
     async def test_slow_compression_storage_does_not_block_event_loop(self) -> None:
