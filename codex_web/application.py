@@ -60,6 +60,9 @@ from codex_web.api.identity import build_identity_router, install_identity_middl
 from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
 from codex_web.api.project_bootstrap import build_project_bootstrap_router
+from codex_web.api.operational_compaction import (
+    build_operational_compaction_router,
+)
 from codex_web.api.project_readiness import build_project_readiness_router
 from codex_web.api.reconciliation_gates import build_reconciliation_gates_router
 from codex_web.api.provider_capacity import build_provider_capacity_router
@@ -279,6 +282,9 @@ from codex_web.services.retrieval_embedding import (
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
+from codex_web.services.operational_compaction import (
+    OperationalCompactionService,
+)
 from codex_web.services.fresh_project_bootstrap import FreshProjectBootstrapService
 from codex_web.services.project_readiness import ProjectReadinessService
 from codex_web.services.reconciliation_gates import ReconciliationGateService
@@ -2925,6 +2931,28 @@ bot_runtime = install_bot_runtime(
     slack_client=slack_client,
     telegram_client=telegram_client,
     ownership=replicated_ownership_service,
+)
+
+assert bot_state.reply_targets is not None
+assert bot_state.delivery_targets is not None
+operational_compaction_service = OperationalCompactionService(
+    state_store=state_store,
+    delivery_targets=bot_state.delivery_targets,
+    reply_targets=bot_state.reply_targets,
+    turn_queues=turn_queue_repository,
+    load_bindings=bot_binding_repository.all,
+    event_journal=BOTS_EVENTS_FILE,
+    backup_directory=DATA_DIR / "compaction-backups",
+)
+app.state.operational_compaction_service = operational_compaction_service
+project_bootstrap_service.operational_state_inspection = (
+    operational_compaction_service.inspect_bounded
+)
+app.include_router(
+    build_operational_compaction_router(
+        operational_compaction_service,
+        bot_runtime=bot_runtime,
+    )
 )
 
 conversation_channel_store = ConversationChannelStore(state_store)
