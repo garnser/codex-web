@@ -135,6 +135,7 @@ class _Canonical:
         self.credential_blocked = credential_blocked
         self.candidate = candidate
         self.apply_calls = 0
+        self.last_applied_plan = None
 
     def derived_gitlab_task_source(self, project_id):
         del project_id
@@ -220,8 +221,9 @@ class _Canonical:
         )
 
     def apply(self, plan, *, actor):
-        del plan, actor
+        del actor
         self.apply_calls += 1
+        self.last_applied_plan = plan
         return SimpleNamespace(id="canonical-execution-a")
 
 
@@ -606,6 +608,7 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
 
     def test_explicit_secret_reference_supersedes_legacy_credential_gap(self):
         self.canonical.credential_blocked = True
+        self.canonical.repository_apply = True
         self.canonical.candidate = TaskSourceConfiguration(
             source_type="gitlab",
             source_instance="https://gitlab.example/api/v4",
@@ -651,6 +654,21 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
         self.assertEqual(len(superseded), 2)
 
         execution = service.apply(plan, actor=_actor())
+        delegated = self.canonical.last_applied_plan
+        self.assertIsNotNone(delegated)
+        delegated_by_id = {
+            item.id: item for item in delegated.operations
+        }
+        self.assertIsNone(
+            delegated_by_id["secret:gitlab"].apply_kind
+        )
+        self.assertIsNone(
+            delegated_by_id["task-source:gitlab"].apply_kind
+        )
+        self.assertEqual(
+            delegated_by_id["secret:gitlab"].disposition,
+            MaterializationDisposition.SKIPPED,
+        )
         current = self.repository.load()[0]
         self.assertIsNotNone(current.authoritative_task_source)
         self.assertEqual(
