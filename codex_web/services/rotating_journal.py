@@ -46,6 +46,7 @@ class JournalManifest(BaseModel):
     archive_failures: int = 0
     cleanup_deleted_segments: int = 0
     cleanup_deleted_bytes: int = 0
+    last_cleanup: list[dict[str, Any]] = Field(default_factory=list)
     last_rotation_at: float | None = None
     last_maintenance_at: float | None = None
     last_error_class: str | None = None
@@ -1084,6 +1085,10 @@ class RotatingJsonlJournal:
                 ]
                 self._manifest.cleanup_deleted_segments += 1
                 self._manifest.cleanup_deleted_bytes += removed_bytes
+                self._manifest.last_cleanup = [
+                    *self._manifest.last_cleanup,
+                    deleted[-1],
+                ][-20:]
                 self._write_manifest_locked()
         return deleted
 
@@ -1216,6 +1221,7 @@ class RotatingJsonlJournal:
                 manifest.cleanup_deleted_segments
             ),
             "cleanupDeletedBytes": manifest.cleanup_deleted_bytes,
+            "lastCleanup": list(manifest.last_cleanup),
             "lastRotationAt": manifest.last_rotation_at,
             "lastMaintenanceAt": manifest.last_maintenance_at,
             "lastErrorClass": manifest.last_error_class,
