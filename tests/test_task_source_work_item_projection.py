@@ -24,12 +24,45 @@ class _Host:
         self.DATA_DIR = root
         self.WORK_ITEM_EVENTS_FILE = root / "work_item_events.jsonl"
         self.states: dict[str, WorkItemState] = {}
+        self.load_calls = 0
+        self.save_calls = 0
+        self.get_calls = 0
+        self.identity_lookup_calls = 0
+        self.put_calls = 0
 
     def _load_work_item_states(self):
+        self.load_calls += 1
         return {key: value.model_copy(deep=True) for key, value in self.states.items()}
 
     def _save_work_item_states(self, states):
+        self.save_calls += 1
         self.states = {key: value.model_copy(deep=True) for key, value in states.items()}
+
+    def _get_work_item_state_record(self, ref):
+        self.get_calls += 1
+        value = self.states.get(ref)
+        return value.model_copy(deep=True) if value is not None else None
+
+    def _get_work_item_state_by_source_identity(self, identity):
+        self.identity_lookup_calls += 1
+        for value in self.states.values():
+            current = value.source_identity
+            if current is None:
+                continue
+            if (
+                current.source_type.strip().casefold()
+                == identity.source_type.strip().casefold()
+                and current.source_instance.strip().rstrip("/")
+                == identity.source_instance.strip().rstrip("/")
+                and current.external_id.strip()
+                == identity.external_id.strip()
+            ):
+                return value.model_copy(deep=True)
+        return None
+
+    def _put_work_item_state_record(self, state):
+        self.put_calls += 1
+        self.states[state.ref] = state.model_copy(deep=True)
 
     def _leading_owner_cue_in_action(self, action):
         return None
@@ -116,6 +149,60 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(result.current_owner, "carl")
         self.assertEqual(result.current_stage, "implementation_active")
         self.assertEqual(result.last_gitlab_event_at, newer_timestamp)
+
+    def test_normal_projection_uses_no_collection_wide_load_or_save(self) -> None:
+        self.projector.upsert(
+            self.source,
+            self.snapshot(),
+            project_id="home",
+        )
+
+        self.assertEqual(self.host.load_calls, 0)
+        self.assertEqual(self.host.save_calls, 0)
+        self.assertEqual(self.host.get_calls, 1)
+        self.assertEqual(self.host.identity_lookup_calls, 1)
+        self.assertEqual(self.host.put_calls, 1)
+        metrics = self.projector.metrics()
+        self.assertEqual(metrics["compatibility_full_scans"], 0)
+        self.assertEqual(metrics["compatibility_bulk_saves"], 0)
+        self.assertEqual(metrics["keyed_saves"], 1)
+
+    def test_direct_ref_hit_skips_source_identity_lookup(self) -> None:
+        initial = self.projector.upsert(
+            self.source,
+            self.snapshot(),
+            project_id="home",
+        )
+        self.host.get_calls = 0
+        self.host.identity_lookup_calls = 0
+        self.host.put_calls = 0
+
+        result = self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T20:00:00Z"),
+            project_id="home",
+        )
+
+        self.assertEqual(result.ref, initial.ref)
+        self.assertEqual(self.host.get_calls, 1)
+        self.assertEqual(self.host.identity_lookup_calls, 0)
+        self.assertEqual(self.host.put_calls, 1)
+
+    def test_stale_snapshot_has_no_persistence_write(self) -> None:
+        self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T20:00:00Z"),
+            project_id="home",
+        )
+        self.host.put_calls = 0
+
+        self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T19:00:00Z"),
+            project_id="home",
+        )
+
+        self.assertEqual(self.host.put_calls, 0)
 
 
 if __name__ == "__main__":
