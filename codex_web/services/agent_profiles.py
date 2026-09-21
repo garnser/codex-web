@@ -70,6 +70,9 @@ class AgentProfileService:
         authority: Any | None = None,
         execution_profiles: Any | None = None,
         role_resolver: RoleResolver | None = None,
+        assignment_history: Callable[
+            [AuthenticationActor], list[Any]
+        ] | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -77,6 +80,7 @@ class AgentProfileService:
         self.authority = authority
         self.execution_profiles = execution_profiles
         self.role_resolver = role_resolver
+        self.assignment_history = assignment_history
         self.clock = clock
 
     @staticmethod
@@ -722,6 +726,71 @@ class AgentProfileService:
             else current
         )
         return profile, decision
+
+    def execution_history(
+        self,
+        profile_id: str,
+        *,
+        actor: AuthenticationActor,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        current = self._latest(profile_id, actor=actor)
+        if not self.can_view(current, actor=actor):
+            raise AgentProfileNotFound(
+                "agent profile not found"
+            )
+        if self.assignment_history is None:
+            return {
+                "items": [],
+                "count": 0,
+                "activeCount": 0,
+                "available": False,
+            }
+        assignments = [
+            item
+            for item in self.assignment_history(actor)
+            if getattr(item, "agent_profile", None) is not None
+            and item.agent_profile.profile_id == profile_id
+        ]
+        assignments.sort(
+            key=lambda item: (
+                float(getattr(item, "updated_at", 0.0)),
+                str(getattr(item, "id", "")),
+            ),
+            reverse=True,
+        )
+        bounded = assignments[: max(1, min(int(limit), 100))]
+        active_statuses = {"pending", "claimed", "running"}
+        return {
+            "items": [
+                {
+                    "assignmentId": item.id,
+                    "executionId": item.execution_id,
+                    "projectId": item.project_id,
+                    "status": item.status.value,
+                    "profileRevision": (
+                        item.agent_profile.profile_revision
+                    ),
+                    "providerId": (
+                        item.agent_profile.selected_provider_id
+                    ),
+                    "runtimeId": (
+                        item.agent_profile.selected_runtime_id
+                    ),
+                    "workerId": item.assigned_worker_id,
+                    "createdAt": item.created_at,
+                    "updatedAt": item.updated_at,
+                    "completedAt": item.completed_at,
+                }
+                for item in bounded
+            ],
+            "count": len(assignments),
+            "activeCount": sum(
+                item.status.value in active_statuses
+                for item in assignments
+            ),
+            "available": True,
+        }
 
     @staticmethod
     def binding_for(
