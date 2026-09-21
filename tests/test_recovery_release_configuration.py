@@ -5,6 +5,8 @@ import stat
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 class RecoveryReleaseConfigurationTests(unittest.TestCase):
     @classmethod
@@ -18,6 +20,16 @@ class RecoveryReleaseConfigurationTests(unittest.TestCase):
             ).strip(),
             "0.2.0",
         )
+
+    def test_release_workflow_yaml_is_syntactically_valid(self) -> None:
+        workflow = (
+            self.root / ".github/workflows/publish-release.yml"
+        ).read_text(encoding="utf-8")
+        parsed = yaml.safe_load(workflow)
+        self.assertIsInstance(parsed, dict)
+        self.assertIn("jobs", parsed)
+        self.assertIn("candidate", parsed["jobs"])
+        self.assertIn("promote", parsed["jobs"])
 
     def test_release_workflow_is_two_phase_and_attested(self) -> None:
         workflow = (
