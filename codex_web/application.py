@@ -277,6 +277,7 @@ from codex_web.services.retrieval_embedding import (
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
+from codex_web.services.fresh_project_bootstrap import FreshProjectBootstrapService
 from codex_web.services.project_readiness import ProjectReadinessService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import (
@@ -2150,6 +2151,11 @@ project_bootstrap_service = ProjectBootstrapService(
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_bootstrap_service = project_bootstrap_service
+fresh_project_bootstrap_service = FreshProjectBootstrapService(
+    materialization=canonical_materialization_service,
+    readiness=project_readiness_service,
+)
+app.state.fresh_project_bootstrap_service = fresh_project_bootstrap_service
 project_bootstrap_service.readiness_probe = (
     lambda project_id, actor: project_readiness_service.evaluate(
         project_id,
@@ -3236,7 +3242,10 @@ EXTRACTED_ROUTE_COUNTS = {
         )
     ),
     "projects": _include_domain_router(
-        build_projects_router(project_service)
+        build_projects_router(
+            project_service,
+            fresh_bootstrap=fresh_project_bootstrap_service,
+        )
     ),
     "project-ui": _include_domain_router(
         build_project_ui_state_router(project_ui_state_service)

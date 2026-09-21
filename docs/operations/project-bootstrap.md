@@ -160,3 +160,22 @@ Project readiness is derived from canonical state. It checks repository Resource
 Executable thread turns are rejected with a structured `project_readiness_blocked` preflight blocker when Project readiness is unresolved. The response includes the readiness correlation ID, failing check ID/code, remediation route, and the Project readiness URL. Thread-bootstrap execution is intentionally exempt so bootstrap can repair an unready Project.
 
 Readiness diagnostics expose SecretReference identifiers only; raw credential values are never included.
+
+
+## Fresh Project creation
+
+Creating a Project through `POST /api/projects` also runs the supported fresh-topology bootstrap when the deployment has the canonical bootstrap services composed.
+
+For the common single-repository case, Codex Web discovers the Git repository beneath the approved Project path, creates or reuses its canonical repository Resource, binds it to the Project, and then evaluates Project readiness. The response retains the normal Project fields and adds `freshBootstrap` with materialization and readiness details.
+
+This setup is idempotent. Re-run it explicitly with:
+
+```
+POST /api/projects/<project-id>/fresh-bootstrap
+```
+
+A missing execution worker does not roll back repository topology: the Project remains configured with its canonical Resource binding and readiness reports the worker blocker before a normal turn can start.
+
+For a Project root containing multiple independent Git repositories, all repositories are materialized and preserved. Codex Web does not pick the first repository as mutable execution authority; readiness remains blocked until deterministic selection/routing is configured.
+
+A non-Git directory remains a configured Project but reports the canonical `repository_missing` materialization/readiness blocker unless a supported orchestration-only topology is configured separately.
