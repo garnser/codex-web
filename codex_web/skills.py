@@ -34,6 +34,23 @@ SkillWorkerCapability = Literal[
     "artifact_upload",
 ]
 
+_AGENT_PROVIDER_CAPABILITIES = {
+    "model_inference",
+    "agent_execution",
+    "persistent_sessions",
+    "streaming",
+    "interrupt_cancel",
+    "filesystem_editing",
+    "shell_tools",
+    "git_operations",
+    "interactive_approvals",
+    "native_context_compaction",
+    "subagents",
+    "mcp_tool_servers",
+    "usage_exact",
+    "usage_partial",
+}
+
 _SECRET_KEY_FRAGMENTS = (
     "password",
     "secret_value",
@@ -244,6 +261,15 @@ class SkillDefinition(BaseModel):
             "required_worker_capabilities",
             tuple(dict.fromkeys(self.required_worker_capabilities)),
         )
+        unknown_provider_capabilities = (
+            set(self.required_provider_capabilities)
+            - _AGENT_PROVIDER_CAPABILITIES
+        )
+        if unknown_provider_capabilities:
+            raise ValueError(
+                "skill requires unsupported AgentProvider capabilities: "
+                + ", ".join(sorted(unknown_provider_capabilities))
+            )
 
         if contains_secret_material(self.instructions):
             raise ValueError(
