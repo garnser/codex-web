@@ -10,6 +10,7 @@ from codex_web.configuration import (
     ConfigurationScope,
     SecretReference,
 )
+from codex_web.definitions import DefinitionReference
 from codex_web.execution_subjects import ExecutionSubjectKind
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
