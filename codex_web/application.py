@@ -26,6 +26,9 @@ from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.conversation_channels import build_conversation_channels_router
 from codex_web.api.capacity import build_capacity_router
+from codex_web.api.canonical_materialization import (
+    build_canonical_materialization_router,
+)
 from codex_web.api.crypto_keys import build_crypto_keys_router
 from codex_web.api.context import build_context_router
 from codex_web.api.control_plane_broker import build_control_plane_broker_router
@@ -183,6 +186,9 @@ from codex_web.services.conversation_channel_adapters import (
 )
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.capacity import CapacityService
+from codex_web.services.canonical_materialization import (
+    CanonicalMaterializationService,
+)
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.coordination import StateStoreCoordinationBackend
 from codex_web.services.event_transport import (
@@ -381,6 +387,9 @@ from codex_web.storage.security_events import SecurityEventStore
 from codex_web.storage.configuration_registry import ConfigurationRegistryStore
 from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
 from codex_web.storage.capacity import CapacityStore
+from codex_web.storage.canonical_materialization import (
+    CanonicalMaterializationStore,
+)
 from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.configuration_state import (
     install_configuration_state,
@@ -1974,6 +1983,27 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     ),
     binding_report_name=bot_presentation_service.binding_report_name,
     binding_prefix=bot_presentation_service.binding_prefix,
+)
+
+canonical_materialization_store = CanonicalMaterializationStore(
+    state_store
+)
+canonical_materialization_service = CanonicalMaterializationService(
+    projects=project_service,
+    resources=resource_catalog_service,
+    work_items=runtime_state.work_item_states,
+    secrets=secret_broker,
+    load_gitlab_routing=configuration_state.gitlab_routing.load,
+    legacy_gitlab_token=gitlab_work_item_dependencies.token_for_project,
+    gitlab_api_base=gitlab_work_item_dependencies.api_base_url,
+    store=canonical_materialization_store,
+)
+app.state.canonical_materialization_store = canonical_materialization_store
+app.state.canonical_materialization_service = canonical_materialization_service
+app.include_router(
+    build_canonical_materialization_router(
+        canonical_materialization_service
+    )
 )
 
 legacy_project_migration_store = LegacyProjectMigrationStore(state_store)
