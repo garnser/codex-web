@@ -4,6 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 
