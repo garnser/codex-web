@@ -20,6 +20,7 @@ class JournalSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    sequence: int = 0
     path: str
     tail_path: str | None = None
     rotated_at: float
@@ -407,13 +408,46 @@ class RotatingJsonlJournal:
             elif path.name.endswith(".jsonl"):
                 slot["plain"] = path
 
+        normalized_existing: list[JournalSegment] = []
+        next_sequence = 1
+        for segment in self._manifest.segments:
+            sequence = int(segment.sequence or 0)
+            if sequence <= 0:
+                sequence = next_sequence
+                segment = segment.model_copy(
+                    update={"sequence": sequence}
+                )
+            next_sequence = max(next_sequence, sequence + 1)
+            normalized_existing.append(segment)
         by_id = {
             segment.id: segment
-            for segment in self._manifest.segments
+            for segment in normalized_existing
         }
-        changed = False
+        changed = normalized_existing != self._manifest.segments
         reconciled: list[JournalSegment] = []
-        all_ids = sorted(set(by_id) | set(discovered))
+        existing_ids = [
+            segment.id
+            for segment in sorted(
+                normalized_existing,
+                key=lambda item: item.sequence,
+            )
+        ]
+        new_ids = sorted(
+            set(discovered) - set(by_id),
+            key=lambda segment_id: (
+                (
+                    discovered[segment_id].get("plain")
+                    or discovered[segment_id].get("gzip")
+                ).stat().st_mtime
+                if (
+                    discovered[segment_id].get("plain")
+                    or discovered[segment_id].get("gzip")
+                ) is not None
+                else 0.0,
+                segment_id,
+            ),
+        )
+        all_ids = [*existing_ids, *new_ids]
         for segment_id in all_ids:
             current = by_id.get(segment_id)
             files = discovered.get(segment_id, {})
@@ -437,6 +471,7 @@ class RotatingJsonlJournal:
                 stat = preferred.stat()
                 current = JournalSegment(
                     id=segment_id,
+                    sequence=next_sequence,
                     path=preferred.name,
                     tail_path=(
                         tail.name if tail is not None else None
@@ -448,6 +483,7 @@ class RotatingJsonlJournal:
                         0 if compressed else int(stat.st_size)
                     ),
                 )
+                next_sequence += 1
                 changed = True
             else:
                 updates: dict[str, Any] = {}
@@ -463,9 +499,7 @@ class RotatingJsonlJournal:
                     changed = True
             reconciled.append(current)
 
-        reconciled.sort(
-            key=lambda item: (item.rotated_at, item.id)
-        )
+        reconciled.sort(key=lambda item: item.sequence)
         if reconciled != self._manifest.segments:
             self._manifest.segments = reconciled
             changed = True
@@ -687,6 +721,16 @@ class RotatingJsonlJournal:
 
                 segment = JournalSegment(
                     id=segment_id,
+                    sequence=(
+                        max(
+                            (
+                                item.sequence
+                                for item in self._manifest.segments
+                            ),
+                            default=0,
+                        )
+                        + 1
+                    ),
                     path=destination.name,
                     rotated_at=now,
                     bytes=int(destination.stat().st_size),
@@ -694,10 +738,7 @@ class RotatingJsonlJournal:
                 )
                 self._manifest.segments.append(segment)
                 self._manifest.segments.sort(
-                    key=lambda item: (
-                        item.rotated_at,
-                        item.id,
-                    )
+                    key=lambda item: item.sequence
                 )
                 self._manifest.active_started_at = now
                 self._manifest.rotation_count += 1
@@ -818,7 +859,7 @@ class RotatingJsonlJournal:
             sources.append((self.active_path, False))
         for segment in sorted(
             self._manifest.segments,
-            key=lambda item: (item.rotated_at, item.id),
+            key=lambda item: item.sequence,
             reverse=True,
         ):
             path = self.segments_dir / segment.path
@@ -975,10 +1016,7 @@ class RotatingJsonlJournal:
                 item.model_copy(deep=True)
                 for item in sorted(
                     self._manifest.segments,
-                    key=lambda segment: (
-                        segment.rotated_at,
-                        segment.id,
-                    ),
+                    key=lambda segment: segment.sequence,
                     reverse=True,
                 )
             ]
@@ -1041,10 +1079,7 @@ class RotatingJsonlJournal:
                 item.model_copy(deep=True)
                 for item in sorted(
                     self._manifest.segments,
-                    key=lambda segment: (
-                        segment.rotated_at,
-                        segment.id,
-                    ),
+                    key=lambda segment: segment.sequence,
                 )
             ]
         try:
@@ -1189,7 +1224,7 @@ class RotatingJsonlJournal:
         ]
         newest_uncompressed = sorted(
             manifest.segments,
-            key=lambda item: (item.rotated_at, item.id),
+            key=lambda item: item.sequence,
             reverse=True,
         )
         archive_backlog = 0
