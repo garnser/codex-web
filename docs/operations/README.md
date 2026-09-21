@@ -23,3 +23,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Company Operations diagnostics](company-operations.md) — canonical business state, source/extension health, fact/KPI conflicts, consequence explain chains and deterministic recovery guidance.
 
 - [Canonical legacy-state materialization](canonical-materialization.md) — dry-run, apply/resume, tenant/resource/TaskSource/Secret recovery, and rollback boundaries for imported installations.
+
+- [Project bootstrap manifest and CLI](project-bootstrap.md) — versioned desired-state input, safe scaffolding/dry-run, legacy materialization apply, exit codes, and secret/path validation.
