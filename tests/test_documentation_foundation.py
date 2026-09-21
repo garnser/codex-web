@@ -197,9 +197,9 @@ class DocumentationFoundationTests(unittest.TestCase):
             "--output json",
         ):
             self.assertIn(switch, combined, switch)
-        for code in ("\`0\`", "\`2\`", "\`10\`", "\`20\`", "\`30\`"):
+        for code in ("`0`", "`2`", "`10`", "`20`", "`30`"):
             self.assertIn(code, bootstrap, code)
-        self.assertIn("no separate \`--resume\` flag", bootstrap.casefold())
+        self.assertIn("no separate `--resume` flag", bootstrap.casefold())
         self.assertIn("secretref", bootstrap.casefold())
         self.assertIn("raw credentials", bootstrap.casefold())
 
