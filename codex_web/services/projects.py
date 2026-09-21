@@ -64,6 +64,7 @@ class ProjectService:
             model=payload.model,
             sandbox=payload.sandbox,
             approval_policy=payload.approval_policy,
+            repository_selection_policy=payload.repository_selection_policy,
             authoritative_task_source=payload.authoritative_task_source,
         )
         projects.append(project)
