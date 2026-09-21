@@ -39,7 +39,7 @@ class _Identity:
             organization_id=scope.organization_id,
             workspace_id=scope.workspace_id,
             roles=(),
-            assurance=AuthenticationAssurance.SERVICE,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
             service_scopes=tuple(service_scopes),
         )
 
