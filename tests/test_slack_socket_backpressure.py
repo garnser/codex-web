@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_web.models import BotConnection
-from codex_web.runtime.bots import BotRuntime
+from codex_web.runtime.bots import BotRuntime, SlackSocketCleanClose
 
 
 class _Telemetry:
@@ -397,7 +397,8 @@ class SlackSocketBackpressureTests(unittest.IsolatedAsyncioTestCase):
             "codex_web.runtime.bots.websockets.connect",
             return_value=socket,
         ):
-            await runtime._run_slack(connection)
+            with self.assertRaises(SlackSocketCleanClose):
+                await runtime._run_slack(connection)
 
         self.assertEqual(
             socket.sent,
