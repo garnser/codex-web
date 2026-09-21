@@ -10,6 +10,10 @@ from codex_web.services.identity import IdentityError, IdentityService, identity
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_items import WorkItemService
+from codex_web.services.task_source_sync_jobs import (
+    GitLabSyncJobNotFound,
+    GitLabSyncJobService,
+)
 from codex_web.work_item_execution_models import (
     WorkItemCheckpointCreate,
     WorkItemExecutionUpdate,
@@ -26,7 +30,11 @@ class WorkItemOperatorAction(BaseModel):
     reason: str | None = None
 
 
-def build_work_items_router(service: WorkItemService) -> APIRouter:
+def build_work_items_router(
+    service: WorkItemService,
+    *,
+    gitlab_sync_jobs: GitLabSyncJobService | None = None,
+) -> APIRouter:
     router = APIRouter(tags=["work-items"])
     execution = WorkItemExecutionLifecycleService(
         None,
@@ -99,13 +107,103 @@ def build_work_items_router(service: WorkItemService) -> APIRouter:
             ],
         }
 
-    @router.post("/api/work-items/sync-from-gitlab")
+    @router.post(
+        "/api/work-items/sync-from-gitlab",
+        status_code=202,
+    )
     async def sync_from_gitlab(request: Request) -> dict[str, Any]:
         try:
             IdentityService.require_admin(request.state.identity_actor)
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
-        return await service.sync_from_gitlab(request.state.tenant_scope)
+        if gitlab_sync_jobs is None:
+            return await service.sync_from_gitlab(
+                request.state.tenant_scope
+            )
+        job = gitlab_sync_jobs.start(
+            scope=request.state.tenant_scope,
+            actor_id=request.state.identity_actor.identity_id,
+        )
+        return {
+            "ok": True,
+            "accepted": True,
+            "job": job.model_dump(mode="json"),
+        }
+
+    @router.get("/api/work-items/gitlab-sync")
+    async def list_gitlab_sync_jobs(
+        request: Request,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            IdentityService.require_admin(request.state.identity_actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        if gitlab_sync_jobs is None:
+            return {"items": [], "count": 0}
+        items = gitlab_sync_jobs.list(
+            scope=request.state.tenant_scope,
+            limit=limit,
+        )
+        return {
+            "items": [
+                item.model_dump(mode="json")
+                for item in items
+            ],
+            "count": len(items),
+        }
+
+    @router.get("/api/work-items/gitlab-sync/{job_id}")
+    async def get_gitlab_sync_job(
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            IdentityService.require_admin(request.state.identity_actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        if gitlab_sync_jobs is None:
+            raise HTTPException(
+                status_code=404,
+                detail="GitLab sync jobs are unavailable",
+            )
+        try:
+            job = gitlab_sync_jobs.get(
+                job_id,
+                scope=request.state.tenant_scope,
+            )
+        except GitLabSyncJobNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=str(exc),
+            ) from exc
+        return {"job": job.model_dump(mode="json")}
+
+    @router.delete("/api/work-items/gitlab-sync/{job_id}")
+    async def cancel_gitlab_sync_job(
+        job_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            IdentityService.require_admin(request.state.identity_actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        if gitlab_sync_jobs is None:
+            raise HTTPException(
+                status_code=404,
+                detail="GitLab sync jobs are unavailable",
+            )
+        try:
+            job = gitlab_sync_jobs.cancel(
+                job_id,
+                scope=request.state.tenant_scope,
+            )
+        except GitLabSyncJobNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=str(exc),
+            ) from exc
+        return {"ok": True, "job": job.model_dump(mode="json")}
 
     @router.post("/api/work-items/sync/{project_id}")
     async def sync_authoritative_task_source(
