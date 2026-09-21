@@ -185,6 +185,7 @@ class SkillContextSelection(BaseModel):
     required_provider_capabilities: tuple[str, ...] = ()
     required_worker_capabilities: tuple[str, ...] = ()
     characters: int = Field(ge=0)
+    truncated: bool = False
 
 
 class SkillBundle(BaseModel):
