@@ -17,6 +17,7 @@ from codex_web.agent_teams import (
     TeamCoordinatorDecision,
     TeamDelegationPlan,
     TeamDelegationRequest,
+    TeamInstructionsDefinition,
 )
 from codex_web.definitions import (
     DefinitionLifecycle,
@@ -35,7 +36,10 @@ from codex_web.services.agent_profiles import (
     AgentProfileNotFound,
     AgentProfileService,
 )
-from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.definitions import (
+    DefinitionKindSchema,
+    DefinitionRegistryService,
+)
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.agent_teams import AgentTeamStore
 
@@ -56,6 +60,30 @@ class AgentTeamAccessDenied(AgentTeamError):
     pass
 
 
+def validate_team_instructions_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return TeamInstructionsDefinition.model_validate(payload).model_dump(mode="json")
+
+
+def install_team_instructions_schema(
+    definitions: DefinitionRegistryService,
+) -> None:
+    try:
+        definitions.schemas.get(
+            TEAM_INSTRUCTIONS_KIND,
+            TEAM_INSTRUCTIONS_SCHEMA_VERSION,
+        )
+        return
+    except Exception:
+        pass
+    definitions.register_schema(
+        DefinitionKindSchema(
+            kind=TEAM_INSTRUCTIONS_KIND,
+            schema_version=TEAM_INSTRUCTIONS_SCHEMA_VERSION,
+            validate=validate_team_instructions_payload,
+        )
+    )
+
+
 class AgentTeamService:
     def __init__(
         self,
@@ -69,6 +97,7 @@ class AgentTeamService:
         self.profiles = profiles
         self.definitions = definitions
         self.clock = clock
+        install_team_instructions_schema(definitions)
         self._seen_triggers: set[str] = set()
         self._seen_decisions: set[str] = set()
 
