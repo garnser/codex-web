@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import json
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,13 @@ class BotRuntimeTelemetry:
     ) -> None:
         self.events_file = events_file
         self.status = status if status is not None else {}
+        self._recent_metrics = {
+            "bytesRead": 0,
+            "chunksRead": 0,
+            "linesConsidered": 0,
+            "validEvents": 0,
+            "fileSize": 0,
+        }
 
     def append(self, event: dict[str, Any]) -> None:
         self.events_file.parent.mkdir(parents=True, exist_ok=True)
@@ -57,18 +63,85 @@ class BotRuntimeTelemetry:
             for connection_id, value in self.status.items()
         }
 
-    def recent(self, limit: int = 80) -> list[dict[str, Any]]:
+    def recent_metrics(self) -> dict[str, int]:
+        return dict(self._recent_metrics)
+
+    def recent(
+        self,
+        limit: int = 80,
+        *,
+        chunk_size: int = 64 * 1024,
+    ) -> list[dict[str, Any]]:
+        requested = max(1, min(int(limit), 300))
+        chunk_size = max(1024, int(chunk_size))
+        metrics = {
+            "bytesRead": 0,
+            "chunksRead": 0,
+            "linesConsidered": 0,
+            "validEvents": 0,
+            "fileSize": 0,
+        }
         if not self.events_file.exists():
+            self._recent_metrics = metrics
             return []
-        with self.events_file.open(errors="replace") as handle:
-            lines = deque(handle, maxlen=max(1, min(int(limit), 300)))
-        events: list[dict[str, Any]] = []
-        for line in lines:
-            with contextlib.suppress(Exception):
-                value = json.loads(line)
-                if isinstance(value, dict):
-                    events.append(value)
-        return events
+
+        events_reverse: list[dict[str, Any]] = []
+        with self.events_file.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            metrics["fileSize"] = position
+            carry = b""
+
+            while position > 0 and len(events_reverse) < requested:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                handle.seek(position)
+                block = handle.read(read_size)
+                metrics["bytesRead"] += len(block)
+                metrics["chunksRead"] += 1
+                data = block + carry
+                parts = data.split(b"\n")
+
+                if position > 0:
+                    carry = parts[0]
+                    complete = parts[1:]
+                else:
+                    carry = b""
+                    complete = parts
+
+                for raw in reversed(complete):
+                    if len(events_reverse) >= requested:
+                        break
+                    if not raw.strip():
+                        continue
+                    metrics["linesConsidered"] += 1
+                    with contextlib.suppress(Exception):
+                        value = json.loads(
+                            raw.decode("utf-8", errors="replace")
+                        )
+                        if isinstance(value, dict):
+                            events_reverse.append(value)
+
+            # A file with no newline can leave its only record in carry until
+            # the first/only block reaches offset zero. The position==0 branch
+            # above normally consumes it; this is a defensive fallback for
+            # unusual file-like behavior.
+            if (
+                position == 0
+                and carry.strip()
+                and len(events_reverse) < requested
+            ):
+                metrics["linesConsidered"] += 1
+                with contextlib.suppress(Exception):
+                    value = json.loads(
+                        carry.decode("utf-8", errors="replace")
+                    )
+                    if isinstance(value, dict):
+                        events_reverse.append(value)
+
+        metrics["validEvents"] = len(events_reverse)
+        self._recent_metrics = metrics
+        return list(reversed(events_reverse))
 
     def thread_recent_activity_age_seconds(
         self,
