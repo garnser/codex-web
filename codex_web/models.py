@@ -166,6 +166,10 @@ class ProjectCreate(BaseModel):
     authoritative_task_source: TaskSourceConfiguration | None = None
 
 
+class ProjectRepositorySelectionUpdate(BaseModel):
+    repository_selection_policy: RepositorySelectionPolicy
+
+
 class TurnCreate(BaseModel):
     message: str = Field(min_length=1)
     project_id: str | None = None
