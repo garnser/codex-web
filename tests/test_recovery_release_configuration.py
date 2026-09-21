@@ -38,8 +38,15 @@ class RecoveryReleaseConfigurationTests(unittest.TestCase):
 
         self.assertIn("immutable-recovery-candidate", workflow)
         self.assertIn("qualified-release-promotion", workflow)
+        self.assertIn(
+            "docker/setup-buildx-action@v3",
+            workflow,
+        )
+        self.assertIn("driver: docker-container", workflow)
         self.assertIn("--sbom=true", workflow)
         self.assertIn("--provenance=mode=max", workflow)
+        self.assertNotIn("--sbom=false", workflow)
+        self.assertNotIn("--provenance=false", workflow)
         self.assertIn("recovery-release", workflow)
         self.assertIn("slack_message_ts", workflow)
         self.assertIn("slack_thread_ts", workflow)
