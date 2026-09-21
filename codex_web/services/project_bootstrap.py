@@ -408,6 +408,7 @@ class ProjectBootstrapService:
             )
         )
 
+        manifest_secret_ready = False
         if manifest.task_source and manifest.task_source.secret_ref:
             try:
                 reference = self.secrets.metadata(
@@ -416,6 +417,7 @@ class ProjectBootstrapService:
                     require_use=True,
                 )
                 secret_ok = reference.status().value == "active"
+                manifest_secret_ready = secret_ok
             except Exception:
                 secret_ok = False
             checks.append(
@@ -569,7 +571,58 @@ class ProjectBootstrapService:
                 )
             )
 
+        current_source = project.authoritative_task_source
+        task_source_candidate, _task_source_candidate_error = (
+            self.canonical_materialization.derived_gitlab_task_source(
+                project_id
+            )
+        )
+        explicit_gitlab_reference = bool(
+            manifest.task_source is not None
+            and manifest.task_source.type.casefold() == "gitlab"
+            and manifest.task_source.secret_ref
+            and manifest_secret_ready
+            and (
+                current_source is None
+                or current_source.source_type.casefold() == "gitlab"
+            )
+            and (
+                current_source is not None
+                or task_source_candidate is not None
+            )
+        )
+        superseded_legacy_reasons = {
+            "gitlab_credential_missing",
+            "task_source_credential_unresolved",
+        }
+
         for blocker in canonical_plan.blockers:
+            if (
+                explicit_gitlab_reference
+                and blocker.reason_code in superseded_legacy_reasons
+            ):
+                checks.append(
+                    self._check(
+                        f"canonical:{blocker.id}",
+                        blocker.domain,
+                        blocker.record_ref,
+                        BootstrapDisposition.READY,
+                        "manifest_secret_reference_supersedes_legacy_credential",
+                        (
+                            "Explicit canonical SecretReference satisfies the "
+                            "credential requirement; legacy credential migration "
+                            "is not required."
+                        ),
+                        details={
+                            "secret_reference_id": (
+                                manifest.task_source.secret_ref
+                                if manifest.task_source is not None
+                                else ""
+                            )
+                        },
+                    )
+                )
+                continue
             checks.append(
                 self._check(
                     f"canonical:{blocker.id}",
@@ -709,7 +762,62 @@ class ProjectBootstrapService:
             )
         )
 
+        current_source = project.authoritative_task_source
+        task_source_candidate, task_source_candidate_error = (
+            self.canonical_materialization.derived_gitlab_task_source(
+                project_id
+            )
+        )
+        explicit_gitlab_reference = bool(
+            manifest.task_source is not None
+            and manifest.task_source.type.casefold() == "gitlab"
+            and manifest.task_source.secret_ref
+            and (
+                current_source is None
+                or current_source.source_type.casefold() == "gitlab"
+            )
+            and (
+                current_source is not None
+                or task_source_candidate is not None
+            )
+        )
+
         for item in canonical.operations:
+            superseded_by_manifest = bool(
+                explicit_gitlab_reference
+                and item.id in {"secret:gitlab", "task-source:gitlab"}
+                and (
+                    item.reason_code
+                    in {
+                        "gitlab_credential_missing",
+                        "task_source_credential_unresolved",
+                        "legacy_gitlab_credential_available",
+                        "task_source_binding_missing",
+                    }
+                    or item.apply_kind in {
+                        "gitlab_secret",
+                        "gitlab_task_source",
+                    }
+                )
+            )
+            if superseded_by_manifest:
+                operations.append(
+                    self._operation(
+                        f"canonical:{item.id}",
+                        item.domain,
+                        item.record_ref,
+                        BootstrapDisposition.SKIP,
+                        "manifest_secret_reference_supersedes_legacy_credential",
+                        (
+                            "Explicit canonical SecretReference supersedes "
+                            "legacy credential/task-source materialization."
+                        ),
+                        provider="none",
+                        provider_operation_id=item.id,
+                    )
+                )
+                continue
+
             disposition = self._canonical_disposition(item)
             operations.append(
                 self._operation(
@@ -735,6 +843,168 @@ class ProjectBootstrapService:
                     provider_operation_id=item.id,
                 )
             )
+
+        if manifest.task_source is not None:
+            desired_type = manifest.task_source.type.casefold()
+            desired_secret = manifest.task_source.secret_ref
+            if (
+                current_source is not None
+                and current_source.source_type.casefold() != desired_type
+            ):
+                operations.append(
+                    self._operation(
+                        "task-source:manifest",
+                        "task_source",
+                        project_id,
+                        BootstrapDisposition.BLOCKED,
+                        "task_source_provider_conflict",
+                        (
+                            "Manifest TaskSource provider conflicts with the "
+                            "existing authoritative provider."
+                        ),
+                        current={
+                            "source_type": current_source.source_type,
+                            "source_instance": current_source.source_instance,
+                            "scope": current_source.scope,
+                            "secret_reference_id": (
+                                current_source.credential_secret_id or ""
+                            ),
+                        },
+                        desired={
+                            "source_type": manifest.task_source.type,
+                            "secret_reference_id": desired_secret or "",
+                        },
+                        operator_action_required=True,
+                    )
+                )
+            elif current_source is not None:
+                secret_matches = (
+                    not desired_secret
+                    or current_source.credential_secret_id == desired_secret
+                )
+                operations.append(
+                    self._operation(
+                        "task-source:manifest",
+                        "task_source",
+                        project_id,
+                        (
+                            BootstrapDisposition.READY
+                            if secret_matches
+                            else BootstrapDisposition.UPDATE
+                        ),
+                        (
+                            "task_source_manifest_ready"
+                            if secret_matches
+                            else "task_source_secret_reference_update"
+                        ),
+                        (
+                            "Authoritative TaskSource matches manifest intent."
+                            if secret_matches
+                            else (
+                                "Authoritative TaskSource will retain its "
+                                "provider/scope and use the manifest SecretReference."
+                            )
+                        ),
+                        current={
+                            "source_type": current_source.source_type,
+                            "source_instance": current_source.source_instance,
+                            "scope": current_source.scope,
+                            "secret_reference_id": (
+                                current_source.credential_secret_id or ""
+                            ),
+                        },
+                        desired={
+                            "source_type": manifest.task_source.type,
+                            "source_instance": current_source.source_instance,
+                            "scope": current_source.scope,
+                            "secret_reference_id": desired_secret or "",
+                        },
+                        rollback=(
+                            BootstrapRollbackClass.REVERSIBLE
+                            if not secret_matches
+                            else BootstrapRollbackClass.NOT_APPLICABLE
+                        ),
+                        provider=(
+                            "bootstrap"
+                            if not secret_matches
+                            else "none"
+                        ),
+                    )
+                )
+            elif (
+                desired_type == "gitlab"
+                and desired_secret
+                and task_source_candidate is not None
+            ):
+                operations.append(
+                    self._operation(
+                        "task-source:manifest",
+                        "task_source",
+                        project_id,
+                        BootstrapDisposition.CREATE,
+                        "task_source_manifest_create",
+                        (
+                            "Authoritative GitLab TaskSource will be created "
+                            "from deterministic legacy/source evidence and the "
+                            "explicit canonical SecretReference."
+                        ),
+                        desired={
+                            "source_type": task_source_candidate.source_type,
+                            "source_instance": task_source_candidate.source_instance,
+                            "scope": task_source_candidate.scope,
+                            "secret_reference_id": desired_secret,
+                        },
+                        rollback=BootstrapRollbackClass.REVERSIBLE,
+                        provider="bootstrap",
+                    )
+                )
+            else:
+                delegated = next(
+                    (
+                        item
+                        for item in canonical.operations
+                        if item.domain == "task_source"
+                        and item.apply_kind is not None
+                    ),
+                    None,
+                )
+                if delegated is not None and not desired_secret:
+                    operations.append(
+                        self._operation(
+                            "task-source:manifest",
+                            "task_source",
+                            project_id,
+                            BootstrapDisposition.READY,
+                            "task_source_materialization_delegated",
+                            (
+                                "TaskSource desired state is deterministically "
+                                "handled by canonical materialization."
+                            ),
+                            provider="none",
+                        )
+                    )
+                else:
+                    operations.append(
+                        self._operation(
+                            "task-source:manifest",
+                            "task_source",
+                            project_id,
+                            BootstrapDisposition.BLOCKED,
+                            (
+                                task_source_candidate_error
+                                or "task_source_binding_missing"
+                            ),
+                            (
+                                "TaskSource provider/scope cannot be derived "
+                                "safely from current state and manifest intent."
+                            ),
+                            desired={
+                                "source_type": manifest.task_source.type,
+                                "secret_reference_id": desired_secret or "",
+                            },
+                            operator_action_required=True,
+                        )
+                    )
 
         if migrate_legacy:
             if legacy is None:
@@ -827,22 +1097,27 @@ class ProjectBootstrapService:
             )
 
         for check in preflight.checks:
-            if check.disposition != BootstrapDisposition.BLOCKED:
+            if check.disposition not in {
+                BootstrapDisposition.WARNING,
+                BootstrapDisposition.BLOCKED,
+            }:
                 continue
             existing = {
-                item.reason_code for item in operations
-                if item.disposition == BootstrapDisposition.BLOCKED
+                (item.disposition, item.reason_code)
+                for item in operations
             }
-            if check.reason_code in existing:
+            key = (check.disposition, check.reason_code)
+            if key in existing:
                 continue
             operations.append(
                 self._operation(
                     f"preflight:{check.id}",
                     check.domain,
                     check.resource_ref,
-                    BootstrapDisposition.BLOCKED,
+                    check.disposition,
                     check.reason_code,
                     check.message,
+                    current=check.details,
                     operator_action_required=check.operator_action_required,
                 )
             )
@@ -1083,10 +1358,42 @@ class ProjectBootstrapService:
                     "Project scope must be materialized before Project settings"
                 )
             desired = plan.manifest
+            source = project.authoritative_task_source
+            if desired.task_source is not None:
+                desired_secret = desired.task_source.secret_ref
+                if source is None:
+                    candidate, error = (
+                        self.canonical_materialization.derived_gitlab_task_source(
+                            plan.project_id
+                        )
+                    )
+                    if candidate is None:
+                        raise ProjectBootstrapBlocked(
+                            error or "TaskSource cannot be derived safely"
+                        )
+                    source = candidate.model_copy(
+                        update={
+                            "credential_secret_id": desired_secret,
+                        }
+                    )
+                elif (
+                    source.source_type.casefold()
+                    != desired.task_source.type.casefold()
+                ):
+                    raise ProjectBootstrapBlocked(
+                        "authoritative TaskSource provider changed during apply"
+                    )
+                elif desired_secret:
+                    source = source.model_copy(
+                        update={
+                            "credential_secret_id": desired_secret,
+                        }
+                    )
             replacement = project.model_copy(
                 update={
                     "name": desired.project.name,
                     "sandbox": desired.execution.sandbox,
+                    "authoritative_task_source": source,
                 }
             )
             changed = changed or replacement != project
