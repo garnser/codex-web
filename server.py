@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import sys
 
+
+# Keep manifest validation/scaffolding side-effect free. The bootstrap CLI is
+# dispatched before importing application.py, which composes mutable runtime
+# state. Apply intentionally crosses that boundary lazily inside codex_web.cli.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "bootstrap":
+    from codex_web.cli import main as _cli_main
+
+    raise SystemExit(_cli_main(sys.argv[1:]))
+
+
 from codex_web import application as _application
 from codex_web.observability import install_observability
 from codex_web.runtime import core as _runtime
