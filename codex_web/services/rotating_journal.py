@@ -475,20 +475,31 @@ class RotatingJsonlJournal:
         # A crash after committing compressed metadata but before deleting the
         # source can leave both files. The manifest is authoritative.
         for segment in self._manifest.segments:
-            if not segment.compressed:
-                continue
             files = discovered.get(segment.id, {})
             plain = files.get("plain")
             zipped = files.get("gzip")
             tail = files.get("tail")
-            if (
-                plain is not None
-                and zipped is not None
-                and tail is not None
-                and segment.path == zipped.name
-            ):
+            if segment.compressed:
+                if (
+                    plain is not None
+                    and zipped is not None
+                    and tail is not None
+                    and segment.path == zipped.name
+                ):
+                    with contextlib.suppress(OSError):
+                        plain.unlink()
+                continue
+
+            # If archive files were committed before a crash but the manifest
+            # still points at the plain source, the plain source is
+            # authoritative. Remove the uncommitted archive artifacts so
+            # restart cannot accumulate ambiguous duplicate representations.
+            if plain is not None and zipped is not None:
                 with contextlib.suppress(OSError):
-                    plain.unlink()
+                    zipped.unlink()
+                if tail is not None:
+                    with contextlib.suppress(OSError):
+                        tail.unlink()
 
     @staticmethod
     def _decode_event(raw: bytes) -> dict[str, Any] | None:
@@ -723,6 +734,10 @@ class RotatingJsonlJournal:
                         0o600,
                     )
                     os.close(fd)
+                    self._manifest.active_started_at = float(
+                        self.clock()
+                    )
+                    self._rotation_requested = False
                 self._manifest.rotation_failures += 1
                 self._manifest.last_error_class = type(exc).__name__
                 self._manifest.last_error_at = float(self.clock())
