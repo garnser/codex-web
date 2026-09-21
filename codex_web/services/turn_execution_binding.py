@@ -451,6 +451,7 @@ class TurnExecutionBindingService:
         repository_target: RepositoryExecutionTarget,
         execution_profile_id: str | None,
         execution_profile_definition: DefinitionReference | None,
+        agent_profile: AgentProfileExecutionBinding | None,
     ) -> TurnExecutionBinding:
         if assignment.subject != subject:
             raise TurnExecutionBindingError(
@@ -489,6 +490,10 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different execution profile"
+            )
+        if assignment.agent_profile != agent_profile:
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different Agent Profile revision"
             )
         if assignment.execution_contract_version != execution_contract_version:
             raise TurnExecutionBindingError(
@@ -982,6 +987,7 @@ class TurnExecutionBindingService:
             runtime_binding=assignment.runtime_binding,
             execution_profile_id=assignment.execution_profile_id,
             execution_profile_definition=assignment.execution_profile_definition,
+            agent_profile=assignment.agent_profile,
         )
 
     def prepare(
