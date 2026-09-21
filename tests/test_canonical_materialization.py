@@ -266,6 +266,51 @@ class CanonicalMaterializationTests(unittest.TestCase):
         )
         self.assertNotIn(self.token, report)
 
+    def test_fresh_plan_after_convergence_has_no_duplicate_writes(self):
+        first_plan = self.service.plan(
+            self.project.id,
+            actor=self.actor,
+        )
+        self.service.apply(first_plan, actor=self.actor)
+
+        bindings_before = len(
+            self.resources.store.load().project_bindings
+        )
+        secrets_before = len(self.secrets.list(self.actor))
+        puts_before = len(self.work_items.put_calls)
+
+        converged = self.service.plan(
+            self.project.id,
+            actor=self.actor,
+        )
+        applied = self.service.apply(
+            converged,
+            actor=self.actor,
+        )
+
+        self.assertEqual(
+            applied.status,
+            MaterializationExecutionStatus.APPLIED,
+        )
+        self.assertFalse(
+            any(
+                item.apply_kind is not None
+                for item in converged.operations
+            )
+        )
+        self.assertEqual(
+            len(self.resources.store.load().project_bindings),
+            bindings_before,
+        )
+        self.assertEqual(
+            len(self.secrets.list(self.actor)),
+            secrets_before,
+        )
+        self.assertEqual(
+            len(self.work_items.put_calls),
+            puts_before,
+        )
+
     def test_interrupted_apply_resumes_without_duplicate_state(self):
         plan = self.service.plan(
             self.project.id,
