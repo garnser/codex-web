@@ -1492,14 +1492,32 @@ class ProjectBootstrapService:
         ):
             raise ProjectBootstrapError("bootstrap plan belongs to another tenant")
 
+        project_executions = self.store.executions_for_project(
+            plan.project_id,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        now = self.clock()
+        active_other = next(
+            (
+                item
+                for item in project_executions
+                if item.status == BootstrapExecutionStatus.APPLYING
+                and item.lease_owner
+                and item.lease_expires_at is not None
+                and item.lease_expires_at > now
+            ),
+            None,
+        )
+        if active_other is not None:
+            raise ProjectBootstrapConcurrentApply(
+                "another bootstrap apply is active for this Project"
+            )
+
         existing = next(
             (
                 item
-                for item in self.store.executions_for_project(
-                    plan.project_id,
-                    organization_id=actor.organization_id,
-                    workspace_id=actor.workspace_id,
-                )
+                for item in project_executions
                 if item.plan_id == plan.id
             ),
             None,
