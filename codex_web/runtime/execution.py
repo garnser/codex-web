@@ -20,6 +20,7 @@ from codex_web.provider_capacity import ProviderCapacityWaitCreate
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_routing import (
     AgentCapacityRoutingError,
+    AgentRoutingBlockedError,
     AgentRoutingError,
     AgentRoutingService,
 )
@@ -160,6 +161,16 @@ class TurnExecutionService:
             )
         except AgentCapacityRoutingError:
             raise
+        except AgentRoutingBlockedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "execution_preflight_blocked",
+                    "message": str(exc),
+                    "blockers": [exc.public()],
+                    "retryable": exc.retryable,
+                },
+            ) from exc
         except AgentRoutingError as exc:
             detail = str(exc)
             lowered = detail.casefold()
