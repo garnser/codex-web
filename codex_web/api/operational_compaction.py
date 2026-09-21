@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
+from codex_web.services.identity import IdentityError, identity_http_error
 from codex_web.services.operational_compaction import (
     DeliveryTargetCompactionPlan,
     OperationalCompactionError,
@@ -61,6 +62,8 @@ def build_operational_compaction_router(
                 )[1]
             )
             return report.model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except OperationalCompactionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -80,6 +83,8 @@ def build_operational_compaction_router(
                 "requires_confirmation": False,
                 "non_reconstructible_deletions": 0,
             }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except OperationalCompactionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -105,6 +110,8 @@ def build_operational_compaction_router(
                     "message": str(exc),
                 },
             ) from exc
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except OperationalCompactionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -121,6 +128,8 @@ def build_operational_compaction_router(
                     actor=actor,
                 )
             )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except OperationalCompactionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -139,6 +148,8 @@ def build_operational_compaction_router(
                     for item in items
                 ],
             }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
         except OperationalCompactionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
