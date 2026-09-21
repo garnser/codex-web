@@ -163,6 +163,7 @@ class RuntimeSupervisor:
         continuity: Any | None = None,
         codex: Any | None = None,
         bot_runtime: Any | None = None,
+        runtime_health: Any | None = None,
         stale_turn_recovery: Any | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         truncate_text: Callable[[str, int], str] | None = None,
@@ -188,6 +189,7 @@ class RuntimeSupervisor:
         self.continuity = continuity
         self.codex = codex or getattr(host, "codex", None)
         self.bot_runtime = bot_runtime or getattr(host, "bot_runtime", None)
+        self.runtime_health = runtime_health
         self.stale_turn_recovery = stale_turn_recovery
         self.event_sink = event_sink or getattr(
             host,
@@ -498,6 +500,12 @@ class RuntimeSupervisor:
                     "resume-active-threads",
                     self.resume_active_threads(),
                 )
+
+        if self.runtime_health is not None:
+            self._spawn(
+                "runtime-health-refresh",
+                self.runtime_health.run_forever(),
+            )
 
         self.sd_notify("READY=1\nSTATUS=codex-web started")
         if (
