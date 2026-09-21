@@ -1362,6 +1362,45 @@ class CanonicalMaterializationService:
             self._save_execution(execution)
             raise
 
+    @staticmethod
+    def human_report(value) -> str:
+        records = tuple(
+            getattr(value, "records", ())
+            or getattr(getattr(value, "plan", None), "operations", ())
+            or getattr(value, "operations", ())
+        )
+        counts = (
+            value.counts()
+            if callable(getattr(value, "counts", None))
+            else {}
+        )
+        header = (
+            "Canonical materialization "
+            f"{getattr(value, 'version', CANONICAL_MATERIALIZATION_VERSION)} "
+            f"for Project {getattr(value, 'project_id', 'unknown')}"
+        )
+        count_line = ", ".join(
+            f"{key}={counts.get(key, 0)}"
+            for key in (
+                "migrated",
+                "unchanged",
+                "skipped",
+                "unresolved",
+                "operator_action_required",
+            )
+        )
+        lines = [header, count_line]
+        for item in records:
+            lines.append(
+                f"- [{item.disposition.value}] {item.domain} "
+                f"{item.record_ref}: {item.reason_code} — {item.message}"
+            )
+            if item.operator_action:
+                lines.append(
+                    f"  action: {item.operator_action}"
+                )
+        return "\n".join(lines)
+
     def status(
         self,
         project_id: str,
