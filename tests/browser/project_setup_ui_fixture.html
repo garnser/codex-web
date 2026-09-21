@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project setup fixture</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/project_setup_ui.css">
+</head>
+<body data-project-id="project-a">
+  <aside class="sidebar"><div class="brand">Codex Web</div></aside>
+  <main class="main">
+    <header class="topbar"><div class="controls"></div></header>
+    <button id="new-thread" type="button">New thread</button>
+    <textarea id="prompt"></textarea>
+    <button id="send" type="button">Send</button>
+  </main>
+  <details id="developer-panel" open><div class="developer-grid"></div></details>
+  <script>
+    window.fixture = {
+      ready: false,
+      calls: [],
+      openedWorkspace: null,
+      readiness() {
+        return {
+          project_id: "project-a",
+          semantic_ready: true,
+          execution_ready: this.ready,
+          status: this.ready ? "ready" : "blocked",
+          checks: [
+            { id: "repository:resources", domain: "repository", status: "ready", code: "repository_resources_ready", message: "Repository is canonical." },
+            { id: "execution:worker", domain: "execution_worker", status: this.ready ? "ready" : "blocked", code: this.ready ? "ready" : "worker_capability_missing", message: this.ready ? "Worker ready." : "command_execution worker is missing.", remediation: "Start a qualified worker.", remediation_route: "/api/execution-workers/readiness" }
+          ]
+        };
+      }
+    };
+    window.CodexProductUI = {
+      openWorkspace(name) { window.fixture.openedWorkspace = name; }
+    };
+    window.fetch = async (url, options = {}) => {
+      const path = String(url);
+      window.fixture.calls.push({ path, method: options.method || "GET", body: options.body || null });
+      let payload;
+      if (path.endsWith("/api/projects")) {
+        payload = [{ id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write" }];
+      } else if (path.includes("/readiness")) {
+        payload = window.fixture.readiness();
+      } else if (path.includes("/bootstrap/status")) {
+        payload = { items: [] };
+      } else if (path.includes("/ui-state")) {
+        payload = { project: { id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write" }, resources: { items: [{ id: "repo-a", aliases: [{ namespace: "filesystem", value: "/workspace/project-a" }] }] } };
+      } else if (path.endsWith("/bootstrap/preflight")) {
+        payload = { blocked: false, preflight: { checks: [] } };
+      } else if (path.endsWith("/bootstrap/plan")) {
+        payload = { blocked: false, counts: { ready: 2 }, plan: { id: "bootstrap-plan-1", operations: [{ id: "repository", domain: "repository", disposition: "ready", reason_code: "repository_ready", message: "Repository ready." }] } };
+      } else if (path.endsWith("/bootstrap/apply")) {
+        window.fixture.ready = true;
+        payload = { execution: { id: "bootstrap-execution-1", status: "applied" } };
+      } else if (path.endsWith("/fresh-bootstrap")) {
+        window.fixture.ready = true;
+        payload = { status: "ready", readiness: window.fixture.readiness() };
+      } else {
+        return new Response(JSON.stringify({ detail: "not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+  </script>
+  <script src="/static/project_setup_ui.js" type="module"></script>
+</body>
+</html>
