@@ -2443,6 +2443,12 @@ $("save-project").addEventListener("click", async (event) => {
   ];
   delete state.projectUiStatic[project.id];
   activateProject(state,project.id);
+  window.dispatchEvent(new CustomEvent("codex:project-created", {
+    detail: {
+      projectId: project.id,
+      freshBootstrap: project.freshBootstrap || null,
+    },
+  }));
   $("project-dialog").close();
   await refresh();
 });
