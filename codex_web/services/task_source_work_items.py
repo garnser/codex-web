@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -38,6 +39,22 @@ class TaskSourceWorkItemProjector:
         self.dependencies = dependencies
         self.state_machine = state_machine
         self.conformance = TaskSourceConformanceSuite()
+        self._metrics_lock = threading.Lock()
+        self._metrics = {
+            "keyed_gets": 0,
+            "source_identity_index_lookups": 0,
+            "compatibility_full_scans": 0,
+            "keyed_saves": 0,
+            "compatibility_bulk_saves": 0,
+        }
+
+    def _metric(self, name: str) -> None:
+        with self._metrics_lock:
+            self._metrics[name] = int(self._metrics.get(name, 0)) + 1
+
+    def metrics(self) -> dict[str, int]:
+        with self._metrics_lock:
+            return dict(self._metrics)
 
     @staticmethod
     def _revision_timestamp(snapshot: TaskSourceSnapshot) -> float | None:
@@ -121,8 +138,30 @@ class TaskSourceWorkItemProjector:
         if not external_ref:
             raise ValueError("Task-source snapshot external identity must not be empty")
 
-        states = self.dependencies.load_states()
-        state = self._find_existing_state(states, snapshot)
+        states: dict[str, WorkItemState] | None = None
+        state: WorkItemState | None = None
+
+        if self.dependencies.get_state is not None:
+            self._metric("keyed_gets")
+            state = self.dependencies.get_state(external_ref)
+
+        if (
+            state is None
+            and self.dependencies.get_state_by_source_identity is not None
+        ):
+            self._metric("source_identity_index_lookups")
+            state = self.dependencies.get_state_by_source_identity(
+                snapshot.identity
+            )
+
+        if state is None and (
+            self.dependencies.get_state is None
+            or self.dependencies.get_state_by_source_identity is None
+        ):
+            self._metric("compatibility_full_scans")
+            states = self.dependencies.load_states()
+            state = self._find_existing_state(states, snapshot)
+
         ref = state.ref if state is not None else external_ref
         projection = source.project(
             snapshot,
@@ -305,6 +344,13 @@ class TaskSourceWorkItemProjector:
 
         state = self.state_machine._ensure_work_item_lane_defaults(state)
         state.artifact_state = self.state_machine._infer_artifact_state_from_state(state)
-        states[ref] = state
-        self.dependencies.save_states(states)
+        if self.dependencies.save_state is not None:
+            self._metric("keyed_saves")
+            self.dependencies.save_state(state)
+        else:
+            self._metric("compatibility_bulk_saves")
+            if states is None:
+                states = self.dependencies.load_states()
+            states[ref] = state
+            self.dependencies.save_states(states)
         return state
