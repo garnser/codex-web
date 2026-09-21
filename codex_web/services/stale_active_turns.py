@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -101,6 +102,7 @@ class ActiveTurnRecoveryReport(BaseModel):
     planned_recovered: int
     drain_thread_ids: tuple[str, ...] = ()
     resume_thread_ids: tuple[str, ...] = ()
+    legacy_backup_refs: tuple[str, ...] = ()
 
 
 class ActiveTurnResolutionRequest(BaseModel):
@@ -269,6 +271,7 @@ class StaleActiveTurnRecoveryService:
         schedule_queue_drain,
         append_event,
         resume_active_threads=None,
+        backup_directory: Path | None = None,
         clock=time.time,
     ) -> None:
         self.active_turns = active_turns
@@ -278,12 +281,53 @@ class StaleActiveTurnRecoveryService:
         self.schedule_queue_drain = schedule_queue_drain
         self.append_event = append_event
         self.resume_active_threads = resume_active_threads
+        self.backup_directory = backup_directory
         self.clock = clock
         self._mutation_lock = threading.RLock()
         self.coordinator = KeyedTaskCoordinator(
             max_concurrency=1,
             per_scope_concurrency=1,
         )
+
+    def _backup_legacy_active_turns(self) -> str | None:
+        source = getattr(self.active_turns, "legacy_path", None)
+        if source is None:
+            return None
+        source = Path(source)
+        if not source.exists():
+            return None
+        directory = (
+            self.backup_directory
+            if self.backup_directory is not None
+            else source.parent / "active-turn-recovery-backups"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        path = directory / (
+            f"active-turns-{int(self.clock())}-"
+            f"{uuid.uuid4().hex[:12]}.json"
+        )
+        data = source.read_bytes()
+        fd = os.open(
+            path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        return f"file://{path.resolve()}"
 
     @staticmethod
     def stale_after_seconds() -> float:
@@ -759,6 +803,7 @@ class StaleActiveTurnRecoveryService:
         *,
         actor_id: str,
         now: float,
+        legacy_backups: list[str],
     ) -> tuple[ActiveTurnRecoveryRecord | None, bool]:
         if inspection.outcome == "fresh":
             return None, False
@@ -784,6 +829,19 @@ class StaleActiveTurnRecoveryService:
             "terminal",
             "interrupted",
         }:
+            if not legacy_backups:
+                backup_ref = self._backup_legacy_active_turns()
+                if backup_ref:
+                    legacy_backups.append(backup_ref)
+            if legacy_backups:
+                record = record.model_copy(
+                    update={
+                        "evidence": {
+                            **record.evidence,
+                            "legacy_backup_ref": legacy_backups[0],
+                        }
+                    }
+                )
             self.store.plan(record)
             self.active_turns.delete(active.thread_id)
             applied = self.store.mark_applied(
@@ -826,6 +884,7 @@ class StaleActiveTurnRecoveryService:
                 now=started
             )
             resume: list[str] = []
+            legacy_backups: list[str] = []
             worker_state = self.worker_state_loader()
             (
                 assignments_by_id,
@@ -887,6 +946,7 @@ class StaleActiveTurnRecoveryService:
                     inspection,
                     actor_id=actor_id,
                     now=started,
+                    legacy_backups=legacy_backups,
                 )
                 if should_drain:
                     drain.append(active.thread_id)
@@ -924,6 +984,7 @@ class StaleActiveTurnRecoveryService:
                 planned_recovered=planned_recovered,
                 drain_thread_ids=tuple(sorted(set(drain))),
                 resume_thread_ids=tuple(sorted(set(resume))),
+                legacy_backup_refs=tuple(legacy_backups),
                 **counts,
             )
 
@@ -1058,13 +1119,21 @@ class StaleActiveTurnRecoveryService:
                     if outcome == "requeued"
                     else "operator_interrupted"
                 )
+                backup_ref = self._backup_legacy_active_turns()
                 replacement = current.model_copy(
                     update={
                         "outcome": outcome,
                         "reason_code": reason_code,
                         "action_state": "planned",
                         "actor_id": actor_id,
-                        "evidence": evidence,
+                        "evidence": {
+                            **evidence,
+                            **(
+                                {"legacy_backup_ref": backup_ref}
+                                if backup_ref
+                                else {}
+                            ),
+                        },
                         "resolved_at": None,
                         "updated_at": now,
                     }
