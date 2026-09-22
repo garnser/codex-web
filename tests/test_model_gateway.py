@@ -303,6 +303,14 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item[0] for item in self.adapter.calls], ["first", "second"])
         self.assertEqual(len(result.invocation.attempts), 2)
         self.assertEqual(result.invocation.attempts[0].outcome, "transient_failure")
+        self.assertIsNotNone(result.invocation.attempts[0].failure)
+        self.assertEqual(
+            result.invocation.attempts[0].failure.reason_code.value,
+            "provider_network",
+        )
+        self.assertTrue(
+            result.invocation.attempts[0].failure.automatic_retry_allowed
+        )
         self.assertEqual(result.invocation.attempts[1].outcome, "success")
         self.assertEqual(result.invocation.selected_model_id, "second")
 
@@ -323,6 +331,17 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result.invocation.attempts[0].outcome,
             "capacity_failure",
+        )
+        self.assertIsNotNone(
+            result.invocation.attempts[0].failure
+        )
+        self.assertEqual(
+            result.invocation.attempts[0].failure.reason_code.value,
+            "provider_quota_exhausted",
+        )
+        self.assertEqual(
+            result.invocation.attempts[0].failure.retryability.value,
+            "after_remediation",
         )
         blocked = self.capacity.blocking_record(
             "p1",
@@ -372,9 +391,19 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
 
-        with self.assertRaises(ModelProviderUnavailableError):
-            await self.service.invoke(self._request(), actor=self.actor)
+        with self.assertRaises(
+            ModelProviderUnavailableError
+        ) as caught:
+            await self.service.invoke(
+                self._request(),
+                actor=self.actor,
+            )
 
+        self.assertIsNotNone(caught.exception.failure)
+        self.assertEqual(
+            caught.exception.failure.reason_code.value,
+            "provider_network",
+        )
         self.assertEqual([item[0] for item in self.adapter.calls], ["first"])
         rows = self.service.invocations(self.actor)
         self.assertEqual(rows[0].status, "failed")
