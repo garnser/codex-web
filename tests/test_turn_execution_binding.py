@@ -279,8 +279,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
             credential_config_key=CODEX_WORKER_API_KEY_CONFIG,
         )
         self.assertEqual(binding.secret_ref, "secret-codex-api-key")
-        assignment = self.workers.get_assignment(
-            binding.assignment_id,
+        assignment = self.workers.assignment_for_execution(
+            "turn-exec-api-key",
             actor=self.actor,
         )
         self.assertEqual(assignment.secret_refs, ("secret-codex-api-key",))
