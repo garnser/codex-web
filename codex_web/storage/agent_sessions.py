@@ -16,8 +16,20 @@ AGENT_SESSION_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": AGENT_SESSION_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         "sessions": list(payload.get("sessions", [])),
+    },
+)
+AGENT_SESSION_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.1",
+        "sessions": [
+            {**dict(item), "failure": dict(item).get("failure")}
+            for item in payload.get("sessions", [])
+        ],
     },
 )
 
