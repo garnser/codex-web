@@ -6,6 +6,7 @@ from codex_web.definitions import DefinitionReference
 
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.execution_workspaces import ExecutionWorkspaceReference
+from codex_web.failures import FailureRecord
 
 
 class WorkItemRetryPolicy(BaseModel):
@@ -37,6 +38,7 @@ class WorkItemFailureReason(BaseModel):
     message: str = Field(min_length=1)
     retryable: bool | None = None
     recorded_at: float
+    canonical: FailureRecord | None = None
 
 
 class WorkItemExecutionCheckpoint(BaseModel):
