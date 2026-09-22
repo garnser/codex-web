@@ -383,9 +383,11 @@ class WorkItemExecutionLifecycleService:
         ref: str,
         *,
         max_events: int = 100,
+        event_offset: int = 0,
     ) -> dict[str, Any]:
         """Return a verified checkpoint delta or an explicit full-context fallback."""
         max_events = max(1, min(int(max_events), self.MAX_HISTORY_LIMIT))
+        event_offset = max(0, int(event_offset))
         anchor = self.continuation_anchor(ref)
         checkpoint_payload = anchor.get("checkpoint")
         if not anchor.get("trusted") or not isinstance(checkpoint_payload, dict):
@@ -459,7 +461,11 @@ class WorkItemExecutionLifecycleService:
         }
         removed_fields = sorted(set(baseline) - set(current))
         new_events = events[event_count:]
-        returned_events = new_events[:max_events]
+        returned_events = new_events[
+            event_offset:event_offset + max_events
+        ]
+        next_event_offset = event_offset + len(returned_events)
+        has_more_events = next_event_offset < len(new_events)
         baseline_bytes = len(self._stable_json(baseline).encode("utf-8"))
         delta_payload = {
             "changed_fields": changed_fields,
@@ -477,8 +483,12 @@ class WorkItemExecutionLifecycleService:
             "removed_fields": removed_fields,
             "events": delta_payload["events"],
             "event_count_since_checkpoint": len(new_events),
+            "event_offset": event_offset,
             "events_returned": len(returned_events),
-            "requires_progressive_retrieval": len(new_events) > len(returned_events),
+            "next_event_offset": (
+                next_event_offset if has_more_events else None
+            ),
+            "requires_progressive_retrieval": has_more_events,
             "current": {
                 "objective": checkpoint.objective,
                 "stage": state.current_stage,
