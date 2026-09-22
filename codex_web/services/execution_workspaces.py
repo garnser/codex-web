@@ -23,6 +23,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceStatus,
     IntegrationOutcome,
     LeaseMode,
+    RepositoryOutcomeStatus,
     WorkspaceIntegrationRecord,
     WorkspaceIntegrationState,
     WorkspaceQuota,
@@ -1143,29 +1144,39 @@ class ExecutionWorkspaceService:
                     resource_id: repository_integrations.get(resource_id)
                     for resource_id in item.writable_repository_ids
                 }
+                recorded = [value for value in outcomes.values() if value is not None]
                 if any(
-                    value is not None and value.outcome == IntegrationOutcome.CONFLICT
-                    for value in outcomes.values()
+                    value.outcome == IntegrationOutcome.CONFLICT
+                    for value in recorded
                 ):
                     status = ExecutionWorkspaceStatus.CONFLICTED
-                elif outcomes and all(value is not None for value in outcomes.values()):
+                    repository_outcome_status = RepositoryOutcomeStatus.BLOCKED
+                elif outcomes and len(recorded) == len(outcomes):
                     if all(
-                        value is not None and value.outcome in successful_outcomes
-                        for value in outcomes.values()
+                        value.outcome in successful_outcomes
+                        for value in recorded
                     ):
                         status = ExecutionWorkspaceStatus.INTEGRATED
+                        repository_outcome_status = RepositoryOutcomeStatus.COMPLETE
                     elif all(
-                        value is not None and value.outcome == IntegrationOutcome.DISCARDED
-                        for value in outcomes.values()
+                        value.outcome == IntegrationOutcome.DISCARDED
+                        for value in recorded
                     ):
                         status = ExecutionWorkspaceStatus.DISCARDED
+                        repository_outcome_status = RepositoryOutcomeStatus.DISCARDED
                     else:
                         status = ExecutionWorkspaceStatus.ACTIVE
+                        repository_outcome_status = RepositoryOutcomeStatus.PARTIAL
+                elif recorded:
+                    status = ExecutionWorkspaceStatus.ACTIVE
+                    repository_outcome_status = RepositoryOutcomeStatus.PARTIAL
                 else:
                     status = ExecutionWorkspaceStatus.ACTIVE
+                    repository_outcome_status = RepositoryOutcomeStatus.PENDING
 
                 updates = {
                     "repository_integrations": repository_integrations,
+                    "repository_outcome_status": repository_outcome_status,
                     "status": status,
                     "updated_at": now,
                 }
@@ -1192,6 +1203,7 @@ class ExecutionWorkspaceService:
                     actor_identity_id=actor.identity_id,
                     details={
                         "repository_id": repository_id,
+                        "repository_outcome_status": repository_outcome_status.value,
                         "outcome": request.outcome.value,
                         "strategy": request.strategy.value,
                         "conflict_count": len(request.conflicts),
