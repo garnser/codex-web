@@ -52,7 +52,6 @@ class WorkItemExecutionCheckpoint(BaseModel):
     id: str = Field(min_length=1)
     sequence: int = Field(ge=1)
     created_at: float
-    schema_version: str = "1.0"
     actor: str | None = None
     source: str | None = None
     reason: str | None = None
