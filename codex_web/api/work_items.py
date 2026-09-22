@@ -34,6 +34,7 @@ def build_work_items_router(
     service: WorkItemService,
     *,
     gitlab_sync_jobs: GitLabSyncJobService | None = None,
+    agent_teams: Any | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["work-items"])
     execution = WorkItemExecutionLifecycleService(
@@ -227,7 +228,13 @@ def build_work_items_router(
     @router.get("/api/work-items/{ref:path}/history")
     async def get_work_item_history(ref: str, request: Request, limit: int = 100) -> dict[str, Any]:
         require_item_scope(ref, request)
-        return execution.history(ref, limit=limit)
+        payload = execution.history(ref, limit=limit)
+        if agent_teams is not None:
+            payload["teamDelegations"] = agent_teams.work_item_history(
+                ref,
+                actor=request.state.identity_actor,
+            )
+        return payload
 
     @router.get("/api/work-items/{ref:path}/execution")
     async def get_work_item_execution(ref: str, request: Request) -> dict[str, Any]:

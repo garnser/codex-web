@@ -11,6 +11,7 @@ from codex_web.agent_teams import (
     AgentTeamUpdate,
     TeamCoordinatorDecision,
     TeamDelegationRequest,
+    TeamExecutionLinksUpdate,
 )
 from codex_web.api.identity import request_actor
 from codex_web.services.agent_teams import (
@@ -156,7 +157,11 @@ def build_agent_teams_router(service: AgentTeamService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.plan(team_id, payload, actor=request_actor(request))
+            item = await service.plan_and_record(
+                team_id,
+                payload,
+                actor=request_actor(request),
+            )
             return {"plan": item.model_dump(mode="json")}
         except Exception as exc:
             raise _error(exc) from exc
@@ -169,13 +174,44 @@ def build_agent_teams_router(service: AgentTeamService) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.apply_coordinator_decision(
+            item = await service.decide_and_record(
                 team_id,
                 delegation,
                 payload,
                 actor=request_actor(request),
             )
             return {"plan": item.model_dump(mode="json")}
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{team_id}/work-items/{work_item_id}/executions")
+    async def link_executions(
+        team_id: str,
+        work_item_id: str,
+        payload: TeamExecutionLinksUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.link_executions(
+                team_id,
+                work_item_id,
+                payload,
+                actor=request_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.get("/work-items/{work_item_id}/timeline")
+    async def work_item_timeline(
+        work_item_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.work_item_history(
+                work_item_id,
+                actor=request_actor(request),
+            )
         except Exception as exc:
             raise _error(exc) from exc
 
