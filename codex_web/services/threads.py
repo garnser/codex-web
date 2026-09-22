@@ -21,6 +21,7 @@ from codex_web.models import (
     ThreadRunSettings,
 )
 
+from codex_web.services.agent_profiles import AgentProfileAccessDenied, AgentProfileService
 from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
@@ -82,6 +83,7 @@ class ThreadService:
         bootstrap_bindings: ThreadBootstrapBindingService | None = None,
         control_actor: AuthenticationActor | None = None,
         agent_sessions: AgentSessionService | None = None,
+        agent_profiles: AgentProfileService | None = None,
         routing_service: AgentRoutingService | None = None,
         session_managers: Mapping[tuple[str, str], AssignmentBoundAgentSessionManager] | None = None,
         runtime_adapter_factory: Callable[[ExecutionRuntimeBinding, Any], Any] | None = None,
@@ -103,6 +105,7 @@ class ThreadService:
         self.bootstrap_bindings = bootstrap_bindings
         self.control_actor = control_actor
         self.agent_sessions = agent_sessions
+        self.agent_profiles = agent_profiles
         self.routing_service = routing_service
         self.session_managers = dict(session_managers or {})
         if session_manager is not None:
@@ -181,12 +184,17 @@ class ThreadService:
         sandbox: str,
         provider_id: str | None = None,
         runtime_id: str | None = None,
-    ) -> ExecutionRuntimeBinding | None:
+        actor: AuthenticationActor | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+    ) -> tuple[ExecutionRuntimeBinding | None, Any | None]:
         if self.routing_service is None or self.control_actor is None:
-            return None
+            return None, None
         routed = await self.routing_service.route(
             AgentRoutingRequest(
                 project_id=project_id,
+                agent_profile_id=agent_profile_id,
+                agent_profile_revision=agent_profile_revision,
                 required_sandbox_profile=sandbox,
                 required_network_profile="brokered-model-egress",
                 require_persistent_session=True,
@@ -196,9 +204,12 @@ class ThreadService:
                 preferred_runtime_ids=((runtime_id,) if runtime_id else ()),
                 allow_fallback=not bool(provider_id or runtime_id),
             ),
-            actor=self.control_actor,
+            actor=actor or self.control_actor,
         )
-        return routed.selected_runtime.execution_binding()
+        return (
+            routed.selected_runtime.execution_binding(),
+            getattr(routed, "agent_profile", None),
+        )
 
     def _manager_for_binding(
         self,
@@ -664,6 +675,9 @@ class ThreadService:
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
+        actor: AuthenticationActor | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
     ) -> dict[str, Any]:
         (
             binding_service,
@@ -672,13 +686,94 @@ class ThreadService:
             control_actor,
         ) = self._require_bootstrap_routing()
         project = self._projects().get(project_id)
-        effective_sandbox = sandbox or project.sandbox
+        profile = None
+        if agent_profile_id is not None:
+            if actor is None or self.agent_profiles is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "agent_profile_unavailable",
+                        "message": (
+                            "Agent Profile thread creation requires an "
+                            "authenticated actor and Agent Profile service"
+                        ),
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile_id,
+                    },
+                )
+            try:
+                profile, _decision = self.agent_profiles.resolve_for_execution(
+                    agent_profile_id,
+                    actor=actor,
+                    project_id=project.id,
+                    revision=agent_profile_revision,
+                )
+            except AgentProfileAccessDenied as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "agent_profile_access_denied",
+                        "message": str(exc),
+                    },
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "agent_profile_unavailable",
+                        "message": str(exc),
+                        "target_type": "agent_profile",
+                        "target_id": agent_profile_id,
+                    },
+                ) from exc
+            agent_profile_revision = profile.revision
+
+        profile_sandbox = (
+            profile.sandbox_requirement
+            if profile is not None
+            else None
+        )
+        if sandbox and profile_sandbox and sandbox != profile_sandbox:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_profile_sandbox_conflict",
+                    "requestedSandbox": sandbox,
+                    "agentProfileSandbox": profile_sandbox,
+                },
+            )
+        effective_sandbox = profile_sandbox or sandbox or project.sandbox
+
+        profile_execution_id = (
+            profile.execution_profile_id
+            if profile is not None
+            else None
+        )
+        if (
+            execution_profile_id
+            and profile_execution_id
+            and execution_profile_id != profile_execution_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "agent_profile_execution_profile_conflict",
+                    "requestedExecutionProfileId": execution_profile_id,
+                    "agentProfileExecutionProfileId": profile_execution_id,
+                },
+            )
+        effective_execution_profile_id = (
+            profile_execution_id or execution_profile_id
+        )
         effective_approval_policy = approval_policy or project.approval_policy
-        runtime_binding = await self._select_runtime_binding(
+        runtime_binding, agent_profile_binding = await self._select_runtime_binding(
             project_id=project.id,
             sandbox=effective_sandbox,
             provider_id=provider_id,
             runtime_id=runtime_id,
+            actor=actor,
+            agent_profile_id=agent_profile_id,
+            agent_profile_revision=agent_profile_revision,
         )
         session_manager = self._manager_for_binding(runtime_binding)
         token = uuid.uuid4().hex
@@ -695,7 +790,8 @@ class ThreadService:
                 runtime_binding=runtime_binding,
                 explicit_repository_id=repository_resource_id,
                 read_only_repository_ids=read_only_repository_resource_ids,
-                execution_profile_id=execution_profile_id,
+                execution_profile_id=effective_execution_profile_id,
+                agent_profile=agent_profile_binding,
             )
         except TurnExecutionBindingError as exc:
             raise HTTPException(
@@ -900,6 +996,11 @@ class ThreadService:
                 "runtime_binding": (
                     effective_runtime_binding.model_dump(mode="json")
                     if effective_runtime_binding is not None
+                    else None
+                ),
+                "agent_profile": (
+                    agent_profile_binding.model_dump(mode="json")
+                    if agent_profile_binding is not None
                     else None
                 ),
             }
