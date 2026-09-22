@@ -270,7 +270,8 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["turns"], 0)
 
     async def test_work_item_ref_reaches_immediate_execution(self) -> None:
-        service, _queue, execution, _events, _settings = self._service()
+        service, queue, execution, _events, _settings = self._service()
+        queue.queued = []
         execution.active = False
 
         await service.start(
