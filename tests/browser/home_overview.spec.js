@@ -22,6 +22,7 @@ const populated = {
     agents: current([{ id: 'session-1', title: 'gpt-5.6', status: 'running', owner: 'worker-1', updated_at: 1800000000, href: '#workspace/agents' }]),
     incidents: current([{ id: 'incident-1', title: 'API degradation', status: 'mitigating', severity: 'high', owner: 'human-3', updated_at: 1800000000, href: '#workspace/operations' }]),
     goals: current([{ id: 'goal-1', title: 'Release safely', status: 'active', health: 'on_track', owner: 'human-4', completion_fraction: 0.5, updated_at: 1800000000, href: '#workspace/goals' }]),
+    automations: current([{ id: 'schedule-1', title: 'Nightly verification', status: 'active', updated_at: 1800000000, href: '#workspace/autonomy' }]),
   },
 };
 
@@ -41,6 +42,7 @@ test('populated Home identifies Project, current work, owners, next actions and 
   await expect(home).toContainText('Awaiting credentials');
   await expect(home).toContainText('API degradation');
   await expect(home).toContainText('Release safely');
+  await expect(home).toContainText('Nightly verification');
 
   const work = page.locator('[data-home-section="active_work"]');
   await expect(work.getByRole('link', { name: 'Open' })).toHaveAttribute('href', '#workspace/work');
@@ -79,4 +81,20 @@ test('Home uses a single-column section layout on mobile', async ({ page }) => {
   await routeHome(page, populated);
   const columns = await page.locator('.home-overview-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns);
   expect(columns.split(' ').length).toBe(1);
+});
+
+test('permission-limited Home section is explicit without degrading current data', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.automations = {
+    status: 'denied',
+    fresh_at: 1800000000,
+    items: [],
+    count: 0,
+    detail: 'Scheduler visibility requires an administrator role.',
+  };
+  await routeHome(page, payload);
+  const automations = page.locator('[data-home-section="automations"]');
+  await expect(automations).toContainText('Not available to this identity');
+  await expect(automations).toContainText('administrator role');
+  await expect(page.getByText('Home is partially degraded')).toHaveCount(0);
 });
