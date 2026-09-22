@@ -10,7 +10,8 @@ from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.models import Project, ThreadRunSettings, TurnCreate
+from codex_web.models import Project, ThreadRunSettings, TurnCreate, WorkItemState
+from codex_web.resources import RepositoryTargetSource
 from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
 from codex_web.services.agent_routing import AgentRoutingError
 from codex_web.services.turns import TurnService
@@ -38,6 +39,13 @@ class _Host:
         self.codex = SimpleNamespace(request=AsyncMock())
         self.IS_SHUTTING_DOWN = False
         self.uuid = __import__("uuid")
+        self.work_item_states = {}
+
+    def _load_work_item_states(self):
+        return {
+            ref: state.model_copy(deep=True)
+            for ref, state in self.work_item_states.items()
+        }
 
     def _load_turn_queues(self):
         self.bulk_queue_loads += 1
@@ -410,6 +418,98 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.last_inputs["t1"]["assignment_id"], "assignment-1")
         self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
+
+    async def test_work_item_metadata_supplies_writable_repository_scope(self) -> None:
+        host, binding, _sessions, service = self._service()
+        ref = "group/app#613"
+        state = WorkItemState(
+            ref=ref,
+            project_id="p1",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+        state.execution.writable_repository_resource_ids = (
+            "repo-app",
+            "repo-api",
+        )
+        host.work_item_states[ref] = state
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="coordinate work item repositories",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="exec-work-item-scope",
+            work_item_ref=ref,
+        )
+
+        self.assertEqual(
+            binding.calls[0]["writable_repository_ids"],
+            ("repo-app", "repo-api"),
+        )
+        self.assertEqual(
+            binding.calls[0]["writable_repository_source"],
+            RepositoryTargetSource.WORK_ITEM,
+        )
+
+    async def test_explicit_writable_scope_conflicting_with_work_item_fails_closed(self) -> None:
+        host, binding, sessions, service = self._service()
+        ref = "group/app#613"
+        state = WorkItemState(
+            ref=ref,
+            project_id="p1",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+        state.execution.writable_repository_resource_ids = (
+            "repo-app",
+            "repo-api",
+        )
+        host.work_item_states[ref] = state
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="try conflicting scope",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="exec-conflicting-scope",
+                work_item_ref=ref,
+                writable_repository_resource_ids=(
+                    "repo-app",
+                    "repo-other",
+                ),
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "work_item_repository_scope_conflict",
+        )
+        self.assertEqual(binding.calls, [])
+        self.assertEqual(sessions.started, [])
 
     async def test_work_item_delta_is_delivered_and_recorded_after_turn_start(self) -> None:
         recorded = []
