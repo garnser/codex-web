@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.failures import (
-    FailureReason,
     create_failure,
+    legacy_failure_reason,
 )
 from codex_web.models import WorkItemEvent, WorkItemState
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
@@ -170,13 +170,10 @@ class WorkItemExecutionLifecycleService:
                         "required": ["failure_category", "failure_message"],
                     },
                 )
-            try:
-                stable_reason = FailureReason(
-                    payload.failure_code
-                    or payload.failure_category
-                )
-            except ValueError:
-                stable_reason = FailureReason.UNCLASSIFIED
+            stable_reason = legacy_failure_reason(
+                payload.failure_category,
+                payload.failure_code,
+            )
             canonical = create_failure(
                 stable_reason,
                 source_subsystem=(
