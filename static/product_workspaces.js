@@ -442,10 +442,11 @@ function buildShell() {
   const switcher = document.createElement("dialog");
   switcher.id = "product-workspace-switcher";
   switcher.className = "product-workspace-switcher";
+  switcher.setAttribute("aria-labelledby", "product-workspace-switcher-title");
   switcher.innerHTML = `
     <div class="product-switcher-shell">
       <header>
-        <div><h2>Navigate</h2><p>Search workflows and canonical workspaces without leaving the active Project.</p></div>
+        <div><h2 id="product-workspace-switcher-title">Navigate</h2><p>Search workflows and canonical workspaces without leaving the active Project.</p></div>
         <button type="button" class="icon-button" data-workspace-switcher-close aria-label="Close navigation">×</button>
       </header>
       <div class="product-command-search">
@@ -472,12 +473,13 @@ function buildShell() {
   const dialog = document.createElement("dialog");
   dialog.id = "product-workspace-dialog";
   dialog.className = "product-workspace-dialog";
+  dialog.setAttribute("aria-labelledby", "product-workspace-dialog-title");
   dialog.innerHTML = `
     <div class="product-workspace-shell">
       <header class="product-workspace-header">
         <div>
           <small>Workspace</small>
-          <h2 data-product-workspace-title>Overview</h2>
+          <h2 id="product-workspace-dialog-title" data-product-workspace-title>Overview</h2>
           <p data-product-workspace-description></p>
         </div>
         <div class="product-workspace-header-actions">
