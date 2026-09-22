@@ -265,6 +265,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertLessEqual(source_path.stat().st_size, 16_000)
         self.assertIn("api_client.js", source)
         self.assertIn("apiRequest", source)
+        self.assertIn("MAX_TRACE_ROWS = 100", source)
+        self.assertIn("refreshPromise", source)
         self.assertNotIn("fetch(", source)
 
     def test_definition_registry_admin_has_its_own_budget_and_api_client(self) -> None:
