@@ -2453,6 +2453,9 @@ turn_execution_service = install_turn_execution_service(
     work_item_context_recorder=(
         work_item_execution_lifecycle_service.record_continuation_delivery
     ),
+    work_item_outcome_recorder=(
+        work_item_execution_lifecycle_service.record_continuation_outcome
+    ),
 )
 
 async def _existing_thread_runtime_request(method, params):
