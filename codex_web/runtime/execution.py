@@ -77,6 +77,7 @@ class TurnExecutionService:
         ] | None = None,
         work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
         work_item_context_recorder: Callable[..., Any] | None = None,
+        work_item_outcome_recorder: Callable[..., Any] | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -98,6 +99,7 @@ class TurnExecutionService:
         self.skill_context_resolver = skill_context_resolver
         self.work_item_context_resolver = work_item_context_resolver
         self.work_item_context_recorder = work_item_context_recorder
+        self.work_item_outcome_recorder = work_item_outcome_recorder
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -858,6 +860,14 @@ class TurnExecutionService:
             manager, _session = self._session_for_assignment(assignment_id)
         except HTTPException:
             return
+        completion_work_item_ref = None
+        with contextlib.suppress(Exception):
+            completion_assignment = _session.validate_current()
+            completion_work_item_ref = getattr(
+                completion_assignment,
+                "work_item_ref",
+                None,
+            )
         bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
         if bootstrap is not None and bootstrap.assignment_id == assignment_id:
             self.host._append_bot_event(
@@ -874,6 +884,16 @@ class TurnExecutionService:
                     "session_retained": True,
                 }
             )
+            if (
+                completion_work_item_ref
+                and self.work_item_outcome_recorder is not None
+            ):
+                with contextlib.suppress(Exception):
+                    self.work_item_outcome_recorder(
+                        completion_work_item_ref,
+                        bootstrap.execution_id,
+                        "succeeded" if succeeded else "failed",
+                    )
             return
         existing = self.assignment_completion_tasks.get(assignment_id)
         if existing is not None and not existing.done():
@@ -905,6 +925,17 @@ class TurnExecutionService:
                         "succeeded": succeeded,
                     }
                 )
+                if (
+                    completion_work_item_ref
+                    and active.execution_id
+                    and self.work_item_outcome_recorder is not None
+                ):
+                    with contextlib.suppress(Exception):
+                        self.work_item_outcome_recorder(
+                            completion_work_item_ref,
+                            active.execution_id,
+                            "succeeded" if succeeded else "failed",
+                        )
             except Exception as exc:
                 self.host._append_bot_event(
                     {
@@ -916,6 +947,17 @@ class TurnExecutionService:
                         "error": str(exc)[:500],
                     }
                 )
+                if (
+                    completion_work_item_ref
+                    and active.execution_id
+                    and self.work_item_outcome_recorder is not None
+                ):
+                    with contextlib.suppress(Exception):
+                        self.work_item_outcome_recorder(
+                            completion_work_item_ref,
+                            active.execution_id,
+                            "ambiguous",
+                        )
             finally:
                 current = asyncio.current_task()
                 if self.assignment_completion_tasks.get(assignment_id) is current:
@@ -2106,6 +2148,7 @@ def install_turn_execution_service(
     ] | None = None,
     work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
     work_item_context_recorder: Callable[..., Any] | None = None,
+    work_item_outcome_recorder: Callable[..., Any] | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -2134,6 +2177,8 @@ def install_turn_execution_service(
             service.work_item_context_resolver = work_item_context_resolver
         if work_item_context_recorder is not None:
             service.work_item_context_recorder = work_item_context_recorder
+        if work_item_outcome_recorder is not None:
+            service.work_item_outcome_recorder = work_item_outcome_recorder
     else:
         service = TurnExecutionService(
             host,
@@ -2151,6 +2196,7 @@ def install_turn_execution_service(
             skill_context_resolver=skill_context_resolver,
             work_item_context_resolver=work_item_context_resolver,
             work_item_context_recorder=work_item_context_recorder,
+            work_item_outcome_recorder=work_item_outcome_recorder,
         )
         app.state.turn_execution_service = service
 
