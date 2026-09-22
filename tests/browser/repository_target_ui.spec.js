@@ -18,6 +18,7 @@ test("explicit repository policy requires a target and submits canonical resourc
 
   let threadCreated = false;
   let threadCreates = 0;
+  let threadRepositoryId = null;
   const turnPayloads = [];
   const resources = [
     { id: "repo-app", name: "Application", resource_type: "repository", lifecycle: "active" },
@@ -100,6 +101,7 @@ test("explicit repository policy requires a target and submits canonical resourc
 
     if (path === "/api/threads" && request.method() === "POST") {
       threadCreates += 1;
+      threadRepositoryId = url.searchParams.get("repository_resource_id");
       threadCreated = true;
       await route.fulfill({
         status: 200,
@@ -135,6 +137,8 @@ test("explicit repository policy requires a target and submits canonical resourc
   await expect(page.locator("#repository-target")).toHaveAttribute("aria-invalid", "false");
 
   await page.locator("#send").click();
+  await expect.poll(() => threadCreates).toBe(1);
+  expect(threadRepositoryId).toBe("repo-app");
   await expect.poll(() => turnPayloads.length).toBe(1);
   expect(turnPayloads[0].repository_resource_id).toBe("repo-app");
   expect(pageErrors).toEqual([]);
@@ -238,7 +242,7 @@ test("thread-bound repository stays visible and contradictory selection is block
     threadItem.evaluate((element) => element.click()),
   ]);
   await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
-  await expect(page.locator("#repository-target-status")).toContainText("repo-app");
+  await expect(page.locator("#repository-target-status")).toContainText("Application");
   await expect(page.locator("#repository-target-status")).toContainText("thread/profile binding");
 
   await page.locator("#repository-target").selectOption("repo-platform");
