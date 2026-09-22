@@ -36,7 +36,7 @@ Work Item list pages contain 50 items. The browser renders at most 60 loaded Wor
 
 ### Operations / Observability
 
-A normal Operations refresh consists of five bounded requests: observability, operations summary, execution assignments, current identity, and Projects. Concurrent refresh triggers are coalesced into a single in-flight refresh so opening the panel and pressing refresh cannot recursively multiply the request batch.
+A normal Operations refresh consists of five bounded requests: observability, operations summary, execution assignments, current identity, and Projects. Concurrent refresh triggers are coalesced into a single in-flight refresh so opening the panel and pressing refresh cannot recursively multiply the request batch. Trace rendering is windowed to the latest 100 matching rows; if more rows exist, the UI states exactly how many are shown and asks the operator to refine the filter.
 
 ## Regression policy
 
