@@ -19,7 +19,7 @@ export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
     : [...ids];
 }
 
-export function writableTurnPayload() {
+export function scope() {
   const writable = document.getElementById("repository-write-targets");
   const primary = document.getElementById("repository-target")?.value || "";
   const ids = Array.from(writable?.selectedOptions || [], (option) => option.value);
