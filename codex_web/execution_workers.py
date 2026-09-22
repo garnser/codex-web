@@ -269,6 +269,7 @@ class ExecutionAssignment(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    repository_scope: RepositoryExecutionScope | None = None
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
