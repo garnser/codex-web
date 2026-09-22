@@ -138,6 +138,7 @@ class ExecutionWorkspace(BaseModel):
     kind: ExecutionWorkspaceKind
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
+    writable_repository_ids: tuple[str, ...] = ()
     lease_id: str
     path: str | None = None
     branch_name: str | None = None
@@ -159,9 +160,42 @@ class ExecutionWorkspace(BaseModel):
             self.subject,
             self.work_item_ref,
         )
+        writable = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in self.writable_repository_ids
+                if item and item.strip()
+            )
+        )
+        if not writable and self.repository_resource_id is not None:
+            writable = (self.repository_resource_id,)
+        if self.repository_resource_id is None and writable:
+            self.repository_resource_id = writable[0]
+        if (
+            self.repository_resource_id is not None
+            and self.repository_resource_id not in writable
+        ):
+            raise ValueError("primary repository must be included in writable repository ids")
+        self.writable_repository_ids = writable
+
         member_ids = [item.resource_id for item in self.repository_members]
         if len(member_ids) != len(set(member_ids)):
             raise ValueError("execution workspace repository members must be unique")
+        if self.repository_members:
+            by_id = {item.resource_id: item for item in self.repository_members}
+            missing_writable = set(writable) - set(by_id)
+            if missing_writable:
+                raise ValueError("writable repository member is missing")
+            if len(writable) > 1:
+                non_writable = [
+                    resource_id
+                    for resource_id in writable
+                    if by_id[resource_id].access_mode != LeaseMode.WRITE
+                ]
+                if non_writable:
+                    raise ValueError(
+                        "coordinated writable repository members must use write leases"
+                    )
         if self.repository_resource_id is not None and self.repository_members:
             mutable = [
                 item for item in self.repository_members
@@ -202,6 +236,7 @@ class ExecutionWorkspaceAcquire(BaseModel):
     project_id: str = Field(min_length=1)
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None = None
+    writable_repository_ids: tuple[str, ...] = ()
     read_only_repository_ids: tuple[str, ...] = ()
     scratch: bool = False
     base_revision: str | None = None
@@ -222,6 +257,13 @@ class ExecutionWorkspaceAcquire(BaseModel):
             )
         if self.scratch and self.resource_ids:
             raise ValueError("scratch execution workspace cannot lease canonical resources")
+        self.writable_repository_ids = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in self.writable_repository_ids
+                if item and item.strip()
+            )
+        )
         self.read_only_repository_ids = tuple(
             dict.fromkeys(
                 item.strip()
@@ -229,22 +271,34 @@ class ExecutionWorkspaceAcquire(BaseModel):
                 if item and item.strip()
             )
         )
+        if not self.writable_repository_ids and self.repository_resource_id is not None:
+            self.writable_repository_ids = (self.repository_resource_id,)
+        if self.repository_resource_id is None and self.writable_repository_ids:
+            self.repository_resource_id = self.writable_repository_ids[0]
         if self.scratch and (
             self.repository_resource_id is not None
+            or self.writable_repository_ids
             or self.read_only_repository_ids
             or self.base_revision is not None
         ):
             raise ValueError("scratch execution workspace cannot reference repositories")
         if self.repository_resource_id and self.repository_resource_id not in self.resource_ids:
             raise ValueError("repository_resource_id must be included in resource_ids")
+        missing_writable = set(self.writable_repository_ids) - set(self.resource_ids)
+        if missing_writable:
+            raise ValueError("writable repository ids must be included in resource_ids")
         missing_read_only = set(self.read_only_repository_ids) - set(self.resource_ids)
         if missing_read_only:
             raise ValueError("read-only repository ids must be included in resource_ids")
+        if set(self.writable_repository_ids) & set(self.read_only_repository_ids):
+            raise ValueError("writable repositories cannot also be read-only context")
         if (
             self.repository_resource_id is not None
-            and self.repository_resource_id in self.read_only_repository_ids
+            and self.repository_resource_id not in self.writable_repository_ids
         ):
-            raise ValueError("mutable repository cannot also be read-only context")
+            raise ValueError("primary repository must be included in writable repository ids")
+        if len(self.writable_repository_ids) > 1 and self.lease_mode != LeaseMode.WRITE:
+            raise ValueError("coordinated writable repositories require a write lease")
         return self
 
 
