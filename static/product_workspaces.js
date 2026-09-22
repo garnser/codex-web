@@ -1,25 +1,28 @@
+import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
+import { renderHomeOverview } from "./home_overview.js";
+
 const WORKSPACES = [
-  { id: "overview", label: "Overview", group: "Core", kind: "embedded", description: "Product-wide status vocabulary, explainability and shortcuts." },
-  { id: "inbox", label: "Inbox / Attention", group: "Core", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
-  { id: "projects", label: "Projects", group: "Core", kind: "focus", selector: "#projects", description: "Project selection and creation." },
-  { id: "setup", label: "Project Setup / Readiness", group: "Core", kind: "launcher", selector: "#project-setup-launch", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
-  { id: "threads", label: "Threads", group: "Core", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
+  { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
+  { id: "inbox", label: "Attention", group: "Home", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
+  { id: "projects", label: "Projects", group: "Home", kind: "focus", selector: "#projects", description: "Project selection and creation." },
+  { id: "setup", label: "Project Setup / Readiness", group: "Home", kind: "launcher", selector: "#project-setup-launch", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
+  { id: "threads", label: "Threads", group: "Work", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
   { id: "work", label: "Work", group: "Work", kind: "embedded", description: "Canonical work graph and execution continuity." },
   { id: "goals", label: "Goals", group: "Work", kind: "launcher", selector: "#goals-button", description: "Outcome definitions and progress." },
   { id: "decisions", label: "Decisions", group: "Work", kind: "launcher", selector: "#decisions-button", description: "Canonical decisions and provenance." },
   { id: "metrics", label: "Metrics / KPIs", group: "Work", kind: "launcher", selector: "#metrics-button", description: "Versioned measurements, observations and snapshots." },
   { id: "company", label: "Company Operations", group: "Work", kind: "launcher", selector: "#company-operations-button", description: "Governed business entities, facts and operating KPIs." },
-  { id: "organization", label: "Organization / Roles", group: "Governance", kind: "embedded", description: "Organizations, workspaces, identities, sessions and Executive roles." },
-  { id: "definitions", label: "Definitions / Contracts", group: "Governance", kind: "embedded", description: "Definition lifecycle, exact revisions, compatibility and usage." },
-  { id: "resources", label: "Resources", group: "Governance", kind: "embedded", description: "Canonical resources and relationships." },
-  { id: "integrations", label: "Integrations / Extensions", group: "Platform", kind: "embedded", description: "Extensions, ActionProviders and input/source integrations." },
-  { id: "agents", label: "Agent Providers / Sessions", group: "Platform", kind: "embedded", description: "Model and execution-agent provider/runtime/session state." },
-  { id: "skills", label: "Skills", group: "Platform", kind: "embedded", description: "Reusable versioned procedures, exact Agent Profile pins and execution provenance." },
-  { id: "workers", label: "Workers / Execution", group: "Platform", kind: "embedded", description: "Execution workers, workspaces, leases and capability state." },
-  { id: "operations", label: "Operations / Observability", group: "Platform", kind: "embedded", description: "Logs, evidence, health, incidents, releases and recovery state." },
-  { id: "memory", label: "Memory", group: "Platform", kind: "launcher", selector: "#memory-button", description: "Governed organizational memory and retrieval." },
-  { id: "autonomy", label: "Autonomy", group: "Platform", kind: "embedded", description: "Autonomy controls, orchestration, ActionIntents and explainability." },
-  { id: "settings", label: "Settings / Security", group: "Platform", kind: "embedded", description: "Configuration, entitlements, secret references, keys and trust diagnostics." },
+  { id: "agents", label: "Team / Agents", group: "Team", kind: "embedded", description: "Agent identities, provider/runtime/session state and team execution context." },
+  { id: "skills", label: "Skills", group: "Team", kind: "embedded", description: "Reusable versioned procedures, exact Agent Profile pins and execution provenance." },
+  { id: "autonomy", label: "Automation / Autonomy", group: "Automation", kind: "embedded", description: "Autonomy controls, orchestration, ActionIntents and explainability." },
+  { id: "integrations", label: "Integrations / Extensions", group: "Automation", kind: "embedded", description: "Extensions, ActionProviders and input/source integrations." },
+  { id: "operations", label: "Operations / Observability", group: "Operations", kind: "embedded", description: "Logs, evidence, health, incidents, releases and recovery state." },
+  { id: "workers", label: "Workers / Execution", group: "Operations", kind: "embedded", description: "Execution workers, workspaces, leases and capability state." },
+  { id: "organization", label: "Organization / Roles", group: "Organization", kind: "embedded", description: "Organizations, workspaces, identities, sessions and Executive roles." },
+  { id: "resources", label: "Resources", group: "Organization", kind: "embedded", description: "Canonical resources and relationships." },
+  { id: "definitions", label: "Definitions / Contracts", group: "Organization", kind: "embedded", description: "Definition lifecycle, exact revisions, compatibility and usage." },
+  { id: "settings", label: "Settings / Security", group: "Organization", kind: "embedded", description: "Configuration, entitlements, secret references, keys and trust diagnostics." },
+  { id: "memory", label: "Memory", group: "Organization", kind: "launcher", selector: "#memory-button", description: "Governed organizational memory and retrieval." },
 ];
 
 const CARD_RULES = [
@@ -108,15 +111,8 @@ function conceptBadge(kind, label = null) {
 }
 
 function statusBadge(status, label = null) {
-  const value = String(status || "unknown").toLowerCase();
-  let family = "neutral";
-  if (["active", "ready", "healthy", "fresh", "current", "succeeded", "verified", "available", "approved"].includes(value)) family = "positive";
-  else if (["pending", "degraded", "partial", "stale", "warning", "paused", "quota", "throttled"].includes(value)) family = "warning";
-  else if (["denied", "failed", "invalid", "blocked", "quarantined", "unavailable", "conflict", "revoked"].includes(value)) family = "negative";
-  const span = document.createElement("span");
-  span.className = `product-status-badge status-${family}`;
-  span.dataset.status = value;
-  span.textContent = label || value;
+  const span = sharedStatusBadge(status, label, { className: "product-status-badge" });
+  span.classList.add(`status-${sharedStatusFamily(status)}`);
   return span;
 }
 
@@ -144,7 +140,7 @@ function workspaceById(id) {
 
 function setHash(id) {
   const desired = `#workspace/${id}`;
-  if (window.location.hash !== desired) history.replaceState(null, "", desired);
+  if (window.location.hash !== desired) window.location.hash = desired;
 }
 
 function closeSwitcher() {
@@ -238,6 +234,10 @@ function setActiveInternal(id, { updateHash = true } = {}) {
   if (description) description.textContent = item.description;
   renderWorkspaceActions(id);
   refreshWorkspaceCards(id);
+  if (id === "overview") {
+    const host = document.querySelector("[data-home-overview]");
+    if (host) void renderHomeOverview(host);
+  }
   if (updateHash) setHash(id);
 }
 
@@ -279,10 +279,12 @@ function openInternalWorkspace(id) {
 function openWorkspace(id) {
   const item = workspaceById(id);
   if (item.kind === "launcher") {
+    activeWorkspace = item.id;
     setHash(item.id);
     return launchExisting(item.selector);
   }
   if (item.kind === "focus") {
+    activeWorkspace = item.id;
     setHash(item.id);
     return focusSidebar(item.selector);
   }
@@ -291,7 +293,12 @@ function openWorkspace(id) {
 
 function overviewMarkup() {
   return `
-    <div class="product-overview-grid">
+    <div class="home-overview-shell" data-home-overview>
+      <div class="workspace-state workspace-state-loading" role="status">Loading current workspace…</div>
+    </div>
+    <details class="product-overview-reference">
+      <summary>UI vocabulary and explainability reference</summary>
+      <div class="product-overview-grid">
       <section class="product-overview-card">
         <h3>Canonical UI vocabulary</h3>
         <p>Unavailable actions should say <em>why</em>. These concepts remain distinct rather than collapsing into generic settings or “not allowed”.</p>
@@ -324,7 +331,8 @@ function overviewMarkup() {
           <span class="product-status-badge status-neutral" data-status="unknown">unknown</span>
         </div>
       </section>
-    </div>`;
+      </div>
+    </details>`;
 }
 
 function buildPanels() {
@@ -386,6 +394,7 @@ function buildSwitcherNav(container) {
       button.className = "product-workspace-nav-item";
       button.dataset.productWorkspaceNav = workspace.id;
       button.innerHTML = `<strong>${esc(workspace.label)}</strong><small>${esc(workspace.description)}</small>`;
+      button.dataset.workspaceSearch = `${workspace.label} ${workspace.group} ${workspace.description}`.toLowerCase();
       button.addEventListener("click", () => openWorkspace(workspace.id));
       grid.appendChild(button);
     }
@@ -400,10 +409,20 @@ function buildShell() {
   const sidebar = document.querySelector(".sidebar");
   const brand = sidebar?.querySelector(".brand");
   if (sidebar && brand) {
+    const projectContext = document.createElement("div");
+    projectContext.className = "product-project-context";
+    projectContext.innerHTML = `
+      <label for="product-project-switcher">Current Project</label>
+      <select id="product-project-switcher" aria-label="Current Project">
+        <option value="">Loading projects…</option>
+      </select>
+    `;
+    brand.insertAdjacentElement("afterend", projectContext);
+
     const quick = document.createElement("nav");
     quick.className = "product-workspace-quicknav";
-    quick.setAttribute("aria-label", "Product workspaces");
-    for (const id of ["inbox", "work", "goals", "company", "operations"]) {
+    quick.setAttribute("aria-label", "Primary workflows");
+    for (const id of ["overview", "work", "agents", "autonomy", "operations", "organization"]) {
       const item = workspaceById(id);
       const button = document.createElement("button");
       button.type = "button";
@@ -417,7 +436,7 @@ function buildShell() {
     all.dataset.workspaceSwitcherLaunch = "true";
     all.textContent = "All workspaces";
     quick.appendChild(all);
-    brand.insertAdjacentElement("afterend", quick);
+    projectContext.insertAdjacentElement("afterend", quick);
   }
 
   const switcher = document.createElement("dialog");
@@ -426,15 +445,29 @@ function buildShell() {
   switcher.innerHTML = `
     <div class="product-switcher-shell">
       <header>
-        <div><h2>Workspaces</h2><p>Navigate canonical product domains without leaving conversational Threads behind.</p></div>
-        <button type="button" class="icon-button" data-workspace-switcher-close aria-label="Close workspace switcher">×</button>
+        <div><h2>Navigate</h2><p>Search workflows and canonical workspaces without leaving the active Project.</p></div>
+        <button type="button" class="icon-button" data-workspace-switcher-close aria-label="Close navigation">×</button>
       </header>
+      <div class="product-command-search">
+        <label for="product-workspace-search">Search workspaces</label>
+        <input id="product-workspace-search" type="search" autocomplete="off" placeholder="Work, Team, Automation, Operations…" />
+      </div>
       <div class="product-workspace-nav-groups" data-product-workspace-nav-groups></div>
-      <footer><small>Shortcut: Ctrl/⌘ K · canonical refresh/navigation does not invoke a model.</small></footer>
+      <footer><small>Shortcut: Ctrl/⌘ K · navigation and Project switching do not invoke a model.</small></footer>
     </div>`;
   document.body.appendChild(switcher);
   buildSwitcherNav(switcher.querySelector("[data-product-workspace-nav-groups]"));
   switcher.querySelector("[data-workspace-switcher-close]").addEventListener("click", () => switcher.close());
+  const workspaceSearch = switcher.querySelector("#product-workspace-search");
+  workspaceSearch?.addEventListener("input", () => {
+    const needle = workspaceSearch.value.trim().toLowerCase();
+    switcher.querySelectorAll(".product-workspace-nav-item").forEach((button) => {
+      button.hidden = Boolean(needle) && !button.dataset.workspaceSearch.includes(needle);
+    });
+    switcher.querySelectorAll(".product-workspace-nav-group").forEach((group) => {
+      group.hidden = !group.querySelector(".product-workspace-nav-item:not([hidden])");
+    });
+  });
 
   const dialog = document.createElement("dialog");
   dialog.id = "product-workspace-dialog";
@@ -470,6 +503,21 @@ function buildShell() {
 
   const topbar = document.querySelector(".topbar .controls");
   if (topbar) {
+    const projectIndicator = document.createElement("button");
+    projectIndicator.type = "button";
+    projectIndicator.className = "ghost-button product-project-indicator";
+    projectIndicator.dataset.projectIndicator = "true";
+    projectIndicator.textContent = "Project: loading…";
+    projectIndicator.setAttribute("aria-label", "Current Project");
+    projectIndicator.addEventListener("click", () => {
+      const select = document.getElementById("product-project-switcher");
+      if (document.body.classList.contains("sidebar-collapsed")) {
+        document.getElementById("sidebar-toggle")?.click();
+      }
+      select?.focus();
+    });
+    topbar.prepend(projectIndicator);
+
     const launch = document.createElement("button");
     launch.type = "button";
     launch.className = "ghost-button product-workspaces-launch";
@@ -482,7 +530,66 @@ function buildShell() {
     topbar.prepend(launch);
   }
 
+  installProjectContext();
   setActiveInternal("overview", { updateHash: false });
+}
+
+function projectLabel(project) {
+  return project?.name || project?.path || project?.id || "Unknown Project";
+}
+
+function renderProjectContext({ projects = [], projectId = "" } = {}) {
+  const select = document.getElementById("product-project-switcher");
+  const indicator = document.querySelector("[data-project-indicator]");
+  if (!select) return;
+  const current = projectId || select.value || new URLSearchParams(window.location.search).get("project") || "";
+  select.innerHTML = "";
+  for (const project of projects) {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = projectLabel(project);
+    option.dataset.path = project.path || "";
+    select.appendChild(option);
+  }
+  if (current && !projects.some((project) => project.id === current)) {
+    const option = document.createElement("option");
+    option.value = current;
+    option.textContent = current;
+    select.appendChild(option);
+  }
+  if (current) select.value = current;
+  const active = projects.find((project) => project.id === select.value);
+  const label = active ? projectLabel(active) : (select.value || "No Project");
+  if (indicator) indicator.textContent = `Project: ${label}`;
+  document.body.dataset.activeProject = select.value || "";
+}
+
+function installProjectContext() {
+  const select = document.getElementById("product-project-switcher");
+  if (!select) return;
+  select.addEventListener("change", () => {
+    if (!select.value) return;
+    window.dispatchEvent(new CustomEvent("codex:project-select", {
+      detail: { projectId: select.value },
+    }));
+  });
+  window.addEventListener("codex:projects-rendered", (event) => {
+    renderProjectContext(event.detail || {});
+  });
+  window.addEventListener("codex:project-changed", (event) => {
+    const projectId = event.detail?.projectId || "";
+    if (projectId) {
+      select.value = projectId;
+      document.body.dataset.activeProject = projectId;
+      const option = select.selectedOptions[0];
+      const indicator = document.querySelector("[data-project-indicator]");
+      if (indicator) indicator.textContent = `Project: ${option?.textContent || projectId}`;
+      if (activeWorkspace === "overview") {
+        const host = document.querySelector("[data-home-overview]");
+        if (host) void renderHomeOverview(host, projectId);
+      }
+    }
+  });
 }
 
 function installObservers() {
@@ -509,7 +616,14 @@ function installKeyboard() {
       const switcher = document.getElementById("product-workspace-switcher");
       if (switcher && !switcher.open) {
         switcher.showModal();
-        switcher.querySelector(".product-workspace-nav-item")?.focus();
+        const search = switcher.querySelector("#product-workspace-search");
+        if (search) {
+          search.value = "";
+          search.dispatchEvent(new Event("input", { bubbles: true }));
+          search.focus();
+        } else {
+          switcher.querySelector(".product-workspace-nav-item")?.focus();
+        }
       }
     }
   });
@@ -523,6 +637,7 @@ function installHashRouting() {
     if (item && item.id !== activeWorkspace) openWorkspace(item.id);
   };
   window.addEventListener("hashchange", route);
+  window.addEventListener("popstate", route);
   route();
 }
 

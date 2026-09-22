@@ -54,6 +54,7 @@ from codex_web.api.integrations import build_integrations_router
 from codex_web.api.incidents import build_incidents_router
 from codex_web.api.legacy_project_migration import build_legacy_project_migration_router
 from codex_web.api.goals import build_goals_router
+from codex_web.api.home import build_home_router
 from codex_web.api.metrics import build_metrics_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.input_plugins import build_input_plugins_router
@@ -275,6 +276,7 @@ from codex_web.services.gitlab_sync_health import GitLabSyncHealth
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
+from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.metrics import MetricService
 from codex_web.services.goal_decomposition_commit import (
     GoalDecompositionCommitService,
@@ -1006,7 +1008,6 @@ def _execution_assignment_notifier(assignment, event_type):
             }
         )
     )
-
 execution_worker_service = ExecutionWorkerService(
     execution_worker_store,
     identity=identity_service,
@@ -3445,6 +3446,17 @@ operator_ui_service = OperatorUiService(
     load_work_item_states=runtime_state.work_item_states.load,
     event_hub=event_hub,
 )
+home_overview_service = HomeOverviewService(
+    projects=project_service,
+    work_items=work_item_service,
+    attention=attention_service,
+    approvals=approval_request_service,
+    incidents=incident_service,
+    agent_sessions=agent_session_service,
+    goals=goal_service,
+    schedules=scheduler_service,
+)
+app.state.home_overview_service = home_overview_service
 app.state.runtime_diagnostics_service = runtime_diagnostics_service
 app.state.operator_ui_service = operator_ui_service
 
@@ -3635,6 +3647,9 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "ui": _include_domain_router(
         build_ui_router(operator_ui_service)
+    ),
+    "home": _include_domain_router(
+        build_home_router(home_overview_service)
     ),
     "system": _include_domain_router(
         build_system_router(
