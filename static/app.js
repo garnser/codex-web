@@ -8,7 +8,7 @@ import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
 import*as rtui from"./repository_target_ui.js";
 
-const state = {
+const state={
   projects: [],
   projectResources: [],
   projectUiStatic: {},
