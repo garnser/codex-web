@@ -112,15 +112,7 @@ const SLACK_ICON_MAP = {
   ":compass:": "🧭",
   ":anchor:": "⚓",
 };
-const REASONING_EFFORTS = [
-  ["", "Default reasoning"],
-  ["none", "None"],
-  ["minimal", "Minimal"],
-  ["low", "Low"],
-  ["medium", "Medium"],
-  ["high", "High"],
-  ["xhigh", "Extra high"],
-];
+const REASONING_EFFORTS=[["","Default reasoning"],["none","None"],["minimal","Minimal"],["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high"]];
 
 function preferredTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
