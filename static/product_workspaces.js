@@ -38,6 +38,7 @@ const CARD_RULES = [
   [/^Agent Channel Presence$/i, "integrations"],
   [/^Model Gateway$/i, "agents"],
   [/^Agent Providers & Sessions$/i, "agents"],
+  [/^Agent Profiles & Teams$/i, "agents"],
   [/^Skills$/i, "skills"],
   [/^Execution Workers$/i, "workers"],
   [/^Execution Workspaces & Leases$/i, "workers"],
