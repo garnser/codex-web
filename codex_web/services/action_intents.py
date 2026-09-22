@@ -1641,12 +1641,28 @@ class ActionIntentService:
                     }:
                         next_status = ActionIntentStatus.REQUIRES_RECONCILIATION
                     updated_at = time.time()
+                    failure = item.failure
+                    if payload.outcome == ActionIntentStatus.FAILED:
+                        native_code = (
+                            payload.payload.get("error_code")
+                            or payload.payload.get("code")
+                            or payload.event_type
+                        )
+                        failure = self._failure(
+                            item,
+                            action_failure_reason(native_code),
+                            source_native_code=str(native_code),
+                            details={
+                                "callback_event_type": payload.event_type,
+                            },
+                        )
                     current.intents[index] = item.model_copy(
                         update={
                             "status": next_status,
                             "last_receipt_id": receipt.id,
                             "lease": None,
                             "updated_at": updated_at,
+                            "failure": failure,
                             "completed_at": (
                                 updated_at
                                 if next_status in TERMINAL_ACTION_INTENT_STATUSES
