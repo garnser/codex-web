@@ -240,6 +240,46 @@ class WorkItemExecutionLifecycleService:
         )
         return self.execution(ref)
 
+    def continuation_anchor(self, ref: str) -> dict[str, Any]:
+        """Assess whether the latest checkpoint is safe to use as a delta anchor."""
+        checkpoint = self._state(ref).execution.latest_checkpoint
+        if checkpoint is None:
+            return {
+                "trusted": False,
+                "reason": "checkpoint_missing",
+                "checkpoint": None,
+            }
+
+        missing: list[str] = []
+        if not checkpoint.delivery_proven:
+            missing.append("delivery_not_proven")
+        if not checkpoint.delivery_proof_ref:
+            missing.append("delivery_proof_missing")
+        if not checkpoint.execution_id:
+            missing.append("execution_id_missing")
+        if not checkpoint.work_item_revision:
+            missing.append("work_item_revision_missing")
+        if not checkpoint.work_item_hash:
+            missing.append("work_item_hash_missing")
+        if not checkpoint.event_watermark:
+            missing.append("event_watermark_missing")
+        if not checkpoint.delivered_context_hash:
+            missing.append("delivered_context_hash_missing")
+
+        if missing:
+            return {
+                "trusted": False,
+                "reason": "checkpoint_provenance_incomplete",
+                "blockers": missing,
+                "checkpoint": checkpoint.model_dump(mode="json"),
+            }
+        return {
+            "trusted": True,
+            "reason": "delivery_proven",
+            "blockers": [],
+            "checkpoint": checkpoint.model_dump(mode="json"),
+        }
+
     def checkpoint(self, ref: str, payload: WorkItemCheckpointCreate) -> dict[str, Any]:
         state = self._state(ref)
         execution = state.execution
