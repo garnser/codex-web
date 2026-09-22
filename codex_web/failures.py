@@ -30,14 +30,6 @@ class FailureRetryability(StrEnum):
     RECONCILE_REQUIRED = "reconcile_required"
     NOT_RETRYABLE = "not_retryable"
 
-    def metric_labels(self) -> dict[str, str]:
-        return {
-            "category": self.category.value,
-            "reason": self.reason_code.value,
-            "source": self.source_subsystem,
-            "retryability": self.retryability.value,
-        }
-
     @property
     def automatic_retry_allowed(self) -> bool:
         return self == FailureRetryability.TRANSIENT
@@ -481,6 +473,14 @@ class FailureRecord(BaseModel):
             tuple(dict.fromkeys(item for item in self.artifact_ids if item)),
         )
         return self
+
+    def metric_labels(self) -> dict[str, str]:
+        return {
+            "category": self.category.value,
+            "reason": self.reason_code.value,
+            "source": self.source_subsystem,
+            "retryability": self.retryability.value,
+        }
 
     @property
     def automatic_retry_allowed(self) -> bool:
