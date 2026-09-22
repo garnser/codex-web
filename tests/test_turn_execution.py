@@ -515,6 +515,82 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Canonical full context", instructions)
         self.assertIn("checkpoint_provenance_incomplete", instructions)
 
+    async def test_work_item_context_resolution_failure_blocks_before_runtime_turn(self) -> None:
+        def fail_resolution(_ref):
+            raise RuntimeError("canonical context store unavailable")
+
+        _host, _binding, sessions, service = self._service(
+            work_item_context_resolver=fail_resolution,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="continue safely",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="exec-context-failure",
+                work_item_ref="group/app#531",
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "work_item_context_unavailable",
+        )
+        self.assertEqual(
+            [method for method, _params in sessions.session.requests],
+            [],
+        )
+
+    async def test_checkpoint_write_failure_does_not_fail_accepted_runtime_turn(self) -> None:
+        selection = {
+            "mode": "full",
+            "reason": "checkpoint_missing",
+            "snapshot": {
+                "work_item_context": {"title": "Safe full context"},
+            },
+        }
+
+        def fail_recording(*_args, **_kwargs):
+            raise RuntimeError("checkpoint store unavailable")
+
+        _host, _binding, sessions, service = self._service(
+            work_item_context_resolver=lambda ref: selection,
+            work_item_context_recorder=fail_recording,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        result = await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue safely",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="exec-record-failure",
+            work_item_ref="group/app#531",
+        )
+
+        self.assertEqual(result["turn"]["id"], "turn-1")
+        self.assertEqual(
+            [method for method, _params in sessions.session.requests],
+            ["thread/resume", "turn/start"],
+        )
+
     async def test_idle_bootstrap_thread_request_uses_live_private_session(self) -> None:
         host, _binding, sessions, service = self._service(
             bootstrap_thread_id="t1"
