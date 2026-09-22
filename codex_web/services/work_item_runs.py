@@ -46,6 +46,7 @@ class WorkItemRunProjectionService:
         approvals: Any | None = None,
         attention: Any | None = None,
         work_item_execution: Any | None = None,
+        execution_workspaces: Any | None = None,
     ) -> None:
         self.execution_workers = execution_workers
         self.runtime_usage = runtime_usage
@@ -54,6 +55,7 @@ class WorkItemRunProjectionService:
         self.approvals = approvals
         self.attention = attention
         self.work_item_execution = work_item_execution
+        self.execution_workspaces = execution_workspaces
 
     @staticmethod
     def _value(value: Any) -> Any:
@@ -225,6 +227,78 @@ class WorkItemRunProjectionService:
         }
 
     @classmethod
+    def _repository_outcomes(
+        cls,
+        workspace_state: Any | None,
+        item: ExecutionAssignment,
+    ) -> list[dict[str, Any]]:
+        if workspace_state is None or item.execution_workspace_id is None:
+            return []
+        workspace = next(
+            (
+                value
+                for value in workspace_state.workspaces
+                if value.id == item.execution_workspace_id
+                and value.organization_id == item.organization_id
+                and value.workspace_id == item.workspace_id
+            ),
+            None,
+        )
+        if workspace is None:
+            return []
+
+        integrations = dict(workspace.repository_integrations)
+        primary_id = workspace.repository_resource_id
+        if (
+            primary_id is not None
+            and primary_id not in integrations
+            and workspace.integration.recorded_at is not None
+        ):
+            integrations[primary_id] = workspace.integration
+
+        members = {
+            member.resource_id: member
+            for member in workspace.repository_members
+        }
+        successful = {"merged", "rebased", "fast_forwarded"}
+        rows = []
+        for repository_id in workspace.writable_repository_ids:
+            integration = integrations.get(repository_id)
+            member = members.get(repository_id)
+            outcome = cls._value(integration.outcome) if integration is not None else None
+            if outcome == "conflict":
+                status = "conflict"
+            elif outcome == "discarded":
+                status = "discarded"
+            elif outcome in successful:
+                status = "integrated"
+            else:
+                status = "pending"
+            rows.append(
+                {
+                    "repositoryId": repository_id,
+                    "status": status,
+                    "baseRevision": member.base_revision if member is not None else None,
+                    "headRevision": member.head_revision if member is not None else None,
+                    "branchName": member.branch_name if member is not None else None,
+                    "integration": (
+                        {
+                            "strategy": cls._value(integration.strategy),
+                            "outcome": outcome,
+                            "targetRevision": integration.target_revision,
+                            "resultingRevision": integration.resulting_revision,
+                            "conflicts": list(integration.conflicts),
+                            "recordedAt": integration.recorded_at,
+                            "recordedBy": integration.recorded_by,
+                        }
+                        if integration is not None
+                        else None
+                    ),
+                }
+            )
+        return rows
+
+    @classmethod
     def _attempts(cls, worker_state: Any, item: ExecutionAssignment) -> list[dict[str, Any]]:
         relevant = sorted(
             (
@@ -351,7 +425,12 @@ class WorkItemRunProjectionService:
             "runtimes": sorted({record.runtime_id for record in records}),
         }
 
-    def _summary(self, worker_state: Any, item: ExecutionAssignment) -> dict[str, Any]:
+    def _summary(
+        self,
+        worker_state: Any,
+        item: ExecutionAssignment,
+        workspace_state: Any | None = None,
+    ) -> dict[str, Any]:
         usage = self._usage_summary(self._usage_records(item))
         attempts = self._attempts(worker_state, item)
         failure = item.failure.model_dump(mode="json") if item.failure is not None else None
@@ -399,6 +478,7 @@ class WorkItemRunProjectionService:
                 else None
             ),
             "repositoryScope": self._repository_scope_view(item),
+            "repositoryOutcomes": self._repository_outcomes(workspace_state, item),
             "usage": usage,
             "activity": {
                 "toolCalls": usage["toolCalls"],
@@ -453,11 +533,18 @@ class WorkItemRunProjectionService:
             if has_more and page
             else None
         )
+        workspace_state = self._safe_load(self.execution_workspaces)
         return {
             "ref": ref,
-            "active": [self._summary(worker_state, item) for item in active],
+            "active": [
+                self._summary(worker_state, item, workspace_state)
+                for item in active
+            ],
             "activeTruncated": len(active_all) > len(active),
-            "items": [self._summary(worker_state, item) for item in page],
+            "items": [
+                self._summary(worker_state, item, workspace_state)
+                for item in page
+            ],
             "limit": limit,
             "nextCursor": next_cursor,
             "hasMore": has_more,
@@ -779,7 +866,8 @@ class WorkItemRunProjectionService:
         if item is None:
             raise HTTPException(status_code=404, detail="Run not found")
 
-        result = self._summary(worker_state, item)
+        workspace_state = self._safe_load(self.execution_workspaces)
+        result = self._summary(worker_state, item, workspace_state)
         usage_records = self._usage_records(item)
         artifacts, evidence, verifications = self._artifacts(item)
         actions, action_receipts, action_verifications = self._actions(item)
