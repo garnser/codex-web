@@ -103,7 +103,13 @@ class AttentionService:
         offset = max(0, int(cursor))
         visible = self.list(actor)
         if status:
-            visible = [item for item in visible if item.status.value == status]
+            if status == "active":
+                visible = [
+                    item for item in visible
+                    if item.status not in TERMINAL_ATTENTION_STATUSES
+                ]
+            else:
+                visible = [item for item in visible if item.status.value == status]
         if severity:
             visible = [item for item in visible if item.severity.value == severity]
         total = len(visible)
