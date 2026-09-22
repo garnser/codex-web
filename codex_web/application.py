@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_profiles import build_agent_profiles_router
 from codex_web.api.agent_teams import build_agent_teams_router
+from codex_web.api.agent_team_execution import build_agent_team_execution_router
 from codex_web.api.skills import build_skills_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.api.agent_routing import build_agent_routing_router
@@ -146,6 +147,7 @@ from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_teams import AgentTeamService
+from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.skills import SkillService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -2617,6 +2619,16 @@ turn_service = TurnService(
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+
+agent_team_execution_service = AgentTeamExecutionService(
+    agent_team_service,
+    threads=thread_service,
+    turns=turn_service,
+)
+app.state.agent_team_execution_service = agent_team_execution_service
+app.include_router(
+    build_agent_team_execution_router(agent_team_execution_service)
+)
 
 # Preserve the small historical direct-import surface through dynamic
 # compatibility proxies. Production routers continue to use thread_service and
