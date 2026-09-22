@@ -270,6 +270,8 @@
       if (panel.open) refresh().catch(console.error);
     });
     if (panel?.open) refresh().catch(console.error);
+    window.__codexOperationsReady = true;
+    window.dispatchEvent(new CustomEvent("codex:operations-ready"));
   }
 
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
