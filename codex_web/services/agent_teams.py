@@ -10,6 +10,7 @@ from codex_web.agent_teams import (
     TEAM_INSTRUCTIONS_KIND,
     TEAM_INSTRUCTIONS_SCHEMA_VERSION,
     AgentTeamCreate,
+    AgentTeamDelegationRecord,
     AgentTeamLifecycle,
     AgentTeamLifecycleChange,
     AgentTeamRevision,
@@ -17,7 +18,14 @@ from codex_web.agent_teams import (
     TeamCoordinatorDecision,
     TeamDelegationPlan,
     TeamDelegationRequest,
+    TeamExecutionLinksUpdate,
     TeamInstructionsDefinition,
+)
+from codex_web.attention import (
+    AttentionItemCreate,
+    AttentionSeverity,
+    AttentionSource,
+    EscalationPolicy,
 )
 from codex_web.definitions import (
     DefinitionLifecycle,
@@ -91,11 +99,17 @@ class AgentTeamService:
         *,
         profiles: AgentProfileService,
         definitions: DefinitionRegistryService,
+        attention: Any | None = None,
+        runtime_usage_store: Any | None = None,
+        assignment_loader: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
         self.profiles = profiles
         self.definitions = definitions
+        self.attention = attention
+        self.runtime_usage_store = runtime_usage_store
+        self.assignment_loader = assignment_loader
         self.clock = clock
         install_team_instructions_schema(definitions)
         self._seen_triggers: set[str] = set()
@@ -463,7 +477,20 @@ class AgentTeamService:
                 blocked=True,
                 attention_required=True,
             )
-        if request.trigger_id and request.trigger_id in self._seen_triggers:
+        if request.trigger_id and (
+            request.trigger_id in self._seen_triggers
+            or any(
+                item.trigger_id == request.trigger_id
+                and item.team_id == team.team_id
+                and item.work_item_id == request.work_item_id
+                for item in self.store.list_delegations(
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                    work_item_id=request.work_item_id,
+                    team_id=team.team_id,
+                )
+            )
+        ):
             return TeamDelegationPlan(
                 team_id=team.team_id,
                 team_revision=team.revision,
@@ -567,7 +594,20 @@ class AgentTeamService:
         actor: AuthenticationActor,
     ) -> TeamDelegationPlan:
         team = self.get(team_id, actor=actor)
-        if decision.decision_key in self._seen_decisions:
+        if (
+            decision.decision_key in self._seen_decisions
+            or any(
+                item.decision_key == decision.decision_key
+                and item.team_id == team.team_id
+                and item.work_item_id == request.work_item_id
+                for item in self.store.list_delegations(
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                    work_item_id=request.work_item_id,
+                    team_id=team.team_id,
+                )
+            )
+        ):
             return TeamDelegationPlan(
                 team_id=team.team_id,
                 team_revision=team.revision,
@@ -651,3 +691,278 @@ class AgentTeamService:
             dedupe_key=decision.decision_key,
             metadata={"participantIds": sorted(participant_ids)},
         )
+
+
+    def _record(
+        self,
+        team: AgentTeamRevision,
+        request: TeamDelegationRequest,
+        plan: TeamDelegationPlan,
+        *,
+        actor: AuthenticationActor,
+        event_type: str,
+        decision_key: str | None = None,
+    ) -> AgentTeamDelegationRecord:
+        dedupe_key = plan.dedupe_key or self._dedupe_key(
+            team,
+            request,
+            plan.selected_profile_ids,
+            f"{event_type}:{plan.mode}:{plan.reason}",
+        )
+        return self.store.append_delegation(
+            AgentTeamDelegationRecord(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                team_id=team.team_id,
+                team_revision=team.revision,
+                work_item_id=request.work_item_id,
+                project_id=request.project_id,
+                event_type=event_type,
+                mode=plan.mode,
+                reason=plan.reason,
+                selected_profile_ids=plan.selected_profile_ids,
+                leader_profile_id=plan.leader_profile_id,
+                trigger_id=request.trigger_id,
+                decision_key=decision_key,
+                dedupe_key=dedupe_key,
+                handoff_count=plan.handoff_count,
+                coordinator_round=plan.coordinator_round,
+                blocked=plan.blocked,
+                attention_required=plan.attention_required,
+                actor_identity_id=actor.identity_id,
+            )
+        )
+
+    async def _attention_for(
+        self,
+        record: AgentTeamDelegationRecord,
+    ) -> str | None:
+        if not record.attention_required or self.attention is None:
+            return None
+        item = await self.attention.upsert(
+            AttentionItemCreate(
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                type="agent_team.delegation_blocked",
+                severity=AttentionSeverity.HIGH,
+                source=AttentionSource(
+                    object_type="agent_team_delegation",
+                    object_id=record.id,
+                ),
+                reason=record.reason,
+                dedupe_key=f"agent-team:{record.team_id}:{record.work_item_id}:{record.reason}",
+                recipient_team_ids=(record.team_id,),
+                deep_link=f"/?work_item={record.work_item_id}",
+                escalation=EscalationPolicy(
+                    mandatory=True,
+                    recipient_team_ids=(record.team_id,),
+                ),
+            ),
+            actor_id="agent-team-orchestration",
+        )
+        self.store.update_delegation(
+            record.id,
+            organization_id=record.organization_id,
+            workspace_id=record.workspace_id,
+            updater=lambda current: current.model_copy(
+                update={"attention_item_id": item.id}
+            ),
+        )
+        return item.id
+
+    async def plan_and_record(
+        self,
+        team_id: str,
+        request: TeamDelegationRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> TeamDelegationPlan:
+        plan = self.plan(team_id, request, actor=actor)
+        team = self.get(team_id, actor=actor)
+        if plan.mode != "deduped":
+            record = self._record(
+                team,
+                request,
+                plan,
+                actor=actor,
+                event_type="routing_plan",
+            )
+            await self._attention_for(record)
+        return plan
+
+    async def decide_and_record(
+        self,
+        team_id: str,
+        request: TeamDelegationRequest,
+        decision: TeamCoordinatorDecision,
+        *,
+        actor: AuthenticationActor,
+    ) -> TeamDelegationPlan:
+        plan = self.apply_coordinator_decision(
+            team_id,
+            request,
+            decision,
+            actor=actor,
+        )
+        team = self.get(team_id, actor=actor)
+        if plan.mode != "deduped":
+            record = self._record(
+                team,
+                request,
+                plan,
+                actor=actor,
+                event_type="coordinator_decision",
+                decision_key=decision.decision_key,
+            )
+            await self._attention_for(record)
+        return plan
+
+    def link_executions(
+        self,
+        team_id: str,
+        work_item_id: str,
+        payload: TeamExecutionLinksUpdate,
+        *,
+        actor: AuthenticationActor,
+    ) -> AgentTeamDelegationRecord:
+        team = self.get(team_id, actor=actor)
+        history = self.store.list_delegations(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            work_item_id=work_item_id,
+            team_id=team_id,
+        )
+        source = next(
+            (
+                item
+                for item in reversed(history)
+                if item.event_type in {"coordinator_decision", "routing_plan"}
+            ),
+            None,
+        )
+        if source is None:
+            raise AgentTeamConflict(
+                "execution links require an existing delegation plan"
+            )
+        allowed = set(source.selected_profile_ids)
+        if any(key not in allowed for key in payload.member_execution_ids):
+            raise AgentTeamConflict(
+                "member execution link does not match selected team member"
+            )
+        material = json.dumps(
+            {
+                "team": team_id,
+                "work_item": work_item_id,
+                "coordinator": payload.coordinator_execution_id,
+                "members": payload.member_execution_ids,
+                "children": payload.child_work_item_refs,
+            },
+            sort_keys=True,
+        )
+        dedupe_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return self.store.append_delegation(
+            AgentTeamDelegationRecord(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                team_id=team_id,
+                team_revision=team.revision,
+                work_item_id=work_item_id,
+                project_id=source.project_id,
+                event_type="execution_linked",
+                mode="linked",
+                reason="canonical execution links recorded",
+                selected_profile_ids=source.selected_profile_ids,
+                leader_profile_id=source.leader_profile_id,
+                dedupe_key=dedupe_key,
+                coordinator_execution_id=payload.coordinator_execution_id,
+                member_execution_ids=payload.member_execution_ids,
+                child_work_item_refs=payload.child_work_item_refs,
+                handoff_count=source.handoff_count,
+                coordinator_round=source.coordinator_round,
+                actor_identity_id=actor.identity_id,
+            )
+        )
+
+    def work_item_history(
+        self,
+        work_item_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        records = self.store.list_delegations(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            work_item_id=work_item_id,
+        )
+        visible = []
+        for record in records:
+            try:
+                self.get(record.team_id, actor=actor)
+            except AgentTeamNotFound:
+                continue
+            visible.append(record)
+
+        execution_roles: dict[str, str] = {}
+        for record in visible:
+            if record.coordinator_execution_id:
+                execution_roles[record.coordinator_execution_id] = "coordinator"
+            for execution_id in record.member_execution_ids.values():
+                execution_roles[execution_id] = "worker"
+
+        usage = {"coordinator": {}, "workers": {}}
+        if self.runtime_usage_store is not None:
+            totals = {
+                "coordinator": {"tokens": 0, "costUsd": 0.0, "records": 0},
+                "workers": {"tokens": 0, "costUsd": 0.0, "records": 0},
+            }
+            for item in self.runtime_usage_store.list():
+                if (
+                    item.organization_id != actor.organization_id
+                    or item.workspace_id != actor.workspace_id
+                    or item.work_item_ref != work_item_id
+                ):
+                    continue
+                role = execution_roles.get(item.execution_id or "")
+                if role is None:
+                    continue
+                bucket = totals[role]
+                bucket["records"] += 1
+                if item.total_tokens is not None:
+                    bucket["tokens"] += item.total_tokens
+                if item.cost_usd is not None:
+                    bucket["costUsd"] += item.cost_usd
+            usage = totals
+
+        active_member_ids: set[str] = set()
+        if self.assignment_loader is not None:
+            assignments = self.assignment_loader()
+            active_status = {"pending", "claimed", "running"}
+            for record in visible:
+                for profile_id, execution_id in record.member_execution_ids.items():
+                    if any(
+                        getattr(item, "execution_id", None) == execution_id
+                        and str(getattr(item, "status", "")).split(".")[-1].casefold()
+                        in active_status
+                        for item in assignments
+                    ):
+                        active_member_ids.add(profile_id)
+
+        return {
+            "items": [
+                item.model_dump(mode="json")
+                for item in visible
+            ],
+            "count": len(visible),
+            "activeMemberProfileIds": sorted(active_member_ids),
+            "usage": usage,
+            "blockers": [
+                {
+                    "recordId": item.id,
+                    "teamId": item.team_id,
+                    "reason": item.reason,
+                    "attentionItemId": item.attention_item_id,
+                }
+                for item in visible
+                if item.blocked or item.attention_required
+            ],
+        }
