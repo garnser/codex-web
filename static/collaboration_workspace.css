@@ -12,10 +12,9 @@
   border-radius: 10px;
   background: var(--panel, var(--cw-color-surface, transparent));
 }
-.collab-card { display: grid; gap: 10px; position: relative; isolation: isolate; }
-.collab-agent-context, .collab-secondary { position: relative; min-width: 0; }
-.collab-agent-context > summary, .collab-secondary > summary { position: relative; z-index: 2; pointer-events: auto; user-select: none; }
-.collab-agent-context > :not(summary), .collab-secondary > :not(summary) { position: relative; z-index: 1; }
+.collab-card { display: grid; gap: 10px; min-width: 0; overflow: hidden; }
+.collab-agent-context, .collab-secondary { min-width: 0; }
+.collab-agent-context > summary, .collab-secondary > summary { pointer-events: auto; user-select: none; }
 .collab-card-head, .collab-skill-usage-head, .collab-access {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
 }
