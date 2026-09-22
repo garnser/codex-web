@@ -11,7 +11,7 @@ from codex_web.compatibility import ContractSpec
 from codex_web.definitions import DefinitionReference
 
 
-AGENT_TEAM_STATE_CONTRACT = ContractSpec("agent-team-state", "1.0", ("1.0",))
+AGENT_TEAM_STATE_CONTRACT = ContractSpec("agent-team-state", "1.1", ("1.0", "1.1"))
 TEAM_INSTRUCTIONS_KIND = "agent.team.instructions"
 TEAM_INSTRUCTIONS_SCHEMA_VERSION = "1.0"
 
@@ -125,10 +125,55 @@ class AgentTeamRevision(BaseModel):
         return self
 
 
+class AgentTeamDelegationRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        default_factory=lambda: f"agent-team-delegation-{uuid.uuid4().hex}",
+        min_length=1,
+    )
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    team_id: str = Field(min_length=1)
+    team_revision: int = Field(ge=1)
+    work_item_id: str = Field(min_length=1)
+    project_id: str | None = None
+    event_type: str = Field(min_length=1, max_length=100)
+    mode: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=2000)
+    selected_profile_ids: tuple[str, ...] = ()
+    leader_profile_id: str | None = None
+    trigger_id: str | None = None
+    decision_key: str | None = None
+    dedupe_key: str = Field(min_length=1, max_length=500)
+    coordinator_execution_id: str | None = None
+    member_execution_ids: dict[str, str] = Field(default_factory=dict)
+    child_work_item_refs: tuple[str, ...] = ()
+    attention_item_id: str | None = None
+    handoff_count: int = Field(default=0, ge=0)
+    coordinator_round: int = Field(default=0, ge=0)
+    blocked: bool = False
+    attention_required: bool = False
+    created_at: float = Field(default_factory=time.time)
+    actor_identity_id: str | None = None
+
+    @model_validator(mode="after")
+    def normalize(self) -> "AgentTeamDelegationRecord":
+        self.selected_profile_ids = tuple(dict.fromkeys(self.selected_profile_ids))
+        self.child_work_item_refs = tuple(dict.fromkeys(self.child_work_item_refs))
+        self.member_execution_ids = {
+            str(key).strip(): str(value).strip()
+            for key, value in self.member_execution_ids.items()
+            if str(key).strip() and str(value).strip()
+        }
+        return self
+
+
 class AgentTeamState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: str = AGENT_TEAM_STATE_CONTRACT.current
     revisions: list[AgentTeamRevision] = Field(default_factory=list)
+    delegations: list[AgentTeamDelegationRecord] = Field(default_factory=list)
 
 
 class AgentTeamCreate(BaseModel):
@@ -230,3 +275,11 @@ class TeamDelegationPlan(BaseModel):
     attention_required: bool = False
     dedupe_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TeamExecutionLinksUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    coordinator_execution_id: str | None = None
+    member_execution_ids: dict[str, str] = Field(default_factory=dict)
+    child_work_item_refs: tuple[str, ...] = ()
