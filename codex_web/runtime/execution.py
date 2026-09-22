@@ -778,6 +778,7 @@ class TurnExecutionService:
         worker_id: str | None = None,
         fence: int | None = None,
         repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         agent_profile_actor_id: str | None = None,
@@ -814,6 +815,14 @@ class TurnExecutionService:
                 repository_resource_id
                 or settings.repository_resource_id
                 or (current.repository_resource_id if current else None)
+            ),
+            writable_repository_resource_ids=(
+                writable_repository_resource_ids
+                or (
+                    current.writable_repository_resource_ids
+                    if current
+                    else ()
+                )
             ),
             execution_profile_id=(
                 execution_profile_id
@@ -1478,6 +1487,15 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                writable_repository_resource_ids=(
+                    tuple(
+                        getattr(
+                            getattr(assignment, "repository_scope", None),
+                            "writable_repository_ids",
+                            (),
+                        )
+                    )
+                ),
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
                 agent_profile_actor_id=(
@@ -1673,6 +1691,15 @@ class TurnExecutionService:
                 worker_id=status.worker_id,
                 fence=status.fence,
                 repository_resource_id=canonical_repository_resource_id,
+                writable_repository_resource_ids=(
+                    tuple(
+                        getattr(
+                            getattr(assignment, "repository_scope", None),
+                            "writable_repository_ids",
+                            (),
+                        )
+                    )
+                ),
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
                 agent_profile_actor_id=(
@@ -2018,6 +2045,9 @@ class TurnExecutionService:
                     execution_id=active.execution_id,
                     repository_resource_id=(
                         active.repository_resource_id
+                    ),
+                    writable_repository_resource_ids=(
+                        active.writable_repository_resource_ids
                     ),
                     execution_profile_id=active.execution_profile_id,
                     actor=(
