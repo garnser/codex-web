@@ -362,6 +362,31 @@ class WorkItemRunProjectionTests(unittest.TestCase):
                     verifications=[verification],
                 )
             ),
+            action_intents=SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    intents=[
+                        SimpleNamespace(
+                            id="action-1",
+                            organization_id="local",
+                            workspace_id="default",
+                            execution_id="exec-detail",
+                            status="succeeded",
+                            provider_type="github",
+                            provider_instance="primary",
+                            action_id="pull_request.create",
+                            resource_ids=("repo-1",),
+                            attempt=1,
+                            correlation_id="corr-1",
+                            causation_id=None,
+                            created_at=33.5,
+                            completed_at=34.0,
+                            failure=None,
+                        )
+                    ],
+                    receipts=[],
+                    verifications=[],
+                )
+            ),
             work_item_execution=SimpleNamespace(
                 run_context=lambda ref, execution_id: {
                     "id": "checkpoint-2",
@@ -399,9 +424,11 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(activity["artifact"]["repositoryIds"], ["repo-2"])
         self.assertEqual(activity["evidence"]["repositoryIds"], ["repo-2"])
         self.assertEqual(activity["verification"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["action"]["repositoryIds"], ["repo-1"])
+        self.assertEqual(payload["actions"][0]["resourceIds"], ["repo-1"])
         self.assertEqual(
             [entry["occurredAt"] for entry in payload["repositoryActivity"]],
-            [31.0, 32.0, 33.0],
+            [31.0, 32.0, 33.0, 34.0],
         )
         self.assertEqual(payload["contextCheckpoint"]["id"], "checkpoint-2")
         self.assertEqual(
