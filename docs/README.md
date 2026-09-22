@@ -16,6 +16,7 @@ This is the user/operator documentation entry point. Architecture documents desc
 - [Advanced Adoption](advanced-adoption/README.md) — maturity-based rollout from interactive use to controlled autonomy.
 - [Worked Examples](examples/README.md) — success, refusal, blocker, approval and recovery scenarios.
 - [Reproducible Screenshots](screenshots/README.md) — sanitized fixture-based UI capture and refresh workflow.
+- [Workspace navigation](ui/workspace-navigation.md) — current Home/Work/Team/Automation/Operations shell, Project switching and Run inspection.
 
 ## Choose a path
 
