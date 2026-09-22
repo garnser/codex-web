@@ -91,3 +91,62 @@ test('concurrent Operations refresh triggers coalesce to one bounded request bat
   expect(windowStatus.repeated).toEqual([]);
   expect(windowStatus.ok).toBeTruthy();
 });
+
+
+test('large trace sets render through a bounded DOM window', async ({ page }) => {
+  const traces = Array.from({ length: 500 }, (_, index) => ({
+    spanId: `span-${index}`,
+    name: `trace-${index}`,
+    correlationId: `corr-${index}`,
+    causationId: null,
+    parentSpanId: null,
+    status: 'ok',
+    durationSeconds: 0.01,
+    startedAt: 1900000000 + index,
+    endedAt: 1900000000 + index + 0.01,
+    attributes: { index },
+  }));
+  await page.route('**/api/observability', (route) => route.fulfill({
+    json: {
+      health: {
+        status: 'healthy', liveness: true, readiness: true, degraded: false,
+        autonomousExecutionEligible: true, uptimeSeconds: 10, dependencies: [],
+      },
+      metrics: { uptimeSeconds: 10, counters: {}, timers: {} },
+      recentTraces: traces,
+      traceCount: traces.length,
+    },
+  }));
+  await page.route('**/api/operations?**', (route) => route.fulfill({
+    json: {
+      windowSeconds: 900,
+      runtime: {
+        healthy: true, activeTurns: 0, queuedTurns: 0, queueThreads: 0,
+        pendingApprovals: 0, oldestQueueAgeSeconds: 0, averageQueueAgeSeconds: 0,
+        healthProblems: [], supervisorTasks: {},
+      },
+      workItems: {
+        open: 0, blocked: 0, pendingHandoffs: 0, releaseGates: 0, splitBrain: 0,
+        stages: {}, owners: {}, oldestPendingHandoffAgeSeconds: 0,
+      },
+      providers: {
+        runtimeConnections: 0, recentDeliveryFailures: 0,
+        slackBackfillCooldownRemainingSeconds: 0, gitlabSyncConsecutiveFailures: 0,
+      },
+      activity: { events: 0, eventTypes: {}, recoveryEvents: 0, executiveEvents: 0 },
+    },
+  }));
+  await page.route('**/api/execution-workers/assignments', (route) => route.fulfill({
+    json: { items: Array.from({ length: 500 }, (_, index) => ({ id: `a-${index}`, status: 'pending' })) },
+  }));
+  await page.route('**/api/identity/me', (route) => route.fulfill({
+    json: { principal_kind: 'human', assurance: 'mfa', roles: ['admin'] },
+  }));
+  await page.route('**/api/projects', (route) => route.fulfill({ json: [] }));
+
+  await page.goto(fixture);
+  await page.locator('#refresh-operations').click();
+  await expect(page.locator('#operations-status')).toContainText('500 recent trace');
+  await expect(page.locator('#operations-traces')).toContainText('Showing latest 100 of 500 matching traces');
+  await expect(page.locator('#operations-traces details.comm-entry')).toHaveCount(100);
+});
