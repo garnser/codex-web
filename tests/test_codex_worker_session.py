@@ -16,7 +16,12 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
     WorkerResourceLimits,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus
+from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
+from codex_web.resources import (
+    RepositoryExecutionScope,
+    RepositoryTargetSource,
+    RepositoryWriteMode,
+)
 from codex_web.runtime.codex import CodexRuntime
 from codex_web.services.agent_process_session import (
     AssignmentBoundAgentProcessSession,
@@ -128,6 +133,9 @@ class _FakeBackend:
                 "environment": dict(environment or {}),
                 "trusted_readonly_mounts": tuple(
                     kwargs.get("trusted_readonly_mounts") or ()
+                ),
+                "trusted_writable_mounts": tuple(
+                    kwargs.get("trusted_writable_mounts") or ()
                 ),
             }
         )
@@ -402,6 +410,57 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         await session.start()
         return session
+
+    async def test_codex_session_mounts_coordinated_writable_repository_set(self) -> None:
+        secondary = Path(self.temp.name) / "secondary-writable"
+        secondary.mkdir()
+        self.workspaces.workspace.resource_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.repository_resource_id = "repo-1"
+        self.workspaces.workspace.writable_repository_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(self.workspace_path),
+                sandbox_path=str(self.workspace_path),
+            ),
+            SimpleNamespace(
+                resource_id="repo-2",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(secondary),
+                sandbox_path="/mnt/codex-repositories/repo-2",
+            ),
+        )
+        assignment = self._create_assignment(
+            resource_ids=("repo-1", "repo-2"),
+            repository_scope=RepositoryExecutionScope(
+                organization_id="local",
+                workspace_id="default",
+                project_id="home",
+                writable_repository_ids=("repo-1", "repo-2"),
+                write_mode=RepositoryWriteMode.COORDINATED,
+                source=RepositoryTargetSource.EXPLICIT,
+            ),
+        )
+
+        session = await self._session(assignment)
+        try:
+            launch = self.backend.spawned[0]
+            self.assertEqual(
+                launch["trusted_writable_mounts"],
+                (
+                    (
+                        secondary.resolve(),
+                        Path("/mnt/codex-repositories/repo-2"),
+                    ),
+                ),
+            )
+            self.assertEqual(
+                launch["environment"]["CODEX_WRITABLE_REPOSITORIES"],
+                "/mnt/codex-repositories/repo-2",
+            )
+        finally:
+            await session.stop()
 
     async def test_generic_process_session_launches_non_codex_runtime_under_same_assignment_boundary(self) -> None:
         assignment = self._create_assignment()
