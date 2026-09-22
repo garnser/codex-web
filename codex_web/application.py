@@ -3428,6 +3428,7 @@ home_overview_service = HomeOverviewService(
     incidents=incident_service,
     agent_sessions=agent_session_service,
     goals=goal_service,
+    schedules=scheduler_service,
 )
 app.state.home_overview_service = home_overview_service
 app.state.runtime_diagnostics_service = runtime_diagnostics_service
