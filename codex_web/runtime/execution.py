@@ -2530,6 +2530,7 @@ def install_turn_execution_service(
     work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
     work_item_context_recorder: Callable[..., Any] | None = None,
     work_item_outcome_recorder: Callable[..., Any] | None = None,
+    authentication_resolver: CodexExecutionAuthenticationResolver | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -2560,6 +2561,8 @@ def install_turn_execution_service(
             service.work_item_context_recorder = work_item_context_recorder
         if work_item_outcome_recorder is not None:
             service.work_item_outcome_recorder = work_item_outcome_recorder
+        if authentication_resolver is not None:
+            service.authentication_resolver = authentication_resolver
     else:
         service = TurnExecutionService(
             host,
@@ -2578,6 +2581,7 @@ def install_turn_execution_service(
             work_item_context_resolver=work_item_context_resolver,
             work_item_context_recorder=work_item_context_recorder,
             work_item_outcome_recorder=work_item_outcome_recorder,
+            authentication_resolver=authentication_resolver,
         )
         app.state.turn_execution_service = service
 
