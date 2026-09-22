@@ -692,6 +692,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         writable_path = Path(self.temp.name) / "writable-repo-2"
         writable_path.mkdir()
         self.workspaces.workspace.resource_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.writable_repository_ids = ("repo-1", "repo-2")
         self.workspaces.workspace.repository_members = (
             SimpleNamespace(
                 resource_id="repo-1",
