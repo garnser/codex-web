@@ -275,12 +275,22 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(lineage["attempts"][1]["workerId"], "worker-b")
 
     def test_detail_joins_usage_artifacts_evidence_and_verification_by_execution(self) -> None:
+        repository_scope = RepositoryExecutionScope(
+            organization_id="local",
+            workspace_id="default",
+            project_id="home",
+            writable_repository_ids=("repo-1", "repo-2"),
+            write_mode=RepositoryWriteMode.COORDINATED,
+            source=RepositoryTargetSource.EXPLICIT,
+        )
         item = self.assignment(
             "exec-detail",
             status=AssignmentStatus.SUCCEEDED,
             created_at=30.0,
             artifact_ids=("artifact-1",),
             evidence_ids=("evidence-1",),
+            resource_ids=("repo-1", "repo-2"),
+            repository_scope=repository_scope,
         )
         self.seed([item])
         usage = AgentRuntimeUsage(
@@ -308,9 +318,11 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             project_id="home",
             work_item_ref="group/app#42",
             execution_id="exec-detail",
+            resource_ids=("repo-2",),
             artifact_type=ArtifactType.PATCH,
             name="change.patch",
             producer_identity_id="worker",
+            produced_at=31.0,
         )
         evidence = Evidence(
             id="evidence-1",
@@ -324,6 +336,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             producer_identity_id="worker",
             result=EvidenceResult.PASS,
             summary="tests passed",
+            observed_at=32.0,
         )
         verification = Verification(
             id="verification-1",
@@ -337,6 +350,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             independent=True,
             method="ci",
             result=VerificationResult.VERIFIED,
+            verified_at=33.0,
         )
         service = WorkItemRunProjectionService(
             self.store,
@@ -346,6 +360,31 @@ class WorkItemRunProjectionTests(unittest.TestCase):
                     artifacts=[artifact],
                     evidence=[evidence],
                     verifications=[verification],
+                )
+            ),
+            action_intents=SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    intents=[
+                        SimpleNamespace(
+                            id="action-1",
+                            organization_id="local",
+                            workspace_id="default",
+                            execution_id="exec-detail",
+                            status="succeeded",
+                            provider_type="github",
+                            provider_instance="primary",
+                            action_id="pull_request.create",
+                            resource_ids=("repo-1",),
+                            attempt=1,
+                            correlation_id="corr-1",
+                            causation_id=None,
+                            created_at=33.5,
+                            completed_at=34.0,
+                            failure=None,
+                        )
+                    ],
+                    receipts=[],
+                    verifications=[],
                 )
             ),
             work_item_execution=SimpleNamespace(
@@ -380,6 +419,17 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(payload["artifacts"][0]["id"], "artifact-1")
         self.assertEqual(payload["evidence"][0]["result"], "pass")
         self.assertEqual(payload["verifications"][0]["result"], "verified")
+        self.assertEqual(payload["artifacts"][0]["resourceIds"], ["repo-2"])
+        activity = {entry["kind"]: entry for entry in payload["repositoryActivity"]}
+        self.assertEqual(activity["artifact"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["evidence"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["verification"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["action"]["repositoryIds"], ["repo-1"])
+        self.assertEqual(payload["actions"][0]["resourceIds"], ["repo-1"])
+        self.assertEqual(
+            [entry["occurredAt"] for entry in payload["repositoryActivity"]],
+            [31.0, 32.0, 33.0, 34.0],
+        )
         self.assertEqual(payload["contextCheckpoint"]["id"], "checkpoint-2")
         self.assertEqual(
             payload["contextCheckpoint"]["continuation"]["mode"],
@@ -406,6 +456,9 @@ class WorkItemRunUiContractTests(unittest.TestCase):
         self.assertIn("repositoryScope", run_ui)
         self.assertIn("Repository execution scope", run_ui)
         self.assertIn("writable_repositories", run_ui)
+        self.assertIn("repositoryActivity", run_ui)
+        self.assertIn("Combined repository activity", run_ui)
+        self.assertIn("work-run-repository-activity", run_ui)
         self.assertIn("codex:work-item-run-updated", ui)
         self.assertIn("work_item.run.updated", app)
         self.assertNotIn("setInterval(() => refreshRuns", ui + run_ui)

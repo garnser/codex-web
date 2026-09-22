@@ -532,6 +532,7 @@ class WorkItemRunProjectionService:
                     "providerType": value.provider_type,
                     "providerInstance": value.provider_instance,
                     "actionId": value.action_id,
+                    "resourceIds": list(value.resource_ids),
                     "attempt": value.attempt,
                     "correlationId": value.correlation_id,
                     "causationId": value.causation_id,
@@ -622,6 +623,7 @@ class WorkItemRunProjectionService:
             "lifecycle": getattr(value.lifecycle, "value", value.lifecycle),
             "externalUrl": value.external_url,
             "revision": value.revision,
+            "resourceIds": list(value.resource_ids),
             "producedAt": value.produced_at,
         }
 
@@ -632,6 +634,7 @@ class WorkItemRunProjectionService:
             "type": getattr(value.evidence_type, "value", value.evidence_type),
             "result": getattr(value.result, "value", value.result),
             "summary": value.summary,
+            "artifactIds": list(value.artifact_ids),
             "deepLink": value.deep_link,
             "observedAt": value.observed_at,
         }
@@ -642,10 +645,115 @@ class WorkItemRunProjectionService:
             "id": value.id,
             "result": getattr(value.result, "value", value.result),
             "method": value.method,
+            "artifactIds": list(value.artifact_ids),
+            "evidenceIds": list(value.evidence_ids),
             "findings": list(value.findings),
             "deepLink": value.deep_link,
             "verifiedAt": value.verified_at,
         }
+
+    @classmethod
+    def _repository_activity(
+        cls,
+        item: ExecutionAssignment,
+        artifacts: list[Any],
+        evidence: list[Any],
+        verifications: list[Any],
+        actions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        scope = cls._repository_scope_view(item) or {}
+        repository_ids = set(scope.get("writableRepositoryIds", ())) | set(
+            scope.get("readOnlyRepositoryIds", ())
+        )
+
+        def repositories(values: Any) -> list[str]:
+            return sorted(repository_ids.intersection(values or ()))
+
+        artifact_repositories = {
+            value.id: repositories(value.resource_ids)
+            for value in artifacts
+        }
+        evidence_repositories = {
+            value.id: sorted(
+                {
+                    repository_id
+                    for artifact_id in value.artifact_ids
+                    for repository_id in artifact_repositories.get(artifact_id, ())
+                }
+            )
+            for value in evidence
+        }
+
+        rows: list[dict[str, Any]] = []
+        for value in artifacts:
+            rows.append(
+                {
+                    "kind": "artifact",
+                    "id": value.id,
+                    "occurredAt": value.produced_at,
+                    "repositoryIds": artifact_repositories[value.id],
+                    "label": value.name,
+                    "detail": cls._value(value.artifact_type),
+                    "status": cls._value(value.lifecycle),
+                }
+            )
+        for value in evidence:
+            rows.append(
+                {
+                    "kind": "evidence",
+                    "id": value.id,
+                    "occurredAt": value.observed_at,
+                    "repositoryIds": evidence_repositories[value.id],
+                    "label": value.summary or cls._value(value.evidence_type),
+                    "detail": cls._value(value.evidence_type),
+                    "status": cls._value(value.result),
+                }
+            )
+        for value in verifications:
+            verification_repositories = sorted(
+                {
+                    repository_id
+                    for artifact_id in value.artifact_ids
+                    for repository_id in artifact_repositories.get(artifact_id, ())
+                }
+                | {
+                    repository_id
+                    for evidence_id in value.evidence_ids
+                    for repository_id in evidence_repositories.get(evidence_id, ())
+                }
+            )
+            rows.append(
+                {
+                    "kind": "verification",
+                    "id": value.id,
+                    "occurredAt": value.verified_at,
+                    "repositoryIds": verification_repositories,
+                    "label": value.method,
+                    "detail": value.method,
+                    "status": cls._value(value.result),
+                }
+            )
+        for value in actions:
+            rows.append(
+                {
+                    "kind": "action",
+                    "id": value["id"],
+                    "occurredAt": value.get("completedAt") or value.get("createdAt"),
+                    "repositoryIds": repositories(value.get("resourceIds")),
+                    "label": value.get("actionId"),
+                    "detail": value.get("providerType"),
+                    "status": value.get("status"),
+                }
+            )
+
+        return sorted(
+            rows,
+            key=lambda value: (
+                float(value.get("occurredAt") or 0.0),
+                str(value.get("kind") or ""),
+                str(value.get("id") or ""),
+            ),
+        )
 
     def get_run(
         self,
@@ -728,6 +836,13 @@ class WorkItemRunProjectionService:
                     for value in verifications
                 ],
                 "actions": actions,
+                "repositoryActivity": self._repository_activity(
+                    item,
+                    artifacts,
+                    evidence,
+                    verifications,
+                    actions,
+                ),
                 "actionReceiptIds": action_receipts,
                 "actionVerificationIds": action_verifications,
                 "approvals": self._approvals(item),
