@@ -1236,6 +1236,10 @@ class ActionIntentService:
                     authority_recheck.reason
                     or "canonical Role authority denied action at execution"
                 ),
+                failure=self._failure(
+                    pending,
+                    FailureReason.AUTHORITY_DENIED,
+                ),
             )
         allowed, reason = self._recheck_security(
             pending,
@@ -1247,6 +1251,10 @@ class ActionIntentService:
                 intent_id,
                 ActionIntentStatus.CANCELLED,
                 error=reason or "security trust boundary denied action",
+                failure=self._failure(
+                    pending,
+                    FailureReason.AUTHORITY_DENIED,
+                ),
             )
         if self.entitlements is not None:
             try:
@@ -1508,12 +1516,13 @@ class ActionIntentService:
             raise ActionIntentConflictError(
                 "action intent is not retryable from current status"
             )
-        if (
-            intent.failure is not None
-            and intent.failure.retryability.value == "not_retryable"
-        ):
+        if intent.failure is None:
             raise ActionIntentUnsafeRetryError(
-                "canonical failure classification forbids retry"
+                "failed action lacks canonical transient failure classification"
+            )
+        if not intent.failure.automatic_retry_allowed:
+            raise ActionIntentUnsafeRetryError(
+                "canonical failure classification does not allow automatic retry"
             )
         return self._schedule_retry(intent, payload)
 
