@@ -620,6 +620,19 @@ class AgentTeamService:
         self._seen_decisions.add(decision.decision_key)
 
         selected = tuple(dict.fromkeys(decision.selected_profile_ids))
+        if request.coordinator_round > team.budgets.max_coordinator_rounds:
+            return TeamDelegationPlan(
+                team_id=team.team_id,
+                team_revision=team.revision,
+                work_item_id=request.work_item_id,
+                mode="budget_exhausted",
+                reason="max_coordinator_rounds_exhausted",
+                blocked=True,
+                attention_required=True,
+                handoff_count=request.handoff_count,
+                coordinator_round=request.coordinator_round,
+                dedupe_key=decision.decision_key,
+            )
         if team.leader_profile_id in selected:
             return TeamDelegationPlan(
                 team_id=team.team_id,
@@ -629,6 +642,31 @@ class AgentTeamService:
                 reason="leader_cannot_delegate_to_itself",
                 blocked=True,
                 attention_required=True,
+                dedupe_key=decision.decision_key,
+            )
+        prior = self.store.list_delegations(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            work_item_id=request.work_item_id,
+            team_id=team.team_id,
+        )
+        if any(
+            item.event_type == "coordinator_decision"
+            and item.mode == "delegated"
+            and item.selected_profile_ids == selected
+            and item.reason == decision.reason
+            for item in prior
+        ):
+            return TeamDelegationPlan(
+                team_id=team.team_id,
+                team_revision=team.revision,
+                work_item_id=request.work_item_id,
+                mode="loop_suppressed",
+                reason="equivalent_delegation_loop_detected",
+                blocked=True,
+                attention_required=True,
+                handoff_count=request.handoff_count,
+                coordinator_round=request.coordinator_round,
                 dedupe_key=decision.decision_key,
             )
         eligible = set(self._eligible_members(team, request, actor=actor))
