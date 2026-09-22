@@ -720,16 +720,16 @@ class ExecutionWorkerService:
                         if assignment.repository_scope is not None
                         else "single"
                     ),
-                    "writable_repository_ids": (
-                        list(assignment.repository_scope.writable_repository_ids)
+                    "writable_repository_ids": ",".join(
+                        assignment.repository_scope.writable_repository_ids
                         if assignment.repository_scope is not None
                         else (
-                            [assignment.repository_target.mutable_repository_id]
+                            (assignment.repository_target.mutable_repository_id,)
                             if (
                                 assignment.repository_target is not None
                                 and assignment.repository_target.mutable_repository_id is not None
                             )
-                            else []
+                            else ()
                         )
                     ),
                     "execution_profile_id": assignment.execution_profile_id,
