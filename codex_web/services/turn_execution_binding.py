@@ -935,12 +935,23 @@ class TurnExecutionBindingService:
                         "remediation_route": f"/api/projects/{project.id}/resources",
                     },
                 )
-            repository_target, repository_scope = self._coordinated_repository_scope(
-                project,
-                writable_repository_ids=normalized_writable,
-                read_only_repository_ids=read_only_repository_ids,
-                source_ref=work_item_ref or subject.ref,
-            )
+            if len(normalized_writable) == 1:
+                repository_target = self._repository_target(
+                    project,
+                    explicit_repository_id=normalized_writable[0],
+                    read_only_repository_ids=read_only_repository_ids,
+                    work_item_ref=work_item_ref,
+                )
+                repository_scope = RepositoryExecutionScope.from_target(
+                    repository_target
+                )
+            else:
+                repository_target, repository_scope = self._coordinated_repository_scope(
+                    project,
+                    writable_repository_ids=normalized_writable,
+                    read_only_repository_ids=read_only_repository_ids,
+                    source_ref=work_item_ref or subject.ref,
+                )
         else:
             repository_target = self._repository_target(
                 project,
