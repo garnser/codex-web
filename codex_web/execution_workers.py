@@ -211,6 +211,7 @@ class ExecutionRuntimeBinding(BaseModel):
     provider_id: str = Field(min_length=1)
     runtime_id: str = Field(min_length=1)
     capability_revision: int = Field(ge=1)
+    authentication_mode: str | None = None
 
 
 class ExecutionAssignmentCreate(BaseModel):
