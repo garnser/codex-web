@@ -211,17 +211,9 @@ function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(
 
 function threadRunSettings(threadId=state.threadId){return state.threadSettings?.[threadId]||{}}
 
-function selectedThreadTurnOptions(threadId = state.threadId) {
-  const settings = threadRunSettings(threadId);
-  return {
-    model: settings.model || null,
-    reasoningEffort: settings.reasoning_effort || null,
-  };
-}
+function selectedThreadTurnOptions(threadId=state.threadId){const settings=threadRunSettings(threadId);return{model:settings.model||null,reasoningEffort:settings.reasoning_effort||null}}
 
-function modelOptionLabel(model) {
-  return model.displayName || model.display_name || model.model || model.id || "Unnamed model";
-}
+function modelOptionLabel(model){return model.displayName||model.display_name||model.model||model.id||"Unnamed model"}
 
 function modelOptionValue(model){return model.model||model.id||""}
 
