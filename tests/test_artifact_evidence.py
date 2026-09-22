@@ -195,7 +195,7 @@ class ArtifactEvidenceTests(unittest.TestCase):
             actor=self.producer,
         )
 
-        self.assertEqual(evidence.resource_ids, (self.repo.id,))
+        self.assertEqual(evidence.resource_ids, ("repo-app",))
         persisted = {
             item.id: item
             for item in self.service.list_evidence(
