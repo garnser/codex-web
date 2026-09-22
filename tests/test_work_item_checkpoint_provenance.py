@@ -371,6 +371,66 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
                     anchor["blockers"],
                 )
 
+    def test_failed_runtime_attempt_reuses_prior_successful_anchor(self) -> None:
+        first = self.service.continuation_delta(self.ref)
+        self.service.record_continuation_delivery(
+            self.ref,
+            "exec-success",
+            first,
+            {
+                "mode": "full",
+                "reason": first["reason"],
+                "work_item_context": first["snapshot"]["work_item_context"],
+            },
+        )
+        self.service.record_continuation_outcome(
+            self.ref,
+            "exec-success",
+            "succeeded",
+        )
+
+        self.host.states[self.ref].title = "Changed after successful anchor"
+        failed_selection = self.service.continuation_delta(self.ref)
+        self.service.record_continuation_delivery(
+            self.ref,
+            "exec-poisoned",
+            failed_selection,
+            {
+                "mode": failed_selection["mode"],
+                "reason": failed_selection["reason"],
+                "changed_fields": failed_selection.get("changed_fields", {}),
+                "events": failed_selection.get("events", []),
+            },
+        )
+        self.service.record_continuation_outcome(
+            self.ref,
+            "exec-poisoned",
+            "poisoned",
+        )
+
+        anchor = self.service.continuation_anchor(self.ref)
+        self.assertTrue(anchor["trusted"])
+        self.assertEqual(anchor["reason"], "prior_trusted_checkpoint")
+        self.assertEqual(
+            anchor["checkpoint"]["execution_id"],
+            "exec-success",
+        )
+        self.assertEqual(
+            anchor["ignored_checkpoints"][0]["execution_id"],
+            "exec-poisoned",
+        )
+        self.assertIn(
+            "execution_outcome_poisoned",
+            anchor["ignored_checkpoints"][0]["blockers"],
+        )
+
+        resumed = self.service.continuation_delta(self.ref)
+        self.assertEqual(resumed["mode"], "delta")
+        self.assertEqual(
+            resumed["changed_fields"]["title"],
+            "Changed after successful anchor",
+        )
+
     def test_proven_checkpoint_without_verified_baseline_does_not_claim_delta(self) -> None:
         self.service.checkpoint(
             self.ref,
