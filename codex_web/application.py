@@ -220,6 +220,10 @@ from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegation
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.claude_agent_runtime import ClaudeAgentRuntimeAdapter
 from codex_web.services.codex_worker_configuration import CODEX_WORKER_ACCESS_TOKEN_CONFIG, install_codex_worker_configuration
+from codex_web.services.codex_execution_authentication import (
+    CodexExecutionAuthenticationResolver,
+    install_codex_execution_authentication_configuration,
+)
 from codex_web.services.anthropic_worker_configuration import ANTHROPIC_WORKER_API_KEY_CONFIG, install_anthropic_worker_configuration
 from codex_web.services.agent_model_egress import (
     AgentRuntimeModelEgressEndpoint,
@@ -659,6 +663,12 @@ configuration_service = ConfigurationService(configuration_registry_store)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
+(
+    codex_execution_authentication_mode_spec,
+    codex_worker_api_key_configuration_spec,
+) = install_codex_execution_authentication_configuration(
+    configuration_service
+)
 artifact_content_configuration_spec = install_artifact_content_configuration(
     configuration_service
 )
@@ -670,6 +680,12 @@ agent_routing_configuration_specs = install_agent_routing_configuration(
 )
 app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
+app.state.codex_execution_authentication_mode_spec = (
+    codex_execution_authentication_mode_spec
+)
+app.state.codex_worker_api_key_configuration_spec = (
+    codex_worker_api_key_configuration_spec
+)
 app.state.artifact_content_configuration_spec = artifact_content_configuration_spec
 app.state.anthropic_worker_configuration_spec = anthropic_worker_configuration_spec
 app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
@@ -1090,6 +1106,16 @@ def _project_readiness_environment(project, actor):
     }
 
 
+codex_execution_authentication_resolver = (
+    CodexExecutionAuthenticationResolver(
+        configuration_service,
+        actor=identity_service.local_trusted_actor(),
+    )
+)
+app.state.codex_execution_authentication_resolver = (
+    codex_execution_authentication_resolver
+)
+
 project_readiness_service = ProjectReadinessService(
     projects=project_service,
     resources=resource_catalog_service,
@@ -1101,6 +1127,7 @@ project_readiness_service = ProjectReadinessService(
     environment_probe=_project_readiness_environment,
     configuration=configuration_service,
     runtime_binding=codex_execution_runtime_binding,
+    authentication_resolver=codex_execution_authentication_resolver,
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_readiness_store = project_readiness_store
@@ -2448,6 +2475,7 @@ turn_execution_service = install_turn_execution_service(
             objective=objective,
         )
     ),
+    authentication_resolver=codex_execution_authentication_resolver,
     work_item_context_resolver=(
         work_item_execution_lifecycle_service.continuation_delta
     ),
