@@ -1507,6 +1507,7 @@ async function renameThread() {
 }
 
 function handleEvent(event) {
+  if(event.type==="work_item.run.updated"){window.dispatchEvent(new CustomEvent("codex:work-item-run-updated",{detail:event}));return;}
   if(event.type==="binding.updated"){uiEvents.handleBindingEvent(event);return;}
   if (event.type === "bot.thread.replaced") {
     applyThreadReplacement(event.oldThreadId, event.newThreadId).catch((error) => {
