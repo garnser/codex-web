@@ -25,7 +25,7 @@ MODEL_GATEWAY_MIGRATIONS.register(
     "1.1",
     lambda payload: {
         **payload,
-        "schema_version": MODEL_GATEWAY_CONTRACT.current,
+        "schema_version": "1.1",
         "invocations": [
             {
                 **item,
