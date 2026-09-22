@@ -1417,18 +1417,14 @@ class TurnExecutionService:
                     self._trusted_local_codex_session_enabled(
                         source=source,
                         runtime_binding=runtime_binding,
-                        ),
-                        writable_repository_ids=(
-                            effective_writable_repositories
-                        writable_repository_source=writable_repository_source,
                     )
-                assignment = binding
                 )
                 if trusted_local_codex_session:
                     # The control-plane app-server was started outside a worker
                     # and owns its own interactive Codex login.  Do not copy or
                     # mount that credential material into repository execution.
                     session = h.codex
+                    assignment = None
                     canonical_repository_resource_id = (
                         repository_resource_id
                         or settings.repository_resource_id
@@ -1458,6 +1454,10 @@ class TurnExecutionService:
                                 repository_resource_id
                                 or settings.repository_resource_id
                             ),
+                            writable_repository_ids=(
+                                effective_writable_repositories
+                            ),
+                            writable_repository_source=writable_repository_source,
                             read_only_repository_ids=(
                                 read_only_repository_resource_ids
                                 or settings.read_only_repository_resource_ids
@@ -1477,6 +1477,7 @@ class TurnExecutionService:
                             },
                         ) from exc
                     session = await session_manager.start(binding.assignment_id)
+                    assignment = binding
                     runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
                     canonical_repository_resource_id = getattr(
                         binding,
