@@ -203,7 +203,12 @@ class LocalExecutionWorkerRuntime:
             writable = set()
             read_only = set()
 
-        primary = workspace.repository_resource_id
+        primary = getattr(workspace, "repository_resource_id", None)
+        if scope is None and target is None and primary is not None:
+            # Legacy assignments predate explicit repository authority on the
+            # worker contract. The execution workspace lease remains canonical
+            # for their singular primary repository.
+            writable = {primary}
         if primary is not None and primary not in writable:
             raise LocalExecutionWorkerRuntimeError(
                 "primary repository is outside assignment repository authority"
