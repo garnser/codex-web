@@ -892,6 +892,15 @@ class ModelGatewayService:
                 str(exc),
                 retry_at=exc.retry_at,
                 wait_id=wait_id,
+                failure=create_failure(
+                    FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT,
+                    source_subsystem="model_gateway",
+                    execution_id=effective_request.execution_id,
+                    source_native_code=type(exc).__name__,
+                    details={
+                        "provider_key_count": len(exc.provider_keys),
+                    },
+                ),
             ) from exc
         state = self.store.load()
         template = next(
