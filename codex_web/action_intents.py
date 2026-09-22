@@ -195,7 +195,7 @@ class ActionInboxMessage(BaseModel):
 class ActionIntentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     intents: list[ActionIntent] = Field(default_factory=list)
     receipts: list[ActionIntentReceipt] = Field(default_factory=list)
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)
