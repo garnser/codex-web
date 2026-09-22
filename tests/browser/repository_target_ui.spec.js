@@ -40,6 +40,27 @@ test("explicit repository policy requires a target and submits canonical resourc
       return;
     }
 
+    if (path === "/api/projects/home/readiness") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: "home",
+          semantic_ready: true,
+          execution_ready: true,
+          status: "ready",
+          checks: [{
+            id: "repository:execution-target",
+            domain: "repository",
+            status: "ready",
+            code: "repository_target_required_per_turn",
+            message: "Repository target is selected per turn.",
+          }],
+        }),
+      });
+      return;
+    }
+
     if (path === "/api/projects/home/ui-state") {
       await route.fulfill({
         status: 200,
@@ -137,6 +158,27 @@ test("thread-bound repository stays visible and contradictory selection is block
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([project]) });
       return;
     }
+    if (path === "/api/projects/home/readiness") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: "home",
+          semantic_ready: true,
+          execution_ready: true,
+          status: "ready",
+          checks: [{
+            id: "repository:execution-target",
+            domain: "repository",
+            status: "ready",
+            code: "repository_target_required_per_turn",
+            message: "Repository target is selected per turn.",
+          }],
+        }),
+      });
+      return;
+    }
+
     if (path === "/api/projects/home/ui-state") {
       await route.fulfill({
         status: 200,
@@ -189,7 +231,7 @@ test("thread-bound repository stays visible and contradictory selection is block
   });
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
-  await page.locator("#threads .item-main").first().click();
+  await page.locator("#threads .item-main").first().click({ force: true });
   await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("thread/profile binding");
