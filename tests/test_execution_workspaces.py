@@ -18,6 +18,7 @@ from codex_web.execution_workspaces import (
     IntegrationOutcome,
     IntegrationStrategy,
     LeaseMode,
+    RepositoryOutcomeStatus,
     WorkspaceIntegrationRecord,
     WorkspaceQuota,
 )
@@ -388,6 +389,10 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(first.status, ExecutionWorkspaceStatus.ACTIVE)
         self.assertEqual(
+            first.repository_outcome_status,
+            RepositoryOutcomeStatus.PARTIAL,
+        )
+        self.assertEqual(
             first.repository_integrations[self.repo.id].outcome,
             IntegrationOutcome.MERGED,
         )
@@ -406,6 +411,10 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.status, ExecutionWorkspaceStatus.INTEGRATED)
+        self.assertEqual(
+            completed.repository_outcome_status,
+            RepositoryOutcomeStatus.COMPLETE,
+        )
         self.assertEqual(
             completed.repository_integrations[self.repo.id].resulting_revision,
             "repo-one-result",
@@ -459,6 +468,10 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         )
 
         self.assertEqual(conflicted.status, ExecutionWorkspaceStatus.CONFLICTED)
+        self.assertEqual(
+            conflicted.repository_outcome_status,
+            RepositoryOutcomeStatus.BLOCKED,
+        )
         self.assertEqual(conflicted.integration.resulting_revision, "primary-result")
         self.assertEqual(
             conflicted.repository_integrations[self.repo2.id].conflicts,
