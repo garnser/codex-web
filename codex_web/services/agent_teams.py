@@ -751,12 +751,8 @@ class AgentTeamService:
                 ),
                 reason=record.reason,
                 dedupe_key=f"agent-team:{record.team_id}:{record.work_item_id}:{record.reason}",
-                recipient_team_ids=(record.team_id,),
                 deep_link=f"/?work_item={record.work_item_id}",
-                escalation=EscalationPolicy(
-                    mandatory=True,
-                    recipient_team_ids=(record.team_id,),
-                ),
+                escalation=EscalationPolicy(mandatory=True),
             ),
             actor_id="agent-team-orchestration",
         )
@@ -779,7 +775,29 @@ class AgentTeamService:
     ) -> TeamDelegationPlan:
         plan = self.plan(team_id, request, actor=actor)
         team = self.get(team_id, actor=actor)
+        dedupe_key = plan.dedupe_key or self._dedupe_key(
+            team,
+            request,
+            plan.selected_profile_ids,
+            f"routing_plan:{plan.mode}:{plan.reason}",
+        )
+        existing = self.store.delegation_by_dedupe_key(
+            dedupe_key,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+        )
+        if existing is not None and plan.mode != "deduped":
+            return TeamDelegationPlan(
+                team_id=team.team_id,
+                team_revision=team.revision,
+                work_item_id=request.work_item_id,
+                mode="deduped",
+                reason="equivalent_pending_or_recorded_delegation",
+                blocked=True,
+                dedupe_key=dedupe_key,
+            )
         if plan.mode != "deduped":
+            plan = plan.model_copy(update={"dedupe_key": dedupe_key})
             record = self._record(
                 team,
                 request,
