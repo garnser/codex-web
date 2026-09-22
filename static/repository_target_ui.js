@@ -19,6 +19,16 @@ export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
     : [...ids];
 }
 
+export function writableTurnPayload() {
+  const writable = document.getElementById("repository-write-targets");
+  const primary = document.getElementById("repository-target")?.value || "";
+  const ids = Array.from(writable?.selectedOptions || [], (option) => option.value);
+  const ordered = primary && ids.includes(primary)
+    ? [primary, ...ids.filter((id) => id !== primary)]
+    : ids;
+  return { writable_repository_resource_ids: ordered };
+}
+
 export function activeRepositories(resources = []) {
   return resources.filter((item) => (
     item.resource_type === "repository" && item.lifecycle === "active"
