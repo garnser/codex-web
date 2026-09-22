@@ -25,12 +25,6 @@ DEFAULT_RUNTIME_CREDENTIAL_CONFIGS: dict[tuple[str, str], str] = {
 }
 
 
-class CodexExecutionAuthenticationMode(StrEnum):
-    TRUSTED_LOCAL_SESSION = "trusted_local_session"
-    DELEGATED_WORKER_TOKEN = "delegated_worker_token"
-    API_KEY = "api_key"
-
-
 class RuntimeAuthenticationConfigurationError(ValueError):
     pass
 
