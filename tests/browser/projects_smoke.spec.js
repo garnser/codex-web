@@ -10,6 +10,17 @@ test("renders API projects without page errors and refresh refetches projects", 
     { id: "veridataops", name: "Veridataops", path: "/workspace/veridataops" },
   ];
 
+  // static/index.html is exercised by the repository-root test server; mirror
+  // the production mount where relative static/ URLs resolve from the app root.
+  await page.route("**/static/static/**", async (route) => {
+    const url = new URL(route.request().url());
+    const corrected = url.pathname.replace("/static/static/", "/static/");
+    await route.fulfill({
+      status: 302,
+      headers: { Location: corrected + url.search },
+    });
+  });
+
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
