@@ -177,7 +177,7 @@ class ThreadService:
             self.control_actor,
         )
 
-    async def _select_runtime_binding(
+    async def _select_runtime_route(
         self,
         *,
         project_id: str,
@@ -210,6 +210,22 @@ class ThreadService:
             routed.selected_runtime.execution_binding(),
             getattr(routed, "agent_profile", None),
         )
+
+    async def _select_runtime_binding(
+        self,
+        *,
+        project_id: str,
+        sandbox: str,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
+    ) -> ExecutionRuntimeBinding | None:
+        binding, _profile = await self._select_runtime_route(
+            project_id=project_id,
+            sandbox=sandbox,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+        )
+        return binding
 
     def _manager_for_binding(
         self,
@@ -766,7 +782,7 @@ class ThreadService:
             profile_execution_id or execution_profile_id
         )
         effective_approval_policy = approval_policy or project.approval_policy
-        runtime_binding, agent_profile_binding = await self._select_runtime_binding(
+        runtime_binding, agent_profile_binding = await self._select_runtime_route(
             project_id=project.id,
             sandbox=effective_sandbox,
             provider_id=provider_id,
