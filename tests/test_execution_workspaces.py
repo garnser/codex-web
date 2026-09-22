@@ -360,6 +360,138 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(len(self.backend.cleaned), 2)
         self.assertTrue(all(item[2] for item in self.backend.cleaned))
 
+    def test_coordinated_integration_is_recorded_per_repository(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="coordinated-integration",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                writable_repository_ids=(self.repo.id, self.repo2.id),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        first = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                repository_id=self.repo.id,
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.MERGED,
+                target_revision="main@one",
+                resulting_revision="repo-one-result",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(first.status, ExecutionWorkspaceStatus.ACTIVE)
+        self.assertEqual(
+            first.repository_integrations[self.repo.id].outcome,
+            IntegrationOutcome.MERGED,
+        )
+        self.assertNotIn(self.repo2.id, first.repository_integrations)
+
+        completed = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                repository_id=self.repo2.id,
+                strategy=IntegrationStrategy.REBASE,
+                outcome=IntegrationOutcome.REBASED,
+                target_revision="main@two",
+                resulting_revision="repo-two-result",
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(completed.status, ExecutionWorkspaceStatus.INTEGRATED)
+        self.assertEqual(
+            completed.repository_integrations[self.repo.id].resulting_revision,
+            "repo-one-result",
+        )
+        self.assertEqual(
+            completed.repository_integrations[self.repo2.id].resulting_revision,
+            "repo-two-result",
+        )
+        heads = {
+            member.resource_id: member.head_revision
+            for member in completed.repository_members
+        }
+        self.assertEqual(heads[self.repo.id], "repo-one-result")
+        self.assertEqual(heads[self.repo2.id], "repo-two-result")
+        self.assertEqual(completed.head_revision, "repo-one-result")
+
+    def test_secondary_repository_conflict_preserves_primary_integration(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="coordinated-conflict",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                writable_repository_ids=(self.repo.id, self.repo2.id),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        primary = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.MERGED,
+                resulting_revision="primary-result",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(primary.integration.resulting_revision, "primary-result")
+
+        conflicted = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                repository_id=self.repo2.id,
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.CONFLICT,
+                conflicts=("src/shared.py",),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(conflicted.status, ExecutionWorkspaceStatus.CONFLICTED)
+        self.assertEqual(conflicted.integration.resulting_revision, "primary-result")
+        self.assertEqual(
+            conflicted.repository_integrations[self.repo2.id].conflicts,
+            ("src/shared.py",),
+        )
+
+    def test_repository_integration_rejects_read_only_target(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="readonly-integration",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                read_only_repository_ids=(self.repo2.id,),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(ExecutionWorkspaceConflictError):
+            self.service.record_integration(
+                workspace.id,
+                WorkspaceIntegrationRecord(
+                    repository_id=self.repo2.id,
+                    strategy=IntegrationStrategy.MERGE,
+                    outcome=IntegrationOutcome.MERGED,
+                    resulting_revision="should-not-apply",
+                ),
+                actor=self.actor,
+            )
+
     def test_multi_repository_workspace_provisions_mutable_and_read_only_members(self) -> None:
         workspace = self.service.acquire(
             ExecutionWorkspaceAcquire(

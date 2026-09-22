@@ -1094,18 +1094,29 @@ class ExecutionWorkspaceService:
     ) -> ExecutionWorkspace:
         workspace = self.get(workspace_id, actor)
         self._authorized(workspace, actor)
+        repository_id = request.repository_id or workspace.repository_resource_id
+        if repository_id is None:
+            raise ExecutionWorkspaceConflictError(
+                "repository integration requires a writable repository"
+            )
+        if repository_id not in workspace.writable_repository_ids:
+            raise ExecutionWorkspaceConflictError(
+                "repository integration target must be in the writable repository set"
+            )
+        member = next(
+            (
+                item
+                for item in workspace.repository_members
+                if item.resource_id == repository_id
+            ),
+            None,
+        )
+        if member is not None and member.access_mode != LeaseMode.WRITE:
+            raise ExecutionWorkspaceConflictError(
+                "repository integration target must be writable"
+            )
+
         now = time.time()
-        status = workspace.status
-        if request.outcome == IntegrationOutcome.CONFLICT:
-            status = ExecutionWorkspaceStatus.CONFLICTED
-        elif request.outcome in {
-            IntegrationOutcome.MERGED,
-            IntegrationOutcome.REBASED,
-            IntegrationOutcome.FAST_FORWARDED,
-        }:
-            status = ExecutionWorkspaceStatus.INTEGRATED
-        elif request.outcome == IntegrationOutcome.DISCARDED:
-            status = ExecutionWorkspaceStatus.DISCARDED
         integration = WorkspaceIntegrationState(
             strategy=request.strategy,
             outcome=request.outcome,
@@ -1115,27 +1126,64 @@ class ExecutionWorkspaceService:
             recorded_at=now,
             recorded_by=actor.identity_id,
         )
+        successful_outcomes = {
+            IntegrationOutcome.MERGED,
+            IntegrationOutcome.REBASED,
+            IntegrationOutcome.FAST_FORWARDED,
+        }
 
         def apply(state):
             for index, item in enumerate(state.workspaces):
-                if item.id == workspace_id:
-                    updates = {
-                        "integration": integration,
-                        "status": status,
-                        "updated_at": now,
-                    }
+                if item.id != workspace_id:
+                    continue
+                repository_integrations = dict(item.repository_integrations)
+                repository_integrations[repository_id] = integration
+
+                outcomes = {
+                    resource_id: repository_integrations.get(resource_id)
+                    for resource_id in item.writable_repository_ids
+                }
+                if any(
+                    value is not None and value.outcome == IntegrationOutcome.CONFLICT
+                    for value in outcomes.values()
+                ):
+                    status = ExecutionWorkspaceStatus.CONFLICTED
+                elif outcomes and all(value is not None for value in outcomes.values()):
+                    if all(
+                        value is not None and value.outcome in successful_outcomes
+                        for value in outcomes.values()
+                    ):
+                        status = ExecutionWorkspaceStatus.INTEGRATED
+                    elif all(
+                        value is not None and value.outcome == IntegrationOutcome.DISCARDED
+                        for value in outcomes.values()
+                    ):
+                        status = ExecutionWorkspaceStatus.DISCARDED
+                    else:
+                        status = ExecutionWorkspaceStatus.ACTIVE
+                else:
+                    status = ExecutionWorkspaceStatus.ACTIVE
+
+                updates = {
+                    "repository_integrations": repository_integrations,
+                    "status": status,
+                    "updated_at": now,
+                }
+                if repository_id == item.repository_resource_id:
+                    updates["integration"] = integration
                     if request.resulting_revision:
                         updates["head_revision"] = request.resulting_revision
-                        updates["repository_members"] = tuple(
-                            member.model_copy(
-                                update={"head_revision": request.resulting_revision}
-                            )
-                            if member.resource_id == item.repository_resource_id
-                            else member
-                            for member in item.repository_members
+                if request.resulting_revision:
+                    updates["repository_members"] = tuple(
+                        repository_member.model_copy(
+                            update={"head_revision": request.resulting_revision}
                         )
-                    state.workspaces[index] = item.model_copy(update=updates)
-                    break
+                        if repository_member.resource_id == repository_id
+                        else repository_member
+                        for repository_member in item.repository_members
+                    )
+                state.workspaces[index] = item.model_copy(update=updates)
+                break
             self._append_event(
                 state,
                 ExecutionWorkspaceEvent(
@@ -1143,6 +1191,7 @@ class ExecutionWorkspaceService:
                     event_type="integration_recorded",
                     actor_identity_id=actor.identity_id,
                     details={
+                        "repository_id": repository_id,
                         "outcome": request.outcome.value,
                         "strategy": request.strategy.value,
                         "conflict_count": len(request.conflicts),

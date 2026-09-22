@@ -152,6 +152,7 @@ class ExecutionWorkspace(BaseModel):
     cleaned_at: float | None = None
     error: str | None = None
     integration: WorkspaceIntegrationState = Field(default_factory=WorkspaceIntegrationState)
+    repository_integrations: dict[str, WorkspaceIntegrationState] = Field(default_factory=dict)
     repository_members: tuple[ExecutionWorkspaceMember, ...] = ()
 
     @model_validator(mode="after")
@@ -316,8 +317,9 @@ class ExecutionWorkspaceRelease(BaseModel):
 
 
 class WorkspaceIntegrationRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    repository_id: str | None = None
     strategy: IntegrationStrategy
     outcome: IntegrationOutcome
     target_revision: str | None = None
@@ -326,6 +328,8 @@ class WorkspaceIntegrationRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "WorkspaceIntegrationRecord":
+        if self.repository_id == "":
+            self.repository_id = None
         if self.outcome == IntegrationOutcome.CONFLICT and not self.conflicts:
             raise ValueError("conflict outcome requires explicit conflict details")
         if self.outcome in {
