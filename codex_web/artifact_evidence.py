@@ -123,6 +123,7 @@ class Evidence(BaseModel):
     work_item_ref: str | None = None
     execution_id: str | None = None
     execution_workspace_id: str | None = None
+    resource_ids: tuple[str, ...] = ()
     evidence_type: EvidenceType
     artifact_ids: tuple[str, ...] = ()
     producer_identity_id: str
@@ -144,6 +145,7 @@ class Evidence(BaseModel):
 
     @model_validator(mode="after")
     def normalize(self) -> "Evidence":
+        self.resource_ids = tuple(dict.fromkeys(self.resource_ids))
         self.artifact_ids = tuple(dict.fromkeys(self.artifact_ids))
         return self
 
@@ -250,6 +252,7 @@ class EvidenceCreate(BaseModel):
     work_item_ref: str | None = None
     execution_id: str | None = None
     execution_workspace_id: str | None = None
+    resource_ids: tuple[str, ...] = ()
     evidence_type: EvidenceType
     artifact_ids: tuple[str, ...] = ()
     provider: str | None = None
@@ -305,7 +308,7 @@ class EvidenceEvaluationRequest(BaseModel):
 class ArtifactEvidenceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     artifacts: list[Artifact] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     verifications: list[Verification] = Field(default_factory=list)
