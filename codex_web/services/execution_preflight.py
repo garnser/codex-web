@@ -137,6 +137,10 @@ class ExecutionPreflightService:
                 repository_resource_id=effective.get(
                     "repository_resource_id"
                 ),
+                writable_repository_resource_ids=tuple(
+                    effective.get("writable_repository_resource_ids")
+                    or ()
+                ),
                 read_only_repository_resource_ids=tuple(
                     effective.get("read_only_repository_resource_ids")
                     or ()
@@ -377,6 +381,9 @@ class ExecutionPreflightService:
             approval_policy=attempt.approval_policy,
             sandbox=attempt.sandbox,
             repository_resource_id=attempt.repository_resource_id,
+            writable_repository_resource_ids=(
+                attempt.writable_repository_resource_ids
+            ),
             read_only_repository_resource_ids=(
                 attempt.read_only_repository_resource_ids
             ),

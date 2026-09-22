@@ -179,6 +179,7 @@ class TurnCreate(BaseModel):
     approval_policy: ApprovalPolicy | None = None
     sandbox: SandboxMode | None = None
     repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
     agent_profile_id: str | None = None
@@ -366,6 +367,7 @@ class ExecutionPreflightAttempt(BaseModel):
     model: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
     agent_profile_id: str | None = None
@@ -400,6 +402,7 @@ class ActiveThreadTurn(BaseModel):
     worker_id: str | None = None
     fence: int | None = None
     repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
     agent_profile_actor_id: str | None = None
@@ -421,6 +424,7 @@ class QueuedTurn(BaseModel):
     model: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
     agent_profile_id: str | None = None
