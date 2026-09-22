@@ -7,7 +7,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from codex_web.configuration import ConfigurationContext
-from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.execution_workers import (
+    CodexExecutionAuthenticationMode,
+    ExecutionRuntimeBinding,
+)
 from codex_web.services.anthropic_worker_configuration import (
     ANTHROPIC_WORKER_API_KEY_CONFIG,
 )
