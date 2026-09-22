@@ -157,29 +157,43 @@ class ExecutionWorkspaceService:
         self,
         request: ExecutionWorkspaceAcquire,
         actor: AuthenticationActor,
-    ) -> tuple[list[Resource], str | None, tuple[str, ...]]:
+    ) -> tuple[list[Resource], str | None, tuple[str, ...], tuple[str, ...]]:
         resources = [
             self.resources.get(resource_id, actor)
             for resource_id in request.resource_ids
         ]
         by_id = {item.id: item for item in resources}
         repository_resource_id = request.repository_resource_id
+        writable_repository_ids = tuple(request.writable_repository_ids)
         repositories = [
             item for item in resources
             if item.resource_type == ResourceType.REPOSITORY
         ]
-        if repository_resource_id is None and len(repositories) == 1:
+        if repository_resource_id is None and not writable_repository_ids and len(repositories) == 1:
             repository_resource_id = repositories[0].id
-        if repository_resource_id is not None:
-            repository = by_id.get(repository_resource_id)
-            if repository is None:
+            writable_repository_ids = (repository_resource_id,)
+        elif repository_resource_id is None and writable_repository_ids:
+            repository_resource_id = writable_repository_ids[0]
+        elif repository_resource_id is not None and not writable_repository_ids:
+            writable_repository_ids = (repository_resource_id,)
+
+        for resource_id in writable_repository_ids:
+            resource = by_id.get(resource_id)
+            if resource is None:
                 raise ResourceNotFoundError(
-                    "repository resource is outside requested resource set"
+                    "writable repository is outside requested resource set"
                 )
-            if repository.resource_type != ResourceType.REPOSITORY:
+            if resource.resource_type != ResourceType.REPOSITORY:
                 raise ExecutionWorkspaceConflictError(
-                    "repository_resource_id must reference a canonical repository resource"
+                    "writable repository must reference canonical repository resources"
                 )
+        if (
+            repository_resource_id is not None
+            and repository_resource_id not in writable_repository_ids
+        ):
+            raise ExecutionWorkspaceConflictError(
+                "primary repository must be included in writable repository set"
+            )
 
         read_only_repository_ids = tuple(request.read_only_repository_ids)
         for resource_id in read_only_repository_ids:
@@ -192,19 +206,35 @@ class ExecutionWorkspaceService:
                 raise ExecutionWorkspaceConflictError(
                     "read-only repository context must reference repository resources"
                 )
-            if resource_id == repository_resource_id:
+            if resource_id in writable_repository_ids:
                 raise ExecutionWorkspaceConflictError(
-                    "mutable repository cannot also be read-only context"
+                    "writable repository cannot also be read-only context"
                 )
-        return resources, repository_resource_id, read_only_repository_ids
+        return (
+            resources,
+            repository_resource_id,
+            writable_repository_ids,
+            read_only_repository_ids,
+        )
 
     @staticmethod
-    def _readonly_member_workspace_id(
+    def _member_workspace_id(
         workspace_id: str,
         resource_id: str,
+        *,
+        access_mode: LeaseMode,
     ) -> str:
         suffix = hashlib.sha256(resource_id.encode()).hexdigest()[:12]
-        return f"{workspace_id}-readonly-{suffix}"
+        mode = "write" if access_mode == LeaseMode.WRITE else "readonly"
+        return f"{workspace_id}-{mode}-{suffix}"
+
+    @staticmethod
+    def _writable_sandbox_path(resource_id: str) -> str:
+        safe = "".join(
+            character if character.isalnum() or character in "-._" else "-"
+            for character in resource_id
+        ).strip("-._")
+        return f"/mnt/codex-repositories/{safe or 'repository'}"
 
     @staticmethod
     def _readonly_sandbox_path(resource_id: str) -> str:
@@ -509,7 +539,12 @@ class ExecutionWorkspaceService:
         actor: AuthenticationActor,
     ) -> ExecutionWorkspace:
         project = self._project(request.project_id, actor)
-        resources, repository_resource_id, read_only_repository_ids = self._resource_set(
+        (
+            resources,
+            repository_resource_id,
+            writable_repository_ids,
+            read_only_repository_ids,
+        ) = self._resource_set(
             request,
             actor,
         )
@@ -528,6 +563,7 @@ class ExecutionWorkspaceService:
             if (
                 existing.resource_ids != request.resource_ids
                 or existing.repository_resource_id != repository_resource_id
+                or tuple(existing.writable_repository_ids) != writable_repository_ids
             ):
                 raise ExecutionWorkspaceConflictError(
                     "execution id is already bound to a different resource set"
@@ -550,7 +586,7 @@ class ExecutionWorkspaceService:
             if request.scratch
             else (
                 ExecutionWorkspaceKind.GIT_WORKTREE
-                if repository_resource_id is not None
+                if writable_repository_ids
                 else ExecutionWorkspaceKind.RESOURCE_LEASE
             )
         )
@@ -572,6 +608,12 @@ class ExecutionWorkspaceService:
             resource_id: request.lease_mode
             for resource_id in request.resource_ids
         }
+        for resource_id in writable_repository_ids:
+            resource_modes[resource_id] = (
+                LeaseMode.WRITE
+                if len(writable_repository_ids) > 1
+                else request.lease_mode
+            )
         for resource_id in read_only_repository_ids:
             resource_modes[resource_id] = LeaseMode.READ
         aggregate_mode = (
@@ -581,12 +623,13 @@ class ExecutionWorkspaceService:
         )
 
         source_paths: dict[str, Path] = {}
-        if repository_resource_id is not None:
-            source_paths[repository_resource_id] = self._repository_source_path(
-                resource_by_id[repository_resource_id],
-                project,
-                allow_project_fallback=True,
-            )
+        if writable_repository_ids:
+            for resource_id in writable_repository_ids:
+                source_paths[resource_id] = self._repository_source_path(
+                    resource_by_id[resource_id],
+                    project,
+                    allow_project_fallback=(resource_id == repository_resource_id),
+                )
             for resource_id in read_only_repository_ids:
                 source_paths[resource_id] = self._repository_source_path(
                     resource_by_id[resource_id],
@@ -626,6 +669,7 @@ class ExecutionWorkspaceService:
             kind=kind,
             resource_ids=request.resource_ids,
             repository_resource_id=repository_resource_id,
+            writable_repository_ids=writable_repository_ids,
             lease_id=lease_id,
             branch_name=branch_name,
             base_revision=request.base_revision,
@@ -693,10 +737,9 @@ class ExecutionWorkspaceService:
                         "subject_ref": request.subject.ref,
                         "expires_at": lease.expires_at,
                         "repository_member_count": (
-                            1 + len(read_only_repository_ids)
-                            if repository_resource_id is not None
-                            else 0
+                            len(writable_repository_ids) + len(read_only_repository_ids)
                         ),
+                        "writable_repository_count": len(writable_repository_ids),
                     },
                 ),
             )
