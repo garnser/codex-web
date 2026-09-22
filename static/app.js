@@ -1,7 +1,7 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
-import{initialProjectId,installProjectNavigation,publishProjectContext}from"./project_context.js";
+import{initialProjectId,installProjectNavigation,renderProjectList}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
@@ -565,46 +565,7 @@ function toggleItemExpanded(scope, id) {
   }
 }
 
-function renderProjects() {
-  $("projects").innerHTML = "";
-  state.projects.forEach((project) => {
-    const item = document.createElement("div");
-    const expanded = isItemExpanded("project", project.id);
-    item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
-    item.dataset.projectId = project.id;
-    item.innerHTML = `
-      <div class="item-header">
-        <div class="item-main">
-          <strong>${escapeHtml(project.name)}</strong>
-          <span>${escapeHtml(project.path)}</span>
-        </div>
-        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
-      </div>
-      <div class="item-actions" aria-label="Project actions" ${expanded ? "" : "hidden"}>
-        <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
-      </div>
-    `;
-    item.querySelector(".item-main").addEventListener("click", async () => {
-      await selectProject(project.id);
-    });
-    item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleItemExpanded("project", project.id);
-      renderProjects();
-    });
-    item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
-      event.stopPropagation();
-      openBotIntegration({
-        scope: "project",
-        projectId: project.id,
-        title: project.name,
-      });
-    });
-    $("projects").appendChild(item);
-  });
-  publishProjectContext(state.projects,state.projectId);
-}
-
+function renderProjects(){renderProjectList($("projects"),state.projects,state.projectId,{expanded:id=>isItemExpanded("project",id),escape:escapeHtml,select:selectProject,toggle:id=>{toggleItemExpanded("project",id);renderProjects()},bot:project=>openBotIntegration({scope:"project",projectId:project.id,title:project.name})});}
 function renderThreads() {
   const startedAt=performance.now();
   const container=$("threads");
