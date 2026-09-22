@@ -343,6 +343,7 @@ class TurnExecutionBindingService:
         *,
         writable_repository_ids: tuple[str, ...],
         read_only_repository_ids: tuple[str, ...] = (),
+        source: RepositoryTargetSource = RepositoryTargetSource.EXPLICIT,
         source_ref: str | None = None,
     ) -> tuple[RepositoryExecutionTarget, RepositoryExecutionScope]:
         writable = tuple(
@@ -451,7 +452,7 @@ class TurnExecutionBindingService:
 
         evidence = tuple(
             RepositoryTargetEvidence(
-                source=RepositoryTargetSource.EXPLICIT,
+                source=source,
                 repository_id=repository_id,
                 source_ref=source_ref,
             )
@@ -463,7 +464,7 @@ class TurnExecutionBindingService:
             project_id=project.id,
             mutable_repository_id=writable[0],
             read_only_repository_ids=read_only,
-            source=RepositoryTargetSource.EXPLICIT,
+            source=source,
             source_ref=source_ref,
             selection_evidence=evidence,
         )
@@ -474,7 +475,7 @@ class TurnExecutionBindingService:
             writable_repository_ids=writable,
             read_only_repository_ids=read_only,
             write_mode=RepositoryWriteMode.COORDINATED,
-            source=RepositoryTargetSource.EXPLICIT,
+            source=source,
             source_ref=source_ref,
             selection_evidence=evidence,
         )
@@ -810,6 +811,7 @@ class TurnExecutionBindingService:
         runtime_binding: ExecutionRuntimeBinding | None = None,
         explicit_repository_id: str | None = None,
         writable_repository_ids: tuple[str, ...] = (),
+        writable_repository_source: RepositoryTargetSource = RepositoryTargetSource.EXPLICIT,
         read_only_repository_ids: tuple[str, ...] = (),
         work_item_resource_ids: tuple[str, ...] = (),
         work_item_ref: str | None = None,
@@ -938,8 +940,17 @@ class TurnExecutionBindingService:
             if len(normalized_writable) == 1:
                 repository_target = self._repository_target(
                     project,
-                    explicit_repository_id=normalized_writable[0],
+                    explicit_repository_id=(
+                        normalized_writable[0]
+                        if writable_repository_source == RepositoryTargetSource.EXPLICIT
+                        else None
+                    ),
                     read_only_repository_ids=read_only_repository_ids,
+                    work_item_resource_ids=(
+                        normalized_writable
+                        if writable_repository_source == RepositoryTargetSource.WORK_ITEM
+                        else ()
+                    ),
                     work_item_ref=work_item_ref,
                 )
                 repository_scope = RepositoryExecutionScope.from_target(
@@ -950,6 +961,7 @@ class TurnExecutionBindingService:
                     project,
                     writable_repository_ids=normalized_writable,
                     read_only_repository_ids=read_only_repository_ids,
+                    source=writable_repository_source,
                     source_ref=work_item_ref or subject.ref,
                 )
         else:
@@ -1282,6 +1294,7 @@ class TurnExecutionBindingService:
         runtime_binding: ExecutionRuntimeBinding | None = None,
         explicit_repository_id: str | None = None,
         writable_repository_ids: tuple[str, ...] = (),
+        writable_repository_source: RepositoryTargetSource = RepositoryTargetSource.EXPLICIT,
         read_only_repository_ids: tuple[str, ...] = (),
         work_item_resource_ids: tuple[str, ...] = (),
         work_item_ref: str | None = None,
@@ -1306,6 +1319,7 @@ class TurnExecutionBindingService:
             runtime_binding=runtime_binding,
             explicit_repository_id=explicit_repository_id,
             writable_repository_ids=writable_repository_ids,
+            writable_repository_source=writable_repository_source,
             read_only_repository_ids=read_only_repository_ids,
             work_item_resource_ids=work_item_resource_ids,
             work_item_ref=work_item_ref,
