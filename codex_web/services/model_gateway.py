@@ -9,6 +9,11 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from codex_web.failures import (
+    FailureReason,
+    FailureRecord,
+    create_failure,
+)
 from codex_web.entitlements import (
     METRIC_MODEL_COST_USD,
     METRIC_MODEL_INPUT_TOKENS,
@@ -50,6 +55,7 @@ from codex_web.model_providers import (
     ModelProviderCapacityError,
     ModelProviderTransientError,
 )
+from codex_web.observability import current_correlation
 from codex_web.provider_capacity import (
     ProviderCapacityReport,
     ProviderCapacityWaitCreate,
@@ -63,7 +69,14 @@ from codex_web.storage.model_gateway import ModelGatewayStore
 
 
 class ModelGatewayError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure: FailureRecord | None = None,
+    ) -> None:
+        self.failure = failure
+        super().__init__(message)
 
 
 class ModelRoutingError(ModelGatewayError):
@@ -98,10 +111,11 @@ class ModelProviderCapacityUnavailableError(ModelProviderUnavailableError):
         *,
         retry_at: float | None,
         wait_id: str | None = None,
+        failure: FailureRecord | None = None,
     ) -> None:
         self.retry_at = retry_at
         self.wait_id = wait_id
-        super().__init__(message)
+        super().__init__(message, failure=failure)
 
 
 InputPipelineResolver = Callable[
@@ -236,6 +250,50 @@ class ModelGatewayService:
         return ModelInvocationRequest.model_validate(
             effective.model_dump(mode="python")
         ), result
+
+    @staticmethod
+    def _provider_failure(
+        exc: Exception,
+        *,
+        provider: ModelProviderRecord,
+        model: ModelDefinitionRecord,
+        request: ModelInvocationRequest,
+        attempt: int,
+    ) -> FailureRecord:
+        correlation = current_correlation()
+        reason = getattr(
+            exc,
+            "reason_code",
+            FailureReason.UNCLASSIFIED,
+        )
+        return create_failure(
+            reason,
+            source_subsystem="model_gateway",
+            provider_id=provider.id,
+            execution_id=request.execution_id,
+            correlation_id=(
+                correlation.correlation_id
+                if correlation is not None
+                else None
+            ),
+            causation_id=(
+                correlation.causation_id
+                if correlation is not None
+                else None
+            ),
+            source_native_code=type(exc).__name__,
+            source_native_status=getattr(
+                exc,
+                "source_native_status",
+                None,
+            ),
+            attempt=attempt,
+            details={
+                "model_id": model.id,
+                "concrete_model": model.concrete_model,
+                "adapter_type": provider.adapter_type,
+            },
+        )
 
     def register_adapter(self, adapter: ModelProviderAdapter) -> None:
         existing = self.adapters.get(adapter.adapter_type)
@@ -834,6 +892,15 @@ class ModelGatewayService:
                 str(exc),
                 retry_at=exc.retry_at,
                 wait_id=wait_id,
+                failure=create_failure(
+                    FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT,
+                    source_subsystem="model_gateway",
+                    execution_id=effective_request.execution_id,
+                    source_native_code=type(exc).__name__,
+                    details={
+                        "provider_key_count": len(exc.provider_keys),
+                    },
+                ),
             ) from exc
         state = self.store.load()
         template = next(
@@ -891,7 +958,8 @@ class ModelGatewayService:
                     )
                 except asyncio.TimeoutError as exc:
                     raise ModelProviderTransientError(
-                        f"provider attempt timed out after {effective_request.timeout_seconds}s"
+                        f"provider attempt timed out after {effective_request.timeout_seconds}s",
+                        reason_code=FailureReason.PROVIDER_NETWORK,
                     ) from exc
 
             try:
@@ -943,6 +1011,13 @@ class ModelGatewayService:
                         actor=actor,
                     )
                     capacity_failures.append(capacity_record)
+                failure = self._provider_failure(
+                    exc,
+                    provider=provider,
+                    model=model,
+                    request=effective_request,
+                    attempt=len(attempts) + 1,
+                )
                 attempts.append(
                     ModelInvocationAttempt(
                         provider_id=provider.id,
@@ -951,6 +1026,7 @@ class ModelGatewayService:
                         model_version=model.model_version,
                         outcome="capacity_failure",
                         error_code=exc.capacity_status.value,
+                        failure=failure,
                         estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
                         started_at=started,
                         completed_at=completed,
@@ -965,6 +1041,13 @@ class ModelGatewayService:
                 continue
             except ModelProviderTransientError as exc:
                 completed = time.time()
+                failure = self._provider_failure(
+                    exc,
+                    provider=provider,
+                    model=model,
+                    request=effective_request,
+                    attempt=len(attempts) + 1,
+                )
                 attempts.append(
                     ModelInvocationAttempt(
                         provider_id=provider.id,
@@ -973,6 +1056,7 @@ class ModelGatewayService:
                         model_version=model.model_version,
                         outcome="transient_failure",
                         error_code=type(exc).__name__,
+                        failure=failure,
                         estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
                         started_at=started,
                         completed_at=completed,
@@ -985,8 +1069,15 @@ class ModelGatewayService:
                     )
                 final_error = exc
                 continue
-            except Exception as exc:
+            except ModelProviderAdapterError as exc:
                 completed = time.time()
+                failure = self._provider_failure(
+                    exc,
+                    provider=provider,
+                    model=model,
+                    request=effective_request,
+                    attempt=len(attempts) + 1,
+                )
                 attempts.append(
                     ModelInvocationAttempt(
                         provider_id=provider.id,
@@ -995,6 +1086,37 @@ class ModelGatewayService:
                         model_version=model.model_version,
                         outcome="failure",
                         error_code=type(exc).__name__,
+                        failure=failure,
+                        estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
+                        started_at=started,
+                        completed_at=completed,
+                    )
+                )
+                final_error = exc
+                break
+            except Exception as exc:
+                completed = time.time()
+                failure = create_failure(
+                    FailureReason.UNCLASSIFIED,
+                    source_subsystem="model_gateway",
+                    provider_id=provider.id,
+                    execution_id=effective_request.execution_id,
+                    source_native_code=type(exc).__name__,
+                    attempt=len(attempts) + 1,
+                    details={
+                        "model_id": model.id,
+                        "adapter_type": provider.adapter_type,
+                    },
+                )
+                attempts.append(
+                    ModelInvocationAttempt(
+                        provider_id=provider.id,
+                        model_id=model.id,
+                        concrete_model=model.concrete_model,
+                        model_version=model.model_version,
+                        outcome="failure",
+                        error_code=type(exc).__name__,
+                        failure=failure,
                         estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
                         started_at=started,
                         completed_at=completed,
@@ -1147,14 +1269,44 @@ class ModelGatewayService:
         )
         self._append_invocation(record)
         if all_capacity_failures:
+            final_failure = (
+                attempts[-1].failure
+                if attempts and attempts[-1].failure is not None
+                else create_failure(
+                    FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT,
+                    source_subsystem="model_gateway",
+                    execution_id=effective_request.execution_id,
+                )
+            )
             raise ModelProviderCapacityUnavailableError(
                 str(final_error or "model provider capacity exhausted"),
                 retry_at=retry_at,
                 wait_id=wait_id,
+                failure=final_failure,
             ) from final_error
         if final_error is not None:
-            raise ModelProviderUnavailableError(str(final_error)) from final_error
-        raise ModelProviderUnavailableError("no model attempt could run within budget")
+            final_failure = (
+                attempts[-1].failure
+                if attempts and attempts[-1].failure is not None
+                else create_failure(
+                    FailureReason.UNCLASSIFIED,
+                    source_subsystem="model_gateway",
+                    execution_id=effective_request.execution_id,
+                    source_native_code=type(final_error).__name__,
+                )
+            )
+            raise ModelProviderUnavailableError(
+                str(final_error),
+                failure=final_failure,
+            ) from final_error
+        raise ModelProviderUnavailableError(
+            "no model attempt could run within budget",
+            failure=create_failure(
+                FailureReason.BUDGET_EXHAUSTED,
+                source_subsystem="model_gateway",
+                execution_id=effective_request.execution_id,
+            ),
+        )
 
     def goal_usage(
         self,

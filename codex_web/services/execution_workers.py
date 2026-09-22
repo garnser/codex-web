@@ -21,6 +21,11 @@ from codex_web.execution_workers import (
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
+from codex_web.failures import (
+    FailureReason,
+    create_failure,
+    worker_failure_reason,
+)
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
@@ -44,11 +49,11 @@ class WorkerConflictError(ExecutionWorkerError):
 
 
 class WorkerLeaseError(ExecutionWorkerError):
-    pass
+    reason_code = FailureReason.WORKER_LEASE_LOST
 
 
 class WorkerCapabilityError(ExecutionWorkerError):
-    pass
+    reason_code = FailureReason.CAPABILITY_UNAVAILABLE
 
 
 class ExecutionWorkerService:
@@ -942,6 +947,26 @@ class ExecutionWorkerService:
             if assignment.status != AssignmentStatus.RUNNING:
                 raise WorkerConflictError("assignment must be running before completion")
             status = AssignmentStatus.SUCCEEDED if payload.succeeded else AssignmentStatus.FAILED
+            failure = None
+            if not payload.succeeded:
+                reason = worker_failure_reason(payload.failure_code)
+                failure = create_failure(
+                    reason,
+                    source_subsystem="execution_worker",
+                    summary=None,
+                    worker_id=worker.id,
+                    assignment_id=assignment.id,
+                    execution_id=assignment.execution_id,
+                    source_native_code=payload.failure_code,
+                    evidence_ids=tuple(payload.evidence_ids),
+                    artifact_ids=tuple(payload.artifact_ids),
+                    details={
+                        "project_id": assignment.project_id,
+                        "execution_contract_version": (
+                            assignment.execution_contract_version
+                        ),
+                    },
+                )
             replacement = assignment.model_copy(
                 update={
                     "status": status,
@@ -950,6 +975,7 @@ class ExecutionWorkerService:
                     "updated_at": now,
                     "failure_code": payload.failure_code,
                     "failure_message": payload.failure_message,
+                    "failure": failure,
                     "artifact_ids": tuple(dict.fromkeys(payload.artifact_ids)),
                     "evidence_ids": tuple(dict.fromkeys(payload.evidence_ids)),
                 }
@@ -1035,6 +1061,16 @@ class ExecutionWorkerService:
                     not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
                 ):
                     continue
+                failure = create_failure(
+                    FailureReason.WORKER_LEASE_LOST,
+                    source_subsystem="execution_worker",
+                    worker_id=assignment.assigned_worker_id,
+                    assignment_id=assignment.id,
+                    execution_id=assignment.execution_id,
+                    source_native_code="worker_lease_expired",
+                    details={"fence": assignment.fence},
+                    occurred_at=current,
+                )
                 state.assignments[index] = assignment.model_copy(
                     update={
                         "status": AssignmentStatus.LOST,
@@ -1042,6 +1078,7 @@ class ExecutionWorkerService:
                         "updated_at": current,
                         "failure_code": "worker_lease_expired",
                         "failure_message": "worker lease expired before trusted completion",
+                        "failure": failure,
                     }
                 )
                 lost.append(assignment.id)
@@ -1071,6 +1108,28 @@ class ExecutionWorkerService:
             assignment = self._assignment(state, assignment_id, actor)
             if assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED}:
                 raise WorkerConflictError("only lost or failed assignment can be retried")
+            failure = assignment.failure
+            if failure is None:
+                legacy_reason = worker_failure_reason(
+                    assignment.failure_code
+                    or (
+                        "worker_lease_expired"
+                        if assignment.status == AssignmentStatus.LOST
+                        else None
+                    )
+                )
+                failure = create_failure(
+                    legacy_reason,
+                    source_subsystem="execution_worker",
+                    worker_id=assignment.assigned_worker_id,
+                    assignment_id=assignment.id,
+                    execution_id=assignment.execution_id,
+                    source_native_code=assignment.failure_code,
+                )
+            if not failure.automatic_retry_allowed:
+                raise WorkerConflictError(
+                    "canonical failure classification does not allow automatic retry"
+                )
             replacement = assignment.model_copy(
                 update={
                     "status": AssignmentStatus.PENDING,
@@ -1079,6 +1138,7 @@ class ExecutionWorkerService:
                     "updated_at": time.time(),
                     "failure_code": None,
                     "failure_message": None,
+                    "failure": None,
                 }
             )
             state.assignments = [

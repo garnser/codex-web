@@ -10,12 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.compatibility import ContractSpec
+from codex_web.failures import FailureReason, FailureRecord
 
 
 AGENT_SESSION_STATE_CONTRACT = ContractSpec(
     "agent-session-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.1",),
 )
 
 
@@ -52,6 +53,8 @@ class AgentRuntimeRegistration(BaseModel):
 
 
 class AgentRuntimeUnsupportedCapability(RuntimeError):
+    reason_code = FailureReason.CAPABILITY_UNAVAILABLE
+
     def __init__(self, capability: AgentProviderCapability) -> None:
         self.capability = capability
         super().__init__(f"agent runtime capability is unsupported: {capability.value}")
@@ -141,6 +144,7 @@ class AgentSession(BaseModel):
     recovery_attempts: int = Field(default=0, ge=0)
     last_recovered_at: float | None = None
     failure_reason: str | None = None
+    failure: FailureRecord | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

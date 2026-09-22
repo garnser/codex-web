@@ -40,3 +40,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Runtime event-journal lifecycle](event-journal-lifecycle.md) — active-file rotation, cross-segment tail reads, crash recovery, protected retention, archive/compression, and lifecycle diagnostics.
 
 - [Recovery release v0.2.0](recovery-release-v0.2.0.md) — immutable candidate build, nginx qualification, real-provider promotion evidence, v0.1 emergency-mount upgrade, and rollback.
+
+- [Failure taxonomy and retry contract](failure-taxonomy.md) — stable provider/runtime/policy/action reason codes, deterministic retryability, reconciliation safety, and metrics labels.

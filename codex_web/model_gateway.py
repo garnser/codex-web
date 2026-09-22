@@ -8,14 +8,15 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.failures import FailureRecord
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.1",
-    ("1.0", "1.1"),
-    deprecated=("1.0",),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
+    deprecated=("1.0", "1.1"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -259,6 +260,7 @@ class ModelInvocationAttempt(BaseModel):
     model_version: str | None = None
     outcome: str
     error_code: str | None = None
+    failure: FailureRecord | None = None
     estimated_upper_cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None

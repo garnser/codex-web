@@ -412,6 +412,11 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(intent.status, ActionIntentStatus.CANCELLED)
+        self.assertIsNotNone(intent.failure)
+        self.assertEqual(
+            intent.failure.reason_code.value,
+            "authority_denied",
+        )
         self.assertEqual(self.reference.values, {})
 
     async def test_caller_authority_allow_or_deny_does_not_replace_canonical_decision(self) -> None:
@@ -647,6 +652,11 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         current = self.service.get(intent.id, self.actor)
         self.assertEqual(current.status, ActionIntentStatus.FAILED)
         self.assertIsNotNone(current.completed_at)
+        self.assertIsNotNone(current.failure)
+        self.assertEqual(
+            current.failure.reason_code.value,
+            "unclassified",
+        )
 
     async def test_non_idempotent_unknown_outcome_cannot_be_replayed(self) -> None:
         provider = _NonIdempotentUnknownProvider()
@@ -682,7 +692,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
                 actor=self.actor,
             )
 
-    async def test_idempotent_uncertain_action_can_be_requeued_safely(self) -> None:
+    async def test_idempotent_uncertain_action_requires_reconciliation_before_requeue(self) -> None:
         provider = _SlowProvider()
         self.registry.register(provider)
         binding = self.registry.bind(
@@ -709,14 +719,33 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         uncertain = await self._execute(intent)
         self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+        self.assertIsNotNone(uncertain.failure)
+        self.assertEqual(
+            uncertain.failure.reason_code.value,
+            "action_timeout_unknown_outcome",
+        )
+        self.assertTrue(uncertain.failure.requires_reconciliation)
 
-        retried = self.service.retry(
+        with self.assertRaises(ActionIntentUnsafeRetryError):
+            self.service.retry(
+                intent.id,
+                ActionIntentRetryRequest(reason="same idempotency key"),
+                actor=self.actor,
+            )
+
+        retried = await self.service.reconcile(
             intent.id,
-            ActionIntentRetryRequest(reason="same idempotency key"),
-            actor=self.actor,
+            ActionIntentReconcileRequest(
+                retry_if_idempotent=True,
+            ),
+            actor=self.worker_actor,
         )
         self.assertEqual(retried.status, ActionIntentStatus.PENDING)
-        self.assertEqual(retried.request.idempotency_key, intent.request.idempotency_key)
+        self.assertIsNone(retried.failure)
+        self.assertEqual(
+            retried.request.idempotency_key,
+            intent.request.idempotency_key,
+        )
 
     async def test_rollback_is_recorded_as_terminal_history(self) -> None:
         intent = self._create(rollback_required=True)

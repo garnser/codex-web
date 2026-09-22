@@ -5,6 +5,7 @@ import unittest
 
 import httpx
 
+from codex_web.failures import FailureReason
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
     ModelInvocationRequest,
@@ -135,13 +136,59 @@ class AnthropicModelProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with self.assertRaises(ModelProviderTransientError):
+        with self.assertRaises(ModelProviderTransientError) as caught:
             await adapter.invoke(
                 self._provider(),
                 self._model(),
                 self._request(reasoning_effort=None),
                 credential="secret-value",
             )
+        self.assertEqual(
+            caught.exception.reason_code,
+            FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT,
+        )
+
+    async def test_auth_and_context_failures_have_stable_reason_codes(self) -> None:
+        for status, message, expected in (
+            (
+                401,
+                "invalid api key",
+                FailureReason.PROVIDER_AUTH_OR_ACCESS,
+            ),
+            (
+                400,
+                "maximum context length exceeded",
+                FailureReason.CONTEXT_OVERFLOW,
+            ),
+        ):
+            with self.subTest(status=status):
+                adapter = AnthropicModelProviderAdapter(
+                    transport=httpx.MockTransport(
+                        lambda request, status=status, message=message: httpx.Response(
+                            status,
+                            json={
+                                "type": "error",
+                                "error": {
+                                    "type": "test_error",
+                                    "message": message,
+                                },
+                            },
+                        )
+                    )
+                )
+                with self.assertRaises(
+                    ModelProviderAdapterError
+                ) as caught:
+                    await adapter.invoke(
+                        self._provider(),
+                        self._model(),
+                        self._request(reasoning_effort=None),
+                        credential="secret-value",
+                    )
+                self.assertEqual(
+                    caught.exception.reason_code,
+                    expected,
+                )
 
     async def test_invalid_request_is_terminal(self) -> None:
         adapter = AnthropicModelProviderAdapter(

@@ -6,6 +6,7 @@ import httpx
 import time
 from collections.abc import Mapping
 
+from codex_web.failures import FailureReason
 from codex_web.model_gateway import (
     ModelDefinitionRecord,
     ModelInvocationRequest,
@@ -17,11 +18,31 @@ from codex_web.provider_capacity import ProviderCapacityStatus
 
 
 class ModelProviderAdapterError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: FailureReason = FailureReason.UNCLASSIFIED,
+        source_native_status: str | int | None = None,
+    ) -> None:
+        self.reason_code = reason_code
+        self.source_native_status = source_native_status
+        super().__init__(message)
 
 
 class ModelProviderTransientError(ModelProviderAdapterError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: FailureReason = FailureReason.PROVIDER_NETWORK,
+        source_native_status: str | int | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            reason_code=reason_code,
+            source_native_status=source_native_status,
+        )
 
 
 class ModelProviderCapacityError(ModelProviderTransientError):
@@ -34,7 +55,15 @@ class ModelProviderCapacityError(ModelProviderTransientError):
     ) -> None:
         self.capacity_status = status
         self.retry_at = retry_at
-        super().__init__(message)
+        super().__init__(
+            message,
+            reason_code=(
+                FailureReason.PROVIDER_QUOTA_EXHAUSTED
+                if status == ProviderCapacityStatus.DEPLETED
+                else FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT
+            ),
+            source_native_status=status.value,
+        )
 
 
 def _retry_at_from_headers(
@@ -112,6 +141,12 @@ class OpenAIModelProviderAdapter:
         name = type(exc).__name__.lower()
         message = f"{type(exc).__name__}: {exc}"
         lowered = message.casefold()
+        if status in {401, 403}:
+            return ModelProviderAdapterError(
+                message,
+                reason_code=FailureReason.PROVIDER_AUTH_OR_ACCESS,
+                source_native_status=status,
+            )
         if status == 429 or "ratelimit" in name:
             quota_markers = (
                 "insufficient_quota",
@@ -133,12 +168,46 @@ class OpenAIModelProviderAdapter:
                     or getattr(exc, "headers", None)
                 ),
             )
-        if (
-            (isinstance(status, int) and status >= 500)
-            or any(token in name for token in ("timeout", "connection", "unavailable"))
+        if any(
+            marker in lowered
+            for marker in (
+                "context length",
+                "context_length",
+                "maximum context",
+                "too many tokens",
+            )
         ):
-            return ModelProviderTransientError(message)
-        return ModelProviderAdapterError(message)
+            return ModelProviderAdapterError(
+                message,
+                reason_code=FailureReason.CONTEXT_OVERFLOW,
+                source_native_status=status,
+            )
+        if status == 404:
+            return ModelProviderAdapterError(
+                message,
+                reason_code=FailureReason.MODEL_UNAVAILABLE,
+                source_native_status=status,
+            )
+        if isinstance(status, int) and status >= 500:
+            return ModelProviderTransientError(
+                message,
+                reason_code=FailureReason.PROVIDER_SERVER_ERROR,
+                source_native_status=status,
+            )
+        if any(
+            token in name
+            for token in ("timeout", "connection", "unavailable")
+        ):
+            return ModelProviderTransientError(
+                message,
+                reason_code=FailureReason.PROVIDER_NETWORK,
+                source_native_status=status,
+            )
+        return ModelProviderAdapterError(
+            message,
+            reason_code=FailureReason.CONFIGURATION_MISSING_OR_INVALID,
+            source_native_status=status,
+        )
 
     @staticmethod
     def _client(provider: ModelProviderRecord, credential: str | None):
@@ -146,10 +215,14 @@ class OpenAIModelProviderAdapter:
             from openai import AsyncOpenAI
         except ImportError as exc:
             raise ModelProviderAdapterError(
-                "The openai Python package is required for the OpenAI model adapter"
+                "The openai Python package is required for the OpenAI model adapter",
+                reason_code=FailureReason.RUNTIME_MISSING_EXECUTABLE,
             ) from exc
         if provider.credential_required and not credential:
-            raise ModelProviderAdapterError("provider credential is required")
+            raise ModelProviderAdapterError(
+                "provider credential is required",
+                reason_code=FailureReason.PROVIDER_AUTH_OR_ACCESS,
+            )
         kwargs: dict[str, Any] = {}
         if credential:
             kwargs["api_key"] = credential
@@ -199,7 +272,8 @@ class OpenAIModelProviderAdapter:
 
         if provider.adapter_type not in {"openai-compatible", "ollama"}:
             raise ModelProviderAdapterError(
-                f"unsupported OpenAI adapter mode: {provider.adapter_type}"
+                f"unsupported OpenAI adapter mode: {provider.adapter_type}",
+                reason_code=FailureReason.CONFIGURATION_MISSING_OR_INVALID,
             )
         messages = [
             {"role": "system", "content": request.system_prompt},
@@ -236,7 +310,10 @@ class OpenAIModelProviderAdapter:
                 raise self._classify(exc) from exc
         choices = getattr(response, "choices", None) or []
         if not choices:
-            raise ModelProviderAdapterError("model provider returned no completion choices")
+            raise ModelProviderAdapterError(
+                "model provider returned no completion choices",
+                reason_code=FailureReason.MALFORMED_OR_EMPTY_MODEL_OUTPUT,
+            )
         content = choices[0].message.content
         if isinstance(content, list):
             text = "\n".join(
@@ -275,8 +352,14 @@ class AnthropicModelProviderAdapter:
         headers: Mapping[str, Any] | None = None,
     ) -> ModelProviderAdapterError:
         detail = f"Anthropic API {status_code}: {message}"
+        lowered = str(message).casefold()
+        if status_code in {401, 403}:
+            return ModelProviderAdapterError(
+                detail,
+                reason_code=FailureReason.PROVIDER_AUTH_OR_ACCESS,
+                source_native_status=status_code,
+            )
         if status_code == 429:
-            lowered = str(message).casefold()
             return ModelProviderCapacityError(
                 detail,
                 status=(
@@ -289,9 +372,42 @@ class AnthropicModelProviderAdapter:
                 ),
                 retry_at=_retry_at_from_headers(headers),
             )
-        if status_code in {408, 409} or status_code >= 500:
-            return ModelProviderTransientError(detail)
-        return ModelProviderAdapterError(detail)
+        if any(
+            marker in lowered
+            for marker in (
+                "context length",
+                "context_length",
+                "too many tokens",
+            )
+        ):
+            return ModelProviderAdapterError(
+                detail,
+                reason_code=FailureReason.CONTEXT_OVERFLOW,
+                source_native_status=status_code,
+            )
+        if status_code == 404:
+            return ModelProviderAdapterError(
+                detail,
+                reason_code=FailureReason.MODEL_UNAVAILABLE,
+                source_native_status=status_code,
+            )
+        if status_code in {408, 409}:
+            return ModelProviderTransientError(
+                detail,
+                reason_code=FailureReason.PROVIDER_NETWORK,
+                source_native_status=status_code,
+            )
+        if status_code >= 500:
+            return ModelProviderTransientError(
+                detail,
+                reason_code=FailureReason.PROVIDER_SERVER_ERROR,
+                source_native_status=status_code,
+            )
+        return ModelProviderAdapterError(
+            detail,
+            reason_code=FailureReason.CONFIGURATION_MISSING_OR_INVALID,
+            source_native_status=status_code,
+        )
 
     @staticmethod
     def _messages(request: ModelInvocationRequest) -> list[dict[str, str]]:
@@ -299,7 +415,8 @@ class AnthropicModelProviderAdapter:
         for item in request.messages:
             if item.role not in {"user", "assistant"}:
                 raise ModelProviderAdapterError(
-                    f"Anthropic adapter does not support message role: {item.role}"
+                    f"Anthropic adapter does not support message role: {item.role}",
+                    reason_code=FailureReason.CONFIGURATION_MISSING_OR_INVALID,
                 )
             messages.append({"role": item.role, "content": item.content})
         return messages
@@ -313,10 +430,14 @@ class AnthropicModelProviderAdapter:
         credential: str | None,
     ) -> ModelProviderResult:
         if provider.credential_required and not credential:
-            raise ModelProviderAdapterError("provider credential is required")
+            raise ModelProviderAdapterError(
+                "provider credential is required",
+                reason_code=FailureReason.PROVIDER_AUTH_OR_ACCESS,
+            )
         if request.text_verbosity:
             raise ModelProviderAdapterError(
-                "Anthropic adapter does not support canonical text_verbosity"
+                "Anthropic adapter does not support canonical text_verbosity",
+                reason_code=FailureReason.CONFIGURATION_MISSING_OR_INVALID,
             )
 
         payload: dict[str, Any] = {

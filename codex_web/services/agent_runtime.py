@@ -13,12 +13,21 @@ from codex_web.agent_runtime import (
     AgentSessionStatus,
 )
 from codex_web.agent_providers import AgentProviderCapability
+from codex_web.failures import (
+    FailureReason,
+    failure_from_exception,
+)
 from codex_web.identity import AuthenticationActor
+from codex_web.observability import current_correlation
 from codex_web.storage.agent_sessions import AgentSessionStore
 
 
 class AgentRuntimeError(RuntimeError):
-    pass
+    reason_code = FailureReason.CONFIGURATION_MISSING_OR_INVALID
+
+
+class AgentRuntimeNotFoundError(AgentRuntimeError):
+    reason_code = FailureReason.RUNTIME_OFFLINE
 
 
 class AgentRuntimeRegistry:
@@ -77,7 +86,7 @@ class AgentRuntimeRegistry:
     ) -> AgentRuntimeRegistration:
         registration = self._registrations.get((provider_id, runtime_id))
         if registration is None:
-            raise AgentRuntimeError(
+            raise AgentRuntimeNotFoundError(
                 f"agent runtime not registered: {provider_id}/{runtime_id}"
             )
         return registration
@@ -85,7 +94,7 @@ class AgentRuntimeRegistry:
     def get(self, provider_id: str, runtime_id: str) -> AgentRuntimeAdapter:
         adapter = self._adapters.get((provider_id, runtime_id))
         if adapter is None:
-            raise AgentRuntimeError(
+            raise AgentRuntimeNotFoundError(
                 f"agent runtime not registered: {provider_id}/{runtime_id}"
             )
         return adapter
@@ -262,6 +271,7 @@ class AgentSessionService:
                 "recovery_attempts": session.recovery_attempts + 1,
                 "last_recovered_at": now,
                 "failure_reason": None,
+                "failure": None,
                 "updated_at": now,
             }
         )
@@ -290,11 +300,33 @@ class AgentSessionService:
         try:
             return await adapter.start_turn(native_id, request)
         except Exception as exc:
+            context = current_correlation()
+            failure = failure_from_exception(
+                exc,
+                source_subsystem="agent_runtime",
+                default_reason=FailureReason.PROCESS_FAILURE,
+                provider_id=session.provider_id,
+                runtime_id=session.runtime_id,
+                worker_id=session.worker_id,
+                assignment_id=session.assignment_id,
+                execution_id=session.execution_id,
+                correlation_id=(
+                    context.correlation_id if context is not None else None
+                ),
+                causation_id=(
+                    context.causation_id if context is not None else None
+                ),
+                details={
+                    "runtime_type": session.runtime_type,
+                    "project_id": session.project_id,
+                },
+            )
             self.store.upsert(
                 session.model_copy(
                     update={
                         "status": AgentSessionStatus.FAILED,
-                        "failure_reason": str(exc)[:500],
+                        "failure_reason": failure.summary,
+                        "failure": failure,
                         "updated_at": time.time(),
                     }
                 )

@@ -97,6 +97,23 @@ class WorkItemExecutionLifecycleTests(unittest.TestCase):
         self.assertEqual(execution["failure_reason"]["category"], "provider")
         self.assertEqual(execution["failure_reason"]["code"], "rate_limited")
         self.assertTrue(execution["failure_reason"]["retryable"])
+        canonical = execution["failure_reason"]["canonical"]
+        self.assertEqual(
+            canonical["reason_code"],
+            "provider_capacity_or_rate_limit",
+        )
+        self.assertEqual(
+            canonical["category"],
+            "provider_model",
+        )
+        self.assertEqual(
+            canonical["retryability"],
+            "transient",
+        )
+        self.assertEqual(
+            canonical["remediation_key"],
+            "provider.capacity",
+        )
 
     def test_retry_attempt_cannot_exceed_policy(self) -> None:
         with self.assertRaises(HTTPException) as raised:

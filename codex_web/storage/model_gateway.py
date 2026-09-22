@@ -25,7 +25,7 @@ MODEL_GATEWAY_MIGRATIONS.register(
     "1.1",
     lambda payload: {
         **payload,
-        "schema_version": MODEL_GATEWAY_CONTRACT.current,
+        "schema_version": "1.1",
         "invocations": [
             {
                 **item,
@@ -35,6 +35,25 @@ MODEL_GATEWAY_MIGRATIONS.register(
                 "input_gated_proposals": list(
                     item.get("input_gated_proposals", [])
                 ),
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
+
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.2",
+        "invocations": [
+            {
+                **dict(item),
+                "attempts": [
+                    {**dict(attempt), "failure": dict(attempt).get("failure")}
+                    for attempt in dict(item).get("attempts", [])
+                ],
             }
             for item in payload.get("invocations", [])
         ],
