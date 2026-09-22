@@ -284,6 +284,7 @@ class TurnExecutionBindingService:
         project: Project,
         *,
         explicit_repository_id: str | None = None,
+        writable_repository_ids: tuple[str, ...] = (),
         read_only_repository_ids: tuple[str, ...] = (),
         work_item_resource_ids: tuple[str, ...] = (),
         work_item_ref: str | None = None,
@@ -605,6 +606,7 @@ class TurnExecutionBindingService:
         execution_contract_version: str,
         runtime_binding: ExecutionRuntimeBinding | None,
         repository_target: RepositoryExecutionTarget,
+        repository_scope: RepositoryExecutionScope,
         execution_profile_id: str | None,
         execution_profile_definition: DefinitionReference | None,
         agent_profile: AgentProfileExecutionBinding | None,
@@ -630,6 +632,13 @@ class TurnExecutionBindingService:
         ):
             raise TurnExecutionBindingError(
                 "execution id is already bound to a different repository target"
+            )
+        if (
+            assignment.repository_scope is not None
+            and assignment.repository_scope != repository_scope
+        ):
+            raise TurnExecutionBindingError(
+                "execution id is already bound to a different repository scope"
             )
         if assignment.execution_profile_id is None:
             if (
@@ -701,6 +710,12 @@ class TurnExecutionBindingService:
             raise TurnExecutionBindingError(
                 "existing thread workspace no longer matches repository target"
             )
+        if tuple(workspace.writable_repository_ids) != tuple(
+            repository_scope.writable_repository_ids
+        ):
+            raise TurnExecutionBindingError(
+                "existing thread workspace no longer matches repository scope"
+            )
         if len(assignment.secret_refs) != 1:
             raise TurnExecutionBindingError(
                 "existing thread assignment does not have exactly one credential reference"
@@ -715,6 +730,7 @@ class TurnExecutionBindingService:
             resource_ids=assignment.resource_ids,
             repository_resource_id=workspace.repository_resource_id,
             repository_target=assignment.repository_target or repository_target,
+            repository_scope=assignment.repository_scope or repository_scope,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
@@ -887,28 +903,68 @@ class TurnExecutionBindingService:
                     "remediation_route": "/settings/execution-profiles",
                 },
             )
-        repository_target = self._repository_target(
-            project,
-            explicit_repository_id=(
-                None if effective_orchestration_only else explicit_repository_id
-            ),
-            read_only_repository_ids=(
-                () if effective_orchestration_only else read_only_repository_ids
-            ),
-            work_item_resource_ids=(
-                () if effective_orchestration_only else work_item_resource_ids
-            ),
-            work_item_ref=work_item_ref,
-            thread_profile_repository_id=(
-                None
-                if effective_orchestration_only
-                else thread_profile_repository_id
-            ),
-            routing_repository_id=(
-                None if effective_orchestration_only else routing_repository_id
-            ),
-            orchestration_only=effective_orchestration_only,
-        )
+        if writable_repository_ids:
+            if effective_orchestration_only:
+                raise TurnExecutionBindingError(
+                    "orchestration-only execution cannot request writable repositories",
+                    code="repository_scope_conflict",
+                )
+            normalized_writable = tuple(
+                dict.fromkeys(
+                    str(value).strip()
+                    for value in writable_repository_ids
+                    if str(value).strip()
+                )
+            )
+            if (
+                explicit_repository_id
+                and explicit_repository_id not in normalized_writable
+            ):
+                raise TurnExecutionBindingError(
+                    "explicit repository target conflicts with coordinated writable scope",
+                    code="repository_target_conflict",
+                    blocker={
+                        "code": "repository_target_conflict",
+                        "message": (
+                            "explicit repository target conflicts with "
+                            "coordinated writable scope"
+                        ),
+                        "retryable": False,
+                        "target_type": "repository",
+                        "target_id": explicit_repository_id,
+                        "remediation_route": f"/api/projects/{project.id}/resources",
+                    },
+                )
+            repository_target, repository_scope = self._coordinated_repository_scope(
+                project,
+                writable_repository_ids=normalized_writable,
+                read_only_repository_ids=read_only_repository_ids,
+                source_ref=work_item_ref or subject.ref,
+            )
+        else:
+            repository_target = self._repository_target(
+                project,
+                explicit_repository_id=(
+                    None if effective_orchestration_only else explicit_repository_id
+                ),
+                read_only_repository_ids=(
+                    () if effective_orchestration_only else read_only_repository_ids
+                ),
+                work_item_resource_ids=(
+                    () if effective_orchestration_only else work_item_resource_ids
+                ),
+                work_item_ref=work_item_ref,
+                thread_profile_repository_id=(
+                    None
+                    if effective_orchestration_only
+                    else thread_profile_repository_id
+                ),
+                routing_repository_id=(
+                    None if effective_orchestration_only else routing_repository_id
+                ),
+                orchestration_only=effective_orchestration_only,
+            )
+            repository_scope = RepositoryExecutionScope.from_target(repository_target)
         self._require_project_readiness(
             project,
             execution_contract_version,
@@ -928,6 +984,7 @@ class TurnExecutionBindingService:
                 execution_contract_version=execution_contract_version,
                 runtime_binding=effective_runtime_binding,
                 repository_target=repository_target,
+                repository_scope=repository_scope,
                 execution_profile_id=effective_profile_id,
                 execution_profile_definition=execution_profile_definition,
                 agent_profile=agent_profile,
@@ -1058,22 +1115,20 @@ class TurnExecutionBindingService:
                             ),
                         },
                     )
-                repository = self.resources.get(
-                    repository_target.mutable_repository_id,
-                    self.control_actor,
-                )
+                writable_ids = repository_scope.writable_repository_ids
                 workspace = self.workspaces.acquire(
                     ExecutionWorkspaceAcquire(
                         subject=subject,
                         execution_id=normalized_execution_id,
                         project_id=project.id,
                         resource_ids=(
-                            repository.id,
-                            *repository_target.read_only_repository_ids,
+                            *writable_ids,
+                            *repository_scope.read_only_repository_ids,
                         ),
-                        repository_resource_id=repository.id,
+                        repository_resource_id=repository_target.mutable_repository_id,
+                        writable_repository_ids=writable_ids,
                         read_only_repository_ids=(
-                            repository_target.read_only_repository_ids
+                            repository_scope.read_only_repository_ids
                         ),
                         lease_mode=lease_mode,
                         ttl_seconds=session_seconds,
@@ -1148,6 +1203,7 @@ class TurnExecutionBindingService:
                     execution_workspace_id=workspace.id,
                     runtime_binding=effective_runtime_binding,
                     repository_target=repository_target,
+                    repository_scope=repository_scope,
                     execution_profile_id=effective_profile_id,
                     execution_profile_definition=execution_profile_definition,
                     agent_profile=agent_profile,
@@ -1190,6 +1246,7 @@ class TurnExecutionBindingService:
             resource_ids=assignment.resource_ids,
             repository_resource_id=workspace.repository_resource_id,
             repository_target=repository_target,
+            repository_scope=repository_scope,
             base_revision=workspace.base_revision,
             sandbox=assignment.sandbox,
             approval_policy=assignment.approval_policy,
@@ -1236,6 +1293,7 @@ class TurnExecutionBindingService:
             limits=limits,
             runtime_binding=runtime_binding,
             explicit_repository_id=explicit_repository_id,
+            writable_repository_ids=writable_repository_ids,
             read_only_repository_ids=read_only_repository_ids,
             work_item_resource_ids=work_item_resource_ids,
             work_item_ref=work_item_ref,
