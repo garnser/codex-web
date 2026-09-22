@@ -247,3 +247,48 @@ test("aborted Project load is recorded as aborted and cannot return usable state
   expect(result.outcome).toBe("AbortError");
   expect(result.metrics.some((item) => item.aborted)).toBeTruthy();
 });
+
+
+test("flags repetitive endpoint bursts deterministically", async ({ page }) => {
+  await page.route("**/api/perf-loop?**", async (route) => {
+    await route.fulfill({ json: { ok: true } });
+  });
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const { perf, request } = window.frontendPerfFixture;
+    perf.reset();
+    for (let index = 0; index < 5; index += 1) {
+      await request(`/api/perf-loop?item=${index}`);
+    }
+    return {
+      window: perf.requestWindowStatus({ sinceMs: 5000 }),
+      status: perf.budgetStatus(),
+    };
+  });
+
+  expect(result.window.total).toBe(5);
+  expect(result.window.ok).toBeFalsy();
+  expect(result.window.repeated).toEqual([
+    { key: "GET /api/perf-loop?item", count: 5 },
+  ]);
+  expect(result.status.duplicateRequests).toBeFalsy();
+});
+
+test("bounded mixed requests stay within burst budgets", async ({ page }) => {
+  await page.route("**/api/perf-a", async (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/perf-b", async (route) => route.fulfill({ json: { ok: true } }));
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const { perf, request } = window.frontendPerfFixture;
+    perf.reset();
+    await Promise.all([
+      request("/api/perf-a"),
+      request("/api/perf-b"),
+    ]);
+    return perf.requestWindowStatus({ sinceMs: 5000 });
+  });
+
+  expect(result.ok).toBeTruthy();
+  expect(result.total).toBe(2);
+  expect(result.repeated).toEqual([]);
+});
