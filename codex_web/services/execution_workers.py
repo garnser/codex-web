@@ -869,6 +869,33 @@ class ExecutionWorkerService:
                 raise WorkerConflictError(
                     "assignment resources exceed execution workspace lease"
                 )
+            if payload.repository_scope is not None:
+                scope = payload.repository_scope
+                workspace_writable = set(
+                    getattr(workspace, "writable_repository_ids", ())
+                )
+                if not workspace_writable and workspace.repository_resource_id is not None:
+                    workspace_writable = {workspace.repository_resource_id}
+                if workspace_writable != set(scope.writable_repository_ids):
+                    raise WorkerConflictError(
+                        "assignment writable repository scope does not match execution workspace"
+                    )
+                members = {
+                    member.resource_id: member
+                    for member in getattr(workspace, "repository_members", ())
+                }
+                for resource_id in scope.writable_repository_ids:
+                    member = members.get(resource_id)
+                    if member is None or member.access_mode.value != "write":
+                        raise WorkerConflictError(
+                            "assignment writable repository lacks a write workspace member"
+                        )
+                for resource_id in scope.read_only_repository_ids:
+                    member = members.get(resource_id)
+                    if member is None or member.access_mode.value != "read":
+                        raise WorkerConflictError(
+                            "assignment read-only repository lacks a read workspace member"
+                        )
             if (
                 payload.base_revision is not None
                 and workspace.base_revision is not None
