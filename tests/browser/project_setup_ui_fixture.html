@@ -18,7 +18,8 @@
   <details id="developer-panel" open><div class="developer-grid"></div></details>
   <script>
     window.fixture = {
-      ready: false,
+      ready: new URLSearchParams(location.search).get("explicit") === "1",
+      explicit: new URLSearchParams(location.search).get("explicit") === "1",
       calls: [],
       openedWorkspace: null,
       readiness() {
@@ -29,6 +30,7 @@
           status: this.ready ? "ready" : "blocked",
           checks: [
             { id: "repository:resources", domain: "repository", status: "ready", code: "repository_resources_ready", message: "Repository is canonical." },
+            ...(this.explicit ? [{ id: "repository:execution-target", domain: "repository", status: "ready", code: "repository_target_required_per_turn", message: "Repository target is selected per turn." }] : []),
             { id: "execution:worker", domain: "execution_worker", status: this.ready ? "ready" : "blocked", code: this.ready ? "ready" : "worker_capability_missing", message: this.ready ? "Worker ready." : "command_execution worker is missing.", remediation: "Start a qualified worker.", remediation_route: "/api/execution-workers/readiness" }
           ]
         };
@@ -42,13 +44,13 @@
       window.fixture.calls.push({ path, method: options.method || "GET", body: options.body || null });
       let payload;
       if (path.endsWith("/api/projects")) {
-        payload = [{ id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write" }];
+        payload = [{ id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write", repository_selection_policy: window.fixture.explicit ? "explicit" : "deterministic" }];
       } else if (path.includes("/readiness")) {
         payload = window.fixture.readiness();
       } else if (path.includes("/bootstrap/status")) {
         payload = { items: [] };
       } else if (path.includes("/ui-state")) {
-        payload = { project: { id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write" }, resources: { items: [{ id: "repo-a", aliases: [{ namespace: "filesystem", value: "/workspace/project-a" }] }] } };
+        payload = { project: { id: "project-a", name: "Project A", organization_id: "local", workspace_id: "default", sandbox: "workspace-write", repository_selection_policy: window.fixture.explicit ? "explicit" : "deterministic" }, resources: { items: [{ id: "repo-a", aliases: [{ namespace: "filesystem", value: "/workspace/project-a" }] }] } };
       } else if (path.endsWith("/bootstrap/preflight")) {
         payload = { blocked: false, preflight: { checks: [] } };
       } else if (path.endsWith("/bootstrap/plan")) {

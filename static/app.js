@@ -6,8 +6,9 @@ import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
+import*as rtui from"./repository_target_ui.js";
 
-const state = {
+const state={
   projects: [],
   projectResources: [],
   projectUiStatic: {},
@@ -249,29 +250,10 @@ function currentRunSettings() {
   };
 }
 
-function renderRepositoryTargets() {
-  const mutable = $("repository-target");
-  const readOnly = $("repository-read-context");
-  if (!mutable || !readOnly) return;
-  const settings = currentRunSettings();
-  const repositories = (state.projectResources || []).filter((item) => (
-    item.resource_type === "repository" && item.lifecycle === "active"
-  ));
-  mutable.innerHTML = [
-    '<option value="">Auto</option>',
-    ...repositories.map((item) => (
-      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`
-    )),
-  ].join("");
-  mutable.value = settings.repositoryResourceId;
-  const selected = new Set(settings.readOnlyRepositoryResourceIds);
-  readOnly.innerHTML = repositories
-    .filter((item) => item.id !== settings.repositoryResourceId)
-    .map((item) => (
-      `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
-    ))
-    .join("");
-}
+function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
+function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
+function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
+function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
 function threadRunSettings(threadId = state.threadId) {
   return state.threadSettings?.[threadId] || {};
@@ -1096,7 +1078,9 @@ function renderThread(thread) {
   clearMessages();
   const title = thread.name || thread.preview || "Untitled thread";
   $("thread-title").textContent = title;
-  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}`;
+  const boundRepository = threadRunSettings(thread.id)?.repository_resource_id || "";
+  const repositoryMeta = boundRepository ? ` · repository ${boundRepository}` : "";
+  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}${repositoryMeta}`;
   const turns = thread.turns || [];
   turns.forEach((turn) => {
     (turn.items || []).forEach((item) => renderItem(item, turn));
@@ -1107,7 +1091,10 @@ function renderThread(thread) {
 function renderNewThreadShell(thread) {
   clearMessages();
   $("thread-title").textContent = thread.name || "Untitled thread";
-  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}`;
+  const repositoryId = currentRunSettings().repositoryResourceId;
+  const repositoryMeta = repositoryId ? ` · repository ${repositoryId}` : "";
+  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}${repositoryMeta}`;
+  renderRepositoryTargetStatus();
 }
 
 function renderItem(item, turn = {}) {
@@ -1405,6 +1392,7 @@ async function loadThread(threadId) {
   history?.afterThreadRendered?.(threadId, $("messages"));
   renderThreads();
   renderTokenUsage();
+  renderRepositoryTargetStatus();
   updateWaitingFromState();
 }
 
@@ -1419,6 +1407,7 @@ async function newThread() {
     approval_policy: settings.approvalPolicy,
   });
   ep.applyThreadQuery(qs,settings);
+  if(settings.repositoryResourceId)qs.set("repository_resource_id",settings.repositoryResourceId);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
@@ -1428,15 +1417,25 @@ async function newThread() {
   setWaiting(false);
   renderNewThreadShell(thread);
   renderTokenUsage();
-  await refresh();
+ scheduleRefresh(100);
+}
+
+function blockRepositoryTarget(target) {
+  if (!target.blocked) return false;
+  renderRepositoryTargetStatus();
+  $("repository-target")?.focus();
+  addMessage("Execution blocked", `${target.code}: ${target.message}`, "tool", new Date());
+  return true;
 }
 
 async function sendPrompt() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return;
   persistRunSettings();
+  if (blockRepositoryTarget(repositoryTargetState())) return;
   if (!state.threadId) await newThread();
   const threadId = state.threadId;
+  if (blockRepositoryTarget(repositoryTargetState(threadId))) return;
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   resizePromptInput();

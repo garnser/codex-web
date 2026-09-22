@@ -76,3 +76,18 @@ test('setup UI never renders raw credential-shaped fixture data', async ({ page 
   expect(text).not.toContain('ULTRA_PRIVATE_VALUE');
   expect(text).not.toContain('xoxb-');
 });
+
+
+test('explicit repository policy is ready while requiring a target per turn', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html?explicit=1');
+
+  await expect(page.locator('#project-setup-launch')).toHaveText('Project ready');
+  await expect(page.locator('#new-thread')).toBeEnabled();
+  await expect(page.locator('#send')).toBeEnabled();
+
+  await page.locator('#project-setup-launch').click();
+  const dialog = page.locator('#project-setup-dialog');
+  await expect(dialog.locator('.project-setup-hero')).toContainText('Repository target required per turn');
+  await expect(dialog.locator('.project-setup-metrics')).toContainText('Explicit per turn');
+  await expect(dialog.locator('[data-check-id="repository:execution-target"]')).toContainText('repository_target_required_per_turn');
+});

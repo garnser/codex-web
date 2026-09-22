@@ -94,14 +94,25 @@ function render() {
   const latest = state.bootstrap?.items?.[0] || null;
   const plan = state.plan?.plan || null;
   const blockers = checks.filter((item) => item.status === "blocked");
+  const targetRequiredPerTurn = checks.some((item) => (
+    item.code === "repository_target_required_per_turn"
+  ));
+  const repositoryPolicy = state.project?.repository_selection_policy || "deterministic";
+  const readinessSummary = state.readiness?.execution_ready
+    ? (
+        targetRequiredPerTurn
+          ? "Project is ready. Repository target required per turn."
+          : "Canonical topology and execution prerequisites are ready."
+      )
+    : "Execution remains gated until required readiness checks pass.";
   const latestOps = Array.isArray(latest?.plan?.operations) ? latest.plan.operations : [];
   const planOps = Array.isArray(plan?.operations) ? plan.operations : [];
   body.innerHTML =
     '<section class="project-setup-summary"><div class="project-setup-hero"><div><small>Project readiness</small><h3>' + esc(state.project?.name || state.projectId) + '</h3><p>' +
-    (state.readiness?.execution_ready ? "Canonical topology and execution prerequisites are ready." : "Execution remains gated until required readiness checks pass.") +
+    esc(readinessSummary) +
     '</p></div>' + badge(state.readiness?.status) + '</div><div class="project-setup-metrics"><div><span>Semantic</span><strong>' + (state.readiness?.semantic_ready ? "Ready" : "Blocked") +
     '</strong></div><div><span>Execution</span><strong>' + (state.readiness?.execution_ready ? "Ready" : "Blocked") +
-    '</strong></div><div><span>Bootstrap</span><strong>' + esc(latest?.status || "not recorded") +
+    '</strong></div><div><span>Repository policy</span><strong>' + esc(repositoryPolicy === "explicit" ? "Explicit per turn" : "Deterministic") +
     '</strong></div><div><span>Blockers</span><strong>' + blockers.length + '</strong></div></div>' +
     (state.error ? '<div class="project-setup-error" role="alert">' + esc(state.error) + '</div>' : "") +
     (blocked() ? '<button type="button" class="ghost-button" data-setup-fresh>Retry safe Project setup</button>' : "") + '</section>' +
