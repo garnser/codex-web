@@ -265,7 +265,9 @@ th {
   }
 
   .icon-button {
+    flex: 0 0 var(--touch-target);
     width: var(--touch-target);
+    min-width: var(--touch-target);
     height: var(--touch-target);
     min-height: var(--touch-target);
   }
