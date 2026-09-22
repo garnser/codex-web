@@ -15,13 +15,22 @@ function projectPayload() {
   }];
 }
 
-function operatorPayload() {
-  return {
+function operatorPayload(itemOverrides = {}, diagnosticOverrides = null) {
+  const payload = {
     item: {
       ref: 'team/project-a#42',
       title: 'Ship operator view',
       current_stage: 'implementation_active',
       current_owner: 'james',
+      implementation_owner: 'james',
+      validation_owner: 'quinn',
+      release_owner: 'riley',
+      priority: 'high',
+      next_action: 'Run focused validation.',
+      goal_id: 'goal-42',
+      decision_id: 'decision-7',
+      resource_ids: ['repo-app'],
+      mr_refs: ['!123'],
       next_owner: null,
       artifact_state: 'branch',
       blocker: null,
@@ -81,7 +90,7 @@ function operatorPayload() {
       approval_policy: 'on-request',
       source: 'project-default',
     },
-    diagnostics: [{
+    diagnostics: diagnosticOverrides || [{
       kind: 'task_source_snapshot_stale_ignored',
       severity: 'warning',
       message: 'stale revision ignored',
@@ -103,9 +112,11 @@ function operatorPayload() {
       reconcile: { allowed: true },
     },
   };
+  payload.item = { ...payload.item, ...itemOverrides };
+  return payload;
 }
 
-async function mockOperatorApis(page, posts) {
+async function mockOperatorApis(page, posts, detailPayload = operatorPayload()) {
   await page.route('**/api/projects', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify(projectPayload()),
@@ -148,7 +159,7 @@ async function mockOperatorApis(page, posts) {
   }));
   await page.route('**/api/work-items/**/operator', async (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(operatorPayload()),
+    body: JSON.stringify(detailPayload),
   }));
   await page.route('**/api/work-items/**/retry', async (route) => {
     posts.push({ action: 'retry', body: route.request().postDataJSON() });
@@ -282,3 +293,68 @@ test('source configuration sends typed Jira and ServiceNow settings without secr
   expect(JSON.stringify(saved)).not.toContain('token-value');
   expect(JSON.stringify(saved)).not.toContain('password');
 });
+
+
+test('canonical summary keeps state, routing and related objects understandable from one surface', async ({ page }) => {
+  const posts = [];
+  await mockOperatorApis(page, posts);
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.locator('#work-items-button').click();
+
+  const dialog = page.locator('#work-items-dialog');
+  await expect(dialog.locator('.work-overview')).toContainText('implementation active');
+  await expect(dialog.locator('.work-overview')).toContainText('james');
+  await expect(dialog.locator('.work-overview')).toContainText('high');
+  await expect(dialog.locator('.work-overview')).toContainText('Run focused validation.');
+  await expect(dialog.locator('.work-routing-lanes')).toContainText('quinn');
+  await expect(dialog.locator('.work-routing-lanes')).toContainText('riley');
+  await expect(dialog.locator('.work-related-objects')).toContainText('goal-42');
+  await expect(dialog.locator('.work-related-objects')).toContainText('decision-7');
+  await expect(dialog.locator('.work-related-objects')).toContainText('repo-app');
+  await expect(dialog.locator('.work-related-objects')).toContainText('!123');
+});
+
+for (const scenario of [
+  {
+    name: 'blocked',
+    item: { blocker: 'Waiting for security review', blocking_findings: ['Policy gate unresolved'] },
+    diagnostics: [],
+    expected: ['Blocked', 'Waiting for security review', 'Policy gate unresolved'],
+  },
+  {
+    name: 'awaiting approval',
+    item: { release_gate: true },
+    diagnostics: [{ kind: 'approval_required', severity: 'warning', message: 'Release approval required', created_at: 1789675100 }],
+    expected: ['Approval required', 'Release approval required'],
+  },
+  {
+    name: 'failed and retryable',
+    item: {
+      execution: {
+        retry: { attempt: 2, policy: { max_attempts: 3, backoff_seconds: 5 } },
+        failure_reason: { code: 'worker_lost', category: 'runtime', message: 'Worker lease was lost' },
+        usage: {},
+      },
+    },
+    diagnostics: [],
+    expected: ['Execution failed', 'worker_lost', 'Worker lease was lost', 'retry 2/3'],
+  },
+  {
+    name: 'completed',
+    item: { current_stage: 'closed', terminal_outcome: 'completed', next_action: null },
+    diagnostics: [],
+    expected: ['Completed', 'closed'],
+  },
+]) {
+  test(`Work Item summary represents ${scenario.name} canonical state`, async ({ page }) => {
+    const posts = [];
+    const payload = operatorPayload(scenario.item, scenario.diagnostics);
+    await mockOperatorApis(page, posts, payload);
+    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+    await page.locator('#work-items-button').click();
+    const dialog = page.locator('#work-items-dialog');
+    for (const text of scenario.expected) {
+      await expect(dialog).toContainText(text);
+    }
+  });
+}
