@@ -5,11 +5,19 @@ export function activeRepositories(resources = []) {
 }
 
 export function targetState({
-  policy = "deterministic",
-  repositories = [],
-  selectedId = "",
-  boundId = "",
+  policy,
+  project,
+  resources = [],
+  repositories,
+  settings = {},
+  threadSettings = {},
+  selectedId,
+  boundId,
 } = {}) {
+  policy = policy || project?.repository_selection_policy || "deterministic";
+  repositories = repositories || activeRepositories(resources);
+  selectedId = selectedId ?? settings.repositoryResourceId ?? "";
+  boundId = boundId ?? threadSettings.repository_resource_id ?? "";
   const byId = new Map(repositories.map((item) => [item.id, item]));
 
   if (boundId && selectedId && boundId !== selectedId) {
@@ -68,26 +76,23 @@ export function targetState({
   };
 }
 
-export function renderStatus({ status, mutable, target, required }) {
-  if (!status || !mutable) return;
-  status.textContent = target.message;
-  status.dataset.state = target.status;
-  mutable.setAttribute("aria-invalid", String(target.blocked));
-  mutable.required = Boolean(required);
-}
-
 export function renderControls({
-  mutable,
-  readOnly,
-  status,
-  policy = "deterministic",
-  repositories = [],
+  project,
+  resources = [],
   settings = {},
-  boundId = "",
+  threadSettings = {},
   escapeHtml,
 }) {
+  const mutable = document.getElementById("repository-target");
+  const readOnly = document.getElementById("repository-read-context");
+  const status = document.getElementById("repository-target-status");
   if (!mutable || !readOnly) return;
+
+  const policy = project?.repository_selection_policy || "deterministic";
+  const repositories = activeRepositories(resources);
+  const boundId = threadSettings.repository_resource_id || "";
   const explicit = policy === "explicit";
+
   mutable.innerHTML = [
     `<option value="">${explicit ? "Select repository…" : "Auto"}</option>`,
     ...repositories.map((item) => (
@@ -104,16 +109,28 @@ export function renderControls({
     ))
     .join("");
 
-  const target = targetState({
-    policy,
-    repositories,
-    selectedId: settings.repositoryResourceId || "",
-    boundId,
-  });
-  renderStatus({
-    status,
-    mutable,
-    target,
-    required: explicit && !boundId,
-  });
+  const target = targetState({ policy, repositories, settings, threadSettings });
+  if (status) {
+    status.textContent = target.message;
+    status.dataset.state = target.status;
+  }
+  mutable.setAttribute("aria-invalid", String(target.blocked));
+  mutable.required = explicit && !boundId;
+}
+
+export function renderStatus({
+  project,
+  resources = [],
+  settings = {},
+  threadSettings = {},
+}) {
+  const status = document.getElementById("repository-target-status");
+  const mutable = document.getElementById("repository-target");
+  if (!status || !mutable) return;
+  const target = targetState({ project, resources, settings, threadSettings });
+  status.textContent = target.message;
+  status.dataset.state = target.status;
+  mutable.setAttribute("aria-invalid", String(target.blocked));
+  mutable.required = (project?.repository_selection_policy === "explicit")
+    && !threadSettings.repository_resource_id;
 }
