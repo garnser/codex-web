@@ -4,9 +4,11 @@ import unittest
 from types import SimpleNamespace
 
 from codex_web.configuration import ConfigurationContext
-from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.runtime_credentials import (
+from codex_web.execution_workers import (
     CodexExecutionAuthenticationMode,
+    ExecutionRuntimeBinding,
+)
+from codex_web.runtime_credentials import (
     runtime_authentication_requirement,
 )
 from codex_web.services.codex_worker_configuration import (
