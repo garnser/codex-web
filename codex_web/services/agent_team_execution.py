@@ -60,6 +60,10 @@ class AgentTeamExecutionService:
         read_only_repository_resource_ids: tuple[str, ...],
         actor: AuthenticationActor,
     ) -> TeamLaunchedExecution:
+        if not project_id:
+            raise RuntimeError(
+                "Team execution requires an explicit canonical project id"
+            )
         profile, _decision = self.teams.profiles.resolve_for_execution(
             profile_id,
             actor=actor,
