@@ -440,6 +440,7 @@ class TurnExecutionService:
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
+        work_item_ref: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
@@ -517,6 +518,7 @@ class TurnExecutionService:
                 project_id=project_id,
                 message=message,
                 execution_id=execution_id or self._new_execution_id(),
+                work_item_ref=work_item_ref,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 model=model,
@@ -905,6 +907,7 @@ class TurnExecutionService:
         source: str = "web",
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
+        work_item_ref: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
@@ -1135,6 +1138,7 @@ class TurnExecutionService:
                             read_only_repository_resource_ids
                             or settings.read_only_repository_resource_ids
                         ),
+                        work_item_ref=work_item_ref,
                         execution_profile_id=effective_execution_profile_id,
                         agent_profile=agent_profile_binding,
                     )
@@ -1547,6 +1551,7 @@ class TurnExecutionService:
                 source=f"queued:{queued.source}",
                 reply_target=queued.reply_target,
                 execution_id=queued.execution_id,
+                work_item_ref=queued.work_item_ref,
                 repository_resource_id=queued.repository_resource_id,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                 execution_profile_id=queued.execution_profile_id,

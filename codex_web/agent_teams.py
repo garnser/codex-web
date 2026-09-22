@@ -283,3 +283,63 @@ class TeamExecutionLinksUpdate(BaseModel):
     coordinator_execution_id: str | None = None
     member_execution_ids: dict[str, str] = Field(default_factory=dict)
     child_work_item_refs: tuple[str, ...] = ()
+
+
+
+class TeamExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    delegation: TeamDelegationRequest
+    message: str = Field(min_length=1, max_length=50000)
+    repository_resource_id: str | None = None
+    read_only_repository_resource_ids: tuple[str, ...] = ()
+
+
+class TeamDecisionExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    delegation: TeamDelegationRequest
+    decision: TeamCoordinatorDecision
+    message: str = Field(min_length=1, max_length=50000)
+    repository_resource_id: str | None = None
+    read_only_repository_resource_ids: tuple[str, ...] = ()
+
+
+class TeamLaunchedExecution(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    profile_id: str
+    profile_revision: int = Field(ge=1)
+    thread_id: str
+    execution_id: str
+    role: str
+    queued: bool = False
+
+
+class TeamExecutionLaunchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plan: TeamDelegationPlan
+    coordinator: TeamLaunchedExecution | None = None
+    members: tuple[TeamLaunchedExecution, ...] = ()
+
+
+class TeamMemberResultEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    work_item_id: str = Field(min_length=1)
+    project_id: str | None = None
+    profile_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    result_id: str = Field(min_length=1, max_length=500)
+    summary: str = Field(min_length=1, max_length=12000)
+
+
+class TeamMemberResultOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: str
+    reason: str
+    coordinator: TeamLaunchedExecution | None = None
+    delegation: TeamDelegationRequest | None = None
+    attention_required: bool = False

@@ -415,6 +415,7 @@ class QueuedTurn(BaseModel):
     project_id: str
     message: str
     execution_id: str | None = None
+    work_item_ref: str | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None
