@@ -6,7 +6,7 @@ import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
-import*as repositoryTargetUi from"./repository_target_ui.js";
+import*as rtui from"./repository_target_ui.js";
 
 const state = {
   projects: [],
@@ -251,9 +251,9 @@ function currentRunSettings() {
 }
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
-function repositoryTargetState(threadId=state.threadId){return repositoryTargetUi.targetState(repositoryTargetArgs(threadId))}
-function renderRepositoryTargetStatus(){repositoryTargetUi.renderStatus(repositoryTargetArgs())}
-function renderRepositoryTargets(){repositoryTargetUi.renderControls({...repositoryTargetArgs(),escapeHtml})}
+function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
+function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
+function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
 function threadRunSettings(threadId = state.threadId) {
   return state.threadSettings?.[threadId] || {};
