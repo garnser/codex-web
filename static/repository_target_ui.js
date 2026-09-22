@@ -1,3 +1,24 @@
+const writableSelections = new Map();
+
+function storedWritableIds(project, settings = {}) {
+  const explicit = Array.isArray(settings.writableRepositoryResourceIds)
+    ? settings.writableRepositoryResourceIds.filter(Boolean)
+    : [];
+  const key = project?.id || "";
+  if (explicit.length) {
+    writableSelections.set(key, Array.from(new Set(explicit)));
+  }
+  return explicit.length ? Array.from(new Set(explicit)) : (writableSelections.get(key) || []);
+}
+
+export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
+  const ids = storedWritableIds(project, settings);
+  const primary = settings.repositoryResourceId || "";
+  return primary && ids.includes(primary)
+    ? [primary, ...ids.filter((id) => id !== primary)]
+    : [...ids];
+}
+
 export function activeRepositories(resources = []) {
   return resources.filter((item) => (
     item.resource_type === "repository" && item.lifecycle === "active"
@@ -18,11 +39,7 @@ export function targetState({
   repositories = repositories || activeRepositories(resources);
   selectedId = selectedId ?? settings.repositoryResourceId ?? "";
   boundId = boundId ?? threadSettings.repository_resource_id ?? "";
-  const writableIds = Array.from(new Set(
-    Array.isArray(settings.writableRepositoryResourceIds)
-      ? settings.writableRepositoryResourceIds.filter(Boolean)
-      : [],
-  ));
+  const writableIds = storedWritableIds(project, settings);
   const byId = new Map(repositories.map((item) => [item.id, item]));
   const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
 
@@ -144,12 +161,23 @@ export function renderControls({
   ].join("");
   mutable.value = settings.repositoryResourceId || "";
 
-  const selectedWritable = new Set(settings.writableRepositoryResourceIds || []);
+  const selectedWritable = new Set(storedWritableIds(project, settings));
   writable.innerHTML = repositories
     .map((item) => (
       `<option value="${escapeHtml(item.id)}" ${selectedWritable.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
     ))
     .join("");
+  writable.onchange = () => {
+    const ids = Array.from(writable.selectedOptions, (option) => option.value);
+    writableSelections.set(project?.id || "", ids);
+    renderControls({
+      project,
+      resources,
+      settings: { ...settings, writableRepositoryResourceIds: ids },
+      threadSettings,
+      escapeHtml,
+    });
+  };
 
   const selected = new Set(settings.readOnlyRepositoryResourceIds || []);
   readOnly.innerHTML = repositories
