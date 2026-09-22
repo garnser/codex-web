@@ -70,6 +70,20 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
         self.assertIsNone(checkpoint.execution_id)
         self.assertEqual(checkpoint.definition_refs, [])
 
+    def test_continuation_anchor_fails_closed_without_delivery_proof(self) -> None:
+        self.service.checkpoint(
+            self.ref,
+            WorkItemCheckpointCreate(summary="Legacy-style checkpoint"),
+        )
+
+        assessment = self.service.continuation_anchor(self.ref)
+
+        self.assertFalse(assessment["trusted"])
+        self.assertEqual(assessment["reason"], "checkpoint_provenance_incomplete")
+        self.assertIn("delivery_not_proven", assessment["blockers"])
+        self.assertIn("work_item_hash_missing", assessment["blockers"])
+        self.assertIn("event_watermark_missing", assessment["blockers"])
+
     def test_checkpoint_persists_positive_delivery_provenance_and_audit_fields(self) -> None:
         result = self.service.checkpoint(
             self.ref,
@@ -108,6 +122,11 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
         self.assertTrue(event["payload"]["delivery_proven"])
         self.assertEqual(event["payload"]["delivery_proof_ref"], "assignment-receipt-12")
         self.assertEqual(event["payload"]["work_item_hash"], "sha256:work-item")
+
+        assessment = self.service.continuation_anchor(self.ref)
+        self.assertTrue(assessment["trusted"])
+        self.assertEqual(assessment["reason"], "delivery_proven")
+        self.assertEqual(assessment["blockers"], [])
 
 
 if __name__ == "__main__":
