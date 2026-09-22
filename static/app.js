@@ -1417,7 +1417,7 @@ async function newThread() {
   setWaiting(false);
   renderNewThreadShell(thread);
   renderTokenUsage();
-  scheduleRefresh(100);
+ scheduleRefresh(100);
 }
 
 function blockRepositoryTarget(target) {
