@@ -6,6 +6,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.failures import (
+    FailureReason,
+    create_failure,
+)
 from codex_web.models import WorkItemEvent, WorkItemState
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.work_item_execution_models import (
@@ -166,12 +170,35 @@ class WorkItemExecutionLifecycleService:
                         "required": ["failure_category", "failure_message"],
                     },
                 )
+            try:
+                stable_reason = FailureReason(
+                    payload.failure_code
+                    or payload.failure_category
+                )
+            except ValueError:
+                stable_reason = FailureReason.UNCLASSIFIED
+            canonical = create_failure(
+                stable_reason,
+                source_subsystem=(
+                    payload.source or "work_item_execution"
+                ),
+                details={
+                    "legacy_category": payload.failure_category,
+                    "legacy_code": payload.failure_code,
+                },
+                occurred_at=now,
+            )
             execution.failure_reason = WorkItemFailureReason(
                 category=payload.failure_category,
                 code=payload.failure_code,
                 message=payload.failure_message,
-                retryable=payload.failure_retryable,
+                retryable=(
+                    payload.failure_retryable
+                    if payload.failure_retryable is not None
+                    else canonical.automatic_retry_allowed
+                ),
                 recorded_at=now,
+                canonical=canonical,
             )
 
         state.execution = execution
@@ -193,6 +220,24 @@ class WorkItemExecutionLifecycleService:
                 ),
                 "failure_code": (
                     execution.failure_reason.code if execution.failure_reason else None
+                ),
+                "failure_reason_code": (
+                    execution.failure_reason.canonical.reason_code.value
+                    if execution.failure_reason
+                    and execution.failure_reason.canonical
+                    else None
+                ),
+                "failure_retryability": (
+                    execution.failure_reason.canonical.retryability.value
+                    if execution.failure_reason
+                    and execution.failure_reason.canonical
+                    else None
+                ),
+                "failure_remediation_key": (
+                    execution.failure_reason.canonical.remediation_key
+                    if execution.failure_reason
+                    and execution.failure_reason.canonical
+                    else None
                 ),
             },
         )
