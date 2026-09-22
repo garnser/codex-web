@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from codex_web.execution_workspaces import LeaseMode
 from codex_web.resources import (
     RepositoryTargetSource,
+    ResourceAlias,
     ResourceCreate,
     ResourceLifecycle,
     ResourceType,
@@ -49,10 +51,20 @@ class ExplicitRepositoryTargetQualificationTests(unittest.TestCase):
         self.fx.tearDown()
 
     def _repository(self, name: str):
+        repository_path = Path(self.fx.temp.name) / (
+            "qualification-" + name.casefold().replace(" ", "-")
+        )
+        repository_path.mkdir()
         repository = self.fx.resources.create(
             ResourceCreate(
                 resource_type=ResourceType.REPOSITORY,
                 name=name,
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(repository_path),
+                    )
+                ],
             ),
             actor=self.fx.actor,
         )
