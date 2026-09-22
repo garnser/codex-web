@@ -598,6 +598,7 @@ class ArtifactEvidenceService:
         return artifact
 
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor) -> Evidence:
+        self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
         artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
@@ -622,6 +623,7 @@ class ArtifactEvidenceService:
             work_item_ref=work_item_ref,
             execution_id=payload.execution_id,
             execution_workspace_id=payload.execution_workspace_id,
+            resource_ids=payload.resource_ids,
             evidence_type=payload.evidence_type,
             artifact_ids=payload.artifact_ids,
             provider=payload.provider,
