@@ -3,6 +3,7 @@ export async function loadProjectUiState({
   projectId,
   search = "",
   projects = [],
+  reloadProjects = false,
   models = [],
   cachedStatic = null,
   onModelError = () => {},
@@ -15,7 +16,9 @@ export async function loadProjectUiState({
   if (search) query.set("search", search);
 
   const [projectList, workspace, modelList] = await Promise.all([
-    projects.length ? Promise.resolve(projects) : api("/api/projects", { signal }),
+    (!reloadProjects && projects.length)
+      ? Promise.resolve(projects)
+      : api("/api/projects", { signal }),
     api(
       `/api/projects/${encodeURIComponent(projectId)}/ui-state?${query}`,
       { signal },
