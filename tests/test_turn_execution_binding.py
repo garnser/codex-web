@@ -1240,6 +1240,55 @@ class TurnExecutionBindingTests(unittest.TestCase):
             binding.repository_scope,
         )
 
+    def test_work_item_coordinated_scope_keeps_selection_provenance(self) -> None:
+        self._publish_secret()
+        second_path = Path(self.project.path) / "repo-work-item-2"
+        second_path.mkdir()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Work Item repository 2",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(second_path),
+                    )
+                ],
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-work-item-coordinated",
+            execution_id="exec-work-item-coordinated",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            writable_repository_ids=(self.repository.id, second.id),
+            writable_repository_source=RepositoryTargetSource.WORK_ITEM,
+            work_item_ref="group/app#613",
+        )
+
+        self.assertEqual(
+            binding.repository_scope.source,
+            RepositoryTargetSource.WORK_ITEM,
+        )
+        self.assertEqual(
+            binding.repository_scope.source_ref,
+            "group/app#613",
+        )
+        self.assertTrue(
+            all(
+                evidence.source == RepositoryTargetSource.WORK_ITEM
+                for evidence in binding.repository_scope.selection_evidence
+            )
+        )
+
     def test_coordinated_writable_scope_is_persisted_atomically(self) -> None:
         self._publish_secret()
         second_path = Path(self.project.path) / "repo-2"
