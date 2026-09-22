@@ -1,3 +1,5 @@
+import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
+
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
   { id: "inbox", label: "Attention", group: "Home", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
@@ -106,15 +108,8 @@ function conceptBadge(kind, label = null) {
 }
 
 function statusBadge(status, label = null) {
-  const value = String(status || "unknown").toLowerCase();
-  let family = "neutral";
-  if (["active", "ready", "healthy", "fresh", "current", "succeeded", "verified", "available", "approved"].includes(value)) family = "positive";
-  else if (["pending", "degraded", "partial", "stale", "warning", "paused", "quota", "throttled"].includes(value)) family = "warning";
-  else if (["denied", "failed", "invalid", "blocked", "quarantined", "unavailable", "conflict", "revoked"].includes(value)) family = "negative";
-  const span = document.createElement("span");
-  span.className = `product-status-badge status-${family}`;
-  span.dataset.status = value;
-  span.textContent = label || value;
+  const span = sharedStatusBadge(status, label, { className: "product-status-badge" });
+  span.classList.add(`status-${sharedStatusFamily(status)}`);
   return span;
 }
 
