@@ -925,7 +925,7 @@ class AgentTeamService:
             if record.coordinator_execution_id:
                 execution_roles[record.coordinator_execution_id] = "coordinator"
             for execution_id in record.member_execution_ids.values():
-                execution_roles[execution_id] = "worker"
+                execution_roles[execution_id] = "workers"
 
         usage = {"coordinator": {}, "workers": {}}
         if self.runtime_usage_store is not None:
