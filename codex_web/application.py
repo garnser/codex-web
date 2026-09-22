@@ -1538,6 +1538,7 @@ action_intent_service = ActionIntentService(
     authority=authority_role_service,
     identity=identity_service,
     capacity=capacity_service,
+    execution_workers=execution_worker_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store

@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from codex_web.action_intents import (
     ActionDecisionOutcome,
@@ -46,7 +47,13 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.models import WorkItemState
-from codex_web.resources import ResourceCreate, ResourceType
+from codex_web.resources import (
+    RepositoryExecutionScope,
+    RepositoryTargetSource,
+    RepositoryWriteMode,
+    ResourceCreate,
+    ResourceType,
+)
 from codex_web.services.action_intents import (
     ActionIntentConflictError,
     ActionIntentService,
@@ -687,6 +694,117 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(first.execution_id, "exec-a")
+
+    async def test_execution_bound_repository_action_must_stay_in_writable_scope(self) -> None:
+        writable_repository = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Writable repository",
+            ),
+            actor=self.actor,
+        )
+        read_only_repository = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Read-only repository",
+            ),
+            actor=self.actor,
+        )
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=self.reference.provider_type,
+                provider_instance=self.reference.provider_instance,
+                resource_ids=(
+                    self.resource.id,
+                    writable_repository.id,
+                    read_only_repository.id,
+                ),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        assignment = SimpleNamespace(
+            repository_scope=RepositoryExecutionScope(
+                organization_id="local",
+                workspace_id="default",
+                project_id="home",
+                writable_repository_ids=(writable_repository.id,),
+                read_only_repository_ids=(read_only_repository.id,),
+                write_mode=RepositoryWriteMode.SINGLE,
+                source=RepositoryTargetSource.EXPLICIT,
+            ),
+            repository_target=None,
+        )
+        self.service.execution_workers = SimpleNamespace(
+            assignment_for_execution=lambda execution_id, actor: assignment
+        )
+
+        allowed = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=self._request(
+                    resource_ids=(self.resource.id, writable_repository.id),
+                    idempotency_key="execution-scope-allowed",
+                ),
+                execution_id="exec-coordinated",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(
+            set(allowed.resource_ids),
+            {self.resource.id, writable_repository.id},
+        )
+
+        with self.assertRaisesRegex(
+            ActionIntentConflictError,
+            "outside execution writable scope",
+        ):
+            self.service.create(
+                ActionIntentCreate(
+                    binding_id=binding.id,
+                    request=self._request(
+                        resource_ids=(self.resource.id, read_only_repository.id),
+                        idempotency_key="execution-scope-denied",
+                    ),
+                    execution_id="exec-coordinated",
+                ),
+                actor=self.actor,
+            )
+
+        self.assertEqual(len(self.service.list(self.actor)), 1)
+
+    async def test_execution_bound_repository_action_requires_assignment_state(self) -> None:
+        repository = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository",
+            ),
+            actor=self.actor,
+        )
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=self.reference.provider_type,
+                provider_instance=self.reference.provider_instance,
+                resource_ids=(self.resource.id, repository.id),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+
+        with self.assertRaisesRegex(
+            ActionIntentConflictError,
+            "requires canonical execution assignment state",
+        ):
+            self.service.create(
+                ActionIntentCreate(
+                    binding_id=binding.id,
+                    request=self._request(
+                        resource_ids=(self.resource.id, repository.id),
+                    ),
+                    execution_id="exec-missing-assignment",
+                ),
+                actor=self.actor,
+            )
 
     async def test_callback_provider_must_match_intent_provider(self) -> None:
         intent = self._create()

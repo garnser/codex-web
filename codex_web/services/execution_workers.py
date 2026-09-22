@@ -319,6 +319,52 @@ class ExecutionWorkerService:
             remediation=remediation,
         )
 
+    def assignment_for_execution(
+        self,
+        execution_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        matches = [
+            item
+            for item in self.store.load().assignments
+            if self._same_scope(item, actor)
+            and item.execution_id == execution_id
+        ]
+        if not matches:
+            raise AssignmentNotFoundError("execution assignment not found")
+        matches.sort(key=lambda item: (item.created_at, item.id), reverse=True)
+        canonical = matches[0]
+        canonical_scope = (
+            canonical.repository_scope.model_dump(mode="json")
+            if canonical.repository_scope is not None
+            else None
+        )
+        canonical_target = (
+            canonical.repository_target.model_dump(mode="json")
+            if canonical.repository_target is not None
+            else None
+        )
+        if any(
+            (
+                item.repository_scope.model_dump(mode="json")
+                if item.repository_scope is not None
+                else None
+            )
+            != canonical_scope
+            or (
+                item.repository_target.model_dump(mode="json")
+                if item.repository_target is not None
+                else None
+            )
+            != canonical_target
+            for item in matches[1:]
+        ):
+            raise WorkerConflictError(
+                "execution assignments disagree on repository authority"
+            )
+        return canonical
+
     def list_workers(self, actor: AuthenticationActor) -> list[ExecutionWorker]:
         self._require_admin(actor)
         return sorted(
