@@ -134,6 +134,8 @@ class TurnExecutionService:
                 "removed_fields": selection.get("removed_fields", []),
                 "events": selection.get("events", []),
                 "current": selection.get("current", {}),
+                "event_offset": selection.get("event_offset", 0),
+                "next_event_offset": selection.get("next_event_offset"),
                 "requires_progressive_retrieval": selection.get(
                     "requires_progressive_retrieval",
                     False,
@@ -1289,11 +1291,17 @@ class TurnExecutionService:
                         if item
                     )
 
+            effective_work_item_ref = (
+                work_item_ref
+                or getattr(assignment, "work_item_ref", None)
+            )
             (
                 work_item_context_text,
                 work_item_context_selection,
                 delivered_work_item_context,
-            ) = self._work_item_continuation_context(work_item_ref)
+            ) = self._work_item_continuation_context(
+                effective_work_item_ref
+            )
             if work_item_context_text:
                 effective_developer_instructions = "\n\n".join(
                     item
@@ -1440,7 +1448,7 @@ class TurnExecutionService:
                 )
                 response = runtime_turn_result.payload
                 if (
-                    work_item_ref
+                    effective_work_item_ref
                     and work_item_context_selection is not None
                     and delivered_work_item_context is not None
                     and self.work_item_context_recorder is not None
@@ -1448,7 +1456,7 @@ class TurnExecutionService:
                     profile = getattr(assignment, "agent_profile", None)
                     with contextlib.suppress(Exception):
                         self.work_item_context_recorder(
-                            work_item_ref,
+                            effective_work_item_ref,
                             canonical_execution_id,
                             work_item_context_selection,
                             delivered_work_item_context,
