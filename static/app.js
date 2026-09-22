@@ -1419,39 +1419,22 @@ async function newThread() {
   await refresh();
 }
 
+function blockRepositoryTarget(target) {
+  if (!target.blocked) return false;
+  renderRepositoryTargetStatus();
+  $("repository-target")?.focus();
+  addMessage("Execution blocked", `${target.code}: ${target.message}`, "tool", new Date());
+  return true;
+}
+
 async function sendPrompt() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return;
   persistRunSettings();
-
-  let target = repositoryTargetState();
-  if (target.blocked) {
-    renderRepositoryTargetStatus();
-    const mutable = $("repository-target");
-    mutable?.focus();
-    addMessage(
-      "Execution blocked",
-      `${target.code}: ${target.message}`,
-      "tool",
-      new Date(),
-    );
-    return;
-  }
-
+  if (blockRepositoryTarget(repositoryTargetState())) return;
   if (!state.threadId) await newThread();
   const threadId = state.threadId;
-  target = repositoryTargetState(threadId);
-  if (target.blocked) {
-    renderRepositoryTargetStatus();
-    $("repository-target")?.focus();
-    addMessage(
-      "Execution blocked",
-      `${target.code}: ${target.message}`,
-      "tool",
-      new Date(),
-    );
-    return;
-  }
+  if (blockRepositoryTarget(repositoryTargetState(threadId))) return;
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   resizePromptInput();
