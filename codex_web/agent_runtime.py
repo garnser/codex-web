@@ -15,8 +15,8 @@ from codex_web.failures import FailureReason, FailureRecord
 
 AGENT_SESSION_STATE_CONTRACT = ContractSpec(
     "agent-session-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.1",),
 )
 
 
