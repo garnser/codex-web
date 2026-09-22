@@ -205,13 +205,19 @@ class WorkerExecutionReadiness(BaseModel):
     remediation: str | None = None
 
 
+class CodexExecutionAuthenticationMode(StrEnum):
+    TRUSTED_LOCAL_SESSION = "trusted_local_session"
+    DELEGATED_WORKER_TOKEN = "delegated_worker_token"
+    API_KEY = "api_key"
+
+
 class ExecutionRuntimeBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
     provider_id: str = Field(min_length=1)
     runtime_id: str = Field(min_length=1)
     capability_revision: int = Field(ge=1)
-    authentication_mode: str | None = None
+    authentication_mode: CodexExecutionAuthenticationMode | None = None
 
 
 class ExecutionAssignmentCreate(BaseModel):
