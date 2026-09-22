@@ -26,9 +26,14 @@ from codex_web.execution_profiles import ExecutionProfileContract
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ApprovalPolicy, Project, SandboxMode
 from codex_web.resources import (
+    RepositoryExecutionScope,
     RepositoryExecutionTarget,
+    RepositoryTargetEvidence,
+    RepositoryTargetSource,
+    RepositoryWriteMode,
     Resource,
     ResourceLifecycle,
+    ResourceType,
 )
 from codex_web.runtime_credentials import (
     DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
@@ -96,6 +101,7 @@ class TurnExecutionBinding:
     resource_ids: tuple[str, ...]
     repository_resource_id: str | None
     repository_target: RepositoryExecutionTarget
+    repository_scope: RepositoryExecutionScope
     base_revision: str | None
     sandbox: SandboxMode
     approval_policy: ApprovalPolicy
@@ -117,6 +123,7 @@ class TurnExecutionBinding:
             "resource_ids": list(self.resource_ids),
             "repository_resource_id": self.repository_resource_id,
             "repository_target": self.repository_target.model_dump(mode="json"),
+            "repository_scope": self.repository_scope.model_dump(mode="json"),
             "base_revision": self.base_revision,
             "sandbox": self.sandbox,
             "approval_policy": self.approval_policy,
@@ -329,6 +336,149 @@ class TurnExecutionBindingService:
                 },
             )
         return target
+
+    def _coordinated_repository_scope(
+        self,
+        project: Project,
+        *,
+        writable_repository_ids: tuple[str, ...],
+        read_only_repository_ids: tuple[str, ...] = (),
+        source_ref: str | None = None,
+    ) -> tuple[RepositoryExecutionTarget, RepositoryExecutionScope]:
+        writable = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in writable_repository_ids
+                if str(value).strip()
+            )
+        )
+        if len(writable) < 2:
+            raise TurnExecutionBindingError(
+                "coordinated repository execution requires at least two writable repositories",
+                code="repository_scope_invalid",
+                blocker={
+                    "code": "repository_scope_invalid",
+                    "message": (
+                        "coordinated repository execution requires at least "
+                        "two writable repositories"
+                    ),
+                    "retryable": False,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": f"/api/projects/{project.id}/resources",
+                },
+            )
+        read_only = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in read_only_repository_ids
+                if str(value).strip()
+            )
+        )
+        if set(writable) & set(read_only):
+            raise TurnExecutionBindingError(
+                "writable repositories cannot also be read-only context",
+                code="repository_scope_conflict",
+                blocker={
+                    "code": "repository_scope_conflict",
+                    "message": "writable repositories cannot also be read-only context",
+                    "retryable": False,
+                    "target_type": "project",
+                    "target_id": project.id,
+                    "remediation_route": f"/api/projects/{project.id}/resources",
+                },
+            )
+
+        bound_ids = set(self.resources.resource_ids_for_project(project))
+        for repository_id in (*writable, *read_only):
+            if repository_id not in bound_ids:
+                raise TurnExecutionBindingError(
+                    f"repository {repository_id} is not bound to Project {project.id}",
+                    code="repository_target_unauthorized",
+                    blocker={
+                        "code": "repository_target_unauthorized",
+                        "message": (
+                            f"repository {repository_id} is not bound to "
+                            f"Project {project.id}"
+                        ),
+                        "retryable": False,
+                        "target_type": "repository",
+                        "target_id": repository_id,
+                        "remediation_route": f"/api/projects/{project.id}/resources",
+                    },
+                )
+            try:
+                resource = self.resources.get(repository_id, self.control_actor)
+            except Exception as exc:
+                raise TurnExecutionBindingError(
+                    f"repository {repository_id} is unavailable",
+                    code="repository_target_unauthorized",
+                    blocker={
+                        "code": "repository_target_unauthorized",
+                        "message": f"repository {repository_id} is unavailable",
+                        "retryable": False,
+                        "target_type": "repository",
+                        "target_id": repository_id,
+                        "remediation_route": f"/api/projects/{project.id}/resources",
+                    },
+                ) from exc
+            if resource.resource_type != ResourceType.REPOSITORY:
+                raise TurnExecutionBindingError(
+                    f"resource {repository_id} is not a repository",
+                    code="repository_target_wrong_type",
+                    blocker={
+                        "code": "repository_target_wrong_type",
+                        "message": f"resource {repository_id} is not a repository",
+                        "retryable": False,
+                        "target_type": "repository",
+                        "target_id": repository_id,
+                        "remediation_route": f"/api/projects/{project.id}/resources",
+                    },
+                )
+            if resource.lifecycle != ResourceLifecycle.ACTIVE:
+                raise TurnExecutionBindingError(
+                    f"repository {repository_id} is not active",
+                    code="repository_target_inactive",
+                    blocker={
+                        "code": "repository_target_inactive",
+                        "message": f"repository {repository_id} is not active",
+                        "retryable": False,
+                        "target_type": "repository",
+                        "target_id": repository_id,
+                        "remediation_route": f"/api/projects/{project.id}/resources",
+                    },
+                )
+
+        evidence = tuple(
+            RepositoryTargetEvidence(
+                source=RepositoryTargetSource.EXPLICIT,
+                repository_id=repository_id,
+                source_ref=source_ref,
+            )
+            for repository_id in writable
+        )
+        primary = RepositoryExecutionTarget(
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            mutable_repository_id=writable[0],
+            read_only_repository_ids=read_only,
+            source=RepositoryTargetSource.EXPLICIT,
+            source_ref=source_ref,
+            selection_evidence=evidence,
+        )
+        scope = RepositoryExecutionScope(
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+            project_id=project.id,
+            writable_repository_ids=writable,
+            read_only_repository_ids=read_only,
+            write_mode=RepositoryWriteMode.COORDINATED,
+            source=RepositoryTargetSource.EXPLICIT,
+            source_ref=source_ref,
+            selection_evidence=evidence,
+        )
+        return primary, scope
 
     def _secret_ref(
         self,
