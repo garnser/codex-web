@@ -135,18 +135,8 @@ function applyTheme(theme) {
   toggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
 }
 
-function developerPanelOpen() {
-  return Boolean($("developer-panel")?.open);
-}
-
-function scheduleCommunicationLogRender() {
-  if (!developerPanelOpen() || state.commLogRenderPending) return;
-  state.commLogRenderPending = true;
-  requestAnimationFrame(() => {
-    state.commLogRenderPending = false;
-    renderCommunicationLog();
-  });
-}
+function developerPanelOpen(){return Boolean($("developer-panel")?.open)}
+function scheduleCommunicationLogRender(){if(!developerPanelOpen()||state.commLogRenderPending)return;state.commLogRenderPending=true;requestAnimationFrame(()=>{state.commLogRenderPending=false;renderCommunicationLog()})}
 
 const api=createLoggedApi(logEvent);
 const pfUi=createPfUi({api,addMessage,loadThread,scheduleRefresh,logEvent});
