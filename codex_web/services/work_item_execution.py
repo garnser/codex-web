@@ -497,12 +497,22 @@ class WorkItemExecutionLifecycleService:
     def checkpoint(self, ref: str, payload: WorkItemCheckpointCreate) -> dict[str, Any]:
         state = self._state(ref)
         execution = state.execution
+        snapshot = self.continuation_snapshot(ref)
+        delivered_baseline = payload.delivered_work_item_context
+        if (
+            delivered_baseline is None
+            and payload.delivery_proven
+            and payload.work_item_hash == snapshot["work_item_hash"]
+            and payload.event_watermark == snapshot["event_watermark"]
+        ):
+            delivered_baseline = snapshot["work_item_context"]
         sequence = (
             execution.latest_checkpoint.sequence + 1
             if execution.latest_checkpoint is not None
             else 1
         )
         checkpoint = WorkItemExecutionCheckpoint(
+            schema_version=payload.schema_version,
             id=f"checkpoint-{sequence}",
             sequence=sequence,
             created_at=time.time(),
@@ -531,6 +541,7 @@ class WorkItemExecutionLifecycleService:
             delivery_proven=payload.delivery_proven,
             delivery_proof_ref=payload.delivery_proof_ref,
             definition_refs=payload.definition_refs,
+            delivered_work_item_context=delivered_baseline,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
