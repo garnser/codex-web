@@ -1204,6 +1204,42 @@ class TurnExecutionBindingTests(unittest.TestCase):
             (second.id,),
         )
 
+    def test_single_writable_collection_preserves_single_repository_semantics(self) -> None:
+        self._publish_secret()
+
+        binding = self.service.prepare(
+            thread_id="thread-single-collection",
+            execution_id="exec-single-collection",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            writable_repository_ids=(self.repository.id,),
+        )
+
+        workspace = self.workspaces.get(binding.workspace_id, self.actor)
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+        self.assertEqual(
+            binding.repository_scope.write_mode,
+            RepositoryWriteMode.SINGLE,
+        )
+        self.assertEqual(
+            binding.repository_scope.writable_repository_ids,
+            (self.repository.id,),
+        )
+        self.assertEqual(binding.repository_resource_id, self.repository.id)
+        self.assertEqual(
+            workspace.writable_repository_ids,
+            (self.repository.id,),
+        )
+        self.assertEqual(
+            assignment.repository_scope,
+            binding.repository_scope,
+        )
+
     def test_coordinated_writable_scope_is_persisted_atomically(self) -> None:
         self._publish_secret()
         second_path = Path(self.project.path) / "repo-2"
