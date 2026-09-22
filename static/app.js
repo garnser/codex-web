@@ -223,9 +223,7 @@ function modelOptionLabel(model) {
   return model.displayName || model.display_name || model.model || model.id || "Unnamed model";
 }
 
-function modelOptionValue(model) {
-  return model.model || model.id || "";
-}
+function modelOptionValue(model){return model.model||model.id||""}
 
 function renderModelOptions(selectedModel) {
   const options = [`<option value="">Project/default model</option>`];
