@@ -262,6 +262,21 @@ class WorkItemExecutionLifecycleService:
             blockers=payload.blockers,
             changed_files=payload.changed_files,
             next_actions=payload.next_actions,
+            execution_id=payload.execution_id,
+            execution_contract_version=payload.execution_contract_version,
+            agent_profile_id=payload.agent_profile_id,
+            agent_profile_revision=payload.agent_profile_revision,
+            role_id=payload.role_id,
+            provider_id=payload.provider_id,
+            runtime_id=payload.runtime_id,
+            session_ref=payload.session_ref,
+            work_item_revision=payload.work_item_revision,
+            work_item_hash=payload.work_item_hash,
+            event_watermark=payload.event_watermark,
+            delivered_context_hash=payload.delivered_context_hash,
+            delivery_proven=payload.delivery_proven,
+            delivery_proof_ref=payload.delivery_proof_ref,
+            definition_refs=payload.definition_refs,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
@@ -282,6 +297,12 @@ class WorkItemExecutionLifecycleService:
                 "blockers": checkpoint.blockers,
                 "changed_files": checkpoint.changed_files,
                 "next_actions": checkpoint.next_actions,
+                "execution_id": checkpoint.execution_id,
+                "work_item_revision": checkpoint.work_item_revision,
+                "work_item_hash": checkpoint.work_item_hash,
+                "event_watermark": checkpoint.event_watermark,
+                "delivery_proven": checkpoint.delivery_proven,
+                "delivery_proof_ref": checkpoint.delivery_proof_ref,
             },
         )
         return {
