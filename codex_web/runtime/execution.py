@@ -1256,6 +1256,7 @@ class TurnExecutionService:
                         },
                     ) from exc
                 session = await session_manager.start(binding.assignment_id)
+                assignment = binding
                 runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
                 canonical_repository_resource_id = getattr(
                     binding,
