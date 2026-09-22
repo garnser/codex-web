@@ -26,6 +26,11 @@ from codex_web.execution_workers import (
     WorkerEvent,
     WorkerResourceLimits,
 )
+from codex_web.resources import (
+    RepositoryExecutionScope,
+    RepositoryTargetSource,
+    RepositoryWriteMode,
+)
 from codex_web.services.work_item_runs import WorkItemRunProjectionService
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -50,6 +55,8 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         lease: AssignmentLease | None = None,
         artifact_ids: tuple[str, ...] = (),
         evidence_ids: tuple[str, ...] = (),
+        resource_ids: tuple[str, ...] = ("repo-1",),
+        repository_scope: RepositoryExecutionScope | None = None,
     ) -> ExecutionAssignment:
         terminal = status in {
             AssignmentStatus.SUCCEEDED,
@@ -63,7 +70,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             work_item_ref="group/app#42",
             execution_id=execution_id,
             project_id="home",
-            resource_ids=("repo-1",),
+            resource_ids=resource_ids,
             base_revision="abc123",
             execution_contract_version="1.0",
             required_capabilities=(WorkerCapability.GIT,),
@@ -72,6 +79,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             network=NetworkPolicy(),
             limits=WorkerResourceLimits(),
             secret_refs=("secret-ref-must-not-leak",),
+            repository_scope=repository_scope,
             status=status,
             fence=fence,
             lease=lease,
@@ -152,6 +160,43 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             cursor=first["nextCursor"],
         )
         self.assertEqual([item["executionId"] for item in second["items"]], ["exec-2"])
+
+    def test_coordinated_repository_scope_is_projected_on_run_summary(self) -> None:
+        scope = RepositoryExecutionScope(
+            organization_id="local",
+            workspace_id="default",
+            project_id="home",
+            writable_repository_ids=("repo-app", "repo-api"),
+            read_only_repository_ids=("repo-docs",),
+            write_mode=RepositoryWriteMode.COORDINATED,
+            source=RepositoryTargetSource.EXPLICIT,
+            source_ref="turn:multi-repo",
+        )
+        item = self.assignment(
+            "exec-coordinated",
+            status=AssignmentStatus.RUNNING,
+            created_at=35.0,
+            resource_ids=("repo-app", "repo-api", "repo-docs"),
+            repository_scope=scope,
+        )
+        self.seed([item])
+        service = WorkItemRunProjectionService(self.store)
+
+        payload = service.list_runs(
+            "group/app#42",
+            organization_id="local",
+            workspace_id="default",
+        )
+        projected = payload["active"][0]["repositoryScope"]
+
+        self.assertEqual(projected["writeMode"], "coordinated")
+        self.assertEqual(
+            projected["writableRepositoryIds"],
+            ["repo-app", "repo-api"],
+        )
+        self.assertEqual(projected["readOnlyRepositoryIds"], ["repo-docs"])
+        self.assertEqual(projected["source"], "explicit")
+        self.assertEqual(projected["sourceRef"], "turn:multi-repo")
 
     def test_retry_attempts_are_projected_from_immutable_worker_events(self) -> None:
         item = self.assignment(
@@ -358,6 +403,9 @@ class WorkItemRunUiContractTests(unittest.TestCase):
         self.assertIn("RUN_PAGE_SIZE = 20", ui)
         self.assertIn("/runs?", run_ui)
         self.assertIn("work-runs-load-more", run_ui)
+        self.assertIn("repositoryScope", run_ui)
+        self.assertIn("Repository execution scope", run_ui)
+        self.assertIn("writable_repositories", run_ui)
         self.assertIn("codex:work-item-run-updated", ui)
         self.assertIn("work_item.run.updated", app)
         self.assertNotIn("setInterval(() => refreshRuns", ui + run_ui)
