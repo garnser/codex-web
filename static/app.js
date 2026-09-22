@@ -1407,9 +1407,7 @@ async function newThread() {
     approval_policy: settings.approvalPolicy,
   });
   ep.applyThreadQuery(qs,settings);
-  if (settings.repositoryResourceId) {
-    qs.set("repository_resource_id", settings.repositoryResourceId);
-  }
+  if(settings.repositoryResourceId)qs.set("repository_resource_id",settings.repositoryResourceId);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
