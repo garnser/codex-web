@@ -75,6 +75,7 @@ test('overview Explain Action routes to canonical Autonomy explain UI without mo
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
   const dialog = page.locator('#product-workspace-dialog');
+  await dialog.locator('.product-overview-reference > summary').click();
   await dialog.locator('[data-product-explain-id]').fill('action-intent-123');
   await dialog.locator('[data-product-explain]').click();
 
