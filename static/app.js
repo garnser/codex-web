@@ -567,10 +567,10 @@ function toggleItemExpanded(scope, id) {
 
 function renderProjects() {
   $("projects").innerHTML = "";
-  state.projects.forEach((project) => {
+  state.projects.forEach((project)=>{
     const item = document.createElement("div");
-    const expanded = isItemExpanded("project", project.id);
-    item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
+    const expanded=isItemExpanded("project",project.id);
+    item.className=`item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
       <div class="item-header">
         <div class="item-main">
