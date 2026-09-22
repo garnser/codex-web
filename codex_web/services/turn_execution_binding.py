@@ -30,8 +30,9 @@ from codex_web.resources import (
     Resource,
     ResourceLifecycle,
 )
-from codex_web.services.codex_worker_configuration import (
-    CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+from codex_web.runtime_credentials import (
+    DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
+    runtime_credential_config_key,
 )
 from codex_web.services.configuration import (
     ConfigurationError,
@@ -183,8 +184,7 @@ class TurnExecutionBindingService:
         self.project_readiness = project_readiness
         self.skill_worker_requirements = skill_worker_requirements
         self.runtime_credential_configs = dict(
-            runtime_credential_configs
-            or {("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG}
+            runtime_credential_configs or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
         )
         self._clock = clock
 
@@ -352,8 +352,9 @@ class TurnExecutionBindingService:
                     "remediation_route": "/api/configuration",
                 },
             )
-        config_key = self.runtime_credential_configs.get(
-            (runtime_binding.provider_id, runtime_binding.runtime_id)
+        config_key = runtime_credential_config_key(
+            runtime_binding,
+            self.runtime_credential_configs,
         )
         if not config_key:
             raise TurnExecutionBindingError(

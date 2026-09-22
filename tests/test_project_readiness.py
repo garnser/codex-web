@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.bootstrap_engine import BootstrapExecutionStatus
-from codex_web.execution_workers import WorkerCapability
+from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -105,6 +105,19 @@ class _Secrets:
         return _Reference()
 
 
+class _Configuration:
+    def __init__(self, *, value=None, available=True) -> None:
+        self.value = value
+        self.available = available
+        self.calls = []
+
+    def resolve(self, key, context):
+        self.calls.append((key, context))
+        if not self.available:
+            raise LookupError("configuration not found")
+        return SimpleNamespace(value=self.value)
+
+
 class _Workers:
     def __init__(self, *, ready=True) -> None:
         self.ready = ready
@@ -182,6 +195,9 @@ class ProjectReadinessTests(unittest.TestCase):
         workers=None,
         bootstrap=None,
         environment_ready=True,
+        configuration=None,
+        runtime_binding=None,
+        runtime_credential_configs=None,
     ):
         return ProjectReadinessService(
             projects=_Projects(self.project),
@@ -191,6 +207,9 @@ class ProjectReadinessTests(unittest.TestCase):
             bootstrap=bootstrap or _BootstrapStore(),
             store=self.readiness_store,
             load_work_items=lambda: dict(self.work_items),
+            configuration=configuration,
+            runtime_binding=runtime_binding,
+            runtime_credential_configs=runtime_credential_configs,
             environment_probe=lambda *_args: {
                 "available": environment_ready,
                 "code": (
@@ -233,6 +252,71 @@ class ProjectReadinessTests(unittest.TestCase):
             value.last_successful_verification_at,
             value.generated_at,
         )
+
+    def test_required_codex_credential_is_visible_before_execution(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+        )
+        value = self.service(
+            configuration=_Configuration(available=False),
+            runtime_binding=runtime,
+        ).evaluate(self.project.id, actor=_actor())
+
+        self.assertFalse(value.execution_ready)
+        blocker = next(
+            item for item in value.blockers
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(blocker.code, "credential_reference_missing")
+        self.assertEqual(
+            blocker.affected_id,
+            "codex.worker.access_token_secret",
+        )
+        self.assertEqual(blocker.remediation_route, "/api/configuration")
+        self.assertNotIn("DO_NOT_LEAK", json.dumps(blocker.model_dump(mode="json")))
+
+    def test_configured_codex_credential_clears_readiness_blocker(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+        )
+        value = self.service(
+            configuration=_Configuration(
+                value={"kind": "secret", "secret_id": "secret-codex"}
+            ),
+            runtime_binding=runtime,
+        ).evaluate(self.project.id, actor=_actor())
+
+        check = next(
+            item for item in value.checks
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(check.status, ReadinessCheckStatus.READY)
+        self.assertEqual(check.code, "credential_reference_ready")
+        self.assertTrue(value.execution_ready)
+
+    def test_runtime_without_credential_requirement_is_not_globally_blocked(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="local",
+            runtime_id="credentialless",
+            capability_revision=1,
+        )
+        value = self.service(
+            configuration=_Configuration(available=False),
+            runtime_binding=runtime,
+            runtime_credential_configs={},
+        ).evaluate(self.project.id, actor=_actor())
+
+        check = next(
+            item for item in value.checks
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(check.status, ReadinessCheckStatus.NOT_APPLICABLE)
+        self.assertEqual(check.code, "credential_reference_not_required")
+        self.assertTrue(value.execution_ready)
 
     def test_missing_repository_blocks_semantic_and_execution_readiness(self):
         value = self.service(

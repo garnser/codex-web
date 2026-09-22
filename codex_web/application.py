@@ -1098,6 +1098,8 @@ project_readiness_service = ProjectReadinessService(
     store=project_readiness_store,
     load_work_items=runtime_state.work_item_states.load,
     environment_probe=_project_readiness_environment,
+    configuration=configuration_service,
+    runtime_binding=codex_execution_runtime_binding,
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_readiness_store = project_readiness_store
@@ -1181,10 +1183,6 @@ turn_execution_binding_service = TurnExecutionBindingService(
     execution_worker_service,
     control_actor=identity_service.local_trusted_actor(),
     runtime_binding=codex_execution_runtime_binding,
-    runtime_credential_configs={
-        ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
-        ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
-    },
     execution_profiles=execution_profile_definition_service,
     control_plane_available=lambda: (
         control_plane_broker_factory.service is not None

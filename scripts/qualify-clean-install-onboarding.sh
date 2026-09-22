@@ -21,6 +21,58 @@ json_post() {
     "$url"
 }
 
+ensure_codex_credential() {
+  local project_id="$1"
+  local secret_id draft_id
+
+  secret_id="$(json_get "$BASE_URL/api/secrets" | jq -r '
+    [.items[] | select(.name == "CI onboarding Codex access token" and .status == "active")][0].id // empty
+  ')"
+  if [[ -z "$secret_id" ]]; then
+    secret_id="$(json_post "$BASE_URL/api/secrets" '{
+      "name": "CI onboarding Codex access token",
+      "value": "ci-qualification-token-not-a-real-credential",
+      "provider": "openai",
+      "purpose": "clean-install readiness qualification"
+    }' | jq -r '.item.id')"
+  fi
+
+  if json_post "$BASE_URL/api/configuration/resolve" "$(jq -nc \
+      --arg project_id "$project_id" \
+      '{
+        key:"codex.worker.access_token_secret",
+        context:{project_id:$project_id}
+      }')" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  draft_id="$(json_post "$BASE_URL/api/configuration/drafts" "$(jq -nc \
+      --arg project_id "$project_id" \
+      --arg secret_id "$secret_id" \
+      '{
+        key:"codex.worker.access_token_secret",
+        scope_type:"project",
+        scope_id:$project_id,
+        value:{kind:"secret",secret_id:$secret_id},
+        reason:"clean-install readiness qualification"
+      }')" | jq -r '.record.id')"
+  json_post "$BASE_URL/api/configuration/$draft_id/publish" \
+    '{"reason":"clean-install readiness qualification"}' >/dev/null
+}
+
+assert_credential_blocker() {
+  local project_id="$1"
+  local readiness
+  readiness="$(json_get "$BASE_URL/api/projects/$project_id/readiness")"
+  jq -e '
+    .execution_ready == false
+    and ([.checks[]
+      | select(.status == "blocked")
+      | .code
+    ] | any(. == "credential_reference_missing"))
+  ' <<<"$readiness" >/dev/null
+}
+
 wait_endpoint() {
   local path="$1"
   for _ in $(seq 1 90); do
@@ -140,8 +192,10 @@ fi
 project_id="$(jq -r '.id' <<<"$project")"
 fresh_status="$(jq -r '.freshBootstrap.status // empty' <<<"$project")"
 if [[ -n "$fresh_status" ]]; then
-  test "$fresh_status" = "ready"
+  test "$fresh_status" = "blocked"
 fi
+assert_credential_blocker "$project_id"
+ensure_codex_credential "$project_id"
 assert_project_ready "$project_id"
 repo_before="$(assert_single_repo "$project_id")"
 
