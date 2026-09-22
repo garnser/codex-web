@@ -20,8 +20,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.6",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
+    "1.7",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
 )
 
 
@@ -123,6 +123,72 @@ class ExecutionWorkerRegister(BaseModel):
     capabilities: tuple[WorkerCapability, ...]
     supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
     max_concurrency: int = Field(default=1, ge=1, le=128)
+
+
+class ExecutionWorkerEnrollmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    service_identity_id: str = Field(min_length=1)
+    pool: str = Field(default="local", min_length=1)
+    expires_in_seconds: int = Field(default=300, ge=30, le=1800)
+    allowed_capabilities: tuple[WorkerCapability, ...]
+    max_concurrency_ceiling: int = Field(default=1, ge=1, le=128)
+
+    @model_validator(mode="after")
+    def normalize(self) -> "ExecutionWorkerEnrollmentRequest":
+        self.allowed_capabilities = tuple(
+            sorted(set(self.allowed_capabilities), key=lambda value: value.value)
+        )
+        if not self.allowed_capabilities:
+            raise ValueError("enrollment requires at least one allowed capability")
+        return self
+
+
+class ExecutionWorkerEnrollmentGrant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: f"worker-enrollment-{uuid.uuid4().hex}")
+    organization_id: str
+    workspace_id: str
+    service_identity_id: str
+    pool: str
+    token_digest: str = Field(min_length=64, max_length=64)
+    allowed_capabilities: tuple[WorkerCapability, ...]
+    max_concurrency_ceiling: int = Field(ge=1, le=128)
+    created_by: str
+    created_at: float = Field(default_factory=time.time)
+    expires_at: float
+    used_at: float | None = None
+    worker_id: str | None = None
+
+
+class ExecutionWorkerEnroll(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    token: str = Field(min_length=20)
+    version: str = Field(min_length=1)
+    capabilities: tuple[WorkerCapability, ...]
+    supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
+    max_concurrency: int = Field(default=1, ge=1, le=128)
+    probe_results: dict[str, bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize(self) -> "ExecutionWorkerEnroll":
+        self.capabilities = tuple(
+            sorted(set(self.capabilities), key=lambda value: value.value)
+        )
+        self.supported_execution_contract_versions = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in self.supported_execution_contract_versions
+                if item.strip()
+            )
+        )
+        if not self.capabilities:
+            raise ValueError("enrolled worker requires at least one capability")
+        if not self.supported_execution_contract_versions:
+            raise ValueError("enrolled worker requires an execution contract version")
+        return self
 
 
 class WorkerExecutionReadiness(BaseModel):
@@ -363,3 +429,4 @@ class ExecutionWorkerState(BaseModel):
     workers: list[ExecutionWorker] = Field(default_factory=list)
     assignments: list[ExecutionAssignment] = Field(default_factory=list)
     events: list[WorkerEvent] = Field(default_factory=list)
+    enrollments: list[ExecutionWorkerEnrollmentGrant] = Field(default_factory=list)

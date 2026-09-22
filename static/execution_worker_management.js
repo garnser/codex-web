@@ -200,8 +200,21 @@
         .finally(() => { if (document.contains(button)) button.disabled = false; });
     });
     loadActor().catch(console.error);
+    import(`${BASE}/static/execution_worker_enrollment.js`)
+      .then(({ installExecutionWorkerEnrollment }) => installExecutionWorkerEnrollment({
+        apiRequest,
+        canManage,
+        setStatus,
+        escapeHtml,
+        base: BASE,
+      }))
+      .catch(console.error);
   }
 
   window.addEventListener("codex:execution-worker-state-rendered", (event) => hydrate(event.detail || {}));
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", bind, { once: true });
+  } else {
+    bind();
+  }
 })();

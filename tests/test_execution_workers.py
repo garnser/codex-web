@@ -18,6 +18,8 @@ from codex_web.execution_workers import (
     AssignmentStartRequest,
     AssignmentStatus,
     ExecutionAssignmentCreate,
+    ExecutionWorkerEnroll,
+    ExecutionWorkerEnrollmentRequest,
     ExecutionWorkerRegister,
     NetworkPolicy,
     WorkerCapability,
@@ -35,6 +37,7 @@ from codex_web.identity import (
 )
 from codex_web.services.execution_workers import (
     ExecutionWorkerService,
+    WorkerCapabilityError,
     WorkerConflictError,
     WorkerLeaseError,
 )
@@ -188,7 +191,7 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.6")
+        self.assertEqual(state.schema_version, "1.7")
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
@@ -232,6 +235,138 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 ),
                 actor=self.admin,
             )
+
+    def test_enrollment_token_is_single_use_scoped_and_digest_only(self) -> None:
+        grant, token = self.service.create_enrollment(
+            ExecutionWorkerEnrollmentRequest(
+                service_identity_id="worker-service",
+                pool="enrolled",
+                expires_in_seconds=120,
+                allowed_capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                ),
+                max_concurrency_ceiling=2,
+            ),
+            actor=self.admin,
+            now=100.0,
+        )
+        raw = json.dumps(self.service.store.load().model_dump(mode="json"))
+        self.assertNotIn(token, raw)
+        self.assertIn(grant.id, raw)
+
+        worker = self.service.enroll(
+            ExecutionWorkerEnroll(
+                token=token,
+                version="2.0.0",
+                capabilities=(WorkerCapability.GIT,),
+                max_concurrency=1,
+                probe_results={"git": True},
+            ),
+            now=101.0,
+        )
+        self.assertEqual(worker.pool, "enrolled")
+        self.assertEqual(worker.service_identity_id, "worker-service")
+
+        with self.assertRaisesRegex(WorkerConflictError, "already used"):
+            self.service.enroll(
+                ExecutionWorkerEnroll(
+                    token=token,
+                    version="2.0.0",
+                    capabilities=(WorkerCapability.GIT,),
+                ),
+                now=102.0,
+            )
+
+    def test_enrollment_rejects_expired_escalated_and_failed_probe(self) -> None:
+        _, expired = self.service.create_enrollment(
+            ExecutionWorkerEnrollmentRequest(
+                service_identity_id="worker-service",
+                pool="expired",
+                expires_in_seconds=30,
+                allowed_capabilities=(WorkerCapability.GIT,),
+            ),
+            actor=self.admin,
+            now=100.0,
+        )
+        with self.assertRaisesRegex(WorkerConflictError, "expired"):
+            self.service.enroll(
+                ExecutionWorkerEnroll(
+                    token=expired,
+                    version="1.0.0",
+                    capabilities=(WorkerCapability.GIT,),
+                ),
+                now=131.0,
+            )
+
+        _, scoped = self.service.create_enrollment(
+            ExecutionWorkerEnrollmentRequest(
+                service_identity_id="worker-service",
+                pool="scoped",
+                allowed_capabilities=(WorkerCapability.GIT,),
+                max_concurrency_ceiling=1,
+            ),
+            actor=self.admin,
+            now=200.0,
+        )
+        with self.assertRaisesRegex(WorkerCapabilityError, "outside enrollment scope"):
+            self.service.enroll(
+                ExecutionWorkerEnroll(
+                    token=scoped,
+                    version="1.0.0",
+                    capabilities=(
+                        WorkerCapability.GIT,
+                        WorkerCapability.NETWORK,
+                    ),
+                ),
+                now=201.0,
+            )
+        with self.assertRaisesRegex(WorkerCapabilityError, "probe failed"):
+            self.service.enroll(
+                ExecutionWorkerEnroll(
+                    token=scoped,
+                    version="1.0.0",
+                    capabilities=(WorkerCapability.GIT,),
+                    probe_results={"git": False},
+                ),
+                now=202.0,
+            )
+
+    def test_reenrollment_reconciles_existing_worker_without_duplicate_identity(self) -> None:
+        _, token = self.service.create_enrollment(
+            ExecutionWorkerEnrollmentRequest(
+                service_identity_id="worker-service",
+                pool="local",
+                allowed_capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                ),
+                max_concurrency_ceiling=2,
+            ),
+            actor=self.admin,
+            now=300.0,
+        )
+        worker = self.service.enroll(
+            ExecutionWorkerEnroll(
+                token=token,
+                version="3.0.0",
+                capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                ),
+                max_concurrency=2,
+            ),
+            now=301.0,
+        )
+        self.assertEqual(worker.id, self.worker.id)
+        matching = [
+            item
+            for item in self.service.store.load().workers
+            if item.service_identity_id == "worker-service" and item.pool == "local"
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].version, "3.0.0")
+        self.assertEqual(matching[0].max_concurrency, 2)
 
     def test_assignment_contains_bounded_references_not_secret_material(self) -> None:
         assignment = self._assignment()
@@ -793,6 +928,49 @@ class ExecutionWorkerApiAssuranceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"]["lifecycle"], "quarantined")
+
+    def test_mfa_admin_can_issue_single_use_enrollment_without_exposing_digest(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        issued = self.client.post(
+            "/api/execution-workers/enrollments",
+            json={
+                "service_identity_id": "api-worker-service",
+                "pool": "api-enrolled",
+                "expires_in_seconds": 120,
+                "allowed_capabilities": ["git"],
+                "max_concurrency_ceiling": 1,
+            },
+        )
+        self.assertEqual(issued.status_code, 200)
+        payload = issued.json()
+        self.assertTrue(payload["token"])
+        self.assertNotIn("token_digest", payload["item"])
+
+        enrolled = self.client.post(
+            "/api/execution-workers/enroll",
+            json={
+                "token": payload["token"],
+                "version": "2.0.0",
+                "capabilities": ["git"],
+                "max_concurrency": 1,
+                "probe_results": {"git": True},
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        self.assertEqual(enrolled.json()["item"]["pool"], "api-enrolled")
+
+        replay = self.client.post(
+            "/api/execution-workers/enroll",
+            json={
+                "token": payload["token"],
+                "version": "2.0.0",
+                "capabilities": ["git"],
+            },
+        )
+        self.assertEqual(replay.status_code, 409)
+        self.assertIn("already used", replay.json()["detail"])
 
     def test_worker_owned_heartbeat_remains_service_identity_gated_not_mfa_gated(self) -> None:
         self.actor = AuthenticationActor(

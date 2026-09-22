@@ -12,6 +12,8 @@ from codex_web.execution_workers import (
     AssignmentRenewRequest,
     AssignmentStartRequest,
     ExecutionAssignmentCreate,
+    ExecutionWorkerEnroll,
+    ExecutionWorkerEnrollmentRequest,
     ExecutionWorkerRegister,
     WorkerCapability,
     WorkerHeartbeatRequest,
@@ -146,6 +148,58 @@ def build_execution_workers_router(
             }
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/enrollments")
+    async def list_enrollments(request: Request) -> dict[str, Any]:
+        try:
+            items = service.list_enrollments(_control_actor(request))
+            return {
+                "items": [
+                    {
+                        key: value
+                        for key, value in item.model_dump(mode="json").items()
+                        if key != "token_digest"
+                    }
+                    for item in items
+                ]
+            }
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/enrollments")
+    async def create_enrollment(
+        payload: ExecutionWorkerEnrollmentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item, token = service.create_enrollment(
+                payload,
+                actor=_control_actor(request),
+            )
+            metadata = {
+                key: value
+                for key, value in item.model_dump(mode="json").items()
+                if key != "token_digest"
+            }
+            return {"item": metadata, "token": token}
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/enroll")
+    async def enroll_worker(
+        payload: ExecutionWorkerEnroll,
+    ) -> dict[str, Any]:
+        try:
+            item = service.enroll(payload)
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ExecutionWorkerError, ValueError)):
                 raise _error(exc) from exc
             raise
 
