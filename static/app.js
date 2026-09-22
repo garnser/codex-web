@@ -186,17 +186,9 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
 
 function activeProject(){return state.projects.find(project=>project.id===state.projectId)||state.projects[0]}
 
-function loadProjectSettings() {
-  try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
+function loadProjectSettings(){try{return JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")}catch{return{}}}
 
-function savedProjectSettings(projectId = state.projectId) {
-  return loadProjectSettings()[projectId] || {};
-}
+function savedProjectSettings(projectId=state.projectId){return loadProjectSettings()[projectId]||{}}
 
 function currentRunSettings() {
   const project = activeProject();
@@ -217,9 +209,7 @@ function repositoryTargetState(threadId=state.threadId){return rtui.targetState(
 function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
-function threadRunSettings(threadId = state.threadId) {
-  return state.threadSettings?.[threadId] || {};
-}
+function threadRunSettings(threadId=state.threadId){return state.threadSettings?.[threadId]||{}}
 
 function selectedThreadTurnOptions(threadId = state.threadId) {
   const settings = threadRunSettings(threadId);
