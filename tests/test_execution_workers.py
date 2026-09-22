@@ -500,6 +500,19 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             now=first.lease.expires_at + 1,
         )
         self.assertEqual(lost, [assignment.id])
+        lost_assignment = next(
+            item
+            for item in self.service.store.load().assignments
+            if item.id == assignment.id
+        )
+        self.assertIsNotNone(lost_assignment.failure)
+        self.assertEqual(
+            lost_assignment.failure.reason_code.value,
+            "worker_lease_lost",
+        )
+        self.assertTrue(
+            lost_assignment.failure.automatic_retry_allowed
+        )
         self.service.retry_lost(assignment.id, actor=self.admin)
         second = self.service.claim(
             self.worker.id,
@@ -518,6 +531,51 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                     succeeded=True,
                 ),
                 actor=self.worker_actor,
+            )
+
+    def test_non_transient_worker_failure_cannot_auto_retry(self) -> None:
+        assignment = self._assignment()
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(),
+            actor=self.worker_actor,
+        )
+        self.service.start(
+            self.worker.id,
+            assignment.id,
+            AssignmentStartRequest(
+                fence=claimed.fence,
+                lease_token=claimed.lease.lease_token,
+            ),
+            actor=self.worker_actor,
+        )
+        failed = self.service.complete(
+            self.worker.id,
+            assignment.id,
+            AssignmentCompleteRequest(
+                fence=claimed.fence,
+                lease_token=claimed.lease.lease_token,
+                succeeded=False,
+                failure_code="resource_limit",
+                failure_message="memory pressure",
+            ),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(failed.status, AssignmentStatus.FAILED)
+        self.assertIsNotNone(failed.failure)
+        self.assertEqual(
+            failed.failure.reason_code.value,
+            "resource_limit",
+        )
+        self.assertEqual(
+            failed.failure.retryability.value,
+            "after_remediation",
+        )
+        with self.assertRaises(WorkerConflictError):
+            self.service.retry_lost(
+                assignment.id,
+                actor=self.admin,
             )
 
     def test_quarantined_worker_cannot_complete_existing_work(self) -> None:
