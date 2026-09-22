@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workspace components fixture</title>
+  <link rel="stylesheet" href="/static/design_tokens.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workspace_components.css">
+</head>
+<body>
+  <main id="fixture-root"></main>
+  <script type="module">
+    import {
+      statusBadge,
+      identityChip,
+      objectHeader,
+      metadataGrid,
+      statePanel,
+      skeleton,
+      timeline,
+      provenanceDisclosure,
+      surfaceCard,
+    } from '/static/workspace_components.js';
+
+    const root = document.querySelector('#fixture-root');
+    root.style.display = 'grid';
+    root.style.gap = '16px';
+
+    const action = document.createElement('button');
+    action.textContent = 'Open';
+    action.type = 'button';
+    root.appendChild(objectHeader({
+      eyebrow: 'Work',
+      title: 'Canonical work item',
+      description: 'Shared object header',
+      status: 'running',
+      identity: { id: 'agent-1', label: 'Build agent', kind: 'agent', status: 'healthy' },
+      actions: [action],
+    }));
+
+    const badges = document.createElement('div');
+    badges.id = 'badges';
+    badges.append(
+      statusBadge('healthy'),
+      statusBadge('degraded'),
+      statusBadge('failed'),
+      statusBadge('custom'),
+      identityChip({ id: 'person-1', label: 'Alice', kind: 'person', status: 'active' }),
+      identityChip({ id: 'team-1', label: 'Platform', kind: 'team' }),
+    );
+    root.appendChild(badges);
+
+    root.appendChild(metadataGrid([
+      { label: 'Provider', value: 'codex' },
+      { label: 'Runtime', value: 'gpt-5.6' },
+      { label: 'Owner', node: identityChip({ id: 'agent-2', label: 'Reviewer', kind: 'agent' }) },
+    ]));
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Retry';
+    root.append(
+      statePanel({ kind: 'loading', title: 'Loading work', busy: true }),
+      statePanel({ kind: 'empty', title: 'No runs', detail: 'Start a run to see activity.' }),
+      statePanel({ kind: 'degraded', title: 'Provider degraded', detail: 'Canonical health reports partial availability.' }),
+      statePanel({ kind: 'error', title: 'Load failed', detail: 'Canonical state could not be loaded.', action: retry }),
+      statePanel({ kind: 'offline', title: 'Offline', detail: 'The provider is unavailable.' }),
+      skeleton({ rows: 4 }),
+    );
+
+    root.appendChild(timeline([
+      { label: 'Assigned', detail: 'agent-1', time: '09:00', dateTime: '2026-09-22T09:00:00+02:00' },
+      { label: 'Running', detail: 'worker-2', time: '09:01', dateTime: '2026-09-22T09:01:00+02:00' },
+    ]));
+
+    root.appendChild(provenanceDisclosure({
+      label: 'Provenance',
+      summary: '2 stages',
+      entries: [
+        { label: 'Policy', detail: 'revision 4' },
+        { label: 'Evidence', detail: 'verified' },
+      ],
+    }));
+
+    const cardBody = metadataGrid([{ label: 'Run', value: 'run-42' }]);
+    root.appendChild(surfaceCard({
+      title: 'Approval required',
+      description: 'Human decision needed',
+      status: 'pending',
+      identity: { id: 'person-2', label: 'Operator', kind: 'person' },
+      body: cardBody,
+      kind: 'attention',
+    }));
+  </script>
+</body>
+</html>

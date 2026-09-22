@@ -1,7 +1,7 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
-import{activateProject,initialProjectId}from"./project_context.js";
+import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
@@ -113,15 +113,11 @@ const SLACK_ICON_MAP = {
   ":anchor:": "⚓",
 };
 const REASONING_EFFORTS=[["","Default reasoning"],["none","None"],["minimal","Minimal"],["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high"]];
-
 function preferredTheme(){return matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}
 function currentTheme(){return document.documentElement.dataset.theme||localStorage.getItem(THEME_KEY)||preferredTheme()}
 function slackIconForThread(threadId){const bindings=state.botBindings.filter(binding=>binding.project_id===state.projectId&&binding.thread_id===threadId&&binding.provider==="slack"&&binding.slack_icon);return(bindings.find(binding=>binding.is_primary_channel)||bindings[0])?.slack_icon||""}
 
-function slackIconGlyph(iconCode) {
-  if (!iconCode) return "";
-  return SLACK_ICON_MAP[iconCode] || iconCode.replaceAll(":", "").slice(0, 2).toUpperCase();
-}
+function slackIconGlyph(iconCode){return iconCode?(SLACK_ICON_MAP[iconCode]||iconCode.replaceAll(":","").slice(0,2).toUpperCase()):""}
 
 function applyTheme(theme) {
   const normalized = theme === "dark" ? "dark" : "light";
@@ -188,21 +184,11 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
   await loadThread(newThreadId);
 }
 
-function activeProject() {
-  return state.projects.find((project) => project.id === state.projectId) || state.projects[0];
-}
+function activeProject(){return state.projects.find(project=>project.id===state.projectId)||state.projects[0]}
 
-function loadProjectSettings() {
-  try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
+function loadProjectSettings(){try{return JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")}catch{return{}}}
 
-function savedProjectSettings(projectId = state.projectId) {
-  return loadProjectSettings()[projectId] || {};
-}
+function savedProjectSettings(projectId=state.projectId){return loadProjectSettings()[projectId]||{}}
 
 function currentRunSettings() {
   const project = activeProject();
@@ -223,25 +209,13 @@ function repositoryTargetState(threadId=state.threadId){return rtui.targetState(
 function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
-function threadRunSettings(threadId = state.threadId) {
-  return state.threadSettings?.[threadId] || {};
-}
+function threadRunSettings(threadId=state.threadId){return state.threadSettings?.[threadId]||{}}
 
-function selectedThreadTurnOptions(threadId = state.threadId) {
-  const settings = threadRunSettings(threadId);
-  return {
-    model: settings.model || null,
-    reasoningEffort: settings.reasoning_effort || null,
-  };
-}
+function selectedThreadTurnOptions(threadId=state.threadId){const settings=threadRunSettings(threadId);return{model:settings.model||null,reasoningEffort:settings.reasoning_effort||null}}
 
-function modelOptionLabel(model) {
-  return model.displayName || model.display_name || model.model || model.id || "Unnamed model";
-}
+function modelOptionLabel(model){return model.displayName||model.display_name||model.model||model.id||"Unnamed model"}
 
-function modelOptionValue(model) {
-  return model.model || model.id || "";
-}
+function modelOptionValue(model){return model.model||model.id||""}
 
 function renderModelOptions(selectedModel) {
   const options = [`<option value="">Project/default model</option>`];
@@ -535,10 +509,10 @@ function toggleItemExpanded(scope, id) {
 
 function renderProjects() {
   $("projects").innerHTML = "";
-  state.projects.forEach((project) => {
+  state.projects.forEach((project)=>{
     const item = document.createElement("div");
-    const expanded = isItemExpanded("project", project.id);
-    item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
+    const expanded=isItemExpanded("project",project.id);
+    item.className=`item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
     item.innerHTML = `
       <div class="item-header">
         <div class="item-main">
@@ -551,11 +525,7 @@ function renderProjects() {
         <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
       </div>
     `;
-    item.querySelector(".item-main").addEventListener("click", async () => {
-      activateProject(state,project.id);
-      applyRunSettings();
-      await refresh();
-    });
+    item.querySelector(".item-main").addEventListener("click",()=>selectProject(project.id));
     item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
       event.stopPropagation();
       toggleItemExpanded("project", project.id);
@@ -571,6 +541,7 @@ function renderProjects() {
     });
     $("projects").appendChild(item);
   });
+  publishProjectsRendered(state.projects,state.projectId);
 }
 
 function renderThreads() {
@@ -1511,10 +1482,7 @@ async function renameThread() {
 }
 
 function handleEvent(event) {
-  if(event.type==="work_item.run.updated"){
-    window.dispatchEvent(new CustomEvent("codex:work-item-run-updated",{detail:event}));
-    return;
-  }
+  if(event.type==="work_item.run.updated"){window.dispatchEvent(new CustomEvent("codex:work-item-run-updated",{detail:event}));return;}
   if(event.type==="binding.updated"){uiEvents.handleBindingEvent(event);return;}
   if (event.type === "bot.thread.replaced") {
     applyThreadReplacement(event.oldThreadId, event.newThreadId).catch((error) => {
@@ -2313,6 +2281,8 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+const selectProject=createProjectNavigator(state,{refresh,applyRunSettings,onError:(error)=>addMessage("Error",error.message,"tool",new Date())});
+
 $("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
 $("send").addEventListener("click", sendPrompt);
@@ -2397,12 +2367,7 @@ $("save-project").addEventListener("click", async (event) => {
   ];
   delete state.projectUiStatic[project.id];
   activateProject(state,project.id);
-  window.dispatchEvent(new CustomEvent("codex:project-created", {
-    detail: {
-      projectId: project.id,
-      freshBootstrap: project.freshBootstrap || null,
-    },
-  }));
+  window.dispatchEvent(new CustomEvent("codex:project-created",{detail:{projectId:project.id,freshBootstrap:project.freshBootstrap||null}}));
   $("project-dialog").close();
   await refresh();
 });

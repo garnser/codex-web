@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { statusBadge: sharedStatusBadge, identityChip: sharedIdentityChip } = await import(`${BASE}/static/workspace_components.js`);
   let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null, capacity: [], capacityWaits: [] };
 
   const capabilityLabel = (value) => String(value || '').replaceAll('_', ' ');
@@ -92,11 +93,7 @@
         `${provider.id} · ${provider.lifecycle || 'unknown'} · ${provider.compatibility || 'unknown'}`,
       ),
     );
-    const health = textNode(
-      'span',
-      `agent-health ${provider.health || 'unknown'}`,
-      provider.health || 'unknown',
-    );
+    const health = sharedStatusBadge(provider.health || 'unknown', provider.health || 'unknown', { className: 'agent-health' });
     head.append(titleBox, health);
     item.appendChild(head);
 
@@ -218,18 +215,19 @@
     head.className = 'agent-session-head';
     const titleBox = document.createElement('div');
     titleBox.append(
-      textNode('div', 'agent-session-title', session.id),
+      sharedIdentityChip({
+        id: session.id,
+        label: session.id,
+        kind: 'agent',
+        status: session.status,
+      }, { className: 'agent-session-title' }),
       textNode(
         'div',
         'agent-session-meta',
         `${session.provider_id}/${session.runtime_id} · ${session.model || 'provider default model'} · ${session.status}`,
       ),
     );
-    const health = textNode(
-      'span',
-      `agent-health ${session.runtime_health || 'unknown'}`,
-      session.runtime_health || 'unknown',
-    );
+    const health = sharedStatusBadge(session.runtime_health || 'unknown', session.runtime_health || 'unknown', { className: 'agent-health' });
     head.append(titleBox, health);
     item.appendChild(head);
 
