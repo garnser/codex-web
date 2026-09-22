@@ -88,6 +88,8 @@ class WorkItemExecutionCheckpoint(BaseModel):
     context_delta_bytes: int | None = Field(default=None, ge=0)
     estimated_tokens_reused: int | None = Field(default=None, ge=0)
     fallback_to_full_context_reason: str | None = None
+    execution_outcome: str | None = None
+    outcome_recorded_at: float | None = None
 
 
 class WorkItemUsageAttribution(BaseModel):
@@ -181,6 +183,8 @@ class WorkItemCheckpointCreate(BaseModel):
     context_delta_bytes: int | None = Field(default=None, ge=0)
     estimated_tokens_reused: int | None = Field(default=None, ge=0)
     fallback_to_full_context_reason: str | None = None
+    execution_outcome: str | None = None
+    outcome_recorded_at: float | None = None
 
 
 class WorkItemUsageRecord(BaseModel):
