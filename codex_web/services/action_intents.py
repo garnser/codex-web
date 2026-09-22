@@ -48,6 +48,7 @@ from codex_web.identity import (
     TenantScope,
 )
 from codex_web.observability import correlated, current_correlation, new_correlation_id
+from codex_web.resources import ResourceType
 from codex_web.security import (
     SecurityDecisionOutcome,
     SecurityTrustDecision,
@@ -106,6 +107,7 @@ class ActionIntentService:
         authority: AuthorityRoleService | None = None,
         identity: IdentityService | None = None,
         capacity: CapacityService | None = None,
+        execution_workers: Any | None = None,
         maintenance_guard=None,
     ) -> None:
         self.store = store
@@ -117,6 +119,7 @@ class ActionIntentService:
         self.authority = authority
         self.identity = identity
         self.capacity = capacity
+        self.execution_workers = execution_workers
         self.maintenance_guard = maintenance_guard
 
     @staticmethod
@@ -517,6 +520,56 @@ class ActionIntentService:
             return False, "; ".join(decision.reasons) or "security trust boundary denied action"
         return True, None
 
+    def _validate_execution_repository_scope(
+        self,
+        execution_id: str | None,
+        request: ActionRequest,
+        actor: AuthenticationActor,
+    ) -> None:
+        if execution_id is None:
+            return
+
+        repository_ids = tuple(
+            resource_id
+            for resource_id in request.resource_ids
+            if self.execution.resources.get(resource_id, actor).resource_type
+            == ResourceType.REPOSITORY
+        )
+        if not repository_ids:
+            return
+        if self.execution_workers is None:
+            raise ActionIntentConflictError(
+                "execution-bound repository action requires canonical execution assignment state"
+            )
+
+        try:
+            assignment = self.execution_workers.assignment_for_execution(
+                execution_id,
+                actor=actor,
+            )
+        except Exception as exc:
+            raise ActionIntentConflictError(
+                "execution-bound repository action requires a matching canonical execution assignment"
+            ) from exc
+
+        scope = assignment.repository_scope
+        if scope is not None:
+            writable = set(scope.writable_repository_ids)
+        else:
+            target = assignment.repository_target
+            writable = (
+                {target.mutable_repository_id}
+                if target is not None and target.mutable_repository_id is not None
+                else set()
+            )
+
+        outside_scope = sorted(set(repository_ids) - writable)
+        if outside_scope:
+            raise ActionIntentConflictError(
+                "action request targets repository outside execution writable scope: "
+                + ", ".join(outside_scope)
+            )
+
     def _work_item_requirements(
         self,
         work_item_ref: str | None,
@@ -550,6 +603,11 @@ class ActionIntentService:
         self._validate_work_item_attribution(
             payload.work_item_ref,
             request.project_id,
+            actor,
+        )
+        self._validate_execution_repository_scope(
+            payload.execution_id,
+            request,
             actor,
         )
         if payload.work_item_success is not None and payload.work_item_ref is None:
