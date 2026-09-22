@@ -65,6 +65,17 @@ function installAttentionStyles() {
       border: 1px solid color-mix(in srgb, currentColor 20%, transparent); font-size: .76rem;
     }
     .attention-empty { opacity: .72; padding: 1rem; }
+    .attention-card:focus { outline: 2px solid currentColor; outline-offset: 2px; }
+    @media (max-width: 640px) {
+      .attention-dialog { width: 100vw; max-width: none; height: 100dvh; max-height: 100dvh; margin: 0; border: 0; }
+      .attention-shell { max-height: 100dvh; height: 100dvh; }
+      .attention-head, .attention-toolbar { padding: .7rem; }
+      .attention-toolbar label { flex: 1 1 8rem; }
+      .attention-toolbar select { width: 100%; min-height: 2.75rem; }
+      .attention-list { padding: .7rem; }
+      .attention-meta { grid-template-columns: 1fr; }
+      .attention-actions > * { min-height: 2.75rem; }
+    }
   `;
   document.head.appendChild(style);
 }
@@ -75,7 +86,7 @@ function attentionCard(item) {
     ? `<a href="${attentionEsc(item.deep_link)}">Open source</a>`
     : "";
   return `
-    <article class="attention-card" data-attention-id="${attentionEsc(item.id)}" data-severity="${attentionEsc(item.severity)}">
+    <article class="attention-card" tabindex="0" data-attention-id="${attentionEsc(item.id)}" data-severity="${attentionEsc(item.severity)}">
       <div class="attention-card-head">
         <div>
           <strong>${attentionEsc(item.reason)}</strong>
@@ -153,6 +164,28 @@ async function refreshAttentionBadge() {
   }
 }
 
+function installAttentionKeyboardNavigation(dialog) {
+  const list = dialog.querySelector("[data-attention-list]");
+  if (!list || list.dataset.keyboardInstalled === "true") return;
+  list.dataset.keyboardInstalled = "true";
+  list.addEventListener("keydown", (event) => {
+    const card = event.target.closest?.("[data-attention-id]");
+    if (!card) return;
+    const cards = [...list.querySelectorAll("[data-attention-id]")];
+    const index = cards.indexOf(card);
+    if (index < 0) return;
+    let target = null;
+    if (event.key === "ArrowDown") target = cards[Math.min(cards.length - 1, index + 1)];
+    if (event.key === "ArrowUp") target = cards[Math.max(0, index - 1)];
+    if (event.key === "Home") target = cards[0];
+    if (event.key === "End") target = cards.at(-1);
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+    target.scrollIntoView({ block: "nearest" });
+  });
+}
+
 async function loadAttention(dialog, { append = false } = {}) {
   const status = dialog.querySelector("[data-attention-status]");
   const list = dialog.querySelector("[data-attention-list]");
@@ -191,6 +224,10 @@ async function loadAttention(dialog, { append = false } = {}) {
       more.disabled = dialog._attentionNextCursor == null;
     }
     status.textContent = `${dialog._attentionItems.length} of ${dialog._attentionTotal} matching · deterministic refresh only`;
+    if (dialog._attentionFocusRequested) {
+      dialog._attentionFocusRequested = false;
+      list.querySelector("[data-attention-id]")?.focus();
+    }
     await refreshAttentionBadge();
   } catch (error) {
     status.dataset.error = "true";
@@ -253,8 +290,10 @@ function installAttention() {
 
   controls.insertBefore(button, controls.firstChild);
   document.body.appendChild(dialog);
+  installAttentionKeyboardNavigation(dialog);
 
   button.addEventListener("click", () => {
+    dialog._attentionFocusRequested = true;
     dialog.showModal();
     loadAttention(dialog);
   });
