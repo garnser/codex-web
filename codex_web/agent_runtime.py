@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.compatibility import ContractSpec
+from codex_web.failures import FailureRecord
 
 
 AGENT_SESSION_STATE_CONTRACT = ContractSpec(
@@ -141,6 +142,7 @@ class AgentSession(BaseModel):
     recovery_attempts: int = Field(default=0, ge=0)
     last_recovered_at: float | None = None
     failure_reason: str | None = None
+    failure: FailureRecord | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
