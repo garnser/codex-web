@@ -1,8 +1,10 @@
+import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 
 const PAGE_SIZE = 50;
 const ROW_WINDOW = 60;
+const RUN_PAGE_SIZE = 20;
 const WORK_ITEM_PROJECT_KEY = 'codex-web-work-item-project';
 
 const state = {
@@ -18,6 +20,9 @@ const state = {
   pageError: '',
   listGeneration: 0,
   listController: null,
+  detailPayload: null,
+  runs: { active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false },
+  runRefreshTimer: null,
 };
 
 const esc = (value) => String(value ?? '')
@@ -528,17 +533,29 @@ async function loadItems({ reset = false } = {}) {
 }
 
 
-function keyValueRows(values) {
-  return Object.entries(values).map(([key, value]) => `
-    <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${esc(value ?? '—')}</strong></div>`).join('');
-}
+function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
+
+const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize: RUN_PAGE_SIZE });
 
 async function loadDetail(ref) {
   const detail = document.querySelector('.work-item-detail');
   if (!detail) return;
   detail.innerHTML = '<div class="work-item-empty">Loading work-item detail…</div>';
   try {
-    const payload = await request(`/api/work-items/${pathRef(ref)}/operator`);
+    const query = new URLSearchParams({ limit: String(RUN_PAGE_SIZE) });
+    const [payload, runs] = await Promise.all([
+      request(`/api/work-items/${pathRef(ref)}/operator`),
+      request(`/api/work-items/${pathRef(ref)}/runs?${query}`).catch(() => ({ active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false })),
+    ]);
+    if (ref !== state.selectedRef) return;
+    state.detailPayload = payload;
+    state.runs = {
+      active: Array.isArray(runs.active) ? runs.active : [],
+      items: Array.isArray(runs.items) ? runs.items : [],
+      nextCursor: runs.nextCursor || null,
+      hasMore: Boolean(runs.hasMore),
+      activeTruncated: Boolean(runs.activeTruncated),
+    };
     renderDetail(payload);
   } catch (error) {
     detail.innerHTML = `<div class="work-item-error">${esc(error.message || 'Failed to load work item')}</div>`;
@@ -570,6 +587,9 @@ function renderDetail(payload) {
         <button type="button" class="ghost-button work-item-retry" ${actions.retry?.allowed ? '' : 'disabled'}>Retry</button>
         <button type="button" class="ghost-button work-item-reconcile" ${actions.reconcile?.allowed ? '' : 'disabled'}>Reconcile</button>
       </div>
+    </section>
+    <section class="work-detail-card work-run-timeline">
+      ${runUi.runTimelineHtml()}
     </section>
     <div class="work-detail-columns">
       <section class="work-detail-card canonical-card">
@@ -662,6 +682,7 @@ function renderDetail(payload) {
 
   detail.querySelector('.work-item-retry')?.addEventListener('click', () => runItemAction('retry'));
   detail.querySelector('.work-item-reconcile')?.addEventListener('click', () => runItemAction('reconcile'));
+  runUi.wireRunTimeline();
 }
 
 async function runItemAction(action) {
@@ -679,6 +700,19 @@ async function runItemAction(action) {
     setStatus(error.message || `${action} failed`, true);
   }
 }
+
+window.addEventListener('codex:work-item-run-updated', (event) => {
+  const ref = String(event.detail?.workItemRef || '');
+  const dialog = document.querySelector('#work-items-dialog');
+  if (!dialog?.open || !ref || ref !== state.selectedRef) return;
+  if (state.runRefreshTimer) clearTimeout(state.runRefreshTimer);
+  state.runRefreshTimer = setTimeout(() => {
+    state.runRefreshTimer = null;
+    runUi.refreshRuns({ append: false }).catch((error) => {
+      setStatus(error.message || 'Failed to refresh live Run state', true);
+    });
+  }, 80);
+});
 
 window.addEventListener('codex:project-changed', async (event) => {
   const projectId = String(event.detail?.projectId || '').trim();
