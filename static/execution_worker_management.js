@@ -126,73 +126,6 @@
     }
   }
 
-  function enrollmentCapabilities() {
-    return Array.from(
-      document.querySelectorAll("#execution-worker-enrollment-capabilities input[type='checkbox']:checked"),
-      (node) => node.value,
-    );
-  }
-
-  function renderEnrollments(items = []) {
-    const host = document.getElementById("execution-worker-enrollment-list");
-    if (!host) return;
-    const now = Date.now() / 1000;
-    host.innerHTML = items.slice(0, 20).map((item) => {
-      const state = item.used_at ? "used" : item.expires_at <= now ? "expired" : "ready";
-      return `<div class="comm-entry">
-        <strong>${escapeHtml(item.pool)} · ${escapeHtml(item.service_identity_id)} · ${escapeHtml(state)}</strong>
-        <small>Enrollment: ${escapeHtml(item.id)} · expires: ${new Date(Number(item.expires_at) * 1000).toLocaleString()} · worker: ${escapeHtml(item.worker_id || "not enrolled")}</small>
-        <small>Capabilities: ${escapeHtml((item.allowed_capabilities || []).join(", "))} · max concurrency: ${escapeHtml(item.max_concurrency_ceiling)}</small>
-      </div>`;
-    }).join("") || '<div class="comm-entry"><small>No runtime enrollments created.</small></div>';
-  }
-
-  async function refreshEnrollments() {
-    if (!canManage()) return renderEnrollments([]);
-    try {
-      const response = await apiRequest("/api/execution-workers/enrollments");
-      renderEnrollments(response.items || []);
-    } catch (error) {
-      const host = document.getElementById("execution-worker-enrollment-result");
-      if (host) host.textContent = `Enrollment history unavailable: ${error.message}`;
-    }
-  }
-
-  async function createEnrollment() {
-    if (!canManage()) return setStatus("Runtime enrollment requires canonical admin authority and elevated assurance.");
-    const identity = document.getElementById("execution-worker-enrollment-identity")?.value?.trim() || "";
-    const pool = document.getElementById("execution-worker-enrollment-pool")?.value?.trim() || "local";
-    const expires = Number(document.getElementById("execution-worker-enrollment-expiry")?.value || 300);
-    const concurrency = Number(document.getElementById("execution-worker-enrollment-concurrency")?.value || 1);
-    const capabilities = enrollmentCapabilities();
-    const result = document.getElementById("execution-worker-enrollment-result");
-    if (!identity || !capabilities.length) {
-      if (result) result.textContent = "Service identity and at least one allowed capability are required.";
-      return;
-    }
-    try {
-      const response = await apiRequest("/api/execution-workers/enrollments", {
-        method: "POST",
-        body: JSON.stringify({
-          service_identity_id: identity,
-          pool,
-          expires_in_seconds: expires,
-          allowed_capabilities: capabilities,
-          max_concurrency_ceiling: concurrency,
-        }),
-      });
-      const endpoint = `${window.location.origin}${BASE}/api/execution-workers/enroll`;
-      const command = `curl -sS -X POST '${endpoint}' -H 'Content-Type: application/json' --data '{"token":"${response.token}","version":"<runtime-version>","capabilities":${JSON.stringify(capabilities)},"max_concurrency":${concurrency},"probe_results":{}}'`;
-      if (result) {
-        result.innerHTML = `<strong>Enrollment created. Token is shown only in this response and expires at ${escapeHtml(new Date(Number(response.item.expires_at) * 1000).toLocaleString())}.</strong><pre data-runtime-enrollment-command></pre>`;
-        result.querySelector("[data-runtime-enrollment-command]").textContent = command;
-      }
-      await refreshEnrollments();
-    } catch (error) {
-      if (result) result.textContent = `Runtime enrollment failed: ${error.message}`;
-    }
-  }
-
   async function recoverStaleWorkers() {
     if (!window.confirm(
       "Mark workers with stale heartbeats offline? Active workers with recent heartbeats are unchanged; offline workers cannot claim new work until the trusted reactivation/heartbeat path restores them.",
@@ -228,7 +161,6 @@
       actor = await apiRequest("/api/identity/me");
       renderAssurance();
       hydrateHosts();
-      refreshEnrollments().catch(console.error);
     } catch (error) {
       actor = null;
       setStatus(`Worker management identity unavailable: ${error.message}`);
@@ -245,10 +177,6 @@
   }
 
   function bind() {
-    document.getElementById("create-execution-worker-enrollment")?.addEventListener("click", () => createEnrollment().catch(console.error));
-    document.getElementById("execution-worker-enrollment-panel")?.addEventListener("toggle", (event) => {
-      if (event.currentTarget.open) refreshEnrollments().catch(console.error);
-    });
     document.getElementById("recover-stale-workers")?.addEventListener("click", () => recoverStaleWorkers().catch(console.error));
     document.getElementById("recover-expired-assignments")?.addEventListener("click", () => recoverExpiredAssignments().catch(console.error));
     document.getElementById("execution-worker-list")?.addEventListener("click", (event) => {
@@ -272,6 +200,15 @@
         .finally(() => { if (document.contains(button)) button.disabled = false; });
     });
     loadActor().catch(console.error);
+    import(`${BASE}/static/execution_worker_enrollment.js`)
+      .then(({ installExecutionWorkerEnrollment }) => installExecutionWorkerEnrollment({
+        apiRequest,
+        canManage,
+        setStatus,
+        escapeHtml,
+        base: BASE,
+      }))
+      .catch(console.error);
   }
 
   window.addEventListener("codex:execution-worker-state-rendered", (event) => hydrate(event.detail || {}));
