@@ -291,11 +291,39 @@ class ExecutionAssignmentCreate(BaseModel):
             ):
                 raise ValueError("repository scope project does not match assignment")
             if self.repository_target is not None:
-                expected = RepositoryExecutionScope.from_target(self.repository_target)
-                if self.repository_scope != expected:
-                    raise ValueError(
-                        "repository target and repository scope describe different authority"
-                    )
+                if self.repository_scope.write_mode.value == "single":
+                    expected = RepositoryExecutionScope.from_target(self.repository_target)
+                    if self.repository_scope != expected:
+                        raise ValueError(
+                            "repository target and repository scope describe different authority"
+                        )
+                else:
+                    target_repository_id = self.repository_target.mutable_repository_id
+                    if (
+                        target_repository_id is None
+                        or target_repository_id
+                        not in self.repository_scope.writable_repository_ids
+                    ):
+                        raise ValueError(
+                            "repository target must identify a writable repository in coordinated scope"
+                        )
+                    if (
+                        self.repository_target.organization_id
+                        != self.repository_scope.organization_id
+                        or self.repository_target.workspace_id
+                        != self.repository_scope.workspace_id
+                        or self.repository_target.project_id
+                        != self.repository_scope.project_id
+                    ):
+                        raise ValueError(
+                            "repository target and coordinated scope tenant/project do not match"
+                        )
+                    if set(self.repository_target.read_only_repository_ids) - set(
+                        self.repository_scope.read_only_repository_ids
+                    ):
+                        raise ValueError(
+                            "repository target read-only context exceeds coordinated scope"
+                        )
         return self
 
 
