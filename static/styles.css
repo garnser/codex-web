@@ -769,6 +769,28 @@ h1 {
   max-width: 190px;
 }
 
+.repository-target-status {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.repository-target-status[data-state="selected"] {
+  color: var(--accent);
+}
+
+.repository-target-status[data-state="required"],
+.repository-target-status[data-state="conflict"],
+.repository-target-status[data-state="stale"] {
+  color: var(--danger);
+  font-weight: 800;
+}
+
+#repository-target[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
 #repository-read-context {
   height: 36px;
   min-width: 110px;
