@@ -112,33 +112,10 @@ const SLACK_ICON_MAP = {
   ":compass:": "🧭",
   ":anchor:": "⚓",
 };
-const REASONING_EFFORTS = [
-  ["", "Default reasoning"],
-  ["none", "None"],
-  ["minimal", "Minimal"],
-  ["low", "Low"],
-  ["medium", "Medium"],
-  ["high", "High"],
-  ["xhigh", "Extra high"],
-];
-
-function preferredTheme() {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function currentTheme() {
-  return document.documentElement.dataset.theme || localStorage.getItem(THEME_KEY) || preferredTheme();
-}
-
-function slackIconForThread(threadId) {
-  const bindings = state.botBindings.filter((binding) => (
-    binding.project_id === state.projectId
-    && binding.thread_id === threadId
-    && binding.provider === "slack"
-    && binding.slack_icon
-  ));
-  return (bindings.find((binding) => binding.is_primary_channel) || bindings[0])?.slack_icon || "";
-}
+const REASONING_EFFORTS=[["","Default reasoning"],["none","None"],["minimal","Minimal"],["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high"]];
+function preferredTheme(){return matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}
+function currentTheme(){return document.documentElement.dataset.theme||localStorage.getItem(THEME_KEY)||preferredTheme()}
+function slackIconForThread(threadId){const bindings=state.botBindings.filter(binding=>binding.project_id===state.projectId&&binding.thread_id===threadId&&binding.provider==="slack"&&binding.slack_icon);return(bindings.find(binding=>binding.is_primary_channel)||bindings[0])?.slack_icon||""}
 
 function slackIconGlyph(iconCode) {
   if (!iconCode) return "";
