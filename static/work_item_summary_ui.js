@@ -54,7 +54,7 @@ export function workItemSummaryHtml({ item = {}, diagnostics = [], esc }) {
       <section class="work-blocker-banner" role="status">
         <strong>Blocked</strong>
         <span>${esc(item.blocker || findings[0] || 'Blocking finding recorded')}</span>
-        ${findings.length > 1 ? `<small>${esc(findings.slice(1).join(' · '))}</small>` : ''}
+        ${findings.length && item.blocker ? `<small>${esc(findings.join(' · '))}</small>` : (findings.length > 1 ? `<small>${esc(findings.slice(1).join(' · '))}</small>` : '')}
       </section>` : ''}
     ${failure ? `
       <section class="work-failure-banner" role="alert">
