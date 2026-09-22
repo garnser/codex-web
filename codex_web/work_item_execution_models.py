@@ -125,6 +125,7 @@ class WorkItemExecutionLifecycle(BaseModel):
     definition_refs: list[DefinitionReference] = Field(default_factory=list)
     usage: WorkItemUsageAttribution = Field(default_factory=WorkItemUsageAttribution)
     workspace: ExecutionWorkspaceReference | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     evidence_requirements: list[EvidenceRequirement] = Field(default_factory=list)
 
 
@@ -141,6 +142,7 @@ class WorkItemExecutionUpdate(BaseModel):
     retry_backoff_seconds: float | None = Field(default=None, ge=0.0)
     timeout_seconds: float | None = Field(default=None, gt=0.0)
     deadline_at: float | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     failure_category: str | None = None
     failure_code: str | None = None
     failure_message: str | None = None

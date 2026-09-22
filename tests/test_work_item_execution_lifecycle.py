@@ -115,6 +115,35 @@ class WorkItemExecutionLifecycleTests(unittest.TestCase):
             "provider.capacity",
         )
 
+    def test_writable_repository_scope_is_canonical_execution_metadata(self) -> None:
+        result = self.service.update(
+            self.state.ref,
+            WorkItemExecutionUpdate(
+                actor="james",
+                source="operator",
+                writable_repository_resource_ids=(
+                    "repo-app",
+                    "repo-api",
+                    "repo-app",
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            result["execution"]["writable_repository_resource_ids"],
+            ["repo-app", "repo-api"],
+        )
+        persisted = self.host.states[self.state.ref]
+        self.assertEqual(
+            persisted.execution.writable_repository_resource_ids,
+            ("repo-app", "repo-api"),
+        )
+        history = self.service.history(self.state.ref)
+        self.assertEqual(
+            history["items"][-1]["payload"]["writable_repository_resource_ids"],
+            ["repo-app", "repo-api"],
+        )
+
     def test_retry_attempt_cannot_exceed_policy(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             self.service.update(
