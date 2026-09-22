@@ -1182,7 +1182,9 @@ function renderThread(thread) {
   clearMessages();
   const title = thread.name || thread.preview || "Untitled thread";
   $("thread-title").textContent = title;
-  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}`;
+  const boundRepository = threadRunSettings(thread.id)?.repository_resource_id || "";
+  const repositoryMeta = boundRepository ? ` · repository ${boundRepository}` : "";
+  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}${repositoryMeta}`;
   const turns = thread.turns || [];
   turns.forEach((turn) => {
     (turn.items || []).forEach((item) => renderItem(item, turn));
@@ -1193,7 +1195,10 @@ function renderThread(thread) {
 function renderNewThreadShell(thread) {
   clearMessages();
   $("thread-title").textContent = thread.name || "Untitled thread";
-  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}`;
+  const repositoryId = currentRunSettings().repositoryResourceId;
+  const repositoryMeta = repositoryId ? ` · repository ${repositoryId}` : "";
+  $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}${repositoryMeta}`;
+  renderRepositoryTargetStatus();
 }
 
 function renderItem(item, turn = {}) {
