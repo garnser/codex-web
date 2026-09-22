@@ -8,7 +8,7 @@ export function initialProjectId() {
   );
 }
 
-export function activateProject(state, projectId) {
+export function activateProject(state, projectId, { historyMode = "replace" } = {}) {
   const normalized = String(projectId || "").trim();
   if (!normalized) return "";
   state.projectId = normalized;
@@ -16,11 +16,14 @@ export function activateProject(state, projectId) {
   if (document.body) document.body.dataset.projectId = normalized;
   const url = new URL(window.location.href);
   url.searchParams.set("project", normalized);
-  history.replaceState(
-    { ...history.state, projectId: normalized },
-    "",
-    url,
-  );
+  if (historyMode !== "none") {
+    const method = historyMode === "push" ? "pushState" : "replaceState";
+    history[method](
+      { ...history.state, projectId: normalized },
+      "",
+      url,
+    );
+  }
   window.dispatchEvent(
     new CustomEvent("codex:project-changed", {
       detail: { projectId: normalized },
