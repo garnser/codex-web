@@ -1,4 +1,5 @@
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
+import { renderHomeOverview } from "./home_overview.js";
 
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
@@ -231,6 +232,10 @@ function setActiveInternal(id, { updateHash = true } = {}) {
   if (description) description.textContent = item.description;
   renderWorkspaceActions(id);
   refreshWorkspaceCards(id);
+  if (id === "overview") {
+    const host = document.querySelector("[data-home-overview]");
+    if (host) void renderHomeOverview(host);
+  }
   if (updateHash) setHash(id);
 }
 
@@ -286,7 +291,12 @@ function openWorkspace(id) {
 
 function overviewMarkup() {
   return `
-    <div class="product-overview-grid">
+    <div class="home-overview-shell" data-home-overview>
+      <div class="workspace-state workspace-state-loading" role="status">Loading current workspace…</div>
+    </div>
+    <details class="product-overview-reference">
+      <summary>UI vocabulary and explainability reference</summary>
+      <div class="product-overview-grid">
       <section class="product-overview-card">
         <h3>Canonical UI vocabulary</h3>
         <p>Unavailable actions should say <em>why</em>. These concepts remain distinct rather than collapsing into generic settings or “not allowed”.</p>
@@ -319,7 +329,8 @@ function overviewMarkup() {
           <span class="product-status-badge status-neutral" data-status="unknown">unknown</span>
         </div>
       </section>
-    </div>`;
+      </div>
+    </details>`;
 }
 
 function buildPanels() {
@@ -571,6 +582,10 @@ function installProjectContext() {
       const option = select.selectedOptions[0];
       const indicator = document.querySelector("[data-project-indicator]");
       if (indicator) indicator.textContent = `Project: ${option?.textContent || projectId}`;
+      if (activeWorkspace === "overview") {
+        const host = document.querySelector("[data-home-overview]");
+        if (host) void renderHomeOverview(host, projectId);
+      }
     }
   });
 }
