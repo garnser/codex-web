@@ -162,6 +162,86 @@
   .work-run-status { width: fit-content; }
 }
 
+
+.work-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.work-overview-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 10px;
+  background: var(--panel, transparent);
+}
+.work-overview-card > span,
+.work-routing-lanes span,
+.work-related-objects span {
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .035em;
+  opacity: .62;
+}
+.work-overview-card strong,
+.work-related-objects strong {
+  overflow-wrap: anywhere;
+}
+.work-overview-card small { opacity: .68; }
+.work-overview-state { text-transform: capitalize; }
+.work-overview-state.complete { color: var(--success, #237a4b); }
+.work-overview-state.danger { color: var(--danger, #b42318); }
+.work-overview-state.attention { color: #946200; }
+.work-blocker-banner,
+.work-failure-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+}
+.work-blocker-banner { color: #946200; background: color-mix(in srgb, currentColor 7%, transparent); }
+.work-failure-banner { color: var(--danger, #b42318); background: color-mix(in srgb, currentColor 7%, transparent); }
+.work-blocker-banner small,
+.work-failure-banner small { opacity: .75; }
+.work-routing-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.work-routing-lanes > div,
+.work-related-objects > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+}
+.work-related-objects {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.work-external-link { display: inline-block; margin-top: 10px; }
+
+@media (max-width: 1100px) {
+  .work-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .work-overview,
+  .work-routing-lanes,
+  .work-related-objects { grid-template-columns: 1fr; }
+  .work-blocker-banner,
+  .work-failure-banner { grid-template-columns: 1fr; gap: 4px; }
+}
+
 .work-items-dialog button:focus-visible,
 .work-items-dialog select:focus-visible,
 .work-items-dialog input:focus-visible,
