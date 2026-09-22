@@ -230,6 +230,7 @@ class TurnService:
         actor: AuthenticationActor | None = None,
         execution_id: str | None = None,
         retry_claim_id: str | None = None,
+        work_item_ref: str | None = None,
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
@@ -396,6 +397,7 @@ class TurnService:
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
                 execution_id=execution_id,
+                work_item_ref=work_item_ref,
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
                 execution_profile_id=effective_execution_profile_id,
@@ -473,6 +475,7 @@ class TurnService:
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
                 execution_id=execution_id,
+                work_item_ref=work_item_ref,
                 repository_resource_id=effective_repository_resource_id,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
                 execution_profile_id=effective_execution_profile_id,
