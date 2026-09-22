@@ -571,7 +571,6 @@ function renderProjects() {
     const item = document.createElement("div");
     const expanded = isItemExpanded("project", project.id);
     item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
-    item.dataset.projectId = project.id;
     item.innerHTML = `
       <div class="item-header">
         <div class="item-main">
