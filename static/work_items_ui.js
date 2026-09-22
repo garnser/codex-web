@@ -1,4 +1,5 @@
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
+import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 
@@ -589,6 +590,7 @@ function renderDetail(payload) {
         <button type="button" class="ghost-button work-item-reconcile" ${actions.reconcile?.allowed ? '' : 'disabled'}>Reconcile</button>
       </div>
     </section>
+    ${workItemSummaryHtml({ item, diagnostics, esc })}
     <section class="work-detail-card work-run-timeline">
       ${runUi.runTimelineHtml()}
     </section>
