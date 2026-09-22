@@ -36,8 +36,11 @@ from codex_web.resources import (
     ResourceType,
 )
 from codex_web.runtime_credentials import (
+    CodexExecutionAuthenticationMode,
     DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
-    runtime_credential_config_key,
+    RuntimeAuthenticationConfigurationError,
+    RuntimeAuthenticationRequirement,
+    runtime_authentication_requirement,
 )
 from codex_web.services.configuration import (
     ConfigurationError,
@@ -168,6 +171,7 @@ class TurnExecutionBindingService:
         control_actor: AuthenticationActor,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
+        permitted_codex_authentication_modes: tuple[CodexExecutionAuthenticationMode, ...] | None = None,
         execution_profiles: ExecutionProfileDefinitionService | None = None,
         control_plane_available: Callable[[], bool] | None = None,
         project_readiness: Callable[
@@ -193,6 +197,7 @@ class TurnExecutionBindingService:
         self.runtime_credential_configs = dict(
             runtime_credential_configs or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
         )
+        self.permitted_codex_authentication_modes = permitted_codex_authentication_modes
         self._clock = clock
 
     @staticmethod
@@ -481,48 +486,111 @@ class TurnExecutionBindingService:
         )
         return primary, scope
 
-    def _secret_ref(
+    def _authentication_requirement(
         self,
         project: Project,
         subject: ExecutionSubject,
         runtime_binding: ExecutionRuntimeBinding | None,
-    ) -> str:
+    ) -> RuntimeAuthenticationRequirement:
         if runtime_binding is None:
             raise TurnExecutionBindingError(
-                "agent runtime binding is required for worker credential selection",
-                code="credential_reference_missing",
+                "agent runtime binding is required for authentication selection",
+                code="authentication_mode_invalid",
                 blocker={
-                    "code": "credential_reference_missing",
-                    "message": (
-                        "agent runtime binding is required for worker "
-                        "credential selection"
-                    ),
+                    "code": "authentication_mode_invalid",
+                    "message": "agent runtime binding is required for authentication selection",
                     "retryable": False,
                     "target_type": "project",
                     "target_id": project.id,
                     "remediation_route": "/api/configuration",
                 },
             )
-        config_key = runtime_credential_config_key(
-            runtime_binding,
-            self.runtime_credential_configs,
-        )
+        try:
+            requirement = runtime_authentication_requirement(
+                runtime_binding,
+                configuration=self.configuration,
+                context=ConfigurationContext(
+                    organization_id=self.control_actor.organization_id,
+                    workspace_id=self.control_actor.workspace_id,
+                    project_id=project.id,
+                    subject_id=subject.key,
+                ),
+                credential_mapping=self.runtime_credential_configs,
+                permitted_codex_modes=self.permitted_codex_authentication_modes,
+            )
+        except RuntimeAuthenticationConfigurationError as exc:
+            raise TurnExecutionBindingError(
+                str(exc),
+                code="authentication_mode_invalid",
+                blocker={
+                    "code": "authentication_mode_invalid",
+                    "message": str(exc),
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}",
+                    "remediation_route": "/api/configuration",
+                },
+            ) from exc
+        if requirement is None:
+            raise TurnExecutionBindingError(
+                "agent runtime authentication requirement is unavailable",
+                code="authentication_mode_invalid",
+            )
+        if not requirement.permitted:
+            mode = requirement.codex_mode.value if requirement.codex_mode else "configured"
+            raise TurnExecutionBindingError(
+                f"authentication mode {mode} is denied by execution policy",
+                code="authentication_mode_denied",
+                blocker={
+                    "code": "authentication_mode_denied",
+                    "message": f"authentication mode {mode} is denied by execution policy",
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}",
+                    "authentication": requirement.public(),
+                    "remediation_route": "/api/configuration",
+                },
+            )
+        if requirement.local_session:
+            raise TurnExecutionBindingError(
+                "trusted local Codex session authentication is not supported by the assignment-bound worker path",
+                code="authentication_mode_unsupported",
+                blocker={
+                    "code": "authentication_mode_unsupported",
+                    "message": (
+                        "trusted local Codex session authentication is not supported "
+                        "by the assignment-bound worker path"
+                    ),
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}",
+                    "authentication": requirement.public(),
+                    "remediation_route": "/api/configuration",
+                },
+            )
+        return requirement
+
+    def _secret_ref(
+        self,
+        project: Project,
+        subject: ExecutionSubject,
+        requirement: RuntimeAuthenticationRequirement,
+    ) -> str:
+        config_key = requirement.credential_config_key
         if not config_key:
             raise TurnExecutionBindingError(
-                "agent runtime has no worker credential reference configuration",
+                "selected authentication mode has no worker credential reference configuration",
                 code="credential_reference_missing",
                 blocker={
                     "code": "credential_reference_missing",
                     "message": (
-                        "agent runtime has no worker credential reference "
-                        "configuration"
+                        "selected authentication mode has no worker credential "
+                        "reference configuration"
                     ),
                     "retryable": False,
                     "target_type": "agent_runtime",
-                    "target_id": (
-                        f"{runtime_binding.provider_id}/"
-                        f"{runtime_binding.runtime_id}"
-                    ),
+                    "target_id": f"{requirement.provider_id}/{requirement.runtime_id}",
+                    "authentication": requirement.public(),
                     "remediation_route": "/api/configuration",
                 },
             )
@@ -538,9 +606,7 @@ class TurnExecutionBindingService:
             )
             reference = ConfigurationSecretReference.model_validate(effective.value)
         except (ConfigurationError, ConfigurationNotFoundError, ValueError) as exc:
-            target = (
-                f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}"
-            )
+            target = f"{requirement.provider_id}/{requirement.runtime_id}"
             raise TurnExecutionBindingError(
                 "worker credential reference configuration is unavailable "
                 f"for {target}",
@@ -554,6 +620,7 @@ class TurnExecutionBindingService:
                     "retryable": False,
                     "target_type": "agent_runtime",
                     "target_id": target,
+                    "authentication": requirement.public(),
                     "remediation_route": "/api/configuration",
                 },
             ) from exc
@@ -993,6 +1060,21 @@ class TurnExecutionBindingService:
             execution_contract_version,
         )
         existing = self._existing_assignment(execution_id=normalized_execution_id)
+        if (
+            existing is not None
+            and existing.runtime_binding is not None
+            and effective_runtime_binding is not None
+            and existing.runtime_binding.provider_id == effective_runtime_binding.provider_id
+            and existing.runtime_binding.runtime_id == effective_runtime_binding.runtime_id
+            and existing.runtime_binding.capability_revision
+            == effective_runtime_binding.capability_revision
+            and existing.runtime_binding.authentication_mode
+        ):
+            effective_runtime_binding = effective_runtime_binding.model_copy(
+                update={
+                    "authentication_mode": existing.runtime_binding.authentication_mode,
+                }
+            )
         effective_profile_id = (
             execution_profile.id if execution_profile is not None else None
         )
@@ -1097,7 +1179,19 @@ class TurnExecutionBindingService:
                 blocker=blocker,
             )
 
-        secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
+        authentication = self._authentication_requirement(
+            project,
+            subject,
+            effective_runtime_binding,
+        )
+        if (
+            effective_runtime_binding is not None
+            and authentication.codex_mode is not None
+        ):
+            effective_runtime_binding = effective_runtime_binding.model_copy(
+                update={"authentication_mode": authentication.codex_mode.value}
+            )
+        secret_ref = self._secret_ref(project, subject, authentication)
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
             wall_seconds=session_seconds
