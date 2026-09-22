@@ -23,6 +23,7 @@ from codex_web.execution_workers import (
 from codex_web.models import Project
 from codex_web.resources import (
     RepositoryTargetSource,
+    RepositoryWriteMode,
     ResourceAlias,
     ResourceCreate,
     ResourceLifecycle,
@@ -1202,6 +1203,107 @@ class TurnExecutionBindingTests(unittest.TestCase):
             binding.repository_target.read_only_repository_ids,
             (second.id,),
         )
+
+    def test_coordinated_writable_scope_is_persisted_atomically(self) -> None:
+        self._publish_secret()
+        second_path = Path(self.project.path) / "repo-2"
+        second_path.mkdir()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository 2",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(second_path),
+                    )
+                ],
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-coordinated",
+            execution_id="exec-coordinated",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            writable_repository_ids=(self.repository.id, second.id),
+        )
+
+        workspace = self.workspaces.get(binding.workspace_id, self.actor)
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+        self.assertEqual(
+            binding.repository_scope.write_mode,
+            RepositoryWriteMode.COORDINATED,
+        )
+        self.assertEqual(
+            binding.repository_scope.writable_repository_ids,
+            (self.repository.id, second.id),
+        )
+        self.assertEqual(
+            workspace.writable_repository_ids,
+            (self.repository.id, second.id),
+        )
+        self.assertEqual(
+            assignment.repository_scope,
+            binding.repository_scope,
+        )
+        self.assertEqual(
+            assignment.repository_target,
+            binding.repository_target,
+        )
+        self.assertEqual(
+            {member.resource_id for member in workspace.repository_members},
+            {self.repository.id, second.id},
+        )
+        self.assertTrue(
+            all(
+                member.access_mode == LeaseMode.WRITE
+                for member in workspace.repository_members
+            )
+        )
+
+    def test_invalid_coordinated_scope_fails_before_workspace_or_assignment(self) -> None:
+        self._publish_secret()
+        unbound_path = Path(self.project.path) / "unbound"
+        unbound_path.mkdir()
+        unbound = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Unbound repository",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(unbound_path),
+                    )
+                ],
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as caught:
+            self.service.prepare(
+                thread_id="thread-coordinated-invalid",
+                execution_id="exec-coordinated-invalid",
+                project_id=self.project.id,
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                writable_repository_ids=(self.repository.id, unbound.id),
+            )
+
+        self.assertEqual(caught.exception.code, "repository_target_unauthorized")
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
 
     def test_deprecated_only_repository_is_not_eligible(self) -> None:
         self._publish_secret()
