@@ -273,10 +273,60 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.3")
+        self.assertEqual(state.schema_version, "1.4")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
+
+    def test_v1_3_workspace_state_derives_repository_outcome_status(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="migrate-repository-outcome",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                writable_repository_ids=(self.repo.id, self.repo2.id),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        first = self.service.record_integration(
+            workspace.id,
+            WorkspaceIntegrationRecord(
+                repository_id=self.repo.id,
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.MERGED,
+                resulting_revision="repo-one-result",
+            ),
+            actor=self.actor,
+        )
+        self.service.record_integration(
+            first.id,
+            WorkspaceIntegrationRecord(
+                repository_id=self.repo2.id,
+                strategy=IntegrationStrategy.MERGE,
+                outcome=IntegrationOutcome.CONFLICT,
+                conflicts=("src/conflict.py",),
+            ),
+            actor=self.actor,
+        )
+
+        raw = self.service.store.store.get(self.service.store.namespace)
+        raw["schema_version"] = "1.3"
+        for item in raw["workspaces"]:
+            item.pop("repository_outcome_status", None)
+        self.service.store.store.put(self.service.store.namespace, raw)
+
+        state = self.service.store.load()
+        migrated = next(item for item in state.workspaces if item.id == workspace.id)
+
+        self.assertEqual(state.schema_version, "1.4")
+        self.assertEqual(
+            migrated.repository_outcome_status,
+            RepositoryOutcomeStatus.BLOCKED,
+        )
 
     def test_parallel_non_conflicting_executions_get_distinct_worktrees_and_branches(self) -> None:
         first = self._acquire("exec-1", self.repo.id)
