@@ -324,14 +324,15 @@ class WorkItemRunUiContractTests(unittest.TestCase):
     def test_static_ui_uses_bounded_run_api_and_live_event_not_full_history_polling(self) -> None:
         root = Path(__file__).resolve().parents[1]
         ui = (root / "static/work_items_ui.js").read_text(encoding="utf-8")
+        run_ui = (root / "static/work_item_runs_ui.js").read_text(encoding="utf-8")
         app = (root / "static/app.js").read_text(encoding="utf-8")
 
         self.assertIn("RUN_PAGE_SIZE = 20", ui)
-        self.assertIn("/runs?", ui)
-        self.assertIn("work-runs-load-more", ui)
+        self.assertIn("/runs?", run_ui)
+        self.assertIn("work-runs-load-more", run_ui)
         self.assertIn("codex:work-item-run-updated", ui)
         self.assertIn("work_item.run.updated", app)
-        self.assertNotIn("setInterval(() => refreshRuns", ui)
+        self.assertNotIn("setInterval(() => refreshRuns", ui + run_ui)
 
 
 if __name__ == "__main__":
