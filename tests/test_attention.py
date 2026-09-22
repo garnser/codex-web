@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_web.attention import AttentionStatus
+from codex_web.attention import (
+    AttentionItemCreate,
+    AttentionSeverity,
+    AttentionSource,
+    AttentionStatus,
+)
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.identity import (
     AuthenticationActor,
@@ -113,6 +118,67 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         reopened = self.store.list()[0]
         self.assertEqual(reopened.status, AttentionStatus.OPEN)
         self.assertEqual(reopened.type, "approval.invalidated")
+
+    async def test_list_page_is_bounded_cursor_paginated_and_filterable(self) -> None:
+        for index in range(5):
+            await self.service.upsert(
+                AttentionItemCreate(
+                    organization_id="local",
+                    workspace_id="default",
+                    type=f"test.attention.{index}",
+                    severity=(
+                        AttentionSeverity.CRITICAL
+                        if index in {1, 3}
+                        else AttentionSeverity.WARNING
+                    ),
+                    source=AttentionSource(
+                        object_type="work_item",
+                        object_id=f"work-{index}",
+                    ),
+                    reason=f"Needs human attention {index}",
+                    dedupe_key=f"test-attention-{index}",
+                ),
+                actor_id="test",
+            )
+
+        first, next_cursor, total = self.service.list_page(
+            self.actor,
+            limit=2,
+            cursor=0,
+        )
+        self.assertEqual(len(first), 2)
+        self.assertEqual(total, 5)
+        self.assertEqual(next_cursor, 2)
+
+        second, final_cursor, second_total = self.service.list_page(
+            self.actor,
+            limit=10,
+            cursor=next_cursor,
+        )
+        self.assertEqual(len(second), 3)
+        self.assertEqual(second_total, 5)
+        self.assertIsNone(final_cursor)
+
+        critical, critical_cursor, critical_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            severity="critical",
+        )
+        self.assertEqual(len(critical), 2)
+        self.assertEqual(critical_total, 2)
+        self.assertIsNone(critical_cursor)
+        self.assertTrue(all(item.severity == AttentionSeverity.CRITICAL for item in critical))
+
+        await self.service.resolve(first[0].id, actor=self.actor, reason="handled")
+        active, active_cursor, active_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            status="active",
+        )
+        self.assertEqual(len(active), 4)
+        self.assertEqual(active_total, 4)
+        self.assertIsNone(active_cursor)
+        self.assertTrue(all(item.status != AttentionStatus.RESOLVED for item in active))
 
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())

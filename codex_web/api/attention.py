@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from codex_web.api.identity import request_actor
@@ -36,13 +36,26 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         return HTTPException(status_code=400, detail=str(exc))
 
     @router.get("")
-    async def list_items(request: Request) -> dict[str, Any]:
+    async def list_items(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=100),
+        cursor: int = Query(default=0, ge=0),
+        status: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
+        items, next_cursor, total = service.list_page(
+            actor,
+            limit=limit,
+            cursor=cursor,
+            status=status,
+            severity=severity,
+        )
         return {
-            "attention_items": [
-                serialize(item)
-                for item in service.list(actor)
-            ]
+            "attention_items": [serialize(item) for item in items],
+            "next_cursor": next_cursor,
+            "has_more": next_cursor is not None,
+            "total": total,
         }
 
     @router.get("/{item_id}")
