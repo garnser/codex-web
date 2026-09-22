@@ -47,7 +47,11 @@ from codex_web.identity import (
 )
 from codex_web.models import WorkItemState
 from codex_web.resources import ResourceCreate, ResourceType
-from codex_web.services.action_intents import ActionIntentService, ActionIntentUnsafeRetryError
+from codex_web.services.action_intents import (
+    ActionIntentConflictError,
+    ActionIntentService,
+    ActionIntentUnsafeRetryError,
+)
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
@@ -616,6 +620,73 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             self.service.get(first.id, self.actor).status,
             ActionIntentStatus.REQUIRES_RECONCILIATION,
         )
+
+    async def test_idempotency_key_cannot_cross_resource_targets(self) -> None:
+        other = self.resources.create(
+            ResourceCreate(resource_type=ResourceType.OTHER, name="Other target"),
+            actor=self.actor,
+        )
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=self.reference.provider_type,
+                provider_instance=self.reference.provider_instance,
+                resource_ids=(self.resource.id, other.id),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        stable_key = "stable-resource-target"
+        first = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=self._request(
+                    resource_ids=(self.resource.id,),
+                    idempotency_key=stable_key,
+                ),
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaisesRegex(
+            ActionIntentConflictError,
+            "different action target or execution context",
+        ):
+            self.service.create(
+                ActionIntentCreate(
+                    binding_id=binding.id,
+                    request=self._request(
+                        resource_ids=(other.id,),
+                        idempotency_key=stable_key,
+                    ),
+                ),
+                actor=self.actor,
+            )
+
+        self.assertEqual(first.resource_ids, (self.resource.id,))
+        self.assertEqual(len(self.service.list(self.actor)), 1)
+
+    async def test_idempotency_key_cannot_cross_execution_attribution(self) -> None:
+        request = self._request(idempotency_key="stable-execution-context")
+        first = self.service.create(
+            ActionIntentCreate(
+                binding_id=self.binding.id,
+                request=request,
+                execution_id="exec-a",
+            ),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(ActionIntentConflictError):
+            self.service.create(
+                ActionIntentCreate(
+                    binding_id=self.binding.id,
+                    request=request,
+                    execution_id="exec-b",
+                ),
+                actor=self.actor,
+            )
+
+        self.assertEqual(first.execution_id, "exec-a")
 
     async def test_callback_provider_must_match_intent_provider(self) -> None:
         intent = self._create()
