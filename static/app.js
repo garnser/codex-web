@@ -1491,6 +1491,7 @@ async function loadThread(threadId) {
   history?.afterThreadRendered?.(threadId, $("messages"));
   renderThreads();
   renderTokenUsage();
+  renderRepositoryTargetStatus();
   updateWaitingFromState();
 }
 
@@ -1521,8 +1522,35 @@ async function sendPrompt() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return;
   persistRunSettings();
+
+  let target = repositoryTargetState();
+  if (target.blocked) {
+    renderRepositoryTargetStatus();
+    const mutable = $("repository-target");
+    mutable?.focus();
+    addMessage(
+      "Execution blocked",
+      `${target.code}: ${target.message}`,
+      "tool",
+      new Date(),
+    );
+    return;
+  }
+
   if (!state.threadId) await newThread();
   const threadId = state.threadId;
+  target = repositoryTargetState(threadId);
+  if (target.blocked) {
+    renderRepositoryTargetStatus();
+    $("repository-target")?.focus();
+    addMessage(
+      "Execution blocked",
+      `${target.code}: ${target.message}`,
+      "tool",
+      new Date(),
+    );
+    return;
+  }
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
   $("prompt").value = "";
   resizePromptInput();
