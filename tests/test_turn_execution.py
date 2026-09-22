@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI, HTTPException
 
@@ -18,6 +18,7 @@ from codex_web.services.turns import TurnService
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
+from codex_web.services.turn_execution_binding import TurnExecutionBindingError
 
 
 class _Hub:
@@ -150,7 +151,48 @@ class _RoutingFailure:
         raise AgentRoutingError(self.message)
 
 
+class _RoutingSuccess:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def route(self, request, *, actor):
+        self.calls.append((request, actor))
+        binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+        )
+        return SimpleNamespace(
+            selected_runtime=SimpleNamespace(
+                execution_binding=lambda: binding,
+            ),
+            agent_profile=None,
+        )
+
+
 class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
+    def test_trusted_local_source_preserves_interactive_queue_provenance(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_TRUSTED_LOCAL_CODEX_SESSION": "1"},
+        ):
+            for source in ("web", "queued:web", "steer:web", "queued:steer:web"):
+                with self.subTest(source=source):
+                    self.assertTrue(
+                        TurnExecutionService._trusted_local_codex_session_enabled(
+                            source=source,
+                            runtime_binding=None,
+                        )
+                    )
+            for source in ("slack", "queued:slack", "steer:queued:slack"):
+                with self.subTest(source=source):
+                    self.assertFalse(
+                        TurnExecutionService._trusted_local_codex_session_enabled(
+                            source=source,
+                            runtime_binding=None,
+                        )
+                    )
+
     async def test_network_profile_mismatch_is_structured_preflight_blocker(self) -> None:
         service = TurnExecutionService(
             _Host(),
@@ -175,6 +217,31 @@ class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocker["code"], "network_policy_unsupported")
         self.assertFalse(blocker["retryable"])
         self.assertEqual(blocker["target_type"], "agent_runtime")
+
+    async def test_trusted_local_routing_does_not_require_worker_sandbox_profile(self) -> None:
+        routing = _RoutingSuccess()
+        service = TurnExecutionService(
+            _Host(),
+            control_actor=SimpleNamespace(identity_id="control"),
+            routing_service=routing,
+        )
+
+        binding, profile = await service._select_runtime_binding(
+            project_id="p1",
+            sandbox="danger-full-access",
+            trusted_local_codex_session=True,
+        )
+
+        self.assertEqual((binding.provider_id, binding.runtime_id), ("openai", "codex"))
+        self.assertIsNone(profile)
+        request, _actor = routing.calls[0]
+        self.assertEqual(request.allowed_provider_ids, ("openai",))
+        self.assertEqual(request.allowed_runtime_ids, ("codex",))
+        self.assertEqual(request.preferred_provider_ids, ("openai",))
+        self.assertEqual(request.preferred_runtime_ids, ("codex",))
+        self.assertFalse(request.allow_fallback)
+        self.assertIsNone(request.required_sandbox_profile)
+        self.assertIsNone(request.required_network_profile)
 
 
 class TurnExecutionQueueTests(unittest.TestCase):
@@ -246,6 +313,15 @@ class _BindingService:
         return SimpleNamespace(
             assignment_id="assignment-1",
             workspace_id="workspace-1",
+        )
+
+
+class _CredentialMissingBindingService(_BindingService):
+    def prepare(self, **kwargs):
+        self.calls.append(kwargs)
+        raise TurnExecutionBindingError(
+            "worker credential reference configuration is unavailable for openai/codex",
+            code="credential_reference_missing",
         )
 
 
@@ -375,6 +451,125 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             **service_kwargs,
         )
         return host, binding, sessions, service
+
+    def _credential_missing_service(self):
+        host = _Host()
+        binding = _CredentialMissingBindingService()
+        sessions = _SessionManager()
+        service = TurnExecutionService(
+            host,
+            binding_service=binding,
+            session_manager=sessions,
+            bootstrap_bindings=_BootstrapBindings(),
+            control_actor=SimpleNamespace(identity_id="control"),
+        )
+        return host, binding, sessions, service
+
+    async def test_explicit_trusted_local_web_turn_uses_authenticated_app_server(self) -> None:
+        host, binding, sessions, service = self._credential_missing_service()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="danger-full-access",
+            approval_policy="never",
+        )
+
+        async def request(method, params=None):
+            if method == "thread/resume":
+                return {"thread": {"id": "t1"}}
+            if method == "turn/start":
+                return {"turn": {"id": "turn-local"}}
+            return {"ok": True}
+
+        host.codex.request.side_effect = request
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_TRUSTED_LOCAL_CODEX_SESSION": "1"},
+        ):
+            result = await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="do local work",
+                sandbox="danger-full-access",
+                approval_policy="never",
+                source="web",
+                execution_id="exec-local",
+            )
+
+        self.assertEqual(result["turn"]["id"], "turn-local")
+        self.assertEqual(binding.calls, [])
+        self.assertEqual(sessions.started, [])
+        calls = host.codex.request.await_args_list
+        self.assertEqual([call.args[0] for call in calls], ["thread/resume", "turn/start"])
+        self.assertEqual(calls[0].args[1]["cwd"], "/workspace/project")
+        self.assertEqual(calls[1].args[1]["cwd"], "/workspace/project")
+        self.assertEqual(
+            calls[1].args[1]["sandboxPolicy"],
+            {"type": "danger-full-access"},
+        )
+        active = host.active["t1"]
+        self.assertIsNone(active.assignment_id)
+        self.assertIsNone(active.execution_workspace_id)
+        self.assertEqual(active.worker_id, "local-codex-app-server")
+        self.assertEqual(
+            service.last_inputs["t1"]["authentication_source"],
+            "local_codex_session",
+        )
+        self.assertEqual(
+            host.events[-1]["authentication_source"],
+            "local_codex_session",
+        )
+
+    async def test_trusted_local_mode_does_not_apply_to_unattended_turns(self) -> None:
+        host, binding, sessions, service = self._credential_missing_service()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_TRUSTED_LOCAL_CODEX_SESSION": "1"},
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                await service.start_thread_turn_now(
+                    "t1",
+                    project=project,
+                    message="unattended work",
+                    sandbox="workspace-write",
+                    approval_policy="never",
+                    source="slack",
+                )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(
+            caught.exception.detail["blockers"][0]["code"],
+            "credential_reference_missing",
+        )
+        self.assertEqual(len(binding.calls), 1)
+        self.assertEqual(sessions.started, [])
+        host.codex.request.assert_not_awaited()
+
+    async def test_trusted_local_mode_fails_clearly_when_app_server_is_unavailable(self) -> None:
+        host, binding, sessions, service = self._credential_missing_service()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host.codex.request.side_effect = RuntimeError("local Codex app-server unavailable")
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_WEB_TRUSTED_LOCAL_CODEX_SESSION": "1"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "app-server unavailable"):
+                await service.start_thread_turn_now(
+                    "t1",
+                    project=project,
+                    message="local work",
+                    sandbox="workspace-write",
+                    approval_policy="never",
+                    source="web",
+                )
+
+        self.assertEqual(binding.calls, [])
+        self.assertEqual(sessions.started, [])
+        self.assertNotIn("t1", host.active)
 
     async def test_start_routes_resume_and_turn_start_through_assignment_bound_session(self) -> None:
         host, binding, sessions, service = self._service()

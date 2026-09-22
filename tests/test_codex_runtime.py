@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from codex_web.runtime.codex import CodexRuntime, install_codex_runtime, request_timeout
 
@@ -107,6 +107,56 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await future
         self.assertNotIn(9, self.runtime.pending)
+
+    async def test_message_projection_failure_does_not_kill_response_reader(self) -> None:
+        def fail_activity(_message):
+            raise AttributeError("projection state is unavailable")
+
+        self.host._record_thread_activity = fail_activity
+        response = asyncio.get_running_loop().create_future()
+        self.runtime.pending[7] = response
+        await self.runtime._handle_message_safely(
+            {"method": "thread/status/changed", "params": {}}
+        )
+        await self.runtime._handle_message_safely(
+            {"id": 7, "result": {"ok": True}}
+        )
+
+        self.assertEqual(await response, {"ok": True})
+        self.assertIn("projection state is unavailable", self.runtime.last_error)
+        self.assertTrue(
+            any(event.get("type") == "codex.error" for event in self.host.hub.events)
+        )
+
+    async def test_rpc_timeout_invalidates_live_process_generation(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request("thread/read", {})
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertFalse(self.runtime.ready.is_set())
+        self.runtime.stop.assert_awaited_once()
+
+    async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
+        async def complete():
+            return None
+
+        self.runtime.proc = SimpleNamespace(poll=lambda: None)
+        self.runtime.reader_task = asyncio.create_task(complete())
+        await self.runtime.reader_task
+        self.runtime.ready.set()
+        self.runtime.start = AsyncMock()
+
+        await self.runtime.ensure_started()
+
+        self.runtime.start.assert_awaited_once()
 
     async def test_approval_policy_never_auto_resolves_without_queueing(self) -> None:
         self.host.approval_policy = "never"

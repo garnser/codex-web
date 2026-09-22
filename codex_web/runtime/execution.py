@@ -223,6 +223,49 @@ class TurnExecutionService:
     def _new_execution_id() -> str:
         return f"thread-turn-{__import__('uuid').uuid4().hex}"
 
+    @staticmethod
+    def _trusted_local_codex_session_enabled(
+        *,
+        source: str,
+        runtime_binding: ExecutionRuntimeBinding | None,
+    ) -> bool:
+        """Return whether this turn explicitly selected ambient local Codex auth.
+
+        This compatibility path is intentionally narrower than assignment-bound
+        execution: it is only for browser-originated OpenAI/Codex turns on a
+        trusted native installation.  Unattended sources must continue to use
+        delegated worker credentials.
+        """
+
+        enabled = (
+            os.environ.get("CODEX_WEB_TRUSTED_LOCAL_CODEX_SESSION", "")
+            .strip()
+            .casefold()
+            in {"1", "true", "yes", "on"}
+        )
+        deployment_mode = (
+            os.environ.get("CODEX_WEB_DEPLOYMENT_MODE", "local")
+            .strip()
+            .casefold()
+        )
+        original_source = source.strip().casefold()
+        while True:
+            prefix, separator, remainder = original_source.partition(":")
+            if separator and prefix in {"queued", "steer"}:
+                original_source = remainder
+                continue
+            break
+        if (
+            not enabled
+            or deployment_mode != "local"
+            or original_source != "web"
+        ):
+            return False
+        return runtime_binding is None or (
+            runtime_binding.provider_id == "openai"
+            and runtime_binding.runtime_id == "codex"
+        )
+
     def _require_worker_routing(self) -> tuple[
         TurnExecutionBindingService,
         AssignmentBoundAgentSessionManager,
@@ -239,6 +282,7 @@ class TurnExecutionService:
         *,
         project_id: str,
         sandbox: str,
+        trusted_local_codex_session: bool = False,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
@@ -253,8 +297,37 @@ class TurnExecutionService:
                     agent_profile_id=agent_profile_id,
                     agent_profile_revision=agent_profile_revision,
                     require_persistent_session=True,
-                    required_sandbox_profile=sandbox,
-                    required_network_profile="brokered-model-egress",
+                    allowed_provider_ids=(
+                        ("openai",)
+                        if trusted_local_codex_session
+                        else ()
+                    ),
+                    allowed_runtime_ids=(
+                        ("codex",)
+                        if trusted_local_codex_session
+                        else ()
+                    ),
+                    preferred_provider_ids=(
+                        ("openai",)
+                        if trusted_local_codex_session
+                        else ()
+                    ),
+                    preferred_runtime_ids=(
+                        ("codex",)
+                        if trusted_local_codex_session
+                        else ()
+                    ),
+                    allow_fallback=not trusted_local_codex_session,
+                    required_sandbox_profile=(
+                        None
+                        if trusted_local_codex_session
+                        else sandbox
+                    ),
+                    required_network_profile=(
+                        None
+                        if trusted_local_codex_session
+                        else "brokered-model-egress"
+                    ),
                 ),
                 actor=routing_actor,
             )
@@ -888,7 +961,7 @@ class TurnExecutionService:
         if active and turn_id and active.turn_id and active.turn_id != turn_id:
             return
         if active and self._delete_active_turn(thread_id):
-            if not h.IS_SHUTTING_DOWN and h._autonomy_enabled():
+            if not getattr(h, "IS_SHUTTING_DOWN", False) and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
 
     def _schedule_assignment_completion(
@@ -1033,13 +1106,16 @@ class TurnExecutionService:
                     succeeded=method == "turn/completed",
                     message=message,
                 )
-            if not h.IS_SHUTTING_DOWN:
+            if not getattr(h, "IS_SHUTTING_DOWN", False):
                 self.clear_thread_active(thread_id, turn_id=turn_id)
         elif method == "thread/status/changed":
             status_type = (params.get("status") or {}).get("type")
             if status_type == "active":
                 self.mark_thread_active(thread_id)
-            elif status_type in {"idle", "systemError", "notLoaded"} and not h.IS_SHUTTING_DOWN:
+            elif (
+                status_type in {"idle", "systemError", "notLoaded"}
+                and not getattr(h, "IS_SHUTTING_DOWN", False)
+            ):
                 self.clear_thread_active(thread_id)
 
     async def start_thread_turn_now(
@@ -1119,6 +1195,13 @@ class TurnExecutionService:
             if requested_writable_repositories
             else RepositoryTargetSource.WORK_ITEM
         )
+        trusted_local_codex_requested = (
+            self._trusted_local_codex_session_enabled(
+                source=source,
+                runtime_binding=None,
+            )
+        )
+        trusted_local_codex_session = False
 
         async with self.turn_start_lock:
             if self.thread_is_active(thread_id):
@@ -1284,6 +1367,9 @@ class TurnExecutionService:
                     await self._select_runtime_binding(
                         project_id=project.id,
                         sandbox=effective_sandbox,
+                        trusted_local_codex_session=(
+                            trusted_local_codex_requested
+                        ),
                         actor=actor,
                         agent_profile_id=agent_profile_id,
                         agent_profile_revision=agent_profile_revision,
@@ -1327,50 +1413,79 @@ class TurnExecutionService:
                     )
                 session_manager = self._manager_for_binding(runtime_binding)
                 canonical_execution_id = requested_execution_id
-                try:
-                    binding = binding_service.prepare(
-                        thread_id=thread_id,
-                        execution_id=canonical_execution_id,
-                        project_id=project.id,
-                        sandbox=effective_sandbox,
-                        approval_policy=effective_approval_policy,
+                trusted_local_codex_session = (
+                    self._trusted_local_codex_session_enabled(
+                        source=source,
                         runtime_binding=runtime_binding,
-                        explicit_repository_id=(
-                            repository_resource_id
-                            or settings.repository_resource_id
-                        ),
-                        writable_repository_ids=(
-                            effective_writable_repositories
-                        ),
-                        writable_repository_source=writable_repository_source,
-                        read_only_repository_ids=(
-                            read_only_repository_resource_ids
-                            or settings.read_only_repository_resource_ids
-                        ),
-                        work_item_ref=work_item_ref,
-                        execution_profile_id=effective_execution_profile_id,
-                        agent_profile=agent_profile_binding,
                     )
-                except TurnExecutionBindingError as exc:
-                    raise HTTPException(
-                        status_code=503,
-                        detail={
-                            "code": "execution_preflight_blocked",
-                            "message": str(exc),
-                            "blockers": [exc.public()],
-                            "retryable": False,
-                        },
-                    ) from exc
-                session = await session_manager.start(binding.assignment_id)
-                assignment = binding
-                runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
-                canonical_repository_resource_id = getattr(
-                    binding,
-                    "repository_resource_id",
-                    repository_resource_id or settings.repository_resource_id,
                 )
-                assignment_id = binding.assignment_id
-                workspace_id = binding.workspace_id
+                if trusted_local_codex_session:
+                    # The control-plane app-server was started outside a worker
+                    # and owns its own interactive Codex login.  Do not copy or
+                    # mount that credential material into repository execution.
+                    session = h.codex
+                    assignment = None
+                    canonical_repository_resource_id = (
+                        repository_resource_id
+                        or settings.repository_resource_id
+                    )
+                    assignment_id = None
+                    workspace_id = None
+                    h._append_bot_event(
+                        {
+                            "type": "trusted_local_codex_session_selected",
+                            "thread_id": thread_id,
+                            "project_id": project.id,
+                            "source": source,
+                            "execution_id": canonical_execution_id,
+                            "authentication_source": "local_codex_session",
+                        }
+                    )
+                else:
+                    try:
+                        binding = binding_service.prepare(
+                            thread_id=thread_id,
+                            execution_id=canonical_execution_id,
+                            project_id=project.id,
+                            sandbox=effective_sandbox,
+                            approval_policy=effective_approval_policy,
+                            runtime_binding=runtime_binding,
+                            explicit_repository_id=(
+                                repository_resource_id
+                                or settings.repository_resource_id
+                            ),
+                            writable_repository_ids=(
+                                effective_writable_repositories
+                            ),
+                            writable_repository_source=writable_repository_source,
+                            read_only_repository_ids=(
+                                read_only_repository_resource_ids
+                                or settings.read_only_repository_resource_ids
+                            ),
+                            work_item_ref=work_item_ref,
+                            execution_profile_id=effective_execution_profile_id,
+                            agent_profile=agent_profile_binding,
+                        )
+                    except TurnExecutionBindingError as exc:
+                        raise HTTPException(
+                            status_code=503,
+                            detail={
+                                "code": "execution_preflight_blocked",
+                                "message": str(exc),
+                                "blockers": [exc.public()],
+                                "retryable": False,
+                            },
+                        ) from exc
+                    session = await session_manager.start(binding.assignment_id)
+                    assignment = binding
+                    runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
+                    canonical_repository_resource_id = getattr(
+                        binding,
+                        "repository_resource_id",
+                        repository_resource_id or settings.repository_resource_id,
+                    )
+                    assignment_id = binding.assignment_id
+                    workspace_id = binding.workspace_id
 
             skill_context_selection = None
             if (
@@ -1461,14 +1576,21 @@ class TurnExecutionService:
                     if item
                 )
 
-            status = session.status()
-            workspace_path = session.workspace_path
-            if workspace_path is None or status.fence is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail="assignment-bound agent session lacks canonical workspace/fence",
-                )
-            workspace_cwd = str(workspace_path)
+            if trusted_local_codex_session:
+                workspace_cwd = project.path
+                worker_id = "local-codex-app-server"
+                fence = None
+            else:
+                status = session.status()
+                workspace_path = session.workspace_path
+                if workspace_path is None or status.fence is None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="assignment-bound agent session lacks canonical workspace/fence",
+                    )
+                workspace_cwd = str(workspace_path)
+                worker_id = status.worker_id
+                fence = status.fence
             resume_params = {
                 "threadId": thread_id,
                 **h._project_params(
@@ -1497,7 +1619,7 @@ class TurnExecutionService:
                 execution_id=canonical_execution_id,
                 assignment_id=assignment_id,
                 execution_workspace_id=workspace_id,
-                worker_id=status.worker_id,
+                worker_id=worker_id,
                 model=effective_model,
                 developer_instructions=effective_developer_instructions,
             )
@@ -1518,21 +1640,22 @@ class TurnExecutionService:
                 capacity_error = await self._capacity_error(runtime_binding, exc)
                 if capacity_error is not None:
                     raise capacity_error from exc
-                with contextlib.suppress(Exception):
-                    await session_manager.complete(
-                        assignment_id,
-                        succeeded=False,
-                        failure_code=(
-                            "codex_thread_resume_failed"
-                            if runtime_binding is None
-                            or (
-                                runtime_binding.provider_id == "openai"
-                                and runtime_binding.runtime_id == "codex"
-                            )
-                            else "agent_thread_resume_failed"
-                        ),
-                        failure_message=str(exc)[:500],
-                    )
+                if not trusted_local_codex_session:
+                    with contextlib.suppress(Exception):
+                        await session_manager.complete(
+                            assignment_id,
+                            succeeded=False,
+                            failure_code=(
+                                "codex_thread_resume_failed"
+                                if runtime_binding is None
+                                or (
+                                    runtime_binding.provider_id == "openai"
+                                    and runtime_binding.runtime_id == "codex"
+                                )
+                                else "agent_thread_resume_failed"
+                            ),
+                            failure_message=str(exc)[:500],
+                        )
                 raise
 
             self.mark_thread_active(
@@ -1547,8 +1670,8 @@ class TurnExecutionService:
                 execution_id=canonical_execution_id,
                 assignment_id=assignment_id,
                 execution_workspace_id=workspace_id,
-                worker_id=status.worker_id,
-                fence=status.fence,
+                worker_id=worker_id,
+                fence=fence,
                 repository_resource_id=canonical_repository_resource_id,
                 writable_repository_resource_ids=(
                     tuple(
@@ -1685,21 +1808,22 @@ class TurnExecutionService:
                     raise capacity_error from exc
                 if not h._is_codex_timeout_error(exc):
                     self.clear_thread_active(thread_id)
-                    with contextlib.suppress(Exception):
-                        await session_manager.complete(
-                            assignment_id,
-                            succeeded=False,
-                            failure_code=(
-                                "codex_turn_start_failed"
-                                if runtime_binding is None
-                                or (
-                                    runtime_binding.provider_id == "openai"
-                                    and runtime_binding.runtime_id == "codex"
-                                )
-                                else "agent_turn_start_failed"
-                            ),
-                            failure_message=str(exc)[:500],
-                        )
+                    if not trusted_local_codex_session:
+                        with contextlib.suppress(Exception):
+                            await session_manager.complete(
+                                assignment_id,
+                                succeeded=False,
+                                failure_code=(
+                                    "codex_turn_start_failed"
+                                    if runtime_binding is None
+                                    or (
+                                        runtime_binding.provider_id == "openai"
+                                        and runtime_binding.runtime_id == "codex"
+                                    )
+                                    else "agent_turn_start_failed"
+                                ),
+                                failure_message=str(exc)[:500],
+                            )
                 raise
             turn_id = (
                 runtime_turn_result.provider_native_turn_id
@@ -1722,8 +1846,13 @@ class TurnExecutionService:
                 "execution_id": canonical_execution_id,
                 "assignment_id": assignment_id,
                 "execution_workspace_id": workspace_id,
-                "worker_id": status.worker_id,
-                "fence": status.fence,
+                "worker_id": worker_id,
+                "fence": fence,
+                "authentication_source": (
+                    "local_codex_session"
+                    if trusted_local_codex_session
+                    else "delegated_worker"
+                ),
                 "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
                 "requested_execution_id": (
                     requested_execution_id
@@ -1751,8 +1880,8 @@ class TurnExecutionService:
                 execution_id=canonical_execution_id,
                 assignment_id=assignment_id,
                 execution_workspace_id=workspace_id,
-                worker_id=status.worker_id,
-                fence=status.fence,
+                worker_id=worker_id,
+                fence=fence,
                 repository_resource_id=canonical_repository_resource_id,
                 writable_repository_resource_ids=(
                     tuple(
@@ -1781,8 +1910,13 @@ class TurnExecutionService:
                 "execution_id": canonical_execution_id,
                 "assignment_id": assignment_id,
                 "execution_workspace_id": workspace_id,
-                "worker_id": status.worker_id,
-                "fence": status.fence,
+                "worker_id": worker_id,
+                "fence": fence,
+                "authentication_source": (
+                    "local_codex_session"
+                    if trusted_local_codex_session
+                    else "delegated_worker"
+                ),
                 "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
                 "agent_profile_id": (
                     agent_profile_binding.profile_id
@@ -2194,7 +2328,11 @@ class TurnExecutionService:
 
     def schedule_terminal_thread_recovery(self, thread_id: str, error: str) -> bool:
         h = self.host
-        if not thread_id or thread_id in self.terminal_recovery_tasks or h.IS_SHUTTING_DOWN:
+        if (
+            not thread_id
+            or thread_id in self.terminal_recovery_tasks
+            or getattr(h, "IS_SHUTTING_DOWN", False)
+        ):
             return False
         if not h._bindings_for_thread(thread_id):
             return False
