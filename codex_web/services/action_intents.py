@@ -68,6 +68,10 @@ from codex_web.services.identity import (
     IdentityService,
     TenantIsolationError,
 )
+from codex_web.services.execution_workers import (
+    AssignmentNotFoundError,
+    WorkerConflictError,
+)
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
 
@@ -547,7 +551,7 @@ class ActionIntentService:
                 execution_id,
                 actor=actor,
             )
-        except Exception as exc:
+        except (AssignmentNotFoundError, WorkerConflictError) as exc:
             raise ActionIntentConflictError(
                 "execution-bound repository action requires a matching canonical execution assignment"
             ) from exc
