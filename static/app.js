@@ -198,6 +198,9 @@ function currentRunSettings() {
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
     profileId:saved.profileId||ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
+    writableRepositoryResourceIds: Array.isArray(saved.writableRepositoryResourceIds)
+      ? saved.writableRepositoryResourceIds
+      : [],
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
       : [],
@@ -205,6 +208,14 @@ function currentRunSettings() {
 }
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
+function orderedWritableRepositoryIds(settings=currentRunSettings()){
+  const ids=Array.from(new Set(settings.writableRepositoryResourceIds||[]));
+  const primary=settings.repositoryResourceId||"";
+  if(primary&&ids.includes(primary)){
+    return[primary,...ids.filter((id)=>id!==primary)];
+  }
+  return ids;
+}
 function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
 function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
@@ -256,6 +267,10 @@ function persistRunSettings() {
     approvalPolicy: $("approval-policy").value,
     profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
+    writableRepositoryResourceIds: Array.from(
+      $("repository-write-targets")?.selectedOptions || [],
+      (option) => option.value,
+    ),
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
       (option) => option.value,
@@ -1397,6 +1412,7 @@ async function sendPrompt() {
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
     repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    writable_repository_resource_ids: orderedWritableRepositoryIds(runSettings),
     read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
     execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
   };
@@ -2318,6 +2334,10 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
 }));
 $("execution-profile").addEventListener("change",()=>{persistRunSettings();ep.render(currentRunSettings().profileId,escapeHtml);renderRepositoryTargets();});
 $("repository-target").addEventListener("change", () => {
+  persistRunSettings();
+  renderRepositoryTargets();
+});
+$("repository-write-targets").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
 });
