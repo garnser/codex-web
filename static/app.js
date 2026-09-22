@@ -933,24 +933,6 @@ function commandPreview(command) {
   return value.replace(/\s+/g, " ");
 }
 
-, turn = {}) {
-  return messageTimestamp(
-    item.createdAt,
-    item.created_at,
-    item.timestamp,
-    item.completedAt,
-    item.completed_at,
-    item.updatedAt,
-    item.updated_at,
-    turn.createdAt,
-    turn.created_at,
-    turn.startedAt,
-    turn.started_at,
-    turn.updatedAt,
-    turn.updated_at,
-  );
-}
-
 function addMessage(role, text, type = role, timestamp = new Date()) {
   const message = document.createElement("article");
   message.className = `message ${type}`;
@@ -1144,7 +1126,7 @@ function renderItem(item, turn = {}) {
   }
 }
 
-async function refresh() {
+async function refresh({ reloadProjects = false } = {}) {
   const generation=state.refreshGeneration+1;
   state.refreshGeneration=generation;
   state.refreshController?.abort();
@@ -1160,6 +1142,7 @@ async function refresh() {
       projectId,
       search,
       projects:state.projects,
+      reloadProjects,
       models:state.models,
       cachedStatic:state.projectUiStatic[projectId]||null,
       signal:controller.signal,
@@ -2359,7 +2342,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-$("refresh").addEventListener("click", refresh);
+$("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
 $("send").addEventListener("click", sendPrompt);
 $("theme-toggle").addEventListener("click", () => {
