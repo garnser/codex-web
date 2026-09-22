@@ -178,6 +178,36 @@ class ArtifactEvidenceTests(unittest.TestCase):
             actor=self.producer,
         )
 
+    def test_evidence_can_carry_repository_resource_attribution(self) -> None:
+        artifact = self._artifact()
+        evidence = self.service.create_evidence(
+            EvidenceCreate(
+                work_item_ref=self.work_item.ref,
+                execution_id="exec-repository-test",
+                resource_ids=(self.repo.id, self.repo.id),
+                evidence_type=EvidenceType.TEST_RESULT,
+                artifact_ids=(artifact.id,),
+                provider="pytest",
+                source="worker",
+                result=EvidenceResult.PASS,
+                summary="Repository-scoped tests passed.",
+            ),
+            actor=self.producer,
+        )
+
+        self.assertEqual(evidence.resource_ids, (self.repo.id,))
+        persisted = {
+            item.id: item
+            for item in self.service.list_evidence(
+                self.producer,
+                work_item_ref=self.work_item.ref,
+            )
+        }
+        self.assertEqual(
+            persisted[evidence.id].resource_ids,
+            (self.repo.id,),
+        )
+
     def test_digest_and_provenance_are_stable_and_queryable(self) -> None:
         artifact = self._artifact(
             external_id="commit-abc123",
