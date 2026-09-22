@@ -565,12 +565,23 @@ function toggleItemExpanded(scope, id) {
   }
 }
 
+async function selectProject(projectId, { historyMode = "push" } = {}) {
+  const normalized = String(projectId || "").trim();
+  if (!normalized || normalized === state.projectId) return;
+  activateProject(state, normalized, { historyMode });
+  state.threadId = null;
+  state.activeAgentMessage = null;
+  applyRunSettings();
+  await refresh();
+}
+
 function renderProjects() {
   $("projects").innerHTML = "";
   state.projects.forEach((project) => {
     const item = document.createElement("div");
     const expanded = isItemExpanded("project", project.id);
     item.className = `item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
+    item.dataset.projectId = project.id;
     item.innerHTML = `
       <div class="item-header">
         <div class="item-main">
@@ -584,9 +595,7 @@ function renderProjects() {
       </div>
     `;
     item.querySelector(".item-main").addEventListener("click", async () => {
-      activateProject(state,project.id);
-      applyRunSettings();
-      await refresh();
+      await selectProject(project.id);
     });
     item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
       event.stopPropagation();
@@ -603,6 +612,16 @@ function renderProjects() {
     });
     $("projects").appendChild(item);
   });
+  window.dispatchEvent(new CustomEvent("codex:projects-rendered", {
+    detail: {
+      projectId: state.projectId,
+      projects: state.projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+      })),
+    },
+  }));
 }
 
 function renderThreads() {
@@ -2340,6 +2359,20 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
+
+window.addEventListener("codex:project-select", (event) => {
+  const projectId = event.detail?.projectId;
+  selectProject(projectId).catch((error) => {
+    addMessage("Error", error.message, "tool", new Date());
+  });
+});
+window.addEventListener("popstate", () => {
+  const projectId = new URLSearchParams(window.location.search).get("project");
+  if (!projectId || projectId === state.projectId) return;
+  selectProject(projectId, { historyMode: "none" }).catch((error) => {
+    addMessage("Error", error.message, "tool", new Date());
+  });
+});
 
 $("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
