@@ -259,6 +259,48 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
             896,
         )
 
+    def test_runtime_delivery_records_current_snapshot_as_next_trusted_anchor(self) -> None:
+        self.host.states[self.ref].title = "Current canonical title"
+        selection = self.service.continuation_delta(self.ref)
+        self.assertEqual(selection["mode"], "full")
+
+        result = self.service.record_continuation_delivery(
+            self.ref,
+            "exec-runtime-delivery",
+            selection,
+            {
+                "mode": "full",
+                "reason": selection["reason"],
+                "work_item_context": selection["snapshot"]["work_item_context"],
+            },
+            provenance={
+                "execution_contract_version": "work-item/1.4",
+                "provider_id": "openai",
+                "runtime_id": "codex",
+                "session_ref": "thread-531",
+            },
+        )
+
+        checkpoint = result["checkpoint"]
+        self.assertTrue(checkpoint["delivery_proven"])
+        self.assertEqual(checkpoint["execution_id"], "exec-runtime-delivery")
+        self.assertEqual(checkpoint["continuation_mode"], "full")
+        self.assertEqual(
+            checkpoint["fallback_to_full_context_reason"],
+            selection["reason"],
+        )
+        self.assertEqual(
+            checkpoint["delivered_work_item_context"]["title"],
+            "Current canonical title",
+        )
+
+        anchor = self.service.continuation_anchor(self.ref)
+        self.assertTrue(anchor["trusted"])
+        self.assertEqual(
+            anchor["checkpoint"]["execution_id"],
+            "exec-runtime-delivery",
+        )
+
     def test_proven_checkpoint_without_verified_baseline_does_not_claim_delta(self) -> None:
         self.service.checkpoint(
             self.ref,
