@@ -584,9 +584,7 @@ function renderProjects() {
         <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
       </div>
     `;
-    item.querySelector(".item-main").addEventListener("click", async () => {
-      await selectProject(project.id);
-    });
+    item.querySelector(".item-main").addEventListener("click",()=>selectProject(project.id));
     item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
       event.stopPropagation();
       toggleItemExpanded("project", project.id);
@@ -2427,12 +2425,7 @@ $("save-project").addEventListener("click", async (event) => {
   ];
   delete state.projectUiStatic[project.id];
   activateProject(state,project.id);
-  window.dispatchEvent(new CustomEvent("codex:project-created", {
-    detail: {
-      projectId: project.id,
-      freshBootstrap: project.freshBootstrap || null,
-    },
-  }));
+  window.dispatchEvent(new CustomEvent("codex:project-created",{detail:{projectId:project.id,freshBootstrap:project.freshBootstrap||null}}));
   $("project-dialog").close();
   await refresh();
 });
