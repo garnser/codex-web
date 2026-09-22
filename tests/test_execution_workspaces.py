@@ -288,6 +288,78 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first.branch_name, second.branch_name)
         self.assertEqual(len(self.backend.provisioned), 2)
 
+    def test_coordinated_workspace_provisions_multiple_writable_members(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="coordinated-exec",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                writable_repository_ids=(self.repo.id, self.repo2.id),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        lease = next(
+            item
+            for item in self.service.store.load().leases
+            if item.id == workspace.lease_id
+        )
+
+        self.assertEqual(workspace.status, ExecutionWorkspaceStatus.ACTIVE)
+        self.assertEqual(
+            workspace.writable_repository_ids,
+            (self.repo.id, self.repo2.id),
+        )
+        self.assertEqual(len(workspace.repository_members), 2)
+        primary = next(
+            item
+            for item in workspace.repository_members
+            if item.resource_id == self.repo.id
+        )
+        secondary = next(
+            item
+            for item in workspace.repository_members
+            if item.resource_id == self.repo2.id
+        )
+        self.assertEqual(primary.access_mode, LeaseMode.WRITE)
+        self.assertEqual(primary.workspace_path, workspace.path)
+        self.assertEqual(secondary.access_mode, LeaseMode.WRITE)
+        self.assertTrue(
+            secondary.sandbox_path.startswith("/mnt/codex-repositories/")
+        )
+        self.assertNotEqual(primary.workspace_path, secondary.workspace_path)
+        self.assertEqual(lease.resource_modes[self.repo.id], LeaseMode.WRITE)
+        self.assertEqual(lease.resource_modes[self.repo2.id], LeaseMode.WRITE)
+        self.assertEqual(workspace.actual_disk_bytes, 256)
+        self.assertEqual(len(self.backend.provisioned), 2)
+
+    def test_coordinated_workspace_discard_cleans_every_writable_branch(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                work_item_ref=self.work_item.ref,
+                execution_id="coordinated-cleanup",
+                project_id="home",
+                resource_ids=(self.repo.id, self.repo2.id),
+                repository_resource_id=self.repo.id,
+                writable_repository_ids=(self.repo.id, self.repo2.id),
+                lease_mode=LeaseMode.WRITE,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+
+        self.service.release(
+            workspace.id,
+            ExecutionWorkspaceRelease(discard=True, reason="coordinated cleanup"),
+            actor=self.actor,
+        )
+
+        self.assertEqual(len(self.backend.cleaned), 2)
+        self.assertTrue(all(item[2] for item in self.backend.cleaned))
+
     def test_multi_repository_workspace_provisions_mutable_and_read_only_members(self) -> None:
         workspace = self.service.acquire(
             ExecutionWorkspaceAcquire(
