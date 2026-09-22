@@ -145,7 +145,7 @@ test('large trace sets render through a bounded DOM window', async ({ page }) =>
   await page.route('**/api/projects', (route) => route.fulfill({ json: [] }));
 
   await page.goto(fixture);
-  await page.locator('#refresh-operations').click();
+  await page.evaluate(() => document.getElementById('refresh-operations').click());
   await expect(page.locator('#operations-status')).toContainText('500 recent trace');
   await expect(page.locator('#operations-traces')).toContainText('Showing latest 100 of 500 matching traces');
   await expect(page.locator('#operations-traces details.comm-entry')).toHaveCount(100);
