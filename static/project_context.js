@@ -45,3 +45,18 @@ export function installProjectNavigation(state, refreshSelection, onError = cons
   });
   return select;
 }
+
+export function renderProjectList(c,ps,a,u){
+  c.innerHTML="";
+  for(const p of ps){
+    const x=u.expanded(p.id),e=document.createElement("div");
+    e.className=`item ${p.id===a?"active":""} ${x?"expanded":""}`;
+    e.dataset.projectId=p.id;
+    e.innerHTML=`<div class="item-header"><div class="item-main"><strong>${u.escape(p.name)}</strong><span>${u.escape(p.path)}</span></div><button class="item-expand-button" data-action="expand" aria-expanded="${x}">Actions</button></div><div class="item-actions" ${x?"":"hidden"}><button class="item-action-button" data-action="bot">Bot Integration</button></div>`;
+    e.querySelector(".item-main").onclick=()=>u.select(p.id);
+    e.querySelector('[data-action="expand"]').onclick=v=>{v.stopPropagation();u.toggle(p.id)};
+    e.querySelector('[data-action="bot"]').onclick=v=>{v.stopPropagation();u.bot(p)};
+    c.append(e);
+  }
+  publishProjectContext(ps,a);
+}
