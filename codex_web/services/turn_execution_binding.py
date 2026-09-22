@@ -12,6 +12,7 @@ from codex_web.execution_workspace_backend import ExecutionWorkspaceBackendError
 from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
+    CodexExecutionAuthenticationMode,
     ExecutionRuntimeBinding,
     NetworkPolicy,
     WorkerCapability,
@@ -36,7 +37,6 @@ from codex_web.resources import (
     ResourceType,
 )
 from codex_web.runtime_credentials import (
-    CodexExecutionAuthenticationMode,
     DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
     RuntimeAuthenticationConfigurationError,
     RuntimeAuthenticationRequirement,
