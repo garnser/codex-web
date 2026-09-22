@@ -844,6 +844,26 @@
                   <details id="execution-worker-management-panel">
                     <summary>Worker control-plane management</summary>
                     <div id="execution-worker-management-assurance" class="form-result">Worker control-plane mutation requires canonical admin authority and elevated human assurance.</div>
+                    <details id="execution-worker-enrollment-panel">
+                      <summary>Add runtime</summary>
+                      <div class="route-test">
+                        <label>Service identity <input id="execution-worker-enrollment-identity" placeholder="worker-service" /></label>
+                        <label>Pool <input id="execution-worker-enrollment-pool" value="local" /></label>
+                        <label>Expires in seconds <input id="execution-worker-enrollment-expiry" type="number" min="30" max="1800" value="300" /></label>
+                        <label>Max concurrency <input id="execution-worker-enrollment-concurrency" type="number" min="1" max="128" value="1" /></label>
+                        <fieldset id="execution-worker-enrollment-capabilities">
+                          <legend>Allowed capabilities</legend>
+                          <label><input type="checkbox" value="git" checked /> Git</label>
+                          <label><input type="checkbox" value="command_execution" checked /> Command execution</label>
+                          <label><input type="checkbox" value="container" /> Container</label>
+                          <label><input type="checkbox" value="network" /> Network</label>
+                          <label><input type="checkbox" value="artifact_upload" checked /> Artifact upload</label>
+                        </fieldset>
+                        <button id="create-execution-worker-enrollment" type="button" class="ghost-button">Create enrollment</button>
+                      </div>
+                      <div id="execution-worker-enrollment-result" class="form-result" aria-live="polite"></div>
+                      <div id="execution-worker-enrollment-list" class="comm-log"></div>
+                    </details>
                     <div class="route-test">
                       <button id="recover-stale-workers" type="button" class="ghost-button">Mark stale workers offline</button>
                       <button id="recover-expired-assignments" type="button" class="ghost-button">Recover expired assignment leases</button>
