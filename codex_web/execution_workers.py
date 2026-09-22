@@ -262,6 +262,7 @@ class ExecutionAssignment(BaseModel):
     completed_at: float | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+    failure: FailureRecord | None = None
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
 
