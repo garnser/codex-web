@@ -225,6 +225,15 @@ class ActionIntentService:
             ],
         }
 
+    @staticmethod
+    def _idempotency_request_identity(request: ActionRequest) -> dict[str, Any]:
+        identity = request.model_dump(
+            mode="json",
+            exclude={"correlation_id", "requested_by"},
+        )
+        identity["resource_ids"] = sorted(request.resource_ids)
+        return identity
+
     def _validate_work_item_attribution(
         self,
         work_item_ref: str | None,
@@ -554,9 +563,10 @@ class ActionIntentService:
                 "rollback-required intent needs a reversible rollback-capable action"
             )
 
-        # Suppress duplicate creation when the caller supplies a stable provider
-        # idempotency key. Generated per-intent keys intentionally do not dedupe
-        # logically distinct caller requests.
+        # Suppress duplicate creation only when the stable provider
+        # idempotency key is bound to the same canonical request and execution
+        # attribution. Reusing a key for another repository/resource must never
+        # return an intent for the wrong target.
         if request.idempotency_key:
             existing = next(
                 (
@@ -572,6 +582,19 @@ class ActionIntentService:
                 None,
             )
             if existing is not None:
+                same_request = (
+                    self._idempotency_request_identity(existing.request)
+                    == self._idempotency_request_identity(request)
+                )
+                same_attribution = (
+                    existing.work_item_ref == payload.work_item_ref
+                    and existing.execution_id == payload.execution_id
+                )
+                if not same_request or not same_attribution:
+                    raise ActionIntentConflictError(
+                        "idempotency key is already bound to a different "
+                        "action target or execution context"
+                    )
                 return existing
 
         if self.entitlements is not None:
