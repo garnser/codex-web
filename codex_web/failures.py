@@ -30,6 +30,14 @@ class FailureRetryability(StrEnum):
     RECONCILE_REQUIRED = "reconcile_required"
     NOT_RETRYABLE = "not_retryable"
 
+    def metric_labels(self) -> dict[str, str]:
+        return {
+            "category": self.category.value,
+            "reason": self.reason_code.value,
+            "source": self.source_subsystem,
+            "retryability": self.retryability.value,
+        }
+
     @property
     def automatic_retry_allowed(self) -> bool:
         return self == FailureRetryability.TRANSIENT
@@ -481,6 +489,20 @@ class FailureRecord(BaseModel):
     @property
     def requires_reconciliation(self) -> bool:
         return self.retryability == FailureRetryability.RECONCILE_REQUIRED
+
+
+def failure_taxonomy_snapshot() -> dict[str, Any]:
+    return {
+        "contract": FAILURE_TAXONOMY_CONTRACT.name,
+        "version": FAILURE_TAXONOMY_CONTRACT.current,
+        "reasons": [
+            definition.model_dump(mode="json")
+            for definition in sorted(
+                _DEFINITIONS.values(),
+                key=lambda item: item.reason_code.value,
+            )
+        ],
+    }
 
 
 def failure_definition(
