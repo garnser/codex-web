@@ -15,7 +15,7 @@ from codex_web.execution_subjects import (
 )
 from codex_web.failures import FailureRecord
 from codex_web.models import ApprovalPolicy, SandboxMode
-from codex_web.resources import RepositoryExecutionTarget
+from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTarget
 
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
@@ -169,6 +169,7 @@ class ExecutionAssignmentCreate(BaseModel):
     execution_workspace_id: str | None = None
     runtime_binding: ExecutionRuntimeBinding | None = None
     repository_target: RepositoryExecutionTarget | None = None
+    repository_scope: RepositoryExecutionScope | None = None
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
@@ -210,6 +211,25 @@ class ExecutionAssignmentCreate(BaseModel):
                 and self.repository_target.project_id != self.project_id
             ):
                 raise ValueError("repository target project does not match assignment")
+        if self.repository_scope is not None:
+            scope_ids = set(self.repository_scope.writable_repository_ids) | set(
+                self.repository_scope.read_only_repository_ids
+            )
+            if scope_ids - set(self.resource_ids):
+                raise ValueError(
+                    "repository scope must be included in assignment resources"
+                )
+            if (
+                self.project_id is not None
+                and self.repository_scope.project_id != self.project_id
+            ):
+                raise ValueError("repository scope project does not match assignment")
+            if self.repository_target is not None:
+                expected = RepositoryExecutionScope.from_target(self.repository_target)
+                if self.repository_scope != expected:
+                    raise ValueError(
+                        "repository target and repository scope describe different authority"
+                    )
         return self
 
 
