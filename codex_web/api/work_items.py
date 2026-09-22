@@ -9,6 +9,7 @@ from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemP
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.services.work_item_operator import WorkItemOperatorService
+from codex_web.services.work_item_runs import WorkItemRunProjectionService
 from codex_web.services.work_items import WorkItemService
 from codex_web.services.task_source_sync_jobs import (
     GitLabSyncJobNotFound,
@@ -35,6 +36,7 @@ def build_work_items_router(
     *,
     gitlab_sync_jobs: GitLabSyncJobService | None = None,
     agent_teams: Any | None = None,
+    runs: WorkItemRunProjectionService | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["work-items"])
     execution = WorkItemExecutionLifecycleService(
@@ -221,6 +223,42 @@ def build_work_items_router(
             project_id,
             actor=payload.actor,
             reason=payload.reason,
+        )
+
+    @router.get("/api/work-items/{ref:path}/runs/{execution_id}")
+    async def get_work_item_run(
+        ref: str,
+        execution_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        require_item_scope(ref, request)
+        if runs is None:
+            raise HTTPException(status_code=404, detail="Run projection unavailable")
+        scope = request.state.tenant_scope
+        return runs.get_run(
+            ref,
+            execution_id,
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+        )
+
+    @router.get("/api/work-items/{ref:path}/runs")
+    async def list_work_item_runs(
+        ref: str,
+        request: Request,
+        limit: int = WorkItemRunProjectionService.DEFAULT_LIMIT,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        require_item_scope(ref, request)
+        if runs is None:
+            raise HTTPException(status_code=404, detail="Run projection unavailable")
+        scope = request.state.tenant_scope
+        return runs.list_runs(
+            ref,
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            limit=limit,
+            cursor=cursor,
         )
 
     # Static-suffix work-item routes must be registered before the catch-all
