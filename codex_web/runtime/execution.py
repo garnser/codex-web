@@ -20,6 +20,12 @@ from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.provider_capacity import ProviderCapacityWaitCreate
 from codex_web.resources import RepositoryTargetSource
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+from codex_web.services.codex_execution_authentication import (
+    CodexAuthenticationDecision,
+    CodexAuthenticationPolicyError,
+    CodexExecutionAuthenticationMode,
+    CodexExecutionAuthenticationResolver,
+)
 from codex_web.services.agent_routing import (
     AgentCapacityRoutingError,
     AgentRoutingBlockedError,
@@ -79,6 +85,7 @@ class TurnExecutionService:
         work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
         work_item_context_recorder: Callable[..., Any] | None = None,
         work_item_outcome_recorder: Callable[..., Any] | None = None,
+        authentication_resolver: CodexExecutionAuthenticationResolver | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -101,6 +108,7 @@ class TurnExecutionService:
         self.work_item_context_resolver = work_item_context_resolver
         self.work_item_context_recorder = work_item_context_recorder
         self.work_item_outcome_recorder = work_item_outcome_recorder
+        self.authentication_resolver = authentication_resolver
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -266,6 +274,60 @@ class TurnExecutionService:
             and runtime_binding.runtime_id == "codex"
         )
 
+    def _codex_authentication_decision(
+        self,
+        *,
+        project_id: str,
+        source: str,
+        runtime_binding: ExecutionRuntimeBinding | None,
+    ) -> CodexAuthenticationDecision:
+        if self.authentication_resolver is not None:
+            try:
+                return self.authentication_resolver.resolve(
+                    project_id=project_id,
+                    source=source,
+                    runtime_binding=runtime_binding,
+                )
+            except CodexAuthenticationPolicyError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "execution_preflight_blocked",
+                        "message": str(exc),
+                        "blockers": [
+                            {
+                                "code": exc.code,
+                                "message": str(exc),
+                                "retryable": False,
+                                "target_type": "authentication_mode",
+                                "target_id": project_id,
+                                "remediation_route": "/api/configuration",
+                            }
+                        ],
+                        "retryable": False,
+                    },
+                ) from exc
+        if self._trusted_local_codex_session_enabled(
+            source=source,
+            runtime_binding=runtime_binding,
+        ):
+            return CodexAuthenticationDecision(
+                mode=CodexExecutionAuthenticationMode.TRUSTED_LOCAL_SESSION,
+                authentication_source="local_codex_session",
+                credential_config_key=None,
+                configuration_source="legacy_environment",
+                requires_codex_runtime=True,
+                local_session=True,
+            )
+        return CodexAuthenticationDecision(
+            mode=CodexExecutionAuthenticationMode.DELEGATED_WORKER,
+            authentication_source="delegated_worker",
+            credential_config_key="codex.worker.access_token_secret",
+            configuration_source="legacy_default",
+            requires_codex_runtime=False,
+            local_session=False,
+        )
+
     def _require_worker_routing(self) -> tuple[
         TurnExecutionBindingService,
         AssignmentBoundAgentSessionManager,
@@ -283,6 +345,7 @@ class TurnExecutionService:
         project_id: str,
         sandbox: str,
         trusted_local_codex_session: bool = False,
+        require_codex_runtime: bool = False,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
@@ -299,25 +362,27 @@ class TurnExecutionService:
                     require_persistent_session=True,
                     allowed_provider_ids=(
                         ("openai",)
-                        if trusted_local_codex_session
+                        if (trusted_local_codex_session or require_codex_runtime)
                         else ()
                     ),
                     allowed_runtime_ids=(
                         ("codex",)
-                        if trusted_local_codex_session
+                        if (trusted_local_codex_session or require_codex_runtime)
                         else ()
                     ),
                     preferred_provider_ids=(
                         ("openai",)
-                        if trusted_local_codex_session
+                        if (trusted_local_codex_session or require_codex_runtime)
                         else ()
                     ),
                     preferred_runtime_ids=(
                         ("codex",)
-                        if trusted_local_codex_session
+                        if (trusted_local_codex_session or require_codex_runtime)
                         else ()
                     ),
-                    allow_fallback=not trusted_local_codex_session,
+                    allow_fallback=not (
+                        trusted_local_codex_session or require_codex_runtime
+                    ),
                     required_sandbox_profile=(
                         None
                         if trusted_local_codex_session
@@ -1195,13 +1260,14 @@ class TurnExecutionService:
             if requested_writable_repositories
             else RepositoryTargetSource.WORK_ITEM
         )
-        trusted_local_codex_requested = (
-            self._trusted_local_codex_session_enabled(
-                source=source,
-                runtime_binding=None,
-            )
+        requested_authentication = self._codex_authentication_decision(
+            project_id=project.id,
+            source=source,
+            runtime_binding=None,
         )
+        trusted_local_codex_requested = requested_authentication.local_session
         trusted_local_codex_session = False
+        authentication_decision = requested_authentication
 
         async with self.turn_start_lock:
             if self.thread_is_active(thread_id):
@@ -1370,6 +1436,9 @@ class TurnExecutionService:
                         trusted_local_codex_session=(
                             trusted_local_codex_requested
                         ),
+                        require_codex_runtime=(
+                            requested_authentication.requires_codex_runtime
+                        ),
                         actor=actor,
                         agent_profile_id=agent_profile_id,
                         agent_profile_revision=agent_profile_revision,
@@ -1413,12 +1482,14 @@ class TurnExecutionService:
                     )
                 session_manager = self._manager_for_binding(runtime_binding)
                 canonical_execution_id = requested_execution_id
-                trusted_local_codex_session = (
-                    self._trusted_local_codex_session_enabled(
+                authentication_decision = (
+                    self._codex_authentication_decision(
+                        project_id=project.id,
                         source=source,
                         runtime_binding=runtime_binding,
                     )
                 )
+                trusted_local_codex_session = authentication_decision.local_session
                 if trusted_local_codex_session:
                     # The control-plane app-server was started outside a worker
                     # and owns its own interactive Codex login.  Do not copy or
@@ -1438,7 +1509,15 @@ class TurnExecutionService:
                             "project_id": project.id,
                             "source": source,
                             "execution_id": canonical_execution_id,
-                            "authentication_source": "local_codex_session",
+                            "authentication_source": (
+                                authentication_decision.authentication_source
+                            ),
+                            "authentication_mode": (
+                                authentication_decision.mode.value
+                            ),
+                            "authentication_configuration_source": (
+                                authentication_decision.configuration_source
+                            ),
                         }
                     )
                 else:
@@ -1465,6 +1544,9 @@ class TurnExecutionService:
                             work_item_ref=work_item_ref,
                             execution_profile_id=effective_execution_profile_id,
                             agent_profile=agent_profile_binding,
+                            credential_config_key=(
+                                authentication_decision.credential_config_key
+                            ),
                         )
                     except TurnExecutionBindingError as exc:
                         raise HTTPException(
@@ -1849,9 +1931,11 @@ class TurnExecutionService:
                 "worker_id": worker_id,
                 "fence": fence,
                 "authentication_source": (
-                    "local_codex_session"
-                    if trusted_local_codex_session
-                    else "delegated_worker"
+                    authentication_decision.authentication_source
+                ),
+                "authentication_mode": authentication_decision.mode.value,
+                "authentication_configuration_source": (
+                    authentication_decision.configuration_source
                 ),
                 "bootstrap_id": bootstrap.bootstrap_id if bootstrap is not None else None,
                 "requested_execution_id": (
