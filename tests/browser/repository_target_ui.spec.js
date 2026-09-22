@@ -127,7 +127,7 @@ test("explicit repository policy requires a target and submits canonical resourc
   await page.locator("#send").click();
   expect(threadCreates).toBe(0);
   expect(turnPayloads).toHaveLength(0);
-  await expect(page.locator("#messages")).toContainText("repository_target_missing");
+  await expect(page.locator("#repository-target-status")).toContainText("Repository target required per turn");
 
   await page.locator("#repository-target").selectOption("repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("Application");
@@ -231,8 +231,7 @@ test("thread-bound repository stays visible and contradictory selection is block
   });
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
-  await page.locator("#threads .item-main").first().click({ force: true });
-  await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
+  await Promise.all([\n    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/threads/thread-1"),\n    page.locator("#threads .item-main").first().click(),\n  ]);\n  await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("thread/profile binding");
 
