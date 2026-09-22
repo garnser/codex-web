@@ -34,6 +34,11 @@ async function installCommonRoutes(page) {
   await page.route("**/api/secrets", async (route) => {
     await route.fulfill({ json: { items: [] } });
   });
+  await page.route("**/api/work-items/**/runs?**", async (route) => {
+    await route.fulfill({
+      json: { active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false },
+    });
+  });
   await page.route("**/api/work-items/**/operator", async (route) => {
     const ref = decodeURIComponent(route.request().url().split("/api/work-items/")[1].split("/operator")[0]);
     await route.fulfill({
@@ -90,6 +95,12 @@ test("opens in current Project and pages without rendering the full collection",
   await expect(page.locator(".work-item-row")).toHaveCount(60);
   expect(requests[2]).toContain("cursor=p3");
   expect(await page.locator(".work-item-row").count()).toBeLessThanOrEqual(60);
+  const perf = await page.evaluate(() => (
+    window.__codexFrontendPerf.requestWindowStatus({ sinceMs: 5000 })
+  ));
+  expect(perf.total).toBeLessThanOrEqual(8);
+  expect(perf.repeated).toEqual([]);
+  expect(perf.ok).toBeTruthy();
 });
 
 test("failed next page keeps loaded rows and exposes retry", async ({ page }) => {
