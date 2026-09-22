@@ -1391,4 +1391,5 @@ class TurnExecutionBindingService:
             routing_repository_id=routing_repository_id,
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
+            credential_config_key=credential_config_key,
         )
