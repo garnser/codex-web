@@ -890,6 +890,15 @@ class ExecutionWorkerService:
                         raise WorkerConflictError(
                             "assignment writable repository lacks a write workspace member"
                         )
+                workspace_read_only = {
+                    resource_id
+                    for resource_id, member in members.items()
+                    if member.access_mode.value == "read"
+                }
+                if workspace_read_only != set(scope.read_only_repository_ids):
+                    raise WorkerConflictError(
+                        "assignment read-only repository scope does not match execution workspace"
+                    )
                 for resource_id in scope.read_only_repository_ids:
                     member = members.get(resource_id)
                     if member is None or member.access_mode.value != "read":
