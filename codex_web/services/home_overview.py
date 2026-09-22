@@ -333,7 +333,7 @@ class HomeOverviewService:
 
         degraded = [
             name for name, section in sections.items()
-            if section["status"] != "current"
+            if section["status"] == "degraded"
         ]
         return {
             "project": {
