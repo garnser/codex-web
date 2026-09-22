@@ -5,14 +5,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_web.agent_profiles import AgentProfileCreate
+from codex_web.agent_profiles import (
+    AgentProfileAccessMode,
+    AgentProfileAccessPolicy,
+    AgentProfileCreate,
+)
 from codex_web.agent_teams import (
     AgentTeamBudgets,
     AgentTeamCreate,
     AgentTeamMember,
     TeamCoordinatorDecision,
     TeamDelegationRequest,
+    TeamDecisionExecutionRequest,
     TeamExecutionLinksUpdate,
+    TeamExecutionRequest,
+    TeamMemberResultEvent,
 )
 from codex_web.definitions import (
     DefinitionDraftCreate,
@@ -26,6 +33,7 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.services.agent_profiles import AgentProfileService
+from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.storage.agent_profiles import AgentProfileStore
@@ -460,6 +468,434 @@ class AgentTeamServiceTests(unittest.TestCase):
             ["child-1"],
         )
 
+
+
+class _FakeThreads:
+    def __init__(self, *, fail_profiles=()) -> None:
+        self.calls = []
+        self.fail_profiles = set(fail_profiles)
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        profile_id = kwargs.get("agent_profile_id")
+        if profile_id in self.fail_profiles:
+            raise RuntimeError(f"profile unavailable at launch: {profile_id}")
+        return {
+            "thread": {
+                "id": f"thread-{profile_id}-{len(self.calls)}",
+            }
+        }
+
+
+class _FakeTurns:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def start(self, thread_id, payload, **kwargs):
+        self.calls.append(
+            {
+                "thread_id": thread_id,
+                "payload": payload,
+                **kwargs,
+            }
+        )
+        return {"turn": {"id": f"turn-{len(self.calls)}"}}
+
+
+class AgentTeamExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
+        self.definitions = DefinitionRegistryService(
+            DefinitionRegistryStore(self.sqlite)
+        )
+        self.profiles = AgentProfileService(
+            AgentProfileStore(self.sqlite),
+            definitions=self.definitions,
+        )
+        self.teams = AgentTeamService(
+            AgentTeamStore(self.sqlite),
+            profiles=self.profiles,
+            definitions=self.definitions,
+        )
+        self.admin = _actor("admin-a", admin=True)
+        self.member = _actor("member-a")
+        for profile_id in ("leader", "python", "docs", "ops"):
+            self.profiles.create(
+                AgentProfileCreate(
+                    profile_id=profile_id,
+                    name=profile_id.title(),
+                ),
+                actor=self.admin,
+            )
+        self.teams.create(
+            AgentTeamCreate(
+                team_id="delivery",
+                name="Delivery",
+                leader_profile_id="leader",
+                members=(
+                    AgentTeamMember(
+                        profile_id="python",
+                        role="developer",
+                        capability_tags=("python", "backend"),
+                    ),
+                    AgentTeamMember(
+                        profile_id="docs",
+                        role="writer",
+                        capability_tags=("docs",),
+                    ),
+                    AgentTeamMember(
+                        profile_id="ops",
+                        role="operator",
+                        capability_tags=("ops", "backend"),
+                    ),
+                ),
+                budgets=AgentTeamBudgets(
+                    max_handoffs=5,
+                    max_participants=3,
+                    max_coordinator_rounds=3,
+                    max_parallel_executions=2,
+                ),
+            ),
+            actor=self.admin,
+        )
+        self.threads = _FakeThreads()
+        self.turns = _FakeTurns()
+        self.execution = AgentTeamExecutionService(
+            self.teams,
+            threads=self.threads,
+            turns=self.turns,
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    async def test_direct_match_launches_only_selected_member_and_work_item_provenance(self) -> None:
+        result = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-direct",
+                    project_id="project-a",
+                    required_capabilities=("python",),
+                ),
+                message="Implement the parser.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(result.plan.mode, "direct")
+        self.assertEqual(
+            [item.profile_id for item in result.members],
+            ["python"],
+        )
+        self.assertEqual(
+            [call["agent_profile_id"] for call in self.threads.calls],
+            ["python"],
+        )
+        self.assertEqual(len(self.turns.calls), 1)
+        self.assertEqual(
+            self.turns.calls[0]["work_item_ref"],
+            "work-direct",
+        )
+        self.assertEqual(
+            self.turns.calls[0]["payload"].agent_profile_id,
+            "python",
+        )
+        history = self.teams.work_item_history(
+            "work-direct",
+            actor=self.member,
+        )
+        linked = [
+            item
+            for item in history["items"]
+            if item["event_type"] == "execution_linked"
+        ]
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(
+            linked[0]["member_execution_ids"]["python"],
+            result.members[0].execution_id,
+        )
+
+    async def test_ambiguous_match_launches_only_leader(self) -> None:
+        result = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-coordinator",
+                    project_id="project-a",
+                    required_capabilities=("backend",),
+                ),
+                message="Handle the backend change.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(result.plan.mode, "coordinator")
+        self.assertEqual(result.coordinator.profile_id, "leader")
+        self.assertEqual(result.members, ())
+        self.assertEqual(
+            [call["agent_profile_id"] for call in self.threads.calls],
+            ["leader"],
+        )
+        self.assertIn(
+            "structured delegation decision",
+            self.turns.calls[0]["payload"].message,
+        )
+
+    async def test_structured_decision_launches_bounded_parallel_members(self) -> None:
+        initial = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-parallel",
+                    project_id="project-a",
+                    required_capabilities=("backend",),
+                ),
+                message="Split backend implementation and operational review.",
+            ),
+            actor=self.member,
+        )
+        request = TeamDelegationRequest(
+            work_item_id="work-parallel",
+            project_id="project-a",
+            required_capabilities=("backend",),
+            coordinator_round=initial.plan.coordinator_round,
+        )
+        result = await self.execution.execute_decision(
+            "delivery",
+            TeamDecisionExecutionRequest(
+                delegation=request,
+                decision=TeamCoordinatorDecision(
+                    selected_profile_ids=("python", "ops"),
+                    reason="parallel specialist work",
+                    decision_key="parallel-1",
+                ),
+                message="Split backend implementation and operational review.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(result.plan.mode, "delegated")
+        self.assertEqual(
+            {item.profile_id for item in result.members},
+            {"python", "ops"},
+        )
+        self.assertEqual(len(result.members), 2)
+        self.assertEqual(
+            [call["agent_profile_id"] for call in self.threads.calls],
+            ["leader", "python", "ops"],
+        )
+
+    async def test_equivalent_decision_with_new_key_is_loop_suppressed(self) -> None:
+        initial = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-loop",
+                    project_id="project-a",
+                    required_capabilities=("backend",),
+                ),
+                message="Backend work.",
+            ),
+            actor=self.member,
+        )
+        request = TeamDelegationRequest(
+            work_item_id="work-loop",
+            project_id="project-a",
+            required_capabilities=("backend",),
+            coordinator_round=initial.plan.coordinator_round,
+        )
+        first = await self.execution.execute_decision(
+            "delivery",
+            TeamDecisionExecutionRequest(
+                delegation=request,
+                decision=TeamCoordinatorDecision(
+                    selected_profile_ids=("python",),
+                    reason="same next step",
+                    decision_key="loop-1",
+                ),
+                message="Backend work.",
+            ),
+            actor=self.member,
+        )
+        calls_after_first = len(self.threads.calls)
+        second = await self.execution.execute_decision(
+            "delivery",
+            TeamDecisionExecutionRequest(
+                delegation=request,
+                decision=TeamCoordinatorDecision(
+                    selected_profile_ids=("python",),
+                    reason="same next step",
+                    decision_key="loop-2",
+                ),
+                message="Backend work.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(first.plan.mode, "delegated")
+        self.assertEqual(second.plan.mode, "loop_suppressed")
+        self.assertTrue(second.plan.attention_required)
+        self.assertEqual(len(self.threads.calls), calls_after_first)
+
+    async def test_stale_member_result_is_recorded_without_recoordination(self) -> None:
+        direct = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-stale",
+                    project_id="project-a",
+                    required_capabilities=("python",),
+                ),
+                message="Implement.",
+            ),
+            actor=self.member,
+        )
+        calls_before = len(self.threads.calls)
+        outcome = await self.execution.member_result(
+            "delivery",
+            TeamMemberResultEvent(
+                work_item_id="work-stale",
+                project_id="project-a",
+                profile_id="python",
+                execution_id="superseded-execution",
+                result_id="result-stale",
+                summary="Old result.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(outcome.status, "stale")
+        self.assertEqual(len(self.threads.calls), calls_before)
+        history = self.teams.work_item_history(
+            "work-stale",
+            actor=self.member,
+        )
+        self.assertTrue(
+            any(
+                item["event_type"] == "member_result_stale"
+                for item in history["items"]
+            )
+        )
+        self.assertTrue(direct.members)
+
+    async def test_valid_member_result_retriggers_leader_once_and_duplicate_is_idle(self) -> None:
+        direct = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-result",
+                    project_id="project-a",
+                    required_capabilities=("python",),
+                ),
+                message="Implement.",
+            ),
+            actor=self.member,
+        )
+        event = TeamMemberResultEvent(
+            work_item_id="work-result",
+            project_id="project-a",
+            profile_id="python",
+            execution_id=direct.members[0].execution_id,
+            result_id="result-1",
+            summary="Implementation complete and tests pass.",
+        )
+        accepted = await self.execution.member_result(
+            "delivery",
+            event,
+            actor=self.member,
+        )
+        calls_after_accept = len(self.threads.calls)
+        duplicate = await self.execution.member_result(
+            "delivery",
+            event,
+            actor=self.member,
+        )
+
+        self.assertEqual(accepted.status, "coordinator_retriggered")
+        self.assertEqual(accepted.coordinator.profile_id, "leader")
+        self.assertIsNotNone(accepted.delegation)
+        self.assertEqual(duplicate.status, "deduped")
+        self.assertEqual(len(self.threads.calls), calls_after_accept)
+
+    async def test_member_launch_failure_fails_closed_without_fallback(self) -> None:
+        threads = _FakeThreads(fail_profiles=("python",))
+        execution = AgentTeamExecutionService(
+            self.teams,
+            threads=threads,
+            turns=self.turns,
+        )
+        result = await execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-unavailable",
+                    project_id="project-a",
+                    required_capabilities=("python",),
+                ),
+                message="Implement.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(result.plan.mode, "launch_blocked")
+        self.assertTrue(result.plan.attention_required)
+        self.assertEqual(
+            [call["agent_profile_id"] for call in threads.calls],
+            ["python"],
+        )
+        self.assertEqual(self.turns.calls, [])
+
+    async def test_authority_denial_prevents_member_launch(self) -> None:
+        restricted = self.profiles.create(
+            AgentProfileCreate(
+                profile_id="restricted",
+                name="Restricted",
+                access=AgentProfileAccessPolicy(
+                    mode=AgentProfileAccessMode.ALLOWLIST,
+                    identity_ids=("other-identity",),
+                ),
+            ),
+            actor=self.admin,
+        )
+        current = self.teams.get("delivery", actor=self.admin)
+        self.teams.update(
+            "delivery",
+            __import__(
+                "codex_web.agent_teams",
+                fromlist=["AgentTeamUpdate"],
+            ).AgentTeamUpdate(
+                members=(
+                    *current.members,
+                    AgentTeamMember(
+                        profile_id=restricted.profile_id,
+                        role="restricted",
+                        capability_tags=("restricted",),
+                    ),
+                ),
+                reason="add restricted member",
+            ),
+            actor=self.admin,
+        )
+
+        result = await self.execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-denied",
+                    project_id="project-a",
+                    required_capabilities=("restricted",),
+                ),
+                message="Restricted work.",
+            ),
+            actor=self.member,
+        )
+
+        self.assertEqual(result.plan.mode, "blocked")
+        self.assertEqual(result.plan.reason, "no_eligible_team_member")
+        self.assertEqual(self.threads.calls, [])
+        self.assertEqual(self.turns.calls, [])
 
 
 if __name__ == "__main__":
