@@ -6,6 +6,7 @@ import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
+import*as repositoryTargetUi from"./repository_target_ui.js";
 
 const state = {
   projects: [],
@@ -254,109 +255,44 @@ function repositorySelectionPolicy() {
 }
 
 function activeRepositoryResources() {
-  return (state.projectResources || []).filter((item) => (
-    item.resource_type === "repository" && item.lifecycle === "active"
-  ));
+  return repositoryTargetUi.activeRepositories(state.projectResources || []);
 }
 
 function repositoryTargetState(threadId = state.threadId) {
   const settings = currentRunSettings();
   const threadSettings = threadId ? threadRunSettings(threadId) : {};
-  const selectedId = settings.repositoryResourceId || "";
-  const boundId = threadSettings.repository_resource_id || "";
-  const policy = repositorySelectionPolicy();
-  const repositories = activeRepositoryResources();
-  const byId = new Map(repositories.map((item) => [item.id, item]));
-
-  if (boundId && selectedId && boundId !== selectedId) {
-    return {
-      status: "conflict",
-      blocked: true,
-      code: "repository_target_conflict",
-      message: `Repository conflict: this thread is bound to ${boundId}, but ${selectedId} is selected.`,
-      id: selectedId,
-      provenance: "explicit selection conflicts with thread binding",
-    };
-  }
-
-  const id = boundId || selectedId;
-  if (id) {
-    const repository = byId.get(id);
-    if (!repository) {
-      return {
-        status: "stale",
-        blocked: false,
-        code: "repository_target_stale",
-        message: `Repository ${id} is no longer an active Project-bound option; canonical preflight will validate it.`,
-        id,
-        provenance: boundId ? "thread/profile binding" : "explicit selection",
-      };
-    }
-    return {
-      status: "selected",
-      blocked: false,
-      code: null,
-      message: `${repository.name || repository.id} · ${boundId ? "thread/profile binding" : "explicit selection"}`,
-      id,
-      repository,
-      provenance: boundId ? "thread/profile binding" : "explicit selection",
-    };
-  }
-
-  if (policy === "explicit") {
-    return {
-      status: "required",
-      blocked: true,
-      code: "repository_target_missing",
-      message: "Repository target required per turn",
-      id: "",
-      provenance: "explicit Project policy",
-    };
-  }
-
-  return {
-    status: "canonical",
-    blocked: false,
-    code: null,
-    message: "Repository target resolved by canonical Work Item/routing/default context",
-    id: "",
-    provenance: "canonical preflight",
-  };
+  return repositoryTargetUi.targetState({
+    policy: repositorySelectionPolicy(),
+    repositories: activeRepositoryResources(),
+    selectedId: settings.repositoryResourceId || "",
+    boundId: threadSettings.repository_resource_id || "",
+  });
 }
 
 function renderRepositoryTargetStatus() {
-  const status = $("repository-target-status");
-  const mutable = $("repository-target");
-  if (!status || !mutable) return;
   const target = repositoryTargetState();
-  status.textContent = target.message;
-  status.dataset.state = target.status;
-  mutable.setAttribute("aria-invalid", String(target.blocked));
-  mutable.required = repositorySelectionPolicy() === "explicit" && !threadRunSettings()?.repository_resource_id;
+  const boundId = threadRunSettings()?.repository_resource_id || "";
+  repositoryTargetUi.renderStatus({
+    status: $("repository-target-status"),
+    mutable: $("repository-target"),
+    target,
+    required: repositorySelectionPolicy() === "explicit" && !boundId,
+  });
 }
 
 function renderRepositoryTargets() {
-  const mutable = $("repository-target");
-  const readOnly = $("repository-read-context");
-  if (!mutable || !readOnly) return;
   const settings = currentRunSettings();
-  const repositories = activeRepositoryResources();
-  const explicit = repositorySelectionPolicy() === "explicit";
-  mutable.innerHTML = [
-    `<option value="">${explicit ? "Select repository…" : "Auto"}</option>`,
-    ...repositories.map((item) => (
-      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`
-    )),
-  ].join("");
-  mutable.value = settings.repositoryResourceId;
-  const selected = new Set(settings.readOnlyRepositoryResourceIds);
-  readOnly.innerHTML = repositories
-    .filter((item) => item.id !== settings.repositoryResourceId)
-    .map((item) => (
-      `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
-    ))
-    .join("");
-  renderRepositoryTargetStatus();
+  const boundId = threadRunSettings()?.repository_resource_id || "";
+  repositoryTargetUi.renderControls({
+    mutable: $("repository-target"),
+    readOnly: $("repository-read-context"),
+    status: $("repository-target-status"),
+    policy: repositorySelectionPolicy(),
+    repositories: activeRepositoryResources(),
+    settings,
+    boundId,
+    escapeHtml,
+  });
 }
 
 function threadRunSettings(threadId = state.threadId) {
