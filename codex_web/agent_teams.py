@@ -295,6 +295,16 @@ class TeamExecutionRequest(BaseModel):
     read_only_repository_resource_ids: tuple[str, ...] = ()
 
 
+class TeamDecisionExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    delegation: TeamDelegationRequest
+    decision: TeamCoordinatorDecision
+    message: str = Field(min_length=1, max_length=50000)
+    repository_resource_id: str | None = None
+    read_only_repository_resource_ids: tuple[str, ...] = ()
+
+
 class TeamLaunchedExecution(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -331,4 +341,5 @@ class TeamMemberResultOutcome(BaseModel):
     status: str
     reason: str
     coordinator: TeamLaunchedExecution | None = None
+    delegation: TeamDelegationRequest | None = None
     attention_required: bool = False
