@@ -611,6 +611,94 @@ def action_failure_reason(
     return FailureReason.UNCLASSIFIED
 
 
+def worker_failure_reason(
+    native_code: str | int | None,
+) -> FailureReason:
+    normalized = str(native_code or "").strip().casefold()
+    if normalized in {
+        "worker_lease_expired",
+        "lease_lost",
+        "lease_expired",
+        "fence_mismatch",
+        "stale_fence",
+    }:
+        return FailureReason.WORKER_LEASE_LOST
+    if normalized in {
+        "runtime_offline",
+        "worker_offline",
+        "worker_lost",
+    }:
+        return FailureReason.RUNTIME_OFFLINE
+    if normalized in {
+        "worker_revoked",
+        "worker_quarantined",
+        "revoked",
+        "quarantined",
+    }:
+        return FailureReason.WORKER_REVOKED_OR_QUARANTINED
+    if normalized in {
+        "sandbox_unavailable",
+        "sandbox_failed",
+        "isolation_unavailable",
+    }:
+        return FailureReason.SANDBOX_UNAVAILABLE
+    if normalized in {
+        "resource_limit",
+        "oom",
+        "out_of_memory",
+        "disk_limit",
+        "cpu_limit",
+    }:
+        return FailureReason.RESOURCE_LIMIT
+    if normalized in {
+        "timeout",
+        "execution_timeout",
+        "timed_out",
+    }:
+        return FailureReason.EXECUTION_TIMEOUT
+    if normalized in {
+        "stalled",
+        "execution_stalled",
+        "no_progress",
+    }:
+        return FailureReason.EXECUTION_STALLED
+    if normalized in {
+        "workspace_prepare_failed",
+        "workspace_failed",
+        "checkout_failed",
+    }:
+        return FailureReason.WORKSPACE_PREPARE_FAILED
+    if normalized in {
+        "missing_executable",
+        "runtime_missing_executable",
+        "command_not_found",
+    }:
+        return FailureReason.RUNTIME_MISSING_EXECUTABLE
+    if normalized in {
+        "runtime_incompatible",
+        "contract_incompatible",
+        "unsupported_version",
+    }:
+        return FailureReason.RUNTIME_INCOMPATIBLE
+    if normalized in {
+        "capability_unavailable",
+        "missing_capability",
+    }:
+        return FailureReason.CAPABILITY_UNAVAILABLE
+    if normalized in {"cancelled", "canceled"}:
+        return FailureReason.CANCELLED
+    if normalized in {"superseded"}:
+        return FailureReason.SUPERSEDED
+    if normalized in {
+        "process_failure",
+        "process_exit",
+        "nonzero_exit",
+        "non_zero_exit",
+    }:
+        return FailureReason.PROCESS_FAILURE
+    return FailureReason.UNCLASSIFIED
+
+
 def aggregate_failure(
     previous: FailureRecord | None,
     current: FailureRecord,
