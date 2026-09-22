@@ -41,6 +41,25 @@ MODEL_GATEWAY_MIGRATIONS.register(
     },
 )
 
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.2",
+        "invocations": [
+            {
+                **dict(item),
+                "attempts": [
+                    {**dict(attempt), "failure": dict(attempt).get("failure")}
+                    for attempt in dict(item).get("attempts", [])
+                ],
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
+
 
 class ModelGatewayStore:
     namespace = "model_gateway"
