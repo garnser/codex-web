@@ -1111,6 +1111,7 @@ class TurnExecutionBindingService:
         thread_profile_repository_id: str | None = None,
         routing_repository_id: str | None = None,
         execution_profile_id: str | None = None,
+        agent_profile: AgentProfileExecutionBinding | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -1142,4 +1143,5 @@ class TurnExecutionBindingService:
             thread_profile_repository_id=thread_profile_repository_id,
             routing_repository_id=routing_repository_id,
             execution_profile_id=execution_profile_id,
+            agent_profile=agent_profile,
         )
