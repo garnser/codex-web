@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from codex_web.bootstrap_engine import (
     BootstrapDisposition,
     BootstrapExecutionStatus,
 )
-from codex_web.execution_workers import WorkerCapability
+from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
+from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
 from codex_web.identity import AuthenticationActor
 from codex_web.project_readiness import (
     ProjectReadinessCheck,
@@ -16,6 +17,8 @@ from codex_web.project_readiness import (
     ReadinessCheckStatus,
 )
 from codex_web.resources import ResourceType
+from codex_web.runtime_credentials import DEFAULT_RUNTIME_CREDENTIAL_CONFIGS, runtime_credential_config_key
+from codex_web.services.configuration import ConfigurationError, ConfigurationNotFoundError, ConfigurationService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.projects import ProjectService
 from codex_web.services.resources import (
@@ -45,6 +48,9 @@ class ProjectReadinessService:
         store: ProjectReadinessStore,
         load_work_items: WorkItemLoader,
         environment_probe: EnvironmentProbe | None = None,
+        configuration: ConfigurationService | None = None,
+        runtime_binding: ExecutionRuntimeBinding | None = None,
+        runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -55,6 +61,11 @@ class ProjectReadinessService:
         self.store = store
         self.load_work_items = load_work_items
         self.environment_probe = environment_probe
+        self.configuration = configuration
+        self.runtime_binding = runtime_binding
+        self.runtime_credential_configs = dict(
+            runtime_credential_configs or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
+        )
         self.clock = clock
 
     @staticmethod
@@ -513,6 +524,98 @@ class ProjectReadinessService:
                         details={"secret_reference_id": secret_id},
                     )
                 )
+
+        config_key = runtime_credential_config_key(
+            self.runtime_binding,
+            self.runtime_credential_configs,
+        )
+        if self.runtime_binding is None or config_key is None:
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "secret_reference",
+                    ReadinessCheckStatus.NOT_APPLICABLE,
+                    "credential_reference_not_required",
+                    "The effective runtime does not require a configured worker credential reference.",
+                    affected_type="project",
+                    affected_id=project.id,
+                    required=False,
+                )
+            )
+        elif self.configuration is None:
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "secret_reference",
+                    ReadinessCheckStatus.BLOCKED,
+                    "credential_reference_missing",
+                    f"Runtime credential configuration {config_key} cannot be evaluated.",
+                    affected_type="configuration",
+                    affected_id=config_key,
+                    remediation="Configure the required runtime SecretReference.",
+                    remediation_route="/api/configuration",
+                    details={"configuration_key": config_key},
+                )
+            )
+        else:
+            secret_id = None
+            active = False
+            try:
+                effective = self.configuration.resolve(
+                    config_key,
+                    ConfigurationContext(
+                        organization_id=actor.organization_id,
+                        workspace_id=actor.workspace_id,
+                        project_id=project.id,
+                    ),
+                )
+                reference = ConfigurationSecretReference.model_validate(effective.value)
+                secret_id = reference.secret_id
+                metadata = self.secrets.metadata(
+                    secret_id,
+                    actor=actor,
+                    require_use=True,
+                )
+                active = metadata.status().value == "active"
+            except (ConfigurationError, ConfigurationNotFoundError, ValueError, LookupError):
+                active = False
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "secret_reference",
+                    (
+                        ReadinessCheckStatus.READY
+                        if active
+                        else ReadinessCheckStatus.BLOCKED
+                    ),
+                    (
+                        "credential_reference_ready"
+                        if active
+                        else "credential_reference_missing"
+                    ),
+                    (
+                        f"Runtime credential reference {config_key} is active and authorized."
+                        if active
+                        else f"Required runtime credential reference {config_key} is missing, malformed, inactive, or unauthorized."
+                    ),
+                    affected_type="configuration",
+                    affected_id=config_key,
+                    remediation=(
+                        None
+                        if active
+                        else "Configure an authorized canonical SecretReference for the selected runtime."
+                    ),
+                    remediation_route="/api/configuration",
+                    details={
+                        "configuration_key": config_key,
+                        "secret_reference_id": secret_id,
+                        "runtime": (
+                            f"{self.runtime_binding.provider_id}/"
+                            f"{self.runtime_binding.runtime_id}"
+                        ),
+                    },
+                )
+            )
 
         worker = self.workers.execution_readiness(
             required_capabilities=(
