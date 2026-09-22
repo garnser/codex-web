@@ -533,6 +533,8 @@ async function loadItems({ reset = false } = {}) {
 }
 
 
+function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
+
 const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize: RUN_PAGE_SIZE });
 
 async function loadDetail(ref) {
