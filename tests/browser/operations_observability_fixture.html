@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Operations observability performance fixture</title>
+<details id="developer-panel">
+  <summary>Developer</summary>
+  <button id="refresh-developer" type="button">Refresh developer</button>
+  <button id="refresh-operations" type="button">Refresh operations</button>
+  <select id="operations-window"><option value="900" selected>15 minutes</option></select>
+  <input id="operations-trace-search">
+  <button id="load-diagnostics" type="button">Diagnostics</button>
+  <button id="resume-runtime-recovery" type="button">Recover</button>
+  <select id="operations-diagnostic-project"></select>
+  <div id="operations-status"></div>
+  <div id="operations-health"></div>
+  <div id="operations-runtime"></div>
+  <div id="operations-providers"></div>
+  <div id="operations-metrics"></div>
+  <div id="operations-traces"></div>
+  <div id="operations-diagnostics"></div>
+</details>
+<script src="/static/operations_observability.js"></script>
