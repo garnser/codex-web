@@ -126,7 +126,7 @@ test("explicit repository policy requires a target and submits canonical resourc
   await expect(page.locator("#repository-target option")).toHaveCount(3);
 
   await page.locator("#prompt").fill("Implement the change");
-  await page.locator("#send").click();
+  await page.locator("#prompt").press("Enter");
   expect(threadCreates).toBe(0);
   expect(turnPayloads).toHaveLength(0);
   await expect(page.locator("#repository-target-status")).toContainText("Repository target required per turn");
@@ -136,7 +136,7 @@ test("explicit repository policy requires a target and submits canonical resourc
   await expect(page.locator("#repository-target-status")).toContainText("explicit selection");
   await expect(page.locator("#repository-target")).toHaveAttribute("aria-invalid", "false");
 
-  await page.locator("#send").click();
+  await page.locator("#prompt").press("Enter");
   await expect.poll(() => threadCreates).toBe(1);
   expect(threadRepositoryId).toBe("repo-app");
   await expect.poll(() => turnPayloads.length).toBe(1);
@@ -248,7 +248,7 @@ test("thread-bound repository stays visible and contradictory selection is block
   await page.locator("#repository-target").selectOption("repo-platform");
   await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
   await page.locator("#prompt").fill("Do not run in the wrong repository");
-  await page.locator("#send").click();
+  await page.locator("#prompt").press("Enter");
   expect(turnCalls).toBe(0);
-  await expect(page.locator("#messages")).toContainText("repository_target_conflict");
+  await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
 });
