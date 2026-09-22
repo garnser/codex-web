@@ -215,8 +215,9 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.1")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.2")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
+        self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
 
     async def test_routing_is_deterministic_by_class_policy_health_and_priority(self) -> None:
         self._provider("p1")
