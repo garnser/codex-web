@@ -231,7 +231,7 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         migrated = self.intents.store._decode(raw)
 
-        self.assertEqual(migrated.schema_version, "1.1")
+        self.assertEqual(migrated.schema_version, "1.2")
         migrated_intent = next(item for item in migrated.intents if item.id == intent.id)
         self.assertEqual(
             migrated_intent.security_decision.outcome,
