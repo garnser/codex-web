@@ -775,6 +775,19 @@ class ThreadService:
             agent_profile_id=agent_profile_id,
             agent_profile_revision=agent_profile_revision,
         )
+        if agent_profile_id is not None and agent_profile_binding is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "agent_profile_routing_unavailable",
+                    "message": (
+                        "Agent Profile routing did not return a canonical "
+                        "execution binding"
+                    ),
+                    "target_type": "agent_profile",
+                    "target_id": agent_profile_id,
+                },
+            )
         session_manager = self._manager_for_binding(runtime_binding)
         token = uuid.uuid4().hex
         bootstrap_id = f"bootstrap-{token}"
