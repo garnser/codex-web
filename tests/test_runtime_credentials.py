@@ -7,7 +7,6 @@ from codex_web.configuration import ConfigurationContext
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.runtime_credentials import (
     CodexExecutionAuthenticationMode,
-    RuntimeAuthenticationConfigurationError,
     runtime_authentication_requirement,
 )
 from codex_web.services.codex_worker_configuration import (
@@ -120,9 +119,9 @@ class RuntimeAuthenticationRequirementTests(unittest.TestCase):
         self.assertFalse(requirement.permitted)
         self.assertEqual(requirement.credential_config_key, CODEX_WORKER_API_KEY_CONFIG)
 
-    def test_invalid_explicit_mode_fails_closed(self) -> None:
-        with self.assertRaises(RuntimeAuthenticationConfigurationError):
-            runtime_authentication_requirement(_codex_binding("implicit-fallback"))
+    def test_invalid_explicit_mode_fails_closed_at_runtime_binding_boundary(self) -> None:
+        with self.assertRaises(ValueError):
+            _codex_binding("implicit-fallback")
 
     def test_non_codex_runtime_keeps_existing_mapping_contract(self) -> None:
         binding = ExecutionRuntimeBinding(
