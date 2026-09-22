@@ -183,7 +183,23 @@ class AgentSessionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         failed = self.service.get(created.id, self.actor)
         self.assertEqual(failed.status, AgentSessionStatus.FAILED)
-        self.assertEqual(failed.failure_reason, "provider crashed")
+        self.assertEqual(
+            failed.failure_reason,
+            "The execution process failed.",
+        )
+        self.assertIsNotNone(failed.failure)
+        self.assertEqual(
+            failed.failure.reason_code.value,
+            "process_failure",
+        )
+        self.assertEqual(
+            failed.failure.source_native_code,
+            "RuntimeError",
+        )
+        self.assertNotIn(
+            "provider crashed",
+            failed.failure.model_dump_json(),
+        )
 
     async def test_unsupported_capability_fails_deterministically(self) -> None:
         created = await self.service.create(
