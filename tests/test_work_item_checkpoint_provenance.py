@@ -181,8 +181,19 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
 
         self.assertEqual(delta["mode"], "delta")
         self.assertGreaterEqual(delta["event_count_since_checkpoint"], 2)
+        self.assertEqual(delta["event_offset"], 0)
         self.assertEqual(delta["events_returned"], 1)
+        self.assertEqual(delta["next_event_offset"], 1)
         self.assertTrue(delta["requires_progressive_retrieval"])
+
+        next_page = self.service.continuation_delta(
+            self.ref,
+            max_events=1,
+            event_offset=delta["next_event_offset"],
+        )
+        self.assertEqual(next_page["event_offset"], 1)
+        self.assertEqual(next_page["events_returned"], 1)
+        self.assertNotEqual(next_page["events"], delta["events"])
 
     def test_corrupted_or_stale_event_watermark_falls_back_to_full_context(self) -> None:
         self.service.update(
