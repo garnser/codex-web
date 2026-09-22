@@ -124,7 +124,15 @@ def runtime_authentication_requirement(
 
     mode = CodexExecutionAuthenticationMode(CODEX_DEFAULT_AUTHENTICATION_MODE)
     source = "compatibility_default"
-    if (
+    if runtime_binding.authentication_mode:
+        try:
+            mode = CodexExecutionAuthenticationMode(runtime_binding.authentication_mode)
+        except ValueError as exc:
+            raise RuntimeAuthenticationConfigurationError(
+                "persisted Codex execution authentication mode is invalid"
+            ) from exc
+        source = "execution_binding"
+    elif (
         configuration is not None
         and _configuration_supports(
             configuration,
