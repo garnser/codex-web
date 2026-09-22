@@ -6,7 +6,7 @@ from typing import Any
 
 from codex_web.approval_requests import TERMINAL_APPROVAL_REQUEST_STATUSES
 from codex_web.attention import TERMINAL_ATTENTION_STATUSES
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.incidents import IncidentStatus
 from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -14,6 +14,7 @@ from codex_web.services.attention import AttentionService
 from codex_web.services.goals import GoalService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.projects import ProjectService
+from codex_web.services.scheduler import SchedulerService
 from codex_web.services.work_items import WorkItemService
 
 
@@ -30,6 +31,7 @@ class HomeOverviewService:
         incidents: IncidentService,
         agent_sessions: AgentSessionService,
         goals: GoalService,
+        schedules: SchedulerService | None = None,
         clock: Callable[[], float] = time.time,
         section_limit: int = 5,
     ) -> None:
@@ -40,6 +42,7 @@ class HomeOverviewService:
         self.incidents = incidents
         self.agent_sessions = agent_sessions
         self.goals = goals
+        self.schedules = schedules
         self.clock = clock
         self.section_limit = max(1, min(int(section_limit), 10))
 
@@ -270,6 +273,63 @@ class HomeOverviewService:
             sections["goals"] = self._section(summaries, total=len(matching))
         except Exception as exc:
             sections["goals"] = self._failed_section(exc)
+
+        try:
+            can_read_schedules = (
+                actor.principal_kind == PrincipalKind.SERVICE
+                and any(
+                    scope in actor.service_scopes
+                    for scope in ("scheduler:read", "scheduler:admin")
+                )
+            ) or (
+                actor.principal_kind != PrincipalKind.SERVICE
+                and actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+            )
+            if self.schedules is None:
+                sections["automations"] = self._section(
+                    [],
+                    total=0,
+                    status="degraded",
+                    detail="Scheduler is unavailable.",
+                )
+            elif not can_read_schedules:
+                sections["automations"] = self._section(
+                    [],
+                    total=0,
+                    status="denied",
+                    detail="Scheduler visibility requires an administrator role.",
+                )
+            else:
+                schedules = [
+                    item
+                    for item in self.schedules.list()
+                    if item.tenant_id == actor.organization_id
+                    and item.workspace_id in (None, actor.workspace_id)
+                    and (
+                        item.payload.get("project_id") is None
+                        or item.payload.get("project_id") == project.id
+                    )
+                ]
+                schedules.sort(
+                    key=lambda item: (item.updated_at, item.id),
+                    reverse=True,
+                )
+                sections["automations"] = self._section(
+                    [
+                        {
+                            "id": item.id,
+                            "title": item.name,
+                            "status": item.status.value,
+                            "updated_at": item.updated_at,
+                            "next_run_at": item.next_run_at,
+                            "href": "#workspace/autonomy",
+                        }
+                        for item in schedules
+                    ],
+                    total=len(schedules),
+                )
+        except Exception as exc:
+            sections["automations"] = self._failed_section(exc)
 
         degraded = [
             name for name, section in sections.items()
