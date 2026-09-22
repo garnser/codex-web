@@ -7,6 +7,7 @@
   let assignments = [];
   let projects = [];
   let refreshPromise = null;
+  const MAX_TRACE_ROWS = 100;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -159,8 +160,12 @@
   function renderTraces() {
     const host = document.getElementById("operations-traces");
     if (!host || !observability) return;
-    const rows = (observability.recentTraces || []).filter(traceMatches).slice().reverse();
-    host.innerHTML = rows.map((item) => `<details class="comm-entry">
+    const matches = (observability.recentTraces || []).filter(traceMatches).slice().reverse();
+    const rows = matches.slice(0, MAX_TRACE_ROWS);
+    const windowNotice = matches.length > rows.length
+      ? `<div class="comm-entry"><strong>Showing latest ${rows.length} of ${matches.length} matching traces.</strong><small>Refine the trace filter to inspect older rows without rendering the full telemetry set.</small></div>`
+      : "";
+    host.innerHTML = windowNotice + rows.map((item) => `<details class="comm-entry">
       <summary><strong>${escapeHtml(item.name)} · ${escapeHtml(item.status)} · ${duration(item.durationSeconds)}</strong></summary>
       <small>Correlation: ${escapeHtml(item.correlationId)} · causation: ${escapeHtml(item.causationId || "none")} · span: ${escapeHtml(item.spanId)} · parent: ${escapeHtml(item.parentSpanId || "none")}</small>
       <button type="button" class="ghost-button" data-log-correlation="${escapeHtml(item.correlationId)}">View structured logs</button>
