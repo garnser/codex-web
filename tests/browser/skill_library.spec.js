@@ -84,5 +84,5 @@ test('import requires preview and makes draft semantics explicit', async ({ page
 
 test('responsive layout collapses to one column', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator('.skill-layout')).toHaveCSS('grid-template-columns', '358px');
+  const columns = await page.locator('.skill-layout').evaluate(node => getComputedStyle(node).gridTemplateColumns);\n  expect(columns.trim().split(/\\s+/)).toHaveLength(1);
 });
