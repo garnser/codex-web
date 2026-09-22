@@ -250,47 +250,26 @@ function currentRunSettings() {
   };
 }
 
-function repositorySelectionPolicy() {
-  return activeProject()?.repository_selection_policy || "deterministic";
-}
-
-function activeRepositoryResources() {
-  return repositoryTargetUi.activeRepositories(state.projectResources || []);
+function repositoryTargetArgs(threadId = state.threadId) {
+  return {
+    project: activeProject(),
+    resources: state.projectResources || [],
+    settings: currentRunSettings(),
+    threadSettings: threadId ? threadRunSettings(threadId) : {},
+  };
 }
 
 function repositoryTargetState(threadId = state.threadId) {
-  const settings = currentRunSettings();
-  const threadSettings = threadId ? threadRunSettings(threadId) : {};
-  return repositoryTargetUi.targetState({
-    policy: repositorySelectionPolicy(),
-    repositories: activeRepositoryResources(),
-    selectedId: settings.repositoryResourceId || "",
-    boundId: threadSettings.repository_resource_id || "",
-  });
+  return repositoryTargetUi.targetState(repositoryTargetArgs(threadId));
 }
 
 function renderRepositoryTargetStatus() {
-  const target = repositoryTargetState();
-  const boundId = threadRunSettings()?.repository_resource_id || "";
-  repositoryTargetUi.renderStatus({
-    status: $("repository-target-status"),
-    mutable: $("repository-target"),
-    target,
-    required: repositorySelectionPolicy() === "explicit" && !boundId,
-  });
+  repositoryTargetUi.renderStatus(repositoryTargetArgs());
 }
 
 function renderRepositoryTargets() {
-  const settings = currentRunSettings();
-  const boundId = threadRunSettings()?.repository_resource_id || "";
   repositoryTargetUi.renderControls({
-    mutable: $("repository-target"),
-    readOnly: $("repository-read-context"),
-    status: $("repository-target-status"),
-    policy: repositorySelectionPolicy(),
-    repositories: activeRepositoryResources(),
-    settings,
-    boundId,
+    ...repositoryTargetArgs(),
     escapeHtml,
   });
 }
