@@ -227,7 +227,33 @@ class CodexRuntime:
                 await self.host.hub.publish({"type": "codex.raw", "text": line.rstrip("\n")})
                 continue
 
+            await self._handle_message_safely(message)
+
+    async def _handle_message_safely(self, message: dict[str, Any]) -> None:
+        try:
             await self._handle_message(message)
+        except Exception as exc:
+            # A state projection or delivery failure must not kill the stdout
+            # reader. Otherwise the child remains alive and the runtime keeps
+            # advertising readiness while no task consumes RPC responses.
+            self.last_error = f"Codex message handling failed: {exc}"
+            if self.metrics:
+                self.metrics.increment("codex.message_handler_failures")
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.message_handler_failed",
+                "Codex app-server message handling failed",
+                error=str(exc),
+                method=message.get("method"),
+                message_id=message.get("id"),
+            )
+            await self.host.hub.publish(
+                {
+                    "type": "codex.error",
+                    "error": self.last_error,
+                }
+            )
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
         message_id = message.get("id")
@@ -381,6 +407,14 @@ class CodexRuntime:
                 timeout_seconds=timeout,
             )
             await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
+            # A live process is insufficient evidence of a live JSON-RPC
+            # transport. Invalidate this generation so the next request starts
+            # a fresh app-server rather than accumulating timeouts forever.
+            timed_out_proc = self.proc
+            self.ready.clear()
+            async with self.lifecycle_lock:
+                if self.proc is timed_out_proc:
+                    await self.stop()
             raise HTTPException(status_code=504, detail=self.last_error) from exc
         finally:
             if self.metrics:
@@ -395,7 +429,7 @@ class CodexRuntime:
         if (
             not self.proc
             or self.proc.poll() is not None
-            or (self.reader_task is not None and self.reader_task.done() and not self.ready.is_set())
+            or (self.reader_task is not None and self.reader_task.done())
         ):
             await self.start()
         elif not self.ready.is_set():
