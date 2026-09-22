@@ -1,0 +1,93 @@
+const { test, expect } = require('@playwright/test');
+
+const fixture = 'http://127.0.0.1:18766/tests/browser/operations_observability_fixture.html';
+
+test('concurrent Operations refresh triggers coalesce to one bounded request batch', async ({ page }) => {
+  const counts = {
+    observability: 0,
+    operations: 0,
+    assignments: 0,
+    identity: 0,
+    projects: 0,
+  };
+  const delayed = async (route, key, json) => {
+    counts[key] += 1;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(json) });
+  };
+
+  await page.route('**/api/observability', (route) => delayed(route, 'observability', {
+    health: {
+      status: 'healthy',
+      liveness: true,
+      readiness: true,
+      degraded: false,
+      autonomousExecutionEligible: true,
+      uptimeSeconds: 10,
+      dependencies: [],
+    },
+    metrics: { uptimeSeconds: 10, counters: {}, timers: {} },
+    recentTraces: [],
+    traceCount: 0,
+  }));
+  await page.route('**/api/operations?**', (route) => delayed(route, 'operations', {
+    windowSeconds: 900,
+    runtime: {
+      healthy: true,
+      activeTurns: 0,
+      queuedTurns: 0,
+      queueThreads: 0,
+      pendingApprovals: 0,
+      oldestQueueAgeSeconds: 0,
+      averageQueueAgeSeconds: 0,
+      healthProblems: [],
+      supervisorTasks: {},
+    },
+    workItems: {
+      open: 0,
+      blocked: 0,
+      pendingHandoffs: 0,
+      releaseGates: 0,
+      splitBrain: 0,
+      stages: {},
+      owners: {},
+      oldestPendingHandoffAgeSeconds: 0,
+    },
+    providers: {
+      runtimeConnections: 0,
+      recentDeliveryFailures: 0,
+      slackBackfillCooldownRemainingSeconds: 0,
+      gitlabSyncConsecutiveFailures: 0,
+    },
+    activity: { events: 0, eventTypes: {}, recoveryEvents: 0, executiveEvents: 0 },
+  }));
+  await page.route('**/api/execution-workers/assignments', (route) => delayed(route, 'assignments', { items: [] }));
+  await page.route('**/api/identity/me', (route) => delayed(route, 'identity', {
+    principal_kind: 'human',
+    assurance: 'mfa',
+    roles: ['admin'],
+  }));
+  await page.route('**/api/projects', (route) => delayed(route, 'projects', []));
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    document.getElementById('refresh-developer').click();
+    document.getElementById('refresh-operations').click();
+  });
+
+  await expect(page.locator('#operations-status')).toContainText('Operator telemetry loaded');
+  expect(counts).toEqual({
+    observability: 1,
+    operations: 1,
+    assignments: 1,
+    identity: 1,
+    projects: 1,
+  });
+
+  const windowStatus = await page.evaluate(() => (
+    window.__codexFrontendPerf.requestWindowStatus({ sinceMs: 5000 })
+  ));
+  expect(windowStatus.total).toBe(5);
+  expect(windowStatus.repeated).toEqual([]);
+  expect(windowStatus.ok).toBeTruthy();
+});
