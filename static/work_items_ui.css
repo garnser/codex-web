@@ -84,6 +84,71 @@
 .work-diagnostic.error strong { color: var(--danger, #b42318); }
 .work-diagnostic small, .work-history-event small { opacity: .6; }
 
+
+.work-run-heading, .work-run-related, .work-run-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.work-run-heading h4, .work-run-heading small { margin: 0; }
+.work-run-list { display: grid; gap: 8px; margin-top: 10px; }
+.work-run {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 9px;
+  overflow: clip;
+  background: var(--panel, transparent);
+}
+.work-run > summary {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr) minmax(180px, 1.3fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.work-run[open] > summary { border-bottom: 1px solid var(--border, #ddd); }
+.work-run-status {
+  min-width: 72px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: .72rem;
+  font-weight: 700;
+  background: var(--hover, rgba(127,127,127,.1));
+}
+.work-run-status.running, .work-run-status.claimed, .work-run-status.queued {
+  outline: 1px solid currentColor;
+}
+.work-run-status.failed, .work-run-status.lost { color: var(--danger, #b42318); }
+.work-run-live { font-size: .7rem; font-weight: 700; text-transform: uppercase; }
+.work-run-summary { padding: 10px; }
+.work-run-expanded { margin-top: 12px; }
+.work-run-expanded h5 { margin: 12px 0 7px; }
+.work-run-activity { display: grid; gap: 5px; }
+.work-run-activity-row {
+  display: grid;
+  grid-template-columns: minmax(130px, .8fr) minmax(180px, 1.6fr) auto;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border, #eee);
+}
+.work-run-activity-row:first-child { border-top: 0; }
+.work-run-links { display: grid; gap: 5px; }
+.work-run-links > span {
+  overflow-wrap: anywhere;
+  padding: 5px 0;
+  border-top: 1px solid var(--border, #eee);
+}
+.work-run-related {
+  justify-content: flex-start;
+  margin-top: 12px;
+  font-size: .8rem;
+}
+.work-run-footer { justify-content: flex-end; margin-top: 10px; }
+
 @media (max-width: 900px) {
   .work-items-dialog { width: 100vw; height: 100vh; border-radius: 0; }
   .work-items-layout, .work-detail-columns { grid-template-columns: 1fr; }
@@ -92,4 +157,7 @@
   .work-items-window-controls small { grid-column: 1 / -1; grid-row: 1; }
   .work-source-grid, .work-source-provider-fields, .work-kv-wide { grid-template-columns: 1fr; }
   .work-diagnostic, .work-history-event { grid-template-columns: 1fr; gap: 2px; }
+  .work-run > summary, .work-run-activity-row { grid-template-columns: 1fr; gap: 3px; }
+  .work-run > summary { padding: 10px; }
+  .work-run-status { width: fit-content; }
 }
