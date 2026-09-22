@@ -155,6 +155,10 @@ class _Execution:
             execution_id=kwargs.get("execution_id"),
             work_item_ref=kwargs.get("work_item_ref"),
             repository_resource_id=kwargs.get("repository_resource_id"),
+            writable_repository_resource_ids=kwargs.get(
+                "writable_repository_resource_ids",
+                (),
+            ),
             read_only_repository_resource_ids=kwargs.get(
                 "read_only_repository_resource_ids",
                 (),
@@ -351,6 +355,43 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             queue.queued[0].read_only_repository_resource_ids,
             ("repo-docs",),
+        )
+
+    async def test_coordinated_writable_targets_reach_immediate_execution(self) -> None:
+        service, queue, execution, _events, _settings = self._service()
+        queue.queued = []
+        execution.active = False
+
+        await service.start(
+            "thread-1",
+            TurnCreate(
+                message="coordinate repositories",
+                project_id="home",
+                writable_repository_resource_ids=("repo-app", "repo-api"),
+            ),
+        )
+
+        self.assertEqual(
+            execution.start_calls[0][1]["writable_repository_resource_ids"],
+            ("repo-app", "repo-api"),
+        )
+
+    async def test_coordinated_writable_targets_survive_queueing(self) -> None:
+        service, queue, _execution, _events, _settings = self._service()
+
+        result = await service.start(
+            "thread-1",
+            TurnCreate(
+                message="coordinate queued repositories",
+                project_id="home",
+                writable_repository_resource_ids=("repo-app", "repo-api"),
+            ),
+        )
+
+        self.assertTrue(result["queued"])
+        self.assertEqual(
+            queue.queued[0].writable_repository_resource_ids,
+            ("repo-app", "repo-api"),
         )
 
     async def test_preflight_failure_is_retained_and_retry_reuses_execution_id(self) -> None:
