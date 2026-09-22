@@ -339,54 +339,86 @@ class WorkItemExecutionLifecycleService:
         return self.execution(ref)
 
     def continuation_anchor(self, ref: str) -> dict[str, Any]:
-        """Assess whether the latest checkpoint is safe to use as a delta anchor."""
-        checkpoint = self._state(ref).execution.latest_checkpoint
-        if checkpoint is None:
+        """Select the newest safe checkpoint without trusting failed attempts."""
+        execution = self._state(ref).execution
+        history = list(execution.checkpoint_history)
+        if not history and execution.latest_checkpoint is not None:
+            history = [execution.latest_checkpoint]
+        if not history:
             return {
                 "trusted": False,
                 "reason": "checkpoint_missing",
                 "checkpoint": None,
             }
 
-        missing: list[str] = []
-        if not checkpoint.delivery_proven:
-            missing.append("delivery_not_proven")
-        if not checkpoint.delivery_proof_ref:
-            missing.append("delivery_proof_missing")
-        if not checkpoint.execution_id:
-            missing.append("execution_id_missing")
-        if not checkpoint.work_item_revision:
-            missing.append("work_item_revision_missing")
-        if not checkpoint.work_item_hash:
-            missing.append("work_item_hash_missing")
-        if not checkpoint.event_watermark:
-            missing.append("event_watermark_missing")
-        if not checkpoint.delivered_context_hash:
-            missing.append("delivered_context_hash_missing")
+        def assess(
+            checkpoint: WorkItemExecutionCheckpoint,
+        ) -> tuple[bool, str, list[str]]:
+            missing: list[str] = []
+            if not checkpoint.delivery_proven:
+                missing.append("delivery_not_proven")
+            if not checkpoint.delivery_proof_ref:
+                missing.append("delivery_proof_missing")
+            if not checkpoint.execution_id:
+                missing.append("execution_id_missing")
+            if not checkpoint.work_item_revision:
+                missing.append("work_item_revision_missing")
+            if not checkpoint.work_item_hash:
+                missing.append("work_item_hash_missing")
+            if not checkpoint.event_watermark:
+                missing.append("event_watermark_missing")
+            if not checkpoint.delivered_context_hash:
+                missing.append("delivered_context_hash_missing")
+            if missing:
+                return (
+                    False,
+                    "checkpoint_provenance_incomplete",
+                    missing,
+                )
+            if (
+                checkpoint.source == "turn-execution-runtime"
+                and checkpoint.execution_outcome != "succeeded"
+            ):
+                outcome = checkpoint.execution_outcome or "unconfirmed"
+                return (
+                    False,
+                    "checkpoint_execution_untrusted",
+                    [f"execution_outcome_{outcome}"],
+                )
+            return True, "delivery_proven", []
 
-        if missing:
-            return {
-                "trusted": False,
-                "reason": "checkpoint_provenance_incomplete",
-                "blockers": missing,
-                "checkpoint": checkpoint.model_dump(mode="json"),
-            }
-        if (
-            checkpoint.source == "turn-execution-runtime"
-            and checkpoint.execution_outcome != "succeeded"
-        ):
-            outcome = checkpoint.execution_outcome or "unconfirmed"
-            return {
-                "trusted": False,
-                "reason": "checkpoint_execution_untrusted",
-                "blockers": [f"execution_outcome_{outcome}"],
-                "checkpoint": checkpoint.model_dump(mode="json"),
-            }
+        ignored: list[dict[str, Any]] = []
+        for checkpoint in reversed(history):
+            trusted, reason, blockers = assess(checkpoint)
+            if trusted:
+                return {
+                    "trusted": True,
+                    "reason": (
+                        "delivery_proven"
+                        if not ignored
+                        else "prior_trusted_checkpoint"
+                    ),
+                    "blockers": [],
+                    "checkpoint": checkpoint.model_dump(mode="json"),
+                    "ignored_checkpoints": ignored,
+                }
+            ignored.append(
+                {
+                    "checkpoint_id": checkpoint.id,
+                    "execution_id": checkpoint.execution_id,
+                    "reason": reason,
+                    "blockers": blockers,
+                }
+            )
+
+        latest = history[-1]
+        latest_assessment = ignored[0]
         return {
-            "trusted": True,
-            "reason": "delivery_proven",
-            "blockers": [],
-            "checkpoint": checkpoint.model_dump(mode="json"),
+            "trusted": False,
+            "reason": latest_assessment["reason"],
+            "blockers": latest_assessment["blockers"],
+            "checkpoint": latest.model_dump(mode="json"),
+            "ignored_checkpoints": ignored,
         }
 
     def continuation_delta(
