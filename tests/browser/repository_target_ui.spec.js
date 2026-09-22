@@ -231,7 +231,11 @@ test("thread-bound repository stays visible and contradictory selection is block
   });
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
-  await Promise.all([\n    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/threads/thread-1"),\n    page.locator("#threads .item-main").first().click(),\n  ]);\n  await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/threads/thread-1"),
+    page.locator("#threads .item-main").first().click(),
+  ]);
+  await expect(page.locator("#thread-meta")).toContainText("repository repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("thread/profile binding");
 
