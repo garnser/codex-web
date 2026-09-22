@@ -179,37 +179,84 @@ class LocalExecutionWorkerRuntime:
             )
         return Path(workspace.path)
 
-    def readonly_mounts(
+    def repository_mounts(
         self,
         assignment: ExecutionAssignment,
-    ) -> tuple[tuple[Path, Path], ...]:
+    ) -> tuple[
+        tuple[tuple[Path, Path], ...],
+        tuple[tuple[Path, Path], ...],
+    ]:
         workspace = self._workspace(assignment)
+        scope = assignment.repository_scope
         target = assignment.repository_target
-        authorized = (
-            set(target.read_only_repository_ids)
-            if target is not None
-            else set()
-        )
-        mounts: list[tuple[Path, Path]] = []
+        if scope is not None:
+            writable = set(scope.writable_repository_ids)
+            read_only = set(scope.read_only_repository_ids)
+        elif target is not None:
+            writable = (
+                {target.mutable_repository_id}
+                if target.mutable_repository_id is not None
+                else set()
+            )
+            read_only = set(target.read_only_repository_ids)
+        else:
+            writable = set()
+            read_only = set()
+
+        primary = getattr(workspace, "repository_resource_id", None)
+        if scope is None and target is None and primary is not None:
+            # Legacy assignments predate explicit repository authority on the
+            # worker contract. The execution workspace lease remains canonical
+            # for their singular primary repository.
+            writable = {primary}
+        if primary is not None and primary not in writable:
+            raise LocalExecutionWorkerRuntimeError(
+                "primary repository is outside assignment repository authority"
+            )
+
+        readonly_mounts: list[tuple[Path, Path]] = []
+        writable_mounts: list[tuple[Path, Path]] = []
         for member in getattr(workspace, "repository_members", ()):
-            if member.resource_id == workspace.repository_resource_id:
+            if member.resource_id == primary:
                 continue
-            if member.resource_id not in authorized:
-                raise LocalExecutionWorkerRuntimeError(
-                    "workspace contains read-only repository outside assignment target"
-                )
-            if member.access_mode.value != "read":
-                raise LocalExecutionWorkerRuntimeError(
-                    "non-primary repository member must remain read-only"
-                )
             source = Path(member.workspace_path).resolve(strict=True)
             destination = Path(member.sandbox_path)
             if not destination.is_absolute():
                 raise LocalExecutionWorkerRuntimeError(
-                    "read-only repository sandbox path must be absolute"
+                    "repository sandbox path must be absolute"
                 )
-            mounts.append((source, destination))
-        return tuple(mounts)
+            if member.resource_id in writable:
+                if member.access_mode.value != "write":
+                    raise LocalExecutionWorkerRuntimeError(
+                        "writable repository member does not hold a write lease"
+                    )
+                writable_mounts.append((source, destination))
+                continue
+            if member.resource_id in read_only:
+                if member.access_mode.value != "read":
+                    raise LocalExecutionWorkerRuntimeError(
+                        "read-only repository member must remain read-only"
+                    )
+                readonly_mounts.append((source, destination))
+                continue
+            raise LocalExecutionWorkerRuntimeError(
+                "workspace contains repository outside assignment authority"
+            )
+        return tuple(readonly_mounts), tuple(writable_mounts)
+
+    def readonly_mounts(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> tuple[tuple[Path, Path], ...]:
+        readonly, _writable = self.repository_mounts(assignment)
+        return readonly
+
+    def writable_mounts(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> tuple[tuple[Path, Path], ...]:
+        _readonly, writable = self.repository_mounts(assignment)
+        return writable
 
     def readonly_disk_bytes(self, assignment: ExecutionAssignment) -> int:
         workspace = self._workspace(assignment)
@@ -282,7 +329,7 @@ class LocalExecutionWorkerRuntime:
     ) -> LocalExecutionCompletion:
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
-        readonly_mounts = self.readonly_mounts(assignment)
+        readonly_mounts, writable_mounts = self.repository_mounts(assignment)
         readonly_disk_bytes = self.readonly_disk_bytes(assignment)
         self.backend.validate_assignment(assignment)
 
@@ -352,6 +399,8 @@ class LocalExecutionWorkerRuntime:
             }
             if readonly_mounts:
                 run_kwargs["trusted_readonly_mounts"] = readonly_mounts
+            if writable_mounts:
+                run_kwargs["trusted_writable_mounts"] = writable_mounts
             if readonly_disk_bytes:
                 run_kwargs["additional_disk_bytes"] = readonly_disk_bytes
             result = self.backend.run(

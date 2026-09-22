@@ -20,7 +20,12 @@ from codex_web.execution_workers import (
     WorkerResourceLimits,
 )
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
-from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
+from codex_web.resources import (
+    RepositoryExecutionScope,
+    RepositoryExecutionTarget,
+    RepositoryTargetSource,
+    RepositoryWriteMode,
+)
 from codex_web.local_execution_backend import (
     BubblewrapExecutionBackend,
     LocalExecutionPolicyError,
@@ -85,6 +90,7 @@ class _FakeExecutionBackend:
         poll_hook=None,
         environment=None,
         trusted_readonly_mounts=(),
+        trusted_writable_mounts=(),
         additional_disk_bytes=0,
     ):
         self.calls.append(
@@ -93,6 +99,7 @@ class _FakeExecutionBackend:
                 tuple(argv),
                 Path(workspace_path),
                 tuple(trusted_readonly_mounts),
+                tuple(trusted_writable_mounts),
                 additional_disk_bytes,
             )
         )
@@ -287,6 +294,61 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         )
         self.assertNotIn(["--ro-bind", "/", "/"], mounts)
         self.assertIn("--unshare-net", command)
+
+    def test_explicit_secondary_writable_repository_is_bind_mounted(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "primary"
+            sibling = root / "secondary"
+            workspace.mkdir()
+            sibling.mkdir()
+            destination = Path("/mnt/codex-repositories/repo-2")
+
+            command = backend.build_command(
+                _assignment(sandbox="workspace-write"),
+                argv=("sh", "-c", "true"),
+                workspace_path=workspace,
+                trusted_writable_mounts=((sibling, destination),),
+            )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--bind", str(sibling.resolve()), str(destination)],
+            mounts,
+        )
+        self.assertNotIn(
+            ["--ro-bind", str(sibling.resolve()), str(destination)],
+            mounts,
+        )
+
+    def test_read_only_assignment_rejects_secondary_writable_repository(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "primary"
+            sibling = root / "secondary"
+            workspace.mkdir()
+            sibling.mkdir()
+
+            with self.assertRaises(LocalExecutionPolicyError):
+                backend.build_command(
+                    _assignment(sandbox="read-only"),
+                    argv=("sh", "-c", "true"),
+                    workspace_path=workspace,
+                    trusted_writable_mounts=(
+                        (sibling, Path("/mnt/codex-repositories/repo-2")),
+                    ),
+                )
 
     def test_network_requests_still_fail_closed_for_local_worker(self) -> None:
         backend = BubblewrapExecutionBackend(
@@ -623,7 +685,61 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             backend.calls[0][3],
             ((readonly_path.resolve(), Path("/mnt/codex-context/repo-2")),),
         )
-        self.assertEqual(backend.calls[0][4], 64)
+        self.assertEqual(backend.calls[0][4], ())
+        self.assertEqual(backend.calls[0][5], 64)
+
+    def test_runtime_passes_coordinated_writable_repository_mounts_to_backend(self) -> None:
+        writable_path = Path(self.temp.name) / "writable-repo-2"
+        writable_path.mkdir()
+        self.workspaces.workspace.resource_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.writable_repository_ids = ("repo-1", "repo-2")
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(self.workspace_path),
+                sandbox_path=str(self.workspace_path),
+                disk_bytes=32,
+            ),
+            SimpleNamespace(
+                resource_id="repo-2",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(writable_path),
+                sandbox_path="/mnt/codex-repositories/repo-2",
+                disk_bytes=64,
+            ),
+        )
+        assignment = self._create_assignment(
+            resource_ids=("repo-1", "repo-2"),
+            repository_scope=RepositoryExecutionScope(
+                organization_id="local",
+                workspace_id="default",
+                project_id="home",
+                writable_repository_ids=("repo-1", "repo-2"),
+                write_mode=RepositoryWriteMode.COORDINATED,
+                source=RepositoryTargetSource.EXPLICIT,
+            ),
+        )
+        runtime, backend = self._runtime(
+            LocalExecutionResult(
+                executable="git",
+                command_digest="sha256:" + "e" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+                disk_bytes=10,
+            )
+        )
+
+        runtime.execute(assignment.id, ("git", "status"))
+
+        self.assertEqual(backend.calls[0][3], ())
+        self.assertEqual(
+            backend.calls[0][4],
+            ((writable_path.resolve(), Path("/mnt/codex-repositories/repo-2")),),
+        )
+        self.assertEqual(backend.calls[0][5], 64)
 
     def test_limit_breach_creates_metadata_only_failure_evidence(self) -> None:
         assignment = self._create_assignment()

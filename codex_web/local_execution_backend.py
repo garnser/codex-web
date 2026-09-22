@@ -399,6 +399,7 @@ class BubblewrapExecutionBackend:
         workspace_path: Path,
         git_metadata_path: Path | None = None,
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
+        trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
     ) -> list[str]:
         self.validate_assignment(assignment)
         if not argv or not str(argv[0]).strip():
@@ -441,6 +442,47 @@ class BubblewrapExecutionBackend:
         )
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
+
+        if trusted_writable_mounts and assignment.sandbox == "read-only":
+            raise LocalExecutionPolicyError(
+                "read-only assignment cannot receive writable repository mounts"
+            )
+        writable_destinations: set[Path] = set()
+        for source_raw, destination_raw in trusted_writable_mounts:
+            source = Path(source_raw).resolve(strict=True)
+            destination = Path(destination_raw)
+            if not source.is_dir():
+                raise LocalExecutionPolicyError(
+                    "trusted writable mount source must be an existing directory"
+                )
+            if not destination.is_absolute():
+                raise LocalExecutionPolicyError(
+                    "trusted writable mount destination must be absolute"
+                )
+            if destination == workspace or destination.is_relative_to(workspace):
+                raise LocalExecutionPolicyError(
+                    "trusted writable mount cannot replace or nest inside execution workspace"
+                )
+            if destination in writable_destinations:
+                raise LocalExecutionPolicyError(
+                    "trusted writable mount destinations must be unique"
+                )
+            writable_destinations.add(destination)
+            command.extend(self._directory_creation_args(destination))
+            command.extend(("--bind", str(source), str(destination)))
+            secondary_metadata = self.discover_git_metadata(source)
+            if (
+                secondary_metadata is not None
+                and not secondary_metadata.is_relative_to(source)
+            ):
+                command.extend(self._directory_creation_args(secondary_metadata))
+                command.extend(
+                    (
+                        "--bind",
+                        str(secondary_metadata),
+                        str(secondary_metadata),
+                    )
+                )
 
         for source_raw, destination_raw in trusted_readonly_mounts:
             source = Path(source_raw).resolve(strict=True)
@@ -526,6 +568,7 @@ class BubblewrapExecutionBackend:
         environment: Mapping[str, str] | None = None,
         git_metadata_path: Path | None = None,
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
+        trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -558,6 +601,7 @@ class BubblewrapExecutionBackend:
             workspace_path=workspace,
             git_metadata_path=resolved_git_metadata,
             trusted_readonly_mounts=trusted_readonly_mounts,
+            trusted_writable_mounts=trusted_writable_mounts,
         )
         env = self.minimal_environment(extra=environment)
         return self._popen(
@@ -583,6 +627,7 @@ class BubblewrapExecutionBackend:
         poll_hook: Callable[[], None] | None = None,
         git_metadata_path: Path | None = None,
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
+        trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         additional_disk_bytes: int = 0,
     ) -> LocalExecutionResult:
         status = self.probe()
@@ -608,6 +653,7 @@ class BubblewrapExecutionBackend:
             workspace_path=workspace,
             git_metadata_path=resolved_git_metadata,
             trusted_readonly_mounts=trusted_readonly_mounts,
+            trusted_writable_mounts=trusted_writable_mounts,
         )
         env = self.minimal_environment(extra=environment)
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
