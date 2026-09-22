@@ -66,13 +66,18 @@ class WorkItemExecutionCheckpoint(BaseModel):
     # Continuation provenance is optional for backward compatibility. A
     # checkpoint without positive delivery proof remains an untrusted anchor.
     execution_id: str | None = None
+    subject_kind: str | None = None
+    subject_ref: str | None = None
     execution_contract_version: str | None = None
     agent_profile_id: str | None = None
     agent_profile_revision: int | None = Field(default=None, ge=1)
     role_id: str | None = None
     provider_id: str | None = None
     runtime_id: str | None = None
+    model_id: str | None = None
     session_ref: str | None = None
+    resource_ids: list[str] = Field(default_factory=list)
+    base_revision: str | None = None
     work_item_revision: str | None = None
     work_item_hash: str | None = None
     event_watermark: str | None = None
@@ -88,6 +93,8 @@ class WorkItemExecutionCheckpoint(BaseModel):
     context_delta_bytes: int | None = Field(default=None, ge=0)
     estimated_tokens_reused: int | None = Field(default=None, ge=0)
     fallback_to_full_context_reason: str | None = None
+    execution_outcome: str | None = None
+    outcome_recorded_at: float | None = None
 
 
 class WorkItemUsageAttribution(BaseModel):
@@ -159,13 +166,18 @@ class WorkItemCheckpointCreate(BaseModel):
     next_actions: list[str] = Field(default_factory=list)
 
     execution_id: str | None = None
+    subject_kind: str | None = None
+    subject_ref: str | None = None
     execution_contract_version: str | None = None
     agent_profile_id: str | None = None
     agent_profile_revision: int | None = Field(default=None, ge=1)
     role_id: str | None = None
     provider_id: str | None = None
     runtime_id: str | None = None
+    model_id: str | None = None
     session_ref: str | None = None
+    resource_ids: list[str] = Field(default_factory=list)
+    base_revision: str | None = None
     work_item_revision: str | None = None
     work_item_hash: str | None = None
     event_watermark: str | None = None
@@ -181,6 +193,8 @@ class WorkItemCheckpointCreate(BaseModel):
     context_delta_bytes: int | None = Field(default=None, ge=0)
     estimated_tokens_reused: int | None = Field(default=None, ge=0)
     fallback_to_full_context_reason: str | None = None
+    execution_outcome: str | None = None
+    outcome_recorded_at: float | None = None
 
 
 class WorkItemUsageRecord(BaseModel):

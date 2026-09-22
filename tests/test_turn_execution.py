@@ -245,6 +245,7 @@ class _Session:
     def __init__(self) -> None:
         self.workspace_path = Path("/isolated/workspace")
         self.requests = []
+        self.work_item_ref = None
 
     def status(self):
         return SimpleNamespace(worker_id="worker-1", fence=7)
@@ -257,6 +258,7 @@ class _Session:
             project_id="p1",
             sandbox="workspace-write",
             approval_policy="on-request",
+            work_item_ref=self.work_item_ref,
         )
 
     async def request(self, method, params=None):
@@ -347,7 +349,12 @@ class _BootstrapBindings:
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, *, bootstrap_thread_id: str | None = None):
+    def _service(
+        self,
+        *,
+        bootstrap_thread_id: str | None = None,
+        **service_kwargs,
+    ):
         host = _Host()
         binding = _BindingService()
         sessions = _SessionManager()
@@ -357,6 +364,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             session_manager=sessions,
             bootstrap_bindings=_BootstrapBindings(bootstrap_thread_id),
             control_actor=SimpleNamespace(identity_id="control"),
+            **service_kwargs,
         )
         return host, binding, sessions, service
 
@@ -402,6 +410,228 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.last_inputs["t1"]["assignment_id"], "assignment-1")
         self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
+
+    async def test_work_item_delta_is_delivered_and_recorded_after_turn_start(self) -> None:
+        recorded = []
+        selection = {
+            "mode": "delta",
+            "reason": "verified_checkpoint_delta",
+            "checkpoint_id": "checkpoint-4",
+            "changed_fields": {"title": "Updated"},
+            "removed_fields": [],
+            "events": [{"event_type": "comment_added"}],
+            "current": {"objective": "Finish issue #531"},
+            "requires_progressive_retrieval": False,
+            "metrics": {
+                "baseline_context_bytes": 4096,
+                "delta_context_bytes": 256,
+                "estimated_tokens_reused": 960,
+            },
+            "snapshot": {
+                "work_item_revision": "revision-5",
+                "work_item_hash": "sha256:current",
+                "event_watermark": "wi-events-v1:4:digest",
+                "work_item_context": {"title": "Updated"},
+            },
+        }
+
+        host, _binding, sessions, service = self._service(
+            work_item_context_resolver=lambda ref: selection,
+            work_item_context_recorder=lambda *args, **kwargs: recorded.append(
+                (args, kwargs)
+            ),
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue work",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            source="web",
+            execution_id="exec-context",
+            work_item_ref="group/app#531",
+        )
+
+        turn = sessions.session.requests[1][1]
+        instructions = turn["developerInstructions"]
+        self.assertIn("Canonical Work Item continuation context", instructions)
+        self.assertIn('"mode":"delta"', instructions)
+        self.assertIn('"title":"Updated"', instructions)
+        self.assertNotIn('"work_item_context"', instructions)
+        self.assertEqual(len(recorded), 1)
+        args, kwargs = recorded[0]
+        self.assertEqual(args[0], "group/app#531")
+        self.assertEqual(args[1], "exec-context")
+        self.assertEqual(args[2], selection)
+        self.assertEqual(args[3]["mode"], "delta")
+        self.assertEqual(
+            kwargs["provenance"]["session_ref"],
+            "t1",
+        )
+
+    async def test_untrusted_checkpoint_falls_back_to_full_work_item_context(self) -> None:
+        selection = {
+            "mode": "full",
+            "reason": "checkpoint_provenance_incomplete",
+            "blockers": ["delivery_not_proven"],
+            "snapshot": {
+                "work_item_context": {
+                    "title": "Canonical full context",
+                    "current_stage": "implementation_active",
+                },
+            },
+        }
+        _host, _binding, sessions, service = self._service(
+            work_item_context_resolver=lambda ref: selection,
+            work_item_context_recorder=lambda *args, **kwargs: None,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue safely",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="exec-full-context",
+            work_item_ref="group/app#531",
+        )
+
+        instructions = sessions.session.requests[1][1]["developerInstructions"]
+        self.assertIn('"mode":"full"', instructions)
+        self.assertIn('"work_item_context"', instructions)
+        self.assertIn("Canonical full context", instructions)
+        self.assertIn("checkpoint_provenance_incomplete", instructions)
+
+    async def test_bootstrap_turn_inherits_work_item_ref_from_assignment(self) -> None:
+        resolved_refs = []
+        selection = {
+            "mode": "full",
+            "reason": "checkpoint_missing",
+            "snapshot": {
+                "work_item_context": {"title": "Bootstrap Work Item"},
+            },
+        }
+        _host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            work_item_context_resolver=lambda ref: (
+                resolved_refs.append(ref) or selection
+            ),
+            work_item_context_recorder=lambda *args, **kwargs: None,
+        )
+        sessions.session.work_item_ref = "group/app#531"
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue bootstrap work",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="ignored-bootstrap-exec",
+        )
+
+        self.assertEqual(resolved_refs, ["group/app#531"])
+        self.assertIn(
+            "Bootstrap Work Item",
+            sessions.session.requests[1][1]["developerInstructions"],
+        )
+
+    async def test_work_item_context_resolution_failure_blocks_before_runtime_turn(self) -> None:
+        def fail_resolution(_ref):
+            raise RuntimeError("canonical context store unavailable")
+
+        _host, _binding, sessions, service = self._service(
+            work_item_context_resolver=fail_resolution,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="continue safely",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="exec-context-failure",
+                work_item_ref="group/app#531",
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "work_item_context_unavailable",
+        )
+        self.assertEqual(
+            [method for method, _params in sessions.session.requests],
+            [],
+        )
+
+    async def test_checkpoint_write_failure_does_not_fail_accepted_runtime_turn(self) -> None:
+        selection = {
+            "mode": "full",
+            "reason": "checkpoint_missing",
+            "snapshot": {
+                "work_item_context": {"title": "Safe full context"},
+            },
+        }
+
+        def fail_recording(*_args, **_kwargs):
+            raise RuntimeError("checkpoint store unavailable")
+
+        _host, _binding, sessions, service = self._service(
+            work_item_context_resolver=lambda ref: selection,
+            work_item_context_recorder=fail_recording,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        result = await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue safely",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="exec-record-failure",
+            work_item_ref="group/app#531",
+        )
+
+        self.assertEqual(result["turn"]["id"], "turn-1")
+        self.assertEqual(
+            [method for method, _params in sessions.session.requests],
+            ["thread/resume", "turn/start"],
+        )
 
     async def test_idle_bootstrap_thread_request_uses_live_private_session(self) -> None:
         host, _binding, sessions, service = self._service(
@@ -486,6 +716,39 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             "bootstrap-1",
         )
 
+
+    async def test_bootstrap_turn_completion_finalizes_work_item_checkpoint_outcome(self) -> None:
+        outcomes = []
+        _host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            work_item_outcome_recorder=lambda *args: outcomes.append(args),
+        )
+        sessions.session.work_item_ref = "group/app#531"
+        service.mark_thread_active(
+            "t1",
+            turn_id="turn-1",
+            project_id="p1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        service.record_thread_activity(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t1",
+                    "turn": {"id": "turn-1"},
+                },
+            }
+        )
+
+        self.assertEqual(
+            outcomes,
+            [("group/app#531", "bootstrap-exec", "succeeded")],
+        )
 
     async def test_bootstrap_turn_dispatches_to_owning_non_codex_runtime(self) -> None:
         host = _Host()

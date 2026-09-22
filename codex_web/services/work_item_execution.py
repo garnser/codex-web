@@ -339,43 +339,86 @@ class WorkItemExecutionLifecycleService:
         return self.execution(ref)
 
     def continuation_anchor(self, ref: str) -> dict[str, Any]:
-        """Assess whether the latest checkpoint is safe to use as a delta anchor."""
-        checkpoint = self._state(ref).execution.latest_checkpoint
-        if checkpoint is None:
+        """Select the newest safe checkpoint without trusting failed attempts."""
+        execution = self._state(ref).execution
+        history = list(execution.checkpoint_history)
+        if not history and execution.latest_checkpoint is not None:
+            history = [execution.latest_checkpoint]
+        if not history:
             return {
                 "trusted": False,
                 "reason": "checkpoint_missing",
                 "checkpoint": None,
             }
 
-        missing: list[str] = []
-        if not checkpoint.delivery_proven:
-            missing.append("delivery_not_proven")
-        if not checkpoint.delivery_proof_ref:
-            missing.append("delivery_proof_missing")
-        if not checkpoint.execution_id:
-            missing.append("execution_id_missing")
-        if not checkpoint.work_item_revision:
-            missing.append("work_item_revision_missing")
-        if not checkpoint.work_item_hash:
-            missing.append("work_item_hash_missing")
-        if not checkpoint.event_watermark:
-            missing.append("event_watermark_missing")
-        if not checkpoint.delivered_context_hash:
-            missing.append("delivered_context_hash_missing")
+        def assess(
+            checkpoint: WorkItemExecutionCheckpoint,
+        ) -> tuple[bool, str, list[str]]:
+            missing: list[str] = []
+            if not checkpoint.delivery_proven:
+                missing.append("delivery_not_proven")
+            if not checkpoint.delivery_proof_ref:
+                missing.append("delivery_proof_missing")
+            if not checkpoint.execution_id:
+                missing.append("execution_id_missing")
+            if not checkpoint.work_item_revision:
+                missing.append("work_item_revision_missing")
+            if not checkpoint.work_item_hash:
+                missing.append("work_item_hash_missing")
+            if not checkpoint.event_watermark:
+                missing.append("event_watermark_missing")
+            if not checkpoint.delivered_context_hash:
+                missing.append("delivered_context_hash_missing")
+            if missing:
+                return (
+                    False,
+                    "checkpoint_provenance_incomplete",
+                    missing,
+                )
+            if (
+                checkpoint.source == "turn-execution-runtime"
+                and checkpoint.execution_outcome != "succeeded"
+            ):
+                outcome = checkpoint.execution_outcome or "unconfirmed"
+                return (
+                    False,
+                    "checkpoint_execution_untrusted",
+                    [f"execution_outcome_{outcome}"],
+                )
+            return True, "delivery_proven", []
 
-        if missing:
-            return {
-                "trusted": False,
-                "reason": "checkpoint_provenance_incomplete",
-                "blockers": missing,
-                "checkpoint": checkpoint.model_dump(mode="json"),
-            }
+        ignored: list[dict[str, Any]] = []
+        for checkpoint in reversed(history):
+            trusted, reason, blockers = assess(checkpoint)
+            if trusted:
+                return {
+                    "trusted": True,
+                    "reason": (
+                        "delivery_proven"
+                        if not ignored
+                        else "prior_trusted_checkpoint"
+                    ),
+                    "blockers": [],
+                    "checkpoint": checkpoint.model_dump(mode="json"),
+                    "ignored_checkpoints": ignored,
+                }
+            ignored.append(
+                {
+                    "checkpoint_id": checkpoint.id,
+                    "execution_id": checkpoint.execution_id,
+                    "reason": reason,
+                    "blockers": blockers,
+                }
+            )
+
+        latest = history[-1]
+        latest_assessment = ignored[0]
         return {
-            "trusted": True,
-            "reason": "delivery_proven",
-            "blockers": [],
-            "checkpoint": checkpoint.model_dump(mode="json"),
+            "trusted": False,
+            "reason": latest_assessment["reason"],
+            "blockers": latest_assessment["blockers"],
+            "checkpoint": latest.model_dump(mode="json"),
+            "ignored_checkpoints": ignored,
         }
 
     def continuation_delta(
@@ -383,9 +426,11 @@ class WorkItemExecutionLifecycleService:
         ref: str,
         *,
         max_events: int = 100,
+        event_offset: int = 0,
     ) -> dict[str, Any]:
         """Return a verified checkpoint delta or an explicit full-context fallback."""
         max_events = max(1, min(int(max_events), self.MAX_HISTORY_LIMIT))
+        event_offset = max(0, int(event_offset))
         anchor = self.continuation_anchor(ref)
         checkpoint_payload = anchor.get("checkpoint")
         if not anchor.get("trusted") or not isinstance(checkpoint_payload, dict):
@@ -459,7 +504,11 @@ class WorkItemExecutionLifecycleService:
         }
         removed_fields = sorted(set(baseline) - set(current))
         new_events = events[event_count:]
-        returned_events = new_events[:max_events]
+        returned_events = new_events[
+            event_offset:event_offset + max_events
+        ]
+        next_event_offset = event_offset + len(returned_events)
+        has_more_events = next_event_offset < len(new_events)
         baseline_bytes = len(self._stable_json(baseline).encode("utf-8"))
         delta_payload = {
             "changed_fields": changed_fields,
@@ -477,8 +526,12 @@ class WorkItemExecutionLifecycleService:
             "removed_fields": removed_fields,
             "events": delta_payload["events"],
             "event_count_since_checkpoint": len(new_events),
+            "event_offset": event_offset,
             "events_returned": len(returned_events),
-            "requires_progressive_retrieval": len(new_events) > len(returned_events),
+            "next_event_offset": (
+                next_event_offset if has_more_events else None
+            ),
+            "requires_progressive_retrieval": has_more_events,
             "current": {
                 "objective": checkpoint.objective,
                 "stage": state.current_stage,
@@ -527,13 +580,18 @@ class WorkItemExecutionLifecycleService:
             changed_files=payload.changed_files,
             next_actions=payload.next_actions,
             execution_id=payload.execution_id,
+            subject_kind=payload.subject_kind,
+            subject_ref=payload.subject_ref,
             execution_contract_version=payload.execution_contract_version,
             agent_profile_id=payload.agent_profile_id,
             agent_profile_revision=payload.agent_profile_revision,
             role_id=payload.role_id,
             provider_id=payload.provider_id,
             runtime_id=payload.runtime_id,
+            model_id=payload.model_id,
             session_ref=payload.session_ref,
+            resource_ids=payload.resource_ids,
+            base_revision=payload.base_revision,
             work_item_revision=payload.work_item_revision,
             work_item_hash=payload.work_item_hash,
             event_watermark=payload.event_watermark,
@@ -549,6 +607,8 @@ class WorkItemExecutionLifecycleService:
             context_delta_bytes=payload.context_delta_bytes,
             estimated_tokens_reused=payload.estimated_tokens_reused,
             fallback_to_full_context_reason=payload.fallback_to_full_context_reason,
+            execution_outcome=payload.execution_outcome,
+            outcome_recorded_at=payload.outcome_recorded_at,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
@@ -570,6 +630,11 @@ class WorkItemExecutionLifecycleService:
                 "changed_files": checkpoint.changed_files,
                 "next_actions": checkpoint.next_actions,
                 "execution_id": checkpoint.execution_id,
+                "subject_kind": checkpoint.subject_kind,
+                "subject_ref": checkpoint.subject_ref,
+                "model_id": checkpoint.model_id,
+                "resource_ids": checkpoint.resource_ids,
+                "base_revision": checkpoint.base_revision,
                 "work_item_revision": checkpoint.work_item_revision,
                 "work_item_hash": checkpoint.work_item_hash,
                 "event_watermark": checkpoint.event_watermark,
@@ -582,6 +647,8 @@ class WorkItemExecutionLifecycleService:
                 "context_delta_bytes": checkpoint.context_delta_bytes,
                 "estimated_tokens_reused": checkpoint.estimated_tokens_reused,
                 "fallback_to_full_context_reason": checkpoint.fallback_to_full_context_reason,
+                "execution_outcome": checkpoint.execution_outcome,
+                "outcome_recorded_at": checkpoint.outcome_recorded_at,
             },
         )
         return {
@@ -608,13 +675,18 @@ class WorkItemExecutionLifecycleService:
             "summary": checkpoint.summary,
             "objective": checkpoint.objective,
             "executionId": checkpoint.execution_id,
+            "subjectKind": checkpoint.subject_kind,
+            "subjectRef": checkpoint.subject_ref,
             "executionContractVersion": checkpoint.execution_contract_version,
             "agentProfileId": checkpoint.agent_profile_id,
             "agentProfileRevision": checkpoint.agent_profile_revision,
             "roleId": checkpoint.role_id,
             "providerId": checkpoint.provider_id,
             "runtimeId": checkpoint.runtime_id,
+            "modelId": checkpoint.model_id,
             "sessionRef": checkpoint.session_ref,
+            "resourceIds": list(checkpoint.resource_ids),
+            "baseRevision": checkpoint.base_revision,
             "workItemRevision": checkpoint.work_item_revision,
             "workItemHash": checkpoint.work_item_hash,
             "eventWatermark": checkpoint.event_watermark,
@@ -625,6 +697,8 @@ class WorkItemExecutionLifecycleService:
                 for value in checkpoint.definition_refs
             ],
             "changedFiles": list(checkpoint.changed_files),
+            "executionOutcome": checkpoint.execution_outcome,
+            "outcomeRecordedAt": checkpoint.outcome_recorded_at,
             "continuation": {
                 "mode": checkpoint.continuation_mode,
                 "reason": checkpoint.continuation_reason,
@@ -638,6 +712,155 @@ class WorkItemExecutionLifecycleService:
                     "estimatedTokensReused": checkpoint.estimated_tokens_reused,
                 },
             },
+        }
+
+    def record_continuation_delivery(
+        self,
+        ref: str,
+        execution_id: str,
+        selection: dict[str, Any],
+        delivered_context: dict[str, Any],
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist the canonical context proven delivered to one execution."""
+        snapshot = selection.get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise ValueError("continuation selection is missing canonical snapshot")
+        baseline = snapshot.get("work_item_context")
+        if not isinstance(baseline, dict):
+            raise ValueError("continuation snapshot is missing Work Item context")
+
+        provenance = dict(provenance or {})
+        metrics = selection.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        current = selection.get("current")
+        if not isinstance(current, dict):
+            current = {}
+
+        return self.checkpoint(
+            ref,
+            WorkItemCheckpointCreate(
+                source="turn-execution-runtime",
+                reason="provider accepted canonical Work Item context",
+                summary="Canonical Work Item context delivered to execution.",
+                objective=current.get("objective"),
+                execution_id=execution_id,
+                subject_kind="work_item",
+                subject_ref=ref,
+                execution_contract_version=provenance.get(
+                    "execution_contract_version"
+                ),
+                agent_profile_id=provenance.get("agent_profile_id"),
+                agent_profile_revision=provenance.get(
+                    "agent_profile_revision"
+                ),
+                role_id=provenance.get("role_id"),
+                provider_id=provenance.get("provider_id"),
+                runtime_id=provenance.get("runtime_id"),
+                model_id=provenance.get("model_id"),
+                session_ref=provenance.get("session_ref"),
+                resource_ids=list(provenance.get("resource_ids") or []),
+                base_revision=provenance.get("base_revision"),
+                work_item_revision=snapshot.get("work_item_revision"),
+                work_item_hash=snapshot.get("work_item_hash"),
+                event_watermark=snapshot.get("event_watermark"),
+                delivered_context_hash=self._hash_value(delivered_context),
+                delivery_proven=True,
+                delivery_proof_ref=f"turn-start:{execution_id}",
+                definition_refs=list(provenance.get("definition_refs") or []),
+                delivered_work_item_context=baseline,
+                continuation_mode=str(selection.get("mode") or "full"),
+                continuation_reason=str(
+                    selection.get("reason") or "canonical_context"
+                ),
+                continuation_checkpoint_id=selection.get("checkpoint_id"),
+                context_baseline_bytes=metrics.get(
+                    "baseline_context_bytes"
+                ),
+                context_delta_bytes=metrics.get("delta_context_bytes"),
+                estimated_tokens_reused=metrics.get(
+                    "estimated_tokens_reused"
+                ),
+                fallback_to_full_context_reason=(
+                    str(selection.get("reason"))
+                    if selection.get("mode") == "full"
+                    and selection.get("reason")
+                    else None
+                ),
+                execution_outcome="pending",
+            ),
+        )
+
+    def record_continuation_outcome(
+        self,
+        ref: str,
+        execution_id: str,
+        outcome: str,
+    ) -> dict[str, Any] | None:
+        """Finalize trust eligibility for a runtime-created context checkpoint."""
+        normalized = str(outcome or "").strip().casefold()
+        if normalized not in {
+            "succeeded",
+            "failed",
+            "lost",
+            "poisoned",
+            "cancelled",
+            "ambiguous",
+        }:
+            raise ValueError("unsupported continuation execution outcome")
+
+        state = self._state(ref)
+        execution = state.execution
+        target = next(
+            (
+                checkpoint
+                for checkpoint in reversed(execution.checkpoint_history)
+                if checkpoint.execution_id == execution_id
+                and checkpoint.source == "turn-execution-runtime"
+            ),
+            None,
+        )
+        if target is None:
+            return None
+
+        recorded_at = time.time()
+        updated = target.model_copy(
+            update={
+                "execution_outcome": normalized,
+                "outcome_recorded_at": recorded_at,
+            }
+        )
+        execution.checkpoint_history = [
+            updated if checkpoint.id == target.id else checkpoint
+            for checkpoint in execution.checkpoint_history
+        ]
+        if (
+            execution.latest_checkpoint is not None
+            and execution.latest_checkpoint.id == target.id
+        ):
+            execution.latest_checkpoint = updated
+        state.execution = execution
+        state = self._save(state)
+        self._event(
+            state,
+            "execution_checkpoint_outcome_recorded",
+            actor=None,
+            source="turn-execution-runtime",
+            reason=f"execution {normalized}",
+            payload={
+                "checkpoint_id": updated.id,
+                "execution_id": execution_id,
+                "execution_outcome": normalized,
+                "outcome_recorded_at": recorded_at,
+                "continuation_eligible": normalized == "succeeded",
+            },
+        )
+        return {
+            "ref": ref,
+            "checkpoint": updated.model_dump(mode="json"),
+            "continuation_eligible": normalized == "succeeded",
         }
 
     def record_usage(self, ref: str, payload: WorkItemUsageRecord) -> dict[str, Any]:

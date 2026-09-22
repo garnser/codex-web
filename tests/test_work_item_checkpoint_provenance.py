@@ -181,8 +181,19 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
 
         self.assertEqual(delta["mode"], "delta")
         self.assertGreaterEqual(delta["event_count_since_checkpoint"], 2)
+        self.assertEqual(delta["event_offset"], 0)
         self.assertEqual(delta["events_returned"], 1)
+        self.assertEqual(delta["next_event_offset"], 1)
         self.assertTrue(delta["requires_progressive_retrieval"])
+
+        next_page = self.service.continuation_delta(
+            self.ref,
+            max_events=1,
+            event_offset=delta["next_event_offset"],
+        )
+        self.assertEqual(next_page["event_offset"], 1)
+        self.assertEqual(next_page["events_returned"], 1)
+        self.assertNotEqual(next_page["events"], delta["events"])
 
     def test_corrupted_or_stale_event_watermark_falls_back_to_full_context(self) -> None:
         self.service.update(
@@ -257,6 +268,167 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
         self.assertEqual(
             run_context["continuation"]["metrics"]["estimatedTokensReused"],
             896,
+        )
+
+    def test_runtime_delivery_records_current_snapshot_as_next_trusted_anchor(self) -> None:
+        self.host.states[self.ref].title = "Current canonical title"
+        selection = self.service.continuation_delta(self.ref)
+        self.assertEqual(selection["mode"], "full")
+
+        result = self.service.record_continuation_delivery(
+            self.ref,
+            "exec-runtime-delivery",
+            selection,
+            {
+                "mode": "full",
+                "reason": selection["reason"],
+                "work_item_context": selection["snapshot"]["work_item_context"],
+            },
+            provenance={
+                "execution_contract_version": "work-item/1.4",
+                "provider_id": "openai",
+                "runtime_id": "codex",
+                "session_ref": "thread-531",
+            },
+        )
+
+        checkpoint = result["checkpoint"]
+        self.assertTrue(checkpoint["delivery_proven"])
+        self.assertEqual(checkpoint["execution_id"], "exec-runtime-delivery")
+        self.assertEqual(checkpoint["continuation_mode"], "full")
+        self.assertEqual(
+            checkpoint["fallback_to_full_context_reason"],
+            selection["reason"],
+        )
+        self.assertEqual(
+            checkpoint["delivered_work_item_context"]["title"],
+            "Current canonical title",
+        )
+
+        pending = self.service.continuation_anchor(self.ref)
+        self.assertFalse(pending["trusted"])
+        self.assertEqual(
+            pending["reason"],
+            "checkpoint_execution_untrusted",
+        )
+        self.assertIn(
+            "execution_outcome_pending",
+            pending["blockers"],
+        )
+
+        outcome = self.service.record_continuation_outcome(
+            self.ref,
+            "exec-runtime-delivery",
+            "succeeded",
+        )
+        self.assertIsNotNone(outcome)
+        assert outcome is not None
+        self.assertTrue(outcome["continuation_eligible"])
+
+        anchor = self.service.continuation_anchor(self.ref)
+        self.assertTrue(anchor["trusted"])
+        self.assertEqual(
+            anchor["checkpoint"]["execution_id"],
+            "exec-runtime-delivery",
+        )
+        self.assertEqual(
+            anchor["checkpoint"]["execution_outcome"],
+            "succeeded",
+        )
+
+    def test_failed_lost_and_poisoned_runtime_checkpoints_never_anchor(self) -> None:
+        for outcome in ("failed", "lost", "poisoned", "ambiguous"):
+            with self.subTest(outcome=outcome):
+                self.host.states[self.ref].execution.latest_checkpoint = None
+                self.host.states[self.ref].execution.checkpoint_history = []
+                selection = self.service.continuation_delta(self.ref)
+                self.service.record_continuation_delivery(
+                    self.ref,
+                    f"exec-{outcome}",
+                    selection,
+                    {
+                        "mode": "full",
+                        "reason": selection["reason"],
+                        "work_item_context": selection["snapshot"][
+                            "work_item_context"
+                        ],
+                    },
+                )
+                self.service.record_continuation_outcome(
+                    self.ref,
+                    f"exec-{outcome}",
+                    outcome,
+                )
+
+                anchor = self.service.continuation_anchor(self.ref)
+                self.assertFalse(anchor["trusted"])
+                self.assertEqual(
+                    anchor["reason"],
+                    "checkpoint_execution_untrusted",
+                )
+                self.assertIn(
+                    f"execution_outcome_{outcome}",
+                    anchor["blockers"],
+                )
+
+    def test_failed_runtime_attempt_reuses_prior_successful_anchor(self) -> None:
+        first = self.service.continuation_delta(self.ref)
+        self.service.record_continuation_delivery(
+            self.ref,
+            "exec-success",
+            first,
+            {
+                "mode": "full",
+                "reason": first["reason"],
+                "work_item_context": first["snapshot"]["work_item_context"],
+            },
+        )
+        self.service.record_continuation_outcome(
+            self.ref,
+            "exec-success",
+            "succeeded",
+        )
+
+        self.host.states[self.ref].title = "Changed after successful anchor"
+        failed_selection = self.service.continuation_delta(self.ref)
+        self.service.record_continuation_delivery(
+            self.ref,
+            "exec-poisoned",
+            failed_selection,
+            {
+                "mode": failed_selection["mode"],
+                "reason": failed_selection["reason"],
+                "changed_fields": failed_selection.get("changed_fields", {}),
+                "events": failed_selection.get("events", []),
+            },
+        )
+        self.service.record_continuation_outcome(
+            self.ref,
+            "exec-poisoned",
+            "poisoned",
+        )
+
+        anchor = self.service.continuation_anchor(self.ref)
+        self.assertTrue(anchor["trusted"])
+        self.assertEqual(anchor["reason"], "prior_trusted_checkpoint")
+        self.assertEqual(
+            anchor["checkpoint"]["execution_id"],
+            "exec-success",
+        )
+        self.assertEqual(
+            anchor["ignored_checkpoints"][0]["execution_id"],
+            "exec-poisoned",
+        )
+        self.assertIn(
+            "execution_outcome_poisoned",
+            anchor["ignored_checkpoints"][0]["blockers"],
+        )
+
+        resumed = self.service.continuation_delta(self.ref)
+        self.assertEqual(resumed["mode"], "delta")
+        self.assertEqual(
+            resumed["changed_fields"]["title"],
+            "Changed after successful anchor",
         )
 
     def test_proven_checkpoint_without_verified_baseline_does_not_claim_delta(self) -> None:
