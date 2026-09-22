@@ -93,6 +93,19 @@ EXECUTION_WORKER_MIGRATIONS.register(
     },
 )
 
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.5",
+    "1.6",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.6",
+        "assignments": [
+            {**dict(item), "failure": dict(item).get("failure")}
+            for item in payload.get("assignments", [])
+        ],
+    },
+)
+
 
 class ExecutionWorkerStore:
     namespace = "execution_workers"
