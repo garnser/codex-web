@@ -303,6 +303,24 @@ class WorkItemRunProjectionTests(unittest.TestCase):
                     verifications=[verification],
                 )
             ),
+            work_item_execution=SimpleNamespace(
+                run_context=lambda ref, execution_id: {
+                    "id": "checkpoint-2",
+                    "executionId": execution_id,
+                    "deliveryProven": True,
+                    "continuation": {
+                        "mode": "delta",
+                        "reason": "verified_checkpoint_delta",
+                        "checkpointId": "checkpoint-1",
+                        "fallbackToFullContextReason": None,
+                        "metrics": {
+                            "baselineContextBytes": 4096,
+                            "deltaContextBytes": 512,
+                            "estimatedTokensReused": 896,
+                        },
+                    },
+                }
+            ),
         )
 
         payload = service.get_run(
@@ -317,7 +335,17 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(payload["artifacts"][0]["id"], "artifact-1")
         self.assertEqual(payload["evidence"][0]["result"], "pass")
         self.assertEqual(payload["verifications"][0]["result"], "verified")
-        self.assertIsNone(payload["contextCheckpoint"])
+        self.assertEqual(payload["contextCheckpoint"]["id"], "checkpoint-2")
+        self.assertEqual(
+            payload["contextCheckpoint"]["continuation"]["mode"],
+            "delta",
+        )
+        self.assertEqual(
+            payload["contextCheckpoint"]["continuation"]["metrics"][
+                "estimatedTokensReused"
+            ],
+            896,
+        )
 
 
 class WorkItemRunUiContractTests(unittest.TestCase):

@@ -217,6 +217,48 @@ class WorkItemCheckpointProvenanceTests(unittest.TestCase):
         self.assertEqual(delta["reason"], "checkpoint_schema_incompatible")
         self.assertEqual(delta["checkpoint_schema_version"], "0.9")
 
+    def test_checkpoint_records_continuation_usage_for_run_inspection(self) -> None:
+        snapshot = self.service.continuation_snapshot(self.ref)
+        result = self.service.checkpoint(
+            self.ref,
+            WorkItemCheckpointCreate(
+                summary="Run completed with delta context.",
+                execution_id="exec-delta-observed",
+                work_item_revision=snapshot["work_item_revision"],
+                work_item_hash=snapshot["work_item_hash"],
+                event_watermark=snapshot["event_watermark"],
+                delivered_context_hash="sha256:delivered",
+                delivery_proven=True,
+                delivery_proof_ref="receipt-delta-observed",
+                continuation_mode="delta",
+                continuation_reason="verified_checkpoint_delta",
+                continuation_checkpoint_id="checkpoint-previous",
+                context_baseline_bytes=4096,
+                context_delta_bytes=512,
+                estimated_tokens_reused=896,
+            ),
+        )
+
+        self.assertEqual(
+            result["checkpoint"]["continuation_mode"],
+            "delta",
+        )
+        run_context = self.service.run_context(
+            self.ref,
+            "exec-delta-observed",
+        )
+        self.assertIsNotNone(run_context)
+        assert run_context is not None
+        self.assertEqual(run_context["continuation"]["mode"], "delta")
+        self.assertEqual(
+            run_context["continuation"]["checkpointId"],
+            "checkpoint-previous",
+        )
+        self.assertEqual(
+            run_context["continuation"]["metrics"]["estimatedTokensReused"],
+            896,
+        )
+
     def test_proven_checkpoint_without_verified_baseline_does_not_claim_delta(self) -> None:
         self.service.checkpoint(
             self.ref,

@@ -542,6 +542,13 @@ class WorkItemExecutionLifecycleService:
             delivery_proof_ref=payload.delivery_proof_ref,
             definition_refs=payload.definition_refs,
             delivered_work_item_context=delivered_baseline,
+            continuation_mode=payload.continuation_mode,
+            continuation_reason=payload.continuation_reason,
+            continuation_checkpoint_id=payload.continuation_checkpoint_id,
+            context_baseline_bytes=payload.context_baseline_bytes,
+            context_delta_bytes=payload.context_delta_bytes,
+            estimated_tokens_reused=payload.estimated_tokens_reused,
+            fallback_to_full_context_reason=payload.fallback_to_full_context_reason,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
@@ -568,11 +575,69 @@ class WorkItemExecutionLifecycleService:
                 "event_watermark": checkpoint.event_watermark,
                 "delivery_proven": checkpoint.delivery_proven,
                 "delivery_proof_ref": checkpoint.delivery_proof_ref,
+                "continuation_mode": checkpoint.continuation_mode,
+                "continuation_reason": checkpoint.continuation_reason,
+                "continuation_checkpoint_id": checkpoint.continuation_checkpoint_id,
+                "context_baseline_bytes": checkpoint.context_baseline_bytes,
+                "context_delta_bytes": checkpoint.context_delta_bytes,
+                "estimated_tokens_reused": checkpoint.estimated_tokens_reused,
+                "fallback_to_full_context_reason": checkpoint.fallback_to_full_context_reason,
             },
         )
         return {
             "ref": ref,
             "checkpoint": checkpoint.model_dump(mode="json"),
+        }
+
+    def run_context(self, ref: str, execution_id: str) -> dict[str, Any] | None:
+        """Return bounded checkpoint/continuation provenance for one execution."""
+        state = self._state(ref)
+        matches = [
+            checkpoint
+            for checkpoint in state.execution.checkpoint_history
+            if checkpoint.execution_id == execution_id
+        ]
+        if not matches:
+            return None
+        checkpoint = max(matches, key=lambda value: value.sequence)
+        return {
+            "id": checkpoint.id,
+            "schemaVersion": checkpoint.schema_version,
+            "sequence": checkpoint.sequence,
+            "createdAt": checkpoint.created_at,
+            "summary": checkpoint.summary,
+            "objective": checkpoint.objective,
+            "executionId": checkpoint.execution_id,
+            "executionContractVersion": checkpoint.execution_contract_version,
+            "agentProfileId": checkpoint.agent_profile_id,
+            "agentProfileRevision": checkpoint.agent_profile_revision,
+            "roleId": checkpoint.role_id,
+            "providerId": checkpoint.provider_id,
+            "runtimeId": checkpoint.runtime_id,
+            "sessionRef": checkpoint.session_ref,
+            "workItemRevision": checkpoint.work_item_revision,
+            "workItemHash": checkpoint.work_item_hash,
+            "eventWatermark": checkpoint.event_watermark,
+            "deliveryProven": checkpoint.delivery_proven,
+            "deliveryProofRef": checkpoint.delivery_proof_ref,
+            "definitionRefs": [
+                value.model_dump(mode="json")
+                for value in checkpoint.definition_refs
+            ],
+            "changedFiles": list(checkpoint.changed_files),
+            "continuation": {
+                "mode": checkpoint.continuation_mode,
+                "reason": checkpoint.continuation_reason,
+                "checkpointId": checkpoint.continuation_checkpoint_id,
+                "fallbackToFullContextReason": (
+                    checkpoint.fallback_to_full_context_reason
+                ),
+                "metrics": {
+                    "baselineContextBytes": checkpoint.context_baseline_bytes,
+                    "deltaContextBytes": checkpoint.context_delta_bytes,
+                    "estimatedTokensReused": checkpoint.estimated_tokens_reused,
+                },
+            },
         }
 
     def record_usage(self, ref: str, payload: WorkItemUsageRecord) -> dict[str, Any]:

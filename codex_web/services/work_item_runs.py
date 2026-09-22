@@ -45,6 +45,7 @@ class WorkItemRunProjectionService:
         action_intents: Any | None = None,
         approvals: Any | None = None,
         attention: Any | None = None,
+        work_item_execution: Any | None = None,
     ) -> None:
         self.execution_workers = execution_workers
         self.runtime_usage = runtime_usage
@@ -52,6 +53,7 @@ class WorkItemRunProjectionService:
         self.action_intents = action_intents
         self.approvals = approvals
         self.attention = attention
+        self.work_item_execution = work_item_execution
 
     @staticmethod
     def _value(value: Any) -> Any:
@@ -554,6 +556,18 @@ class WorkItemRunProjectionService:
             and value.source.object_id in object_ids
         ]
 
+    def _context_checkpoint(
+        self,
+        ref: str,
+        execution_id: str,
+    ) -> dict[str, Any] | None:
+        if self.work_item_execution is None:
+            return None
+        try:
+            return self.work_item_execution.run_context(ref, execution_id)
+        except Exception:
+            return None
+
     @staticmethod
     def _artifact_view(value: Any) -> dict[str, Any]:
         return {
@@ -673,10 +687,10 @@ class WorkItemRunProjectionService:
                 "actionVerificationIds": action_verifications,
                 "approvals": self._approvals(item),
                 "attention": self._attention(item),
-                # #531 owns trustworthy continuation checkpoints. Do not
-                # manufacture per-run checkpoint provenance from the legacy
-                # WorkItem-level checkpoint field.
-                "contextCheckpoint": None,
+                "contextCheckpoint": self._context_checkpoint(
+                    ref,
+                    item.execution_id,
+                ),
             }
         )
         return {"ref": ref, "run": result}

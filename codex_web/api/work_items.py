@@ -44,6 +44,8 @@ def build_work_items_router(
         service.state_machine,
         dependencies=service.work_items,
     )
+    if runs is not None:
+        runs.work_item_execution = execution
     operator = WorkItemOperatorService(service)
 
     def require_item_scope(ref: str, request: Request) -> None:
