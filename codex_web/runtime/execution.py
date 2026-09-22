@@ -1496,6 +1496,23 @@ class TurnExecutionService:
                     and self.work_item_context_recorder is not None
                 ):
                     profile = getattr(assignment, "agent_profile", None)
+                    definition_refs = []
+                    for definition_ref in (
+                        getattr(
+                            assignment,
+                            "execution_profile_definition",
+                            None,
+                        ),
+                        getattr(profile, "instructions_ref", None),
+                        *(getattr(profile, "skill_refs", ()) or ()),
+                        getattr(profile, "role_definition_ref", None),
+                        getattr(profile, "authority_definition_ref", None),
+                    ):
+                        if (
+                            definition_ref is not None
+                            and definition_ref not in definition_refs
+                        ):
+                            definition_refs.append(definition_ref)
                     with contextlib.suppress(Exception):
                         self.work_item_context_recorder(
                             effective_work_item_ref,
@@ -1529,7 +1546,20 @@ class TurnExecutionService:
                                     if runtime_binding is not None
                                     else None
                                 ),
+                                "model_id": (
+                                    effective_model
+                                    or getattr(profile, "model_id", None)
+                                ),
                                 "session_ref": str(native_session_id),
+                                "resource_ids": list(
+                                    getattr(assignment, "resource_ids", ()) or ()
+                                ),
+                                "base_revision": getattr(
+                                    assignment,
+                                    "base_revision",
+                                    None,
+                                ),
+                                "definition_refs": definition_refs,
                             },
                         )
             except Exception as exc:
