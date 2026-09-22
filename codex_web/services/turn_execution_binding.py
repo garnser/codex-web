@@ -486,6 +486,7 @@ class TurnExecutionBindingService:
         project: Project,
         subject: ExecutionSubject,
         runtime_binding: ExecutionRuntimeBinding | None,
+        credential_config_key: str | None = None,
     ) -> str:
         if runtime_binding is None:
             raise TurnExecutionBindingError(
@@ -503,7 +504,7 @@ class TurnExecutionBindingService:
                     "remediation_route": "/api/configuration",
                 },
             )
-        config_key = runtime_credential_config_key(
+        config_key = credential_config_key or runtime_credential_config_key(
             runtime_binding,
             self.runtime_credential_configs,
         )
@@ -820,6 +821,7 @@ class TurnExecutionBindingService:
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        credential_config_key: str | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -1097,7 +1099,12 @@ class TurnExecutionBindingService:
                 blocker=blocker,
             )
 
-        secret_ref = self._secret_ref(project, subject, effective_runtime_binding)
+        secret_ref = self._secret_ref(
+            project,
+            subject,
+            effective_runtime_binding,
+            credential_config_key=credential_config_key,
+        )
         lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
             wall_seconds=session_seconds
@@ -1303,6 +1310,7 @@ class TurnExecutionBindingService:
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        credential_config_key: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -1328,6 +1336,7 @@ class TurnExecutionBindingService:
             orchestration_only=orchestration_only,
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
+            credential_config_key=credential_config_key,
         )
 
     def prepare_bootstrap(
@@ -1348,6 +1357,7 @@ class TurnExecutionBindingService:
         routing_repository_id: str | None = None,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        credential_config_key: str | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
