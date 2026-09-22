@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.definitions import DefinitionReference
@@ -46,6 +48,7 @@ class WorkItemExecutionCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    schema_version: str = "1.0"
     id: str = Field(min_length=1)
     sequence: int = Field(ge=1)
     created_at: float
@@ -77,6 +80,7 @@ class WorkItemExecutionCheckpoint(BaseModel):
     delivery_proven: bool = False
     delivery_proof_ref: str | None = None
     definition_refs: list[DefinitionReference] = Field(default_factory=list)
+    delivered_work_item_context: dict[str, Any] | None = None
 
 
 class WorkItemUsageAttribution(BaseModel):
@@ -135,6 +139,7 @@ class WorkItemCheckpointCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    schema_version: str = "1.0"
     actor: str | None = None
     source: str | None = None
     reason: str | None = None
@@ -161,6 +166,7 @@ class WorkItemCheckpointCreate(BaseModel):
     delivery_proven: bool = False
     delivery_proof_ref: str | None = None
     definition_refs: list[DefinitionReference] = Field(default_factory=list)
+    delivered_work_item_context: dict[str, Any] | None = None
 
 
 class WorkItemUsageRecord(BaseModel):

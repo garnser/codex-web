@@ -288,6 +288,23 @@ def build_work_items_router(
         require_item_scope(ref, request)
         return execution.update(ref, payload)
 
+    @router.get("/api/work-items/{ref:path}/continuation-snapshot")
+    async def get_work_item_continuation_snapshot(
+        ref: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        require_item_scope(ref, request)
+        return execution.continuation_snapshot(ref)
+
+    @router.get("/api/work-items/{ref:path}/continuation-delta")
+    async def get_work_item_continuation_delta(
+        ref: str,
+        request: Request,
+        max_events: int = 100,
+    ) -> dict[str, Any]:
+        require_item_scope(ref, request)
+        return execution.continuation_delta(ref, max_events=max_events)
+
     @router.post("/api/work-items/{ref:path}/checkpoints")
     async def create_work_item_checkpoint(
         ref: str,

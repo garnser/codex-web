@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
@@ -76,9 +77,7 @@ class WorkItemExecutionLifecycleService:
             )
         )
 
-    def history(self, ref: str, *, limit: int = 100) -> dict[str, Any]:
-        self._state(ref)
-        limit = max(1, min(int(limit), self.MAX_HISTORY_LIMIT))
+    def _events_for_ref(self, ref: str) -> list[WorkItemEvent]:
         events: list[WorkItemEvent] = []
         path = self.dependencies.events_file
         if path.exists():
@@ -93,7 +92,106 @@ class WorkItemExecutionLifecycleService:
                         if event.ref == ref:
                             events.append(event)
             except OSError:
-                events = []
+                return []
+        return events
+
+    @staticmethod
+    def _stable_json(value: Any) -> str:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+
+    @classmethod
+    def _hash_value(cls, value: Any) -> str:
+        digest = hashlib.sha256(cls._stable_json(value).encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
+
+    @staticmethod
+    def _work_item_context(state: WorkItemState) -> dict[str, Any]:
+        """Bounded task context; volatile timestamps and execution bookkeeping are excluded."""
+        return {
+            "ref": state.ref,
+            "project_id": state.project_id,
+            "goal_id": state.goal_id,
+            "decision_id": state.decision_id,
+            "originating_action_intent_id": state.originating_action_intent_id,
+            "resource_ids": sorted(set(state.resource_ids)),
+            "project_path": state.project_path,
+            "source_identity": (
+                state.source_identity.model_dump(mode="json")
+                if state.source_identity is not None
+                else None
+            ),
+            "title": state.title,
+            "url": state.url,
+            "kind": state.kind,
+            "priority": state.priority,
+            "current_owner": state.current_owner,
+            "current_stage": state.current_stage,
+            "terminal_outcome": state.terminal_outcome,
+            "implementation_owner": state.implementation_owner,
+            "validation_owner": state.validation_owner,
+            "release_owner": state.release_owner,
+            "artifact_state": state.artifact_state,
+            "handoff": (
+                state.handoff.model_dump(mode="json")
+                if state.handoff is not None
+                else None
+            ),
+            "blocker": state.blocker,
+            "blocking_findings": list(state.blocking_findings),
+            "next_action": state.next_action,
+            "next_owner": state.next_owner,
+            "release_gate": state.release_gate,
+            "labels": list(state.labels),
+            "mr_refs": list(state.mr_refs),
+            "notes": list(state.notes),
+            "closed_at": state.closed_at,
+        }
+
+    @classmethod
+    def _event_watermark(cls, events: list[WorkItemEvent]) -> str:
+        payload = [event.model_dump(mode="json") for event in events]
+        return f"wi-events-v1:{len(events)}:{cls._hash_value(payload).split(':', 1)[1]}"
+
+    @classmethod
+    def _parse_event_watermark(cls, value: str | None) -> tuple[int, str] | None:
+        if not value:
+            return None
+        parts = value.split(":")
+        if len(parts) != 3 or parts[0] != "wi-events-v1":
+            return None
+        try:
+            count = int(parts[1])
+        except ValueError:
+            return None
+        if count < 0 or len(parts[2]) != 64:
+            return None
+        return count, parts[2]
+
+    def continuation_snapshot(self, ref: str) -> dict[str, Any]:
+        state = self._state(ref)
+        context = self._work_item_context(state)
+        events = self._events_for_ref(ref)
+        context_hash = self._hash_value(context)
+        return {
+            "ref": ref,
+            "schema_version": "1.0",
+            "work_item_context": context,
+            "work_item_hash": context_hash,
+            "work_item_revision": f"work-item-context-v1:{context_hash.split(':', 1)[1][:16]}",
+            "event_watermark": self._event_watermark(events),
+            "event_count": len(events),
+        }
+
+    def history(self, ref: str, *, limit: int = 100) -> dict[str, Any]:
+        self._state(ref)
+        limit = max(1, min(int(limit), self.MAX_HISTORY_LIMIT))
+        events = self._events_for_ref(ref)
         selected = events[-limit:]
         return {
             "ref": ref,
@@ -280,15 +378,141 @@ class WorkItemExecutionLifecycleService:
             "checkpoint": checkpoint.model_dump(mode="json"),
         }
 
+    def continuation_delta(
+        self,
+        ref: str,
+        *,
+        max_events: int = 100,
+    ) -> dict[str, Any]:
+        """Return a verified checkpoint delta or an explicit full-context fallback."""
+        max_events = max(1, min(int(max_events), self.MAX_HISTORY_LIMIT))
+        anchor = self.continuation_anchor(ref)
+        checkpoint_payload = anchor.get("checkpoint")
+        if not anchor.get("trusted") or not isinstance(checkpoint_payload, dict):
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": anchor.get("reason", "checkpoint_untrusted"),
+                "blockers": anchor.get("blockers", []),
+                "snapshot": self.continuation_snapshot(ref),
+            }
+
+        checkpoint = WorkItemExecutionCheckpoint.model_validate(checkpoint_payload)
+        if checkpoint.schema_version != "1.0":
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "checkpoint_schema_incompatible",
+                "checkpoint_schema_version": checkpoint.schema_version,
+                "snapshot": self.continuation_snapshot(ref),
+            }
+
+        baseline = checkpoint.delivered_work_item_context
+        if not isinstance(baseline, dict):
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "checkpoint_baseline_missing",
+                "snapshot": self.continuation_snapshot(ref),
+            }
+        if self._hash_value(baseline) != checkpoint.work_item_hash:
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "checkpoint_baseline_corrupt",
+                "snapshot": self.continuation_snapshot(ref),
+            }
+
+        events = self._events_for_ref(ref)
+        parsed = self._parse_event_watermark(checkpoint.event_watermark)
+        if parsed is None:
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "event_watermark_invalid",
+                "snapshot": self.continuation_snapshot(ref),
+            }
+        event_count, expected_digest = parsed
+        if event_count > len(events):
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "event_watermark_ahead",
+                "snapshot": self.continuation_snapshot(ref),
+            }
+        prefix = events[:event_count]
+        prefix_digest = self._event_watermark(prefix).rsplit(":", 1)[1]
+        if prefix_digest != expected_digest:
+            return {
+                "ref": ref,
+                "mode": "full",
+                "reason": "event_watermark_stale_or_corrupt",
+                "snapshot": self.continuation_snapshot(ref),
+            }
+
+        state = self._state(ref)
+        current = self._work_item_context(state)
+        changed_fields = {
+            key: value
+            for key, value in current.items()
+            if baseline.get(key) != value
+        }
+        removed_fields = sorted(set(baseline) - set(current))
+        new_events = events[event_count:]
+        returned_events = new_events[:max_events]
+        baseline_bytes = len(self._stable_json(baseline).encode("utf-8"))
+        delta_payload = {
+            "changed_fields": changed_fields,
+            "removed_fields": removed_fields,
+            "events": [event.model_dump(mode="json") for event in returned_events],
+        }
+        delta_bytes = len(self._stable_json(delta_payload).encode("utf-8"))
+        return {
+            "ref": ref,
+            "mode": "delta",
+            "reason": "verified_checkpoint_delta",
+            "checkpoint_id": checkpoint.id,
+            "checkpoint_age_seconds": max(0.0, time.time() - checkpoint.created_at),
+            "changed_fields": changed_fields,
+            "removed_fields": removed_fields,
+            "events": delta_payload["events"],
+            "event_count_since_checkpoint": len(new_events),
+            "events_returned": len(returned_events),
+            "requires_progressive_retrieval": len(new_events) > len(returned_events),
+            "current": {
+                "objective": checkpoint.objective,
+                "stage": state.current_stage,
+                "blocker": state.blocker,
+                "blocking_findings": list(state.blocking_findings),
+                "next_action": state.next_action,
+            },
+            "metrics": {
+                "baseline_context_bytes": baseline_bytes,
+                "delta_context_bytes": delta_bytes,
+                "estimated_tokens_reused": max(0, (baseline_bytes - delta_bytes) // 4),
+            },
+            "snapshot": self.continuation_snapshot(ref),
+        }
+
     def checkpoint(self, ref: str, payload: WorkItemCheckpointCreate) -> dict[str, Any]:
         state = self._state(ref)
         execution = state.execution
+        snapshot = self.continuation_snapshot(ref)
+        delivered_baseline = payload.delivered_work_item_context
+        if (
+            delivered_baseline is None
+            and payload.delivery_proven
+            and payload.work_item_hash == snapshot["work_item_hash"]
+            and payload.event_watermark == snapshot["event_watermark"]
+        ):
+            delivered_baseline = snapshot["work_item_context"]
         sequence = (
             execution.latest_checkpoint.sequence + 1
             if execution.latest_checkpoint is not None
             else 1
         )
         checkpoint = WorkItemExecutionCheckpoint(
+            schema_version=payload.schema_version,
             id=f"checkpoint-{sequence}",
             sequence=sequence,
             created_at=time.time(),
@@ -317,6 +541,7 @@ class WorkItemExecutionLifecycleService:
             delivery_proven=payload.delivery_proven,
             delivery_proof_ref=payload.delivery_proof_ref,
             definition_refs=payload.definition_refs,
+            delivered_work_item_context=delivered_baseline,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
