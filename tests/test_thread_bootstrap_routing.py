@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings
@@ -193,8 +194,9 @@ class _BootstrapBindings:
         return SimpleNamespace(**kwargs)
 
 class _RoutingService:
-    def __init__(self, binding) -> None:
+    def __init__(self, binding, *, agent_profile=None) -> None:
         self.binding = binding
+        self.agent_profile = agent_profile
         self.calls = []
 
     async def route(self, request, *, actor):
@@ -202,8 +204,26 @@ class _RoutingService:
         return SimpleNamespace(
             selected_runtime=SimpleNamespace(
                 execution_binding=lambda: self.binding
-            )
+            ),
+            agent_profile=self.agent_profile,
         )
+
+
+class _AgentProfiles:
+    def __init__(self, profile) -> None:
+        self.profile = profile
+        self.calls = []
+
+    def resolve_for_execution(self, profile_id, *, actor, project_id, revision=None):
+        self.calls.append(
+            {
+                "profile_id": profile_id,
+                "actor": actor,
+                "project_id": project_id,
+                "revision": revision,
+            }
+        )
+        return self.profile, SimpleNamespace(allowed=True)
 
 
 class _AlternateAdapter:
@@ -311,6 +331,62 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bound["execution_id"], planner.calls[0]["execution_id"])
         self.assertEqual(host.settings[0][0], "thread-created")
         self.assertEqual(host.events[-1]["type"], "thread_bootstrap_bound")
+
+    async def test_create_binds_exact_agent_profile_to_bootstrap(self) -> None:
+        host = _Host()
+        binding_service = _BindingService()
+        manager = _SessionManager(_Session())
+        bindings = _BootstrapBindings()
+        actor = SimpleNamespace(identity_id="human-a")
+        profile = SimpleNamespace(
+            revision=7,
+            sandbox_requirement="workspace-write",
+            execution_profile_id=None,
+        )
+        execution_binding = AgentProfileExecutionBinding(
+            profile_id="coder",
+            profile_revision=7,
+            profile_record_id="agent-profile-rev-7",
+        )
+        routing = _RoutingService(
+            None,
+            agent_profile=execution_binding,
+        )
+        profiles = _AgentProfiles(profile)
+        service = _thread_service(
+            host,
+            binding_service=binding_service,
+            session_manager=manager,
+            bootstrap_bindings=bindings,
+            control_actor=SimpleNamespace(identity_id="control"),
+            agent_profiles=profiles,
+            routing_service=routing,
+        )
+
+        response = await service.create(
+            project_id="p1",
+            actor=actor,
+            agent_profile_id="coder",
+            agent_profile_revision=7,
+        )
+
+        self.assertEqual(response["thread"]["id"], "thread-created")
+        self.assertEqual(len(profiles.calls), 1)
+        self.assertEqual(profiles.calls[0]["profile_id"], "coder")
+        self.assertIs(profiles.calls[0]["actor"], actor)
+        self.assertEqual(len(routing.calls), 1)
+        routed_request, routed_actor = routing.calls[0]
+        self.assertEqual(routed_request.agent_profile_id, "coder")
+        self.assertEqual(routed_request.agent_profile_revision, 7)
+        self.assertIs(routed_actor, actor)
+        self.assertEqual(
+            binding_service.calls[0]["agent_profile"],
+            execution_binding,
+        )
+        self.assertEqual(
+            host.events[-1]["agent_profile"]["profile_id"],
+            "coder",
+        )
 
     async def test_create_passes_and_persists_repository_target(self) -> None:
         host, planner, _manager, _bindings, service = self._service()

@@ -2582,6 +2582,7 @@ thread_service = ThreadService(
     bootstrap_bindings=thread_bootstrap_binding_service,
     control_actor=identity_service.local_trusted_actor(),
     agent_sessions=agent_session_service,
+    agent_profiles=agent_profile_service,
     routing_service=agent_routing_service,
     session_managers=assignment_session_managers,
     runtime_adapter_factory=_assignment_runtime_adapter,
@@ -2612,6 +2613,7 @@ turn_service = TurnService(
     truncate_text=lambda value, limit: str(value)[:limit],
     binding_public=_binding_public,
     preflight=execution_preflight_service,
+    agent_profiles=agent_profile_service,
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service

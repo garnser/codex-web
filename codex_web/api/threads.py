@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
@@ -34,6 +34,7 @@ def build_threads_router(service: ThreadService) -> APIRouter:
 
     @router.post("/api/threads")
     async def create_thread(
+        request: Request,
         project_id: str | None = None,
         sandbox: str | None = None,
         approval_policy: str | None = None,
@@ -44,6 +45,8 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         repository_resource_id: str | None = None,
         read_only_repository_resource_id: list[str] | None = None,
         execution_profile_id: str | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
     ) -> dict[str, Any]:
         return await service.create(
             project_id=project_id,
@@ -58,6 +61,9 @@ def build_threads_router(service: ThreadService) -> APIRouter:
                 read_only_repository_resource_id or ()
             ),
             execution_profile_id=execution_profile_id,
+            actor=request.state.identity_actor,
+            agent_profile_id=agent_profile_id,
+            agent_profile_revision=agent_profile_revision,
         )
 
     @router.get("/api/threads/{thread_id}")
