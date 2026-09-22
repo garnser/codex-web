@@ -13,6 +13,7 @@ from codex_web.execution_subjects import (
     ExecutionSubject,
     normalize_execution_subject,
 )
+from codex_web.failures import FailureRecord
 from codex_web.models import ApprovalPolicy, SandboxMode
 from codex_web.resources import RepositoryExecutionTarget
 
