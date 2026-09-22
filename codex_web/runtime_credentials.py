@@ -23,5 +23,5 @@ def runtime_credential_config_key(
 ) -> str | None:
     if runtime_binding is None:
         return None
-    table = mapping or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
+    table = DEFAULT_RUNTIME_CREDENTIAL_CONFIGS if mapping is None else mapping
     return table.get((runtime_binding.provider_id, runtime_binding.runtime_id))
