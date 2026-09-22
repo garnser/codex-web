@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from codex_web.agent_teams import (
     AgentTeamMember,
     TeamCoordinatorDecision,
     TeamDelegationRequest,
+    TeamExecutionLinksUpdate,
 )
 from codex_web.definitions import (
     DefinitionDraftCreate,
@@ -288,6 +290,176 @@ class AgentTeamServiceTests(unittest.TestCase):
         )
         self.assertEqual(plan.mode, "blocked")
         self.assertEqual(plan.reason, "no_eligible_team_member")
+
+    def test_persisted_equivalent_route_is_deduped_after_service_restart(self) -> None:
+        self._team()
+        request = TeamDelegationRequest(
+            work_item_id="work-persist",
+            project_id="project-a",
+            required_capabilities=("backend",),
+        )
+        first = asyncio.run(
+            self.teams.plan_and_record(
+                "delivery",
+                request,
+                actor=self.member,
+            )
+        )
+        self.assertEqual(first.mode, "coordinator")
+
+        restarted = AgentTeamService(
+            AgentTeamStore(self.sqlite),
+            profiles=self.profiles,
+            definitions=self.definitions,
+        )
+        duplicate = asyncio.run(
+            restarted.plan_and_record(
+                "delivery",
+                request,
+                actor=self.member,
+            )
+        )
+        self.assertEqual(duplicate.mode, "deduped")
+        self.assertEqual(
+            duplicate.reason,
+            "equivalent_pending_or_recorded_delegation",
+        )
+        history = restarted.work_item_history(
+            "work-persist",
+            actor=self.member,
+        )
+        self.assertEqual(history["count"], 1)
+
+    def test_budget_exhaustion_creates_durable_attention_link(self) -> None:
+        class _Attention:
+            async def upsert(self, payload, *, actor_id):
+                self.payload = payload
+                self.actor_id = actor_id
+                return type("_Item", (), {"id": "attention-team-1"})()
+
+        attention = _Attention()
+        service = AgentTeamService(
+            AgentTeamStore(self.sqlite),
+            profiles=self.profiles,
+            definitions=self.definitions,
+            attention=attention,
+        )
+        self._team()
+        plan = asyncio.run(
+            service.plan_and_record(
+                "delivery",
+                TeamDelegationRequest(
+                    work_item_id="work-attention",
+                    handoff_count=4,
+                    required_capabilities=("python",),
+                ),
+                actor=self.member,
+            )
+        )
+        self.assertEqual(plan.mode, "budget_exhausted")
+        history = service.work_item_history(
+            "work-attention",
+            actor=self.member,
+        )
+        self.assertEqual(history["count"], 1)
+        self.assertEqual(
+            history["items"][0]["attention_item_id"],
+            "attention-team-1",
+        )
+        self.assertEqual(len(history["blockers"]), 1)
+
+    def test_work_item_history_links_executions_and_splits_usage(self) -> None:
+        class _UsageStore:
+            def list(self):
+                def usage(execution_id, tokens, cost):
+                    return type(
+                        "_Usage",
+                        (),
+                        {
+                            "organization_id": "org-a",
+                            "workspace_id": "workspace-a",
+                            "work_item_ref": "work-usage",
+                            "execution_id": execution_id,
+                            "total_tokens": tokens,
+                            "cost_usd": cost,
+                        },
+                    )()
+                return [
+                    usage("exec-leader", 100, 0.10),
+                    usage("exec-python", 400, 0.40),
+                ]
+
+        service = AgentTeamService(
+            AgentTeamStore(self.sqlite),
+            profiles=self.profiles,
+            definitions=self.definitions,
+            runtime_usage_store=_UsageStore(),
+            assignment_loader=lambda: [
+                type(
+                    "_Assignment",
+                    (),
+                    {
+                        "execution_id": "exec-python",
+                        "status": "running",
+                    },
+                )()
+            ],
+        )
+        self._team()
+        request = TeamDelegationRequest(
+            work_item_id="work-usage",
+            project_id="project-a",
+            required_capabilities=("backend",),
+        )
+        initial = asyncio.run(
+            service.plan_and_record(
+                "delivery",
+                request,
+                actor=self.member,
+            )
+        )
+        self.assertEqual(initial.mode, "coordinator")
+        delegated = asyncio.run(
+            service.decide_and_record(
+                "delivery",
+                request,
+                TeamCoordinatorDecision(
+                    selected_profile_ids=("python",),
+                    reason="python owns this backend change",
+                    decision_key="decision-usage",
+                ),
+                actor=self.member,
+            )
+        )
+        self.assertEqual(delegated.mode, "delegated")
+        service.link_executions(
+            "delivery",
+            "work-usage",
+            TeamExecutionLinksUpdate(
+                coordinator_execution_id="exec-leader",
+                member_execution_ids={"python": "exec-python"},
+                child_work_item_refs=("child-1",),
+            ),
+            actor=self.member,
+        )
+
+        history = service.work_item_history(
+            "work-usage",
+            actor=self.member,
+        )
+        self.assertEqual(
+            history["activeMemberProfileIds"],
+            ["python"],
+        )
+        self.assertEqual(history["usage"]["coordinator"]["tokens"], 100)
+        self.assertEqual(history["usage"]["workers"]["tokens"], 400)
+        self.assertEqual(history["usage"]["coordinator"]["records"], 1)
+        self.assertEqual(history["usage"]["workers"]["records"], 1)
+        self.assertEqual(
+            history["items"][-1]["child_work_item_refs"],
+            ["child-1"],
+        )
+
 
 
 if __name__ == "__main__":
