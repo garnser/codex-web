@@ -7,7 +7,7 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.1", ("1.1",))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.2", ("1.2",))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
@@ -76,6 +76,18 @@ def _security_migration(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 ACTION_INTENT_STATE_MIGRATIONS.register("1.0", "1.1", _security_migration)
+ACTION_INTENT_STATE_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.2",
+        "intents": [
+            {**dict(item), "failure": dict(item).get("failure")}
+            for item in payload.get("intents", [])
+        ],
+    },
+)
 
 
 class ActionIntentStore:
