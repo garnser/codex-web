@@ -747,6 +747,7 @@ class WorkItemRunProjectionService:
             "type": getattr(value.evidence_type, "value", value.evidence_type),
             "result": getattr(value.result, "value", value.result),
             "summary": value.summary,
+            "resourceIds": list(value.resource_ids),
             "artifactIds": list(value.artifact_ids),
             "deepLink": value.deep_link,
             "observedAt": value.observed_at,
@@ -788,7 +789,8 @@ class WorkItemRunProjectionService:
         }
         evidence_repositories = {
             value.id: sorted(
-                {
+                set(repositories(getattr(value, "resource_ids", ())))
+                | {
                     repository_id
                     for artifact_id in value.artifact_ids
                     for repository_id in artifact_repositories.get(artifact_id, ())
