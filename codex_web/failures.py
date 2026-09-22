@@ -551,6 +551,66 @@ def create_failure(
     )
 
 
+def failure_from_exception(
+    exc: Exception,
+    *,
+    source_subsystem: str,
+    default_reason: FailureReason = FailureReason.UNCLASSIFIED,
+    **context: Any,
+) -> FailureRecord:
+    reason = getattr(exc, "reason_code", None)
+    if reason is None:
+        if isinstance(exc, TimeoutError):
+            reason = FailureReason.EXECUTION_TIMEOUT
+        elif isinstance(exc, FileNotFoundError):
+            reason = FailureReason.RUNTIME_MISSING_EXECUTABLE
+        else:
+            reason = default_reason
+    return create_failure(
+        reason,
+        source_subsystem=source_subsystem,
+        source_native_code=type(exc).__name__,
+        source_native_status=getattr(
+            exc,
+            "source_native_status",
+            getattr(exc, "status_code", None),
+        ),
+        **context,
+    )
+
+
+def action_failure_reason(
+    native_code: str | int | None,
+) -> FailureReason:
+    normalized = str(native_code or "").strip().casefold()
+    if normalized in {
+        "401",
+        "403",
+        "auth",
+        "unauthorized",
+        "forbidden",
+        "invalid_auth",
+        "access_denied",
+    }:
+        return FailureReason.ACTION_PROVIDER_AUTH
+    if normalized in {
+        "429",
+        "rate_limit",
+        "rate_limited",
+        "ratelimited",
+        "throttled",
+    }:
+        return FailureReason.ACTION_RATE_LIMIT
+    if normalized in {
+        "409",
+        "conflict",
+        "already_exists",
+        "revision_conflict",
+    }:
+        return FailureReason.ACTION_CONFLICT
+    return FailureReason.UNCLASSIFIED
+
+
 def aggregate_failure(
     previous: FailureRecord | None,
     current: FailureRecord,
