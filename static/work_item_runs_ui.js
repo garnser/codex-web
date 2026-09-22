@@ -89,6 +89,18 @@ function runDetailHtml(run) {
   const actions = run.actions || [];
   const approvals = run.approvals || [];
   const attention = run.attention || [];
+  const repositoryActivity = Array.isArray(run.repositoryActivity) ? run.repositoryActivity : [];
+  const repositoryActivityRows = repositoryActivity.length ? repositoryActivity.map((entry) => {
+    const repositories = Array.isArray(entry.repositoryIds) && entry.repositoryIds.length
+      ? entry.repositoryIds.join(', ')
+      : 'run/global';
+    return `
+      <div class="work-run-activity-row">
+        <strong>${esc(entry.kind)} · ${esc(entry.label || entry.id)}</strong>
+        <span>${esc(repositories)} · ${esc(entry.status || 'recorded')}</span>
+        <small>${esc(fmtTime(entry.occurredAt))}</small>
+      </div>`;
+  }).join('') : '<small>No repository-attributed Run activity recorded.</small>';
   const attemptRows = attempts.length ? attempts.map((attempt) => `
     <div class="work-run-activity-row">
       <strong>Attempt ${esc(attempt.attempt)}</strong>
@@ -137,6 +149,8 @@ function runDetailHtml(run) {
     </div>
     <h5>Repository execution scope</h5>
     <div class="work-run-repositories">${repositoryScopeHtml(run.repositoryScope)}</div>
+    <h5>Combined repository activity</h5>
+    <div class="work-run-activity work-run-repository-activity">${repositoryActivityRows}</div>
     <h5>Attempts / retry lineage</h5>
     <div class="work-run-activity">${attemptRows}</div>
     <h5>Structured actions</h5>
