@@ -261,20 +261,36 @@ class AssignmentBoundAgentProcessSession:
         def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
-            readonly_mount_resolver = getattr(
+            repository_mount_resolver = getattr(
                 self.local_worker,
-                "readonly_mounts",
+                "repository_mounts",
                 None,
             )
-            trusted_mounts = (
-                tuple(readonly_mount_resolver(assignment))
-                if callable(readonly_mount_resolver)
-                else ()
-            )
+            if callable(repository_mount_resolver):
+                trusted_mounts, trusted_writable_mounts = (
+                    repository_mount_resolver(assignment)
+                )
+            else:
+                readonly_mount_resolver = getattr(
+                    self.local_worker,
+                    "readonly_mounts",
+                    None,
+                )
+                trusted_mounts = (
+                    tuple(readonly_mount_resolver(assignment))
+                    if callable(readonly_mount_resolver)
+                    else ()
+                )
+                trusted_writable_mounts = ()
             if trusted_mounts:
                 environment["CODEX_READONLY_REPOSITORIES"] = ":".join(
                     str(destination)
                     for _source, destination in trusted_mounts
+                )
+            if trusted_writable_mounts:
+                environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
+                    str(destination)
+                    for _source, destination in trusted_writable_mounts
                 )
             if broker is not None:
                 environment.update(
@@ -328,6 +344,7 @@ class AssignmentBoundAgentProcessSession:
                 workspace_path=workspace_path,
                 environment=environment,
                 trusted_readonly_mounts=trusted_mounts,
+                trusted_writable_mounts=trusted_writable_mounts,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
