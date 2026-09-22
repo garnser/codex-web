@@ -349,6 +349,7 @@ from codex_web.services.threads import ThreadService
 from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 from codex_web.services.turns import TurnService
+from codex_web.services.work_item_runs import WorkItemRunProjectionService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_continuity import (
     DeferredWorkItemContinuityService,
@@ -983,10 +984,35 @@ app.state.execution_workspace_service = execution_workspace_service
 
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)
+
+def _execution_assignment_notifier(assignment, event_type):
+    if assignment.work_item_ref is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(
+        event_hub.publish(
+            {
+                "type": "work_item.run.updated",
+                "projectId": assignment.project_id,
+                "workItemRef": assignment.work_item_ref,
+                "executionId": assignment.execution_id,
+                "assignmentId": assignment.id,
+                "status": assignment.status.value,
+                "eventType": event_type,
+                "workspace_id": assignment.workspace_id,
+                "work_item_ref": assignment.work_item_ref,
+                "execution_id": assignment.execution_id,
+            }
+        )
+    )
 execution_worker_service = ExecutionWorkerService(
     execution_worker_store,
     identity=identity_service,
     workspaces=execution_workspace_service,
+    assignment_notifier=_execution_assignment_notifier,
 )
 local_execution_backend = BubblewrapExecutionBackend()
 local_execution_backend_status = local_execution_backend.probe()
@@ -3548,6 +3574,17 @@ def _include_domain_router(router) -> int:
     return route_count
 
 
+work_item_run_service = WorkItemRunProjectionService(
+    execution_worker_store,
+    runtime_usage=agent_runtime_usage_store,
+    artifact_evidence=artifact_evidence_store,
+    action_intents=action_intent_store,
+    approvals=approval_request_store,
+    attention=attention_store,
+)
+app.state.work_item_run_service = work_item_run_service
+
+
 EXTRACTED_ROUTE_COUNTS = {
     "definitions": _include_domain_router(
         build_definitions_router(
@@ -3605,6 +3642,7 @@ EXTRACTED_ROUTE_COUNTS = {
             work_item_service,
             gitlab_sync_jobs=gitlab_sync_job_service,
             agent_teams=agent_team_service,
+            runs=work_item_run_service,
         )
     ),
     "ui": _include_domain_router(
