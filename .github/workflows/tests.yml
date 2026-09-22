@@ -72,6 +72,62 @@ jobs:
       - name: Qualify large-state GitLab sync complexity and responsiveness
         run: python -m unittest tests.test_gitlab_sync_scaling
 
+  explicit-repository-target-qualification:
+    name: explicit-repository-target-qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked qualification dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          npm ci
+          npx playwright install chromium
+
+      - name: Qualify explicit per-turn repository targeting and isolation
+        run: |
+          python -m unittest \
+            tests.test_explicit_repository_target_qualification \
+            tests.test_project_readiness.ProjectReadinessTests.test_explicit_multi_repository_policy_is_ready_without_default
+
+      - name: Qualify repository target browser provenance and blockers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 18766 --bind 127.0.0.1 > /tmp/codex-web-repository-target.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" >/dev/null 2>&1 || true; cat /tmp/codex-web-repository-target.log || true' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18766/static/index.html >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          npx playwright test \
+            tests/browser/repository_target_ui.spec.js \
+            tests/browser/execution_preflight.spec.js \
+            --workers=1 \
+            --reporter=line
+
   distributed:
     name: distributed-backends
     runs-on: ubuntu-latest

@@ -37,3 +37,32 @@ test('preflight handler reloads retained state instead of showing a dead turn', 
   expect(await page.evaluate(() => window.__reloadCalls)).toEqual(['thread-1']);
   expect(await page.evaluate(() => window.__refreshCalls)).toEqual([0]);
 });
+
+
+test('repository target authorization and stale-state blockers remain canonical', async ({ page }) => {
+  for (const scenario of [
+    {
+      query: 'unauthorized',
+      code: 'repository_target_unauthorized',
+      message: 'not bound to this Project',
+      target: 'repository/repo-app',
+    },
+    {
+      query: 'stale',
+      code: 'repository_target_unauthorized',
+      message: 'repository is not active',
+      target: 'repository/repo-stale',
+    },
+  ]) {
+    await page.goto(
+      'http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html'
+      + `?repositoryBlocker=${scenario.query}`
+    );
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    const card = page.locator('.message.tool').last();
+    await expect(card).toContainText(scenario.code);
+    await expect(card).toContainText(scenario.message);
+    await expect(card).toContainText(`Target: ${scenario.target}`);
+    await expect(card).toContainText('Repository: repo-app');
+  }
+});

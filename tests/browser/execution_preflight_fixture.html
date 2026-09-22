@@ -25,6 +25,27 @@
       return card;
     }
 
+    const repositoryBlocker = new URLSearchParams(location.search).get("repositoryBlocker");
+    const blocker = repositoryBlocker === "unauthorized"
+      ? {
+          code: "repository_target_unauthorized",
+          message: "explicit repository target is not bound to this Project",
+          target_type: "repository",
+          target_id: "repo-app",
+        }
+      : repositoryBlocker === "stale"
+        ? {
+            code: "repository_target_unauthorized",
+            message: "explicit repository is not active",
+            target_type: "repository",
+            target_id: "repo-stale",
+          }
+        : {
+            code: "worker_capability_missing",
+            message: "command execution is unavailable",
+            remediation: "Restore a qualified worker.",
+          };
+
     const attempts = [{
       id: "preflight-thread-turn-1",
       correlation_id: "thread-turn-1",
@@ -42,11 +63,7 @@
       retry_href: "/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/retry",
       created_at: 1800000000,
       updated_at: 1800000010,
-      blockers: [{
-        code: "worker_capability_missing",
-        message: "command execution is unavailable",
-        remediation: "Restore a qualified worker.",
-      }],
+      blockers: [blocker],
     }];
 
     const api = async (path, options = {}) => {
