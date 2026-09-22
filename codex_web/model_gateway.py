@@ -14,9 +14,9 @@ from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.1",
-    ("1.0", "1.1"),
-    deprecated=("1.0",),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
+    deprecated=("1.0", "1.1"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
