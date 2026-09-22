@@ -3597,6 +3597,7 @@ work_item_run_service = WorkItemRunProjectionService(
     action_intents=action_intent_store,
     approvals=approval_request_store,
     attention=attention_store,
+    execution_workspaces=execution_workspace_state_store,
 )
 app.state.work_item_run_service = work_item_run_service
 

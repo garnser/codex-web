@@ -28,6 +28,28 @@ function repositoryScopeHtml(scope) {
     })}</div>`;
 }
 
+function repositoryOutcomesHtml(outcomes) {
+  if (!Array.isArray(outcomes) || !outcomes.length) {
+    return '<small>No repository-specific outcomes recorded yet.</small>';
+  }
+  return outcomes.map((entry) => {
+    const integration = entry.integration || {};
+    const conflicts = Array.isArray(integration.conflicts) ? integration.conflicts : [];
+    const detail = [
+      integration.outcome || entry.status,
+      integration.strategy,
+      entry.headRevision ? `head ${entry.headRevision}` : null,
+      conflicts.length ? `conflicts: ${conflicts.join(', ')}` : null,
+    ].filter(Boolean).join(' · ');
+    return `
+      <div class="work-run-activity-row">
+        <strong>${esc(entry.repositoryId || 'repository')} · ${esc(entry.status || 'pending')}</strong>
+        <span>${esc(detail || 'No integration result recorded')}</span>
+        <small>${esc(fmtTime(integration.recordedAt))}</small>
+      </div>`;
+  }).join('');
+}
+
 function runTimelineHtml() {
   const active = Array.isArray(state.runs?.active) ? state.runs.active : [];
   const history = Array.isArray(state.runs?.items) ? state.runs.items : [];
@@ -89,6 +111,7 @@ function runDetailHtml(run) {
   const actions = run.actions || [];
   const approvals = run.approvals || [];
   const attention = run.attention || [];
+  const repositoryOutcomes = Array.isArray(run.repositoryOutcomes) ? run.repositoryOutcomes : [];
   const repositoryActivity = Array.isArray(run.repositoryActivity) ? run.repositoryActivity : [];
   const repositoryActivityRows = repositoryActivity.length ? repositoryActivity.map((entry) => {
     const repositories = Array.isArray(entry.repositoryIds) && entry.repositoryIds.length
@@ -149,6 +172,8 @@ function runDetailHtml(run) {
     </div>
     <h5>Repository execution scope</h5>
     <div class="work-run-repositories">${repositoryScopeHtml(run.repositoryScope)}</div>
+    <h5>Repository outcomes</h5>
+    <div class="work-run-activity work-run-repository-outcomes">${repositoryOutcomesHtml(repositoryOutcomes)}</div>
     <h5>Combined repository activity</h5>
     <div class="work-run-activity work-run-repository-activity">${repositoryActivityRows}</div>
     <h5>Attempts / retry lineage</h5>

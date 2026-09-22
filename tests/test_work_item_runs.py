@@ -17,6 +17,16 @@ from codex_web.artifact_evidence import (
     Verification,
     VerificationResult,
 )
+from codex_web.execution_workspaces import (
+    ExecutionWorkspace,
+    ExecutionWorkspaceKind,
+    ExecutionWorkspaceMember,
+    ExecutionWorkspaceStatus,
+    IntegrationOutcome,
+    IntegrationStrategy,
+    LeaseMode,
+    WorkspaceIntegrationState,
+)
 from codex_web.execution_workers import (
     AssignmentLease,
     AssignmentStatus,
@@ -33,6 +43,7 @@ from codex_web.resources import (
 )
 from codex_web.services.work_item_runs import WorkItemRunProjectionService
 from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -41,6 +52,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
         self.store = ExecutionWorkerStore(sqlite)
+        self.workspace_store = ExecutionWorkspaceStateStore(sqlite)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -57,6 +69,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         evidence_ids: tuple[str, ...] = (),
         resource_ids: tuple[str, ...] = ("repo-1",),
         repository_scope: RepositoryExecutionScope | None = None,
+        execution_workspace_id: str | None = None,
     ) -> ExecutionAssignment:
         terminal = status in {
             AssignmentStatus.SUCCEEDED,
@@ -80,6 +93,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             limits=WorkerResourceLimits(),
             secret_refs=("secret-ref-must-not-leak",),
             repository_scope=repository_scope,
+            execution_workspace_id=execution_workspace_id,
             status=status,
             fence=fence,
             lease=lease,
@@ -197,6 +211,182 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(projected["readOnlyRepositoryIds"], ["repo-docs"])
         self.assertEqual(projected["source"], "explicit")
         self.assertEqual(projected["sourceRef"], "turn:multi-repo")
+
+    def test_repository_outcomes_are_projected_from_canonical_workspace_state(self) -> None:
+        scope = RepositoryExecutionScope(
+            organization_id="local",
+            workspace_id="default",
+            project_id="home",
+            writable_repository_ids=("repo-app", "repo-api"),
+            write_mode=RepositoryWriteMode.COORDINATED,
+            source=RepositoryTargetSource.EXPLICIT,
+        )
+        item = self.assignment(
+            "exec-repository-outcomes",
+            status=AssignmentStatus.RUNNING,
+            created_at=36.0,
+            resource_ids=("repo-app", "repo-api"),
+            repository_scope=scope,
+            execution_workspace_id="execws-repository-outcomes",
+        )
+        self.seed([item])
+        workspace = ExecutionWorkspace(
+            id="execws-repository-outcomes",
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+            execution_id=item.execution_id,
+            project_id="home",
+            owner_identity_id="tester",
+            kind=ExecutionWorkspaceKind.GIT_WORKTREE,
+            resource_ids=("repo-app", "repo-api"),
+            repository_resource_id="repo-app",
+            writable_repository_ids=("repo-app", "repo-api"),
+            lease_id="lease-repository-outcomes",
+            status=ExecutionWorkspaceStatus.CONFLICTED,
+            created_at=36.0,
+            updated_at=37.0,
+            repository_members=(
+                ExecutionWorkspaceMember(
+                    resource_id="repo-app",
+                    access_mode=LeaseMode.WRITE,
+                    source_path="/repos/app",
+                    workspace_path="/work/app",
+                    sandbox_path="/mnt/codex-repositories/repo-app",
+                    branch_name="codex/app",
+                    base_revision="app-base",
+                    head_revision="app-result",
+                ),
+                ExecutionWorkspaceMember(
+                    resource_id="repo-api",
+                    access_mode=LeaseMode.WRITE,
+                    source_path="/repos/api",
+                    workspace_path="/work/api",
+                    sandbox_path="/mnt/codex-repositories/repo-api",
+                    branch_name="codex/api",
+                    base_revision="api-base",
+                    head_revision="api-base",
+                ),
+            ),
+            repository_integrations={
+                "repo-app": WorkspaceIntegrationState(
+                    strategy=IntegrationStrategy.MERGE,
+                    outcome=IntegrationOutcome.MERGED,
+                    target_revision="main@app",
+                    resulting_revision="app-result",
+                    recorded_at=36.5,
+                    recorded_by="tester",
+                ),
+                "repo-api": WorkspaceIntegrationState(
+                    strategy=IntegrationStrategy.MERGE,
+                    outcome=IntegrationOutcome.CONFLICT,
+                    target_revision="main@api",
+                    conflicts=("src/api.py",),
+                    recorded_at=36.75,
+                    recorded_by="tester",
+                ),
+            },
+        )
+        self.workspace_store.update(
+            lambda state: state.model_copy(update={"workspaces": [workspace]})
+        )
+        service = WorkItemRunProjectionService(
+            self.store,
+            execution_workspaces=self.workspace_store,
+        )
+
+        run = service.get_run(
+            "group/app#42",
+            item.execution_id,
+            organization_id="local",
+            workspace_id="default",
+        )["run"]
+        outcomes = {
+            value["repositoryId"]: value
+            for value in run["repositoryOutcomes"]
+        }
+
+        self.assertEqual(outcomes["repo-app"]["status"], "integrated")
+        self.assertEqual(outcomes["repo-app"]["headRevision"], "app-result")
+        self.assertEqual(
+            outcomes["repo-app"]["integration"]["outcome"],
+            "merged",
+        )
+        self.assertEqual(outcomes["repo-api"]["status"], "conflict")
+        self.assertEqual(
+            outcomes["repo-api"]["integration"]["conflicts"],
+            ["src/api.py"],
+        )
+        serialized = json.dumps(run["repositoryOutcomes"])
+        self.assertNotIn("/repos/app", serialized)
+        self.assertNotIn("/work/app", serialized)
+
+    def test_repository_outcome_uses_legacy_primary_integration_projection(self) -> None:
+        item = self.assignment(
+            "exec-legacy-integration",
+            status=AssignmentStatus.SUCCEEDED,
+            created_at=38.0,
+            execution_workspace_id="execws-legacy-integration",
+        )
+        self.seed([item])
+        workspace = ExecutionWorkspace(
+            id="execws-legacy-integration",
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+            execution_id=item.execution_id,
+            project_id="home",
+            owner_identity_id="tester",
+            kind=ExecutionWorkspaceKind.GIT_WORKTREE,
+            resource_ids=("repo-1",),
+            repository_resource_id="repo-1",
+            writable_repository_ids=("repo-1",),
+            lease_id="lease-legacy-integration",
+            status=ExecutionWorkspaceStatus.INTEGRATED,
+            created_at=38.0,
+            updated_at=39.0,
+            integration=WorkspaceIntegrationState(
+                strategy=IntegrationStrategy.FAST_FORWARD,
+                outcome=IntegrationOutcome.FAST_FORWARDED,
+                target_revision="main@legacy",
+                resulting_revision="legacy-result",
+                recorded_at=38.5,
+                recorded_by="tester",
+            ),
+            repository_members=(
+                ExecutionWorkspaceMember(
+                    resource_id="repo-1",
+                    access_mode=LeaseMode.WRITE,
+                    source_path="/repos/legacy",
+                    workspace_path="/work/legacy",
+                    sandbox_path="/mnt/codex-repositories/repo-1",
+                    branch_name="codex/legacy",
+                    base_revision="legacy-base",
+                    head_revision="legacy-result",
+                ),
+            ),
+        )
+        self.workspace_store.update(
+            lambda state: state.model_copy(update={"workspaces": [workspace]})
+        )
+        service = WorkItemRunProjectionService(
+            self.store,
+            execution_workspaces=self.workspace_store,
+        )
+
+        run = service.get_run(
+            "group/app#42",
+            item.execution_id,
+            organization_id="local",
+            workspace_id="default",
+        )["run"]
+
+        self.assertEqual(len(run["repositoryOutcomes"]), 1)
+        self.assertEqual(run["repositoryOutcomes"][0]["status"], "integrated")
+        self.assertEqual(
+            run["repositoryOutcomes"][0]["integration"]["outcome"],
+            "fast_forwarded",
+        )
 
     def test_retry_attempts_are_projected_from_immutable_worker_events(self) -> None:
         item = self.assignment(
@@ -454,7 +644,9 @@ class WorkItemRunUiContractTests(unittest.TestCase):
         self.assertIn("/runs?", run_ui)
         self.assertIn("work-runs-load-more", run_ui)
         self.assertIn("repositoryScope", run_ui)
+        self.assertIn("repositoryOutcomes", run_ui)
         self.assertIn("Repository execution scope", run_ui)
+        self.assertIn("Repository outcomes", run_ui)
         self.assertIn("writable_repositories", run_ui)
         self.assertIn("repositoryActivity", run_ui)
         self.assertIn("Combined repository activity", run_ui)
