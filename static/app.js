@@ -250,29 +250,10 @@ function currentRunSettings() {
   };
 }
 
-function repositoryTargetArgs(threadId = state.threadId) {
-  return {
-    project: activeProject(),
-    resources: state.projectResources || [],
-    settings: currentRunSettings(),
-    threadSettings: threadId ? threadRunSettings(threadId) : {},
-  };
-}
-
-function repositoryTargetState(threadId = state.threadId) {
-  return repositoryTargetUi.targetState(repositoryTargetArgs(threadId));
-}
-
-function renderRepositoryTargetStatus() {
-  repositoryTargetUi.renderStatus(repositoryTargetArgs());
-}
-
-function renderRepositoryTargets() {
-  repositoryTargetUi.renderControls({
-    ...repositoryTargetArgs(),
-    escapeHtml,
-  });
-}
+function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
+function repositoryTargetState(threadId=state.threadId){return repositoryTargetUi.targetState(repositoryTargetArgs(threadId))}
+function renderRepositoryTargetStatus(){repositoryTargetUi.renderStatus(repositoryTargetArgs())}
+function renderRepositoryTargets(){repositoryTargetUi.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
 function threadRunSettings(threadId = state.threadId) {
   return state.threadSettings?.[threadId] || {};
