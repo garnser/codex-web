@@ -245,6 +245,7 @@ class _Session:
     def __init__(self) -> None:
         self.workspace_path = Path("/isolated/workspace")
         self.requests = []
+        self.work_item_ref = None
 
     def status(self):
         return SimpleNamespace(worker_id="worker-1", fence=7)
@@ -257,6 +258,7 @@ class _Session:
             project_id="p1",
             sandbox="workspace-write",
             approval_policy="on-request",
+            work_item_ref=self.work_item_ref,
         )
 
     async def request(self, method, params=None):
@@ -514,6 +516,46 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"work_item_context"', instructions)
         self.assertIn("Canonical full context", instructions)
         self.assertIn("checkpoint_provenance_incomplete", instructions)
+
+    async def test_bootstrap_turn_inherits_work_item_ref_from_assignment(self) -> None:
+        resolved_refs = []
+        selection = {
+            "mode": "full",
+            "reason": "checkpoint_missing",
+            "snapshot": {
+                "work_item_context": {"title": "Bootstrap Work Item"},
+            },
+        }
+        _host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            work_item_context_resolver=lambda ref: (
+                resolved_refs.append(ref) or selection
+            ),
+            work_item_context_recorder=lambda *args, **kwargs: None,
+        )
+        sessions.session.work_item_ref = "group/app#531"
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue bootstrap work",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            execution_id="ignored-bootstrap-exec",
+        )
+
+        self.assertEqual(resolved_refs, ["group/app#531"])
+        self.assertIn(
+            "Bootstrap Work Item",
+            sessions.session.requests[1][1]["developerInstructions"],
+        )
 
     async def test_work_item_context_resolution_failure_blocks_before_runtime_turn(self) -> None:
         def fail_resolution(_ref):
