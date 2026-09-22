@@ -1,7 +1,7 @@
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
-import{activateProject,initialProjectId}from"./project_context.js";
+import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
 import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js";
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
@@ -565,16 +565,6 @@ function toggleItemExpanded(scope, id) {
   }
 }
 
-async function selectProject(projectId, { historyMode = "push" } = {}) {
-  const normalized = String(projectId || "").trim();
-  if (!normalized || normalized === state.projectId) return;
-  activateProject(state, normalized, { historyMode });
-  state.threadId = null;
-  state.activeAgentMessage = null;
-  applyRunSettings();
-  await refresh();
-}
-
 function renderProjects() {
   $("projects").innerHTML = "";
   state.projects.forEach((project) => {
@@ -612,16 +602,7 @@ function renderProjects() {
     });
     $("projects").appendChild(item);
   });
-  window.dispatchEvent(new CustomEvent("codex:projects-rendered", {
-    detail: {
-      projectId: state.projectId,
-      projects: state.projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        path: project.path,
-      })),
-    },
-  }));
+  publishProjectsRendered(state.projects,state.projectId);
 }
 
 function renderThreads() {
@@ -2360,19 +2341,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-window.addEventListener("codex:project-select", (event) => {
-  const projectId = event.detail?.projectId;
-  selectProject(projectId).catch((error) => {
-    addMessage("Error", error.message, "tool", new Date());
-  });
-});
-window.addEventListener("popstate", () => {
-  const projectId = new URLSearchParams(window.location.search).get("project");
-  if (!projectId || projectId === state.projectId) return;
-  selectProject(projectId, { historyMode: "none" }).catch((error) => {
-    addMessage("Error", error.message, "tool", new Date());
-  });
-});
+const selectProject=createProjectNavigator(state,{refresh,applyRunSettings,onError:(error)=>addMessage("Error",error.message,"tool",new Date())});
 
 $("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
