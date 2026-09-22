@@ -8,6 +8,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.failures import FailureRecord
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 
@@ -259,6 +260,7 @@ class ModelInvocationAttempt(BaseModel):
     model_version: str | None = None
     outcome: str
     error_code: str | None = None
+    failure: FailureRecord | None = None
     estimated_upper_cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
