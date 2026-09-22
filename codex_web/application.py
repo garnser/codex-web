@@ -1341,6 +1341,9 @@ agent_team_service = AgentTeamService(
     agent_team_store,
     profiles=agent_profile_service,
     definitions=definition_registry_service,
+    attention=attention_service,
+    runtime_usage_store=agent_runtime_usage_store,
+    assignment_loader=lambda: execution_worker_store.load().assignments,
 )
 app.state.agent_team_store = agent_team_store
 app.state.agent_team_service = agent_team_service
@@ -3574,6 +3577,7 @@ EXTRACTED_ROUTE_COUNTS = {
         build_work_items_router(
             work_item_service,
             gitlab_sync_jobs=gitlab_sync_job_service,
+            agent_teams=agent_team_service,
         )
     ),
     "ui": _include_domain_router(
