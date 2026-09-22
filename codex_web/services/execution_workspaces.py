@@ -446,7 +446,7 @@ class ExecutionWorkspaceService:
                         member.branch_name or "",
                         discard_branch=bool(
                             discard_mutable_branch
-                            and member.resource_id == workspace.repository_resource_id
+                            and member.access_mode == LeaseMode.WRITE
                             and member.branch_name
                         ),
                     )
@@ -868,37 +868,56 @@ class ExecutionWorkspaceService:
             tuple[Resource, ExecutionWorkspaceMember]
         ] = []
         try:
-            mutable_resource = resource_by_id[repository_resource_id]
-            mutable_source = source_paths[repository_resource_id]
-            mutable = self.backend.provision_git(
-                mutable_source,
-                workspace_id,
-                branch_name or "",
-                request.base_revision,
-            )
-            provisioned_members.append(
-                (
-                    mutable_resource,
-                    ExecutionWorkspaceMember(
-                        resource_id=repository_resource_id,
-                        access_mode=request.lease_mode,
-                        source_path=str(mutable_source),
-                        workspace_path=str(mutable.path),
-                        sandbox_path=str(mutable.path),
-                        branch_name=mutable.branch_name,
-                        base_revision=mutable.base_revision,
-                        head_revision=mutable.head_revision,
-                        disk_bytes=self.backend.disk_usage(mutable.path),
-                    ),
+            for resource_id in writable_repository_ids:
+                resource = resource_by_id[resource_id]
+                source = source_paths[resource_id]
+                primary = resource_id == repository_resource_id
+                member_workspace_id = (
+                    workspace_id
+                    if primary
+                    else self._member_workspace_id(
+                        workspace_id,
+                        resource_id,
+                        access_mode=LeaseMode.WRITE,
+                    )
                 )
-            )
+                provisioned = self.backend.provision_git(
+                    source,
+                    member_workspace_id,
+                    branch_name or "",
+                    request.base_revision if primary else None,
+                )
+                provisioned_members.append(
+                    (
+                        resource,
+                        ExecutionWorkspaceMember(
+                            resource_id=resource_id,
+                            access_mode=resource_modes[resource_id],
+                            source_path=str(source),
+                            workspace_path=str(provisioned.path),
+                            sandbox_path=(
+                                str(provisioned.path)
+                                if primary
+                                else self._writable_sandbox_path(resource_id)
+                            ),
+                            branch_name=provisioned.branch_name,
+                            base_revision=provisioned.base_revision,
+                            head_revision=provisioned.head_revision,
+                            disk_bytes=self.backend.disk_usage(provisioned.path),
+                        ),
+                    )
+                )
 
             for resource_id in read_only_repository_ids:
                 resource = resource_by_id[resource_id]
                 source = source_paths[resource_id]
                 provisioned = self.backend.provision_git_readonly(
                     source,
-                    self._readonly_member_workspace_id(workspace_id, resource_id),
+                    self._member_workspace_id(
+                        workspace_id,
+                        resource_id,
+                        access_mode=LeaseMode.READ,
+                    ),
                     None,
                 )
                 provisioned_members.append(
@@ -1002,7 +1021,8 @@ class ExecutionWorkspaceService:
                                 "base_revision": mutable_member.base_revision,
                                 "branch_name": mutable_member.branch_name,
                                 "repository_member_count": len(provisioned_members),
-                                "read_only_member_count": len(read_only_repository_ids),
+                                "writable_member_count": len(writable_repository_ids),
+                            "read_only_member_count": len(read_only_repository_ids),
                             },
                         ),
                     )
