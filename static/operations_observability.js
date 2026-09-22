@@ -272,5 +272,6 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();
