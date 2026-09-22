@@ -333,6 +333,35 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ExecutionSubjectKind.THREAD_BOOTSTRAP,
         )
 
+    def test_thread_bootstrap_persists_exact_agent_profile_binding(self) -> None:
+        self._publish_secret()
+        profile = AgentProfileExecutionBinding(
+            profile_id="coordinator",
+            profile_revision=4,
+            profile_record_id="agent-profile-rev-4",
+        )
+
+        binding = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-profile",
+            execution_id="bootstrap-profile-exec",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            agent_profile=profile,
+        )
+
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+        self.assertEqual(binding.agent_profile, profile)
+        self.assertEqual(assignment.agent_profile, profile)
+        self.assertEqual(
+            assignment.agent_profile.profile_revision,
+            4,
+        )
+
     def test_skill_worker_requirement_tightens_assignment_eligibility(self) -> None:
         self._publish_secret()
         self.service.skill_worker_requirements = (
