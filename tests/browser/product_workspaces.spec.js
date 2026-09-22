@@ -95,9 +95,54 @@ test('keyboard and hash routing work and phone layout does not exceed viewport',
   await page.keyboard.press('Control+K');
   const switcher = page.locator('#product-workspace-switcher');
   await expect(switcher).toBeVisible();
-  await expect(switcher.locator('.product-workspace-nav-item').first()).toBeFocused();
+  await expect(switcher.locator('#product-workspace-search')).toBeFocused();
 
   const box = await switcher.boundingBox();
   expect(box.width).toBeLessThanOrEqual(390);
   expect(box.x).toBeGreaterThanOrEqual(0);
+});
+
+
+test('shell keeps canonical Project context visible and switches without reloading', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const switcher = page.locator('#product-project-switcher');
+  await expect(switcher).toBeVisible();
+  await expect(switcher.locator('option')).toHaveCount(2);
+  await expect(switcher).toHaveValue('home');
+  await expect(page.locator('[data-project-indicator]')).toHaveText('Project: Home');
+
+  await switcher.selectOption('alpha');
+  await expect.poll(() => page.evaluate(() => window.__selectedProject)).toBe('alpha');
+  await expect(page.locator('[data-project-indicator]')).toHaveText('Project: Alpha');
+  await expect(page.locator('body')).toHaveAttribute('data-active-project', 'alpha');
+});
+
+test('command search filters the workflow navigation and keeps Attention discoverable', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.keyboard.press('Control+K');
+
+  const switcher = page.locator('#product-workspace-switcher');
+  const search = switcher.locator('#product-workspace-search');
+  await search.fill('automation');
+
+  await expect(switcher.locator('[data-product-workspace-nav="autonomy"]')).toBeVisible();
+  await expect(switcher.locator('[data-product-workspace-nav="work"]')).toBeHidden();
+
+  await search.fill('attention');
+  await expect(switcher.locator('[data-product-workspace-nav="inbox"]')).toBeVisible();
+});
+
+test('workspace deep links participate in browser back navigation', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
+  await expect(page).toHaveURL(/#workspace\/resources$/);
+
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('operations'));
+  await expect(page).toHaveURL(/#workspace\/operations$/);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Operations / Observability');
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#workspace\/resources$/);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Resources');
 });
