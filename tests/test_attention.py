@@ -169,6 +169,17 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(critical_cursor)
         self.assertTrue(all(item.severity == AttentionSeverity.CRITICAL for item in critical))
 
+        await self.service.resolve(first[0].id, actor=self.actor, reason="handled")
+        active, active_cursor, active_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            status="active",
+        )
+        self.assertEqual(len(active), 4)
+        self.assertEqual(active_total, 4)
+        self.assertIsNone(active_cursor)
+        self.assertTrue(all(item.status != AttentionStatus.RESOLVED for item in active))
+
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())
 
