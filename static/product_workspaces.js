@@ -277,10 +277,12 @@ function openInternalWorkspace(id) {
 function openWorkspace(id) {
   const item = workspaceById(id);
   if (item.kind === "launcher") {
+    activeWorkspace = item.id;
     setHash(item.id);
     return launchExisting(item.selector);
   }
   if (item.kind === "focus") {
+    activeWorkspace = item.id;
     setHash(item.id);
     return focusSidebar(item.selector);
   }
