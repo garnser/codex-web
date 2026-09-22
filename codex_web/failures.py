@@ -725,45 +725,78 @@ def legacy_failure_reason(
     category: str | None,
     code: str | None,
 ) -> FailureReason:
+    normalized_category = str(category or "").strip().casefold()
     raw_code = str(code or "").strip()
-    if raw_code:
-        with_value = raw_code.casefold()
+    normalized_code = raw_code.casefold()
+
+    if normalized_code:
         try:
-            return FailureReason(with_value)
+            return FailureReason(normalized_code)
         except ValueError:
             pass
-        action = action_failure_reason(with_value)
-        if action != FailureReason.UNCLASSIFIED:
-            return action
-        worker = worker_failure_reason(with_value)
-        if worker != FailureReason.UNCLASSIFIED:
-            return worker
-        if with_value in {
+
+    if normalized_category in {"provider", "model"}:
+        if normalized_code in {
             "rate_limited",
             "ratelimited",
+            "429",
+            "throttled",
+        }:
+            return FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT
+        if normalized_code in {
             "quota",
             "quota_exhausted",
+            "insufficient_quota",
         }:
-            return (
-                FailureReason.PROVIDER_QUOTA_EXHAUSTED
-                if "quota" in with_value
-                else FailureReason.PROVIDER_CAPACITY_OR_RATE_LIMIT
-            )
-        if with_value in {"auth", "unauthorized", "forbidden"}:
+            return FailureReason.PROVIDER_QUOTA_EXHAUSTED
+        if normalized_code in {
+            "auth",
+            "unauthorized",
+            "forbidden",
+            "401",
+            "403",
+        }:
             return FailureReason.PROVIDER_AUTH_OR_ACCESS
-        if with_value in {"context_overflow", "context_length"}:
+        if normalized_code in {
+            "context_overflow",
+            "context_length",
+        }:
             return FailureReason.CONTEXT_OVERFLOW
-    normalized_category = str(category or "").strip().casefold()
+        if normalized_code in {
+            "timeout",
+            "network",
+            "connection",
+        }:
+            return FailureReason.PROVIDER_NETWORK
+        return FailureReason.MODEL_UNAVAILABLE
+
+    if normalized_category in {"runtime", "worker"}:
+        worker = worker_failure_reason(normalized_code)
+        return (
+            worker
+            if worker != FailureReason.UNCLASSIFIED
+            else FailureReason.PROCESS_FAILURE
+        )
+
+    if normalized_category in {"action", "external_action"}:
+        action = action_failure_reason(normalized_code)
+        return (
+            action
+            if action != FailureReason.UNCLASSIFIED
+            else FailureReason.UNKNOWN_OUTCOME
+        )
+
     if normalized_category in {"authority", "policy"}:
         return FailureReason.AUTHORITY_DENIED
-    if normalized_category in {"approval"}:
+    if normalized_category == "approval":
         return FailureReason.APPROVAL_REQUIRED_OR_EXPIRED
-    if normalized_category in {"provider", "model"}:
-        return FailureReason.MODEL_UNAVAILABLE
-    if normalized_category in {"runtime", "worker"}:
-        return FailureReason.PROCESS_FAILURE
-    if normalized_category in {"action", "external_action"}:
-        return FailureReason.UNKNOWN_OUTCOME
+
+    action = action_failure_reason(normalized_code)
+    if action != FailureReason.UNCLASSIFIED:
+        return action
+    worker = worker_failure_reason(normalized_code)
+    if worker != FailureReason.UNCLASSIFIED:
+        return worker
     return FailureReason.UNCLASSIFIED
 
 
