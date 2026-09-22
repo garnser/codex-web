@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home overview fixture</title>
+  <link rel="stylesheet" href="../../static/workspace_components.css">
+  <link rel="stylesheet" href="../../static/home_overview.css">
+</head>
+<body data-project-id="project-a">
+  <select id="product-project-switcher" aria-label="Current Project">
+    <option value="project-a" selected>Project A</option>
+  </select>
+  <main data-home-overview></main>
+  <script type="module">
+    import { renderHomeOverview } from "../../static/home_overview.js";
+    window.__renderHomeOverview = renderHomeOverview;
+    await renderHomeOverview(document.querySelector("[data-home-overview]"), "project-a");
+    window.__ready = true;
+  </script>
+</body>
+</html>
