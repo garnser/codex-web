@@ -505,6 +505,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         work_item_ref: str | None = None,
         repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
         agent_profile_id: str | None = None,
@@ -587,6 +588,9 @@ class TurnExecutionService:
                 model=model,
                 reasoning_effort=reasoning_effort,
                 repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=(
+                    writable_repository_resource_ids
+                ),
                 read_only_repository_resource_ids=(
                     read_only_repository_resource_ids
                 ),
@@ -1012,6 +1016,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         work_item_ref: str | None = None,
         repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
         execution_profile_id: str | None = None,
         actor: AuthenticationActor | None = None,
@@ -1149,6 +1154,32 @@ class TurnExecutionService:
                 else:
                     effective_execution_profile_id = getattr(assignment, "execution_profile_id", None)
                 target = getattr(assignment, "repository_target", None)
+                scope = getattr(assignment, "repository_scope", None)
+                requested_writable_repositories = tuple(
+                    dict.fromkeys(
+                        value
+                        for value in writable_repository_resource_ids
+                        if value
+                    )
+                )
+                if requested_writable_repositories:
+                    effective_writable = tuple(
+                        getattr(scope, "writable_repository_ids", ())
+                    )
+                    if requested_writable_repositories != effective_writable:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "thread_repository_scope_immutable",
+                                "threadId": thread_id,
+                                "requestedWritableRepositoryResourceIds": list(
+                                    requested_writable_repositories
+                                ),
+                                "effectiveWritableRepositoryResourceIds": list(
+                                    effective_writable
+                                ),
+                            },
+                        )
                 requested_repository = (
                     repository_resource_id or settings.repository_resource_id
                 )
@@ -1236,6 +1267,9 @@ class TurnExecutionService:
                         explicit_repository_id=(
                             repository_resource_id
                             or settings.repository_resource_id
+                        ),
+                        writable_repository_ids=(
+                            writable_repository_resource_ids
                         ),
                         read_only_repository_ids=(
                             read_only_repository_resource_ids
@@ -1751,6 +1785,7 @@ class TurnExecutionService:
                 execution_id=queued.execution_id,
                 work_item_ref=queued.work_item_ref,
                 repository_resource_id=queued.repository_resource_id,
+                writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                 execution_profile_id=queued.execution_profile_id,
                 actor=queued_actor,
