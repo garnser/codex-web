@@ -303,9 +303,14 @@ def build_work_items_router(
         ref: str,
         request: Request,
         max_events: int = 100,
+        event_offset: int = 0,
     ) -> dict[str, Any]:
         require_item_scope(ref, request)
-        return execution.continuation_delta(ref, max_events=max_events)
+        return execution.continuation_delta(
+            ref,
+            max_events=max_events,
+            event_offset=event_offset,
+        )
 
     @router.post("/api/work-items/{ref:path}/checkpoints")
     async def create_work_item_checkpoint(
