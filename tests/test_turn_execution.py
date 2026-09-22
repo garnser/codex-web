@@ -717,6 +717,39 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_bootstrap_turn_completion_finalizes_work_item_checkpoint_outcome(self) -> None:
+        outcomes = []
+        _host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            work_item_outcome_recorder=lambda *args: outcomes.append(args),
+        )
+        sessions.session.work_item_ref = "group/app#531"
+        service.mark_thread_active(
+            "t1",
+            turn_id="turn-1",
+            project_id="p1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        service.record_thread_activity(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "t1",
+                    "turn": {"id": "turn-1"},
+                },
+            }
+        )
+
+        self.assertEqual(
+            outcomes,
+            [("group/app#531", "bootstrap-exec", "succeeded")],
+        )
+
     async def test_bootstrap_turn_dispatches_to_owning_non_codex_runtime(self) -> None:
         host = _Host()
         binding_service = _BindingService()
