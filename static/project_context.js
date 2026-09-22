@@ -16,13 +16,10 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
   if (document.body) document.body.dataset.projectId = normalized;
   const url = new URL(window.location.href);
   url.searchParams.set("project", normalized);
-  if (historyMode !== "none") {
-    const method = historyMode === "push" ? "pushState" : "replaceState";
-    history[method](
-      { ...history.state, projectId: normalized },
-      "",
-      url,
-    );
+  if (historyMode === "push") {
+    history.pushState({ ...history.state, projectId: normalized }, "", url);
+  } else if (historyMode !== "none") {
+    history.replaceState({ ...history.state, projectId: normalized }, "", url);
   }
   window.dispatchEvent(
     new CustomEvent("codex:project-changed", {
@@ -30,4 +27,43 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
     }),
   );
   return normalized;
+}
+
+
+export function publishProjectsRendered(projects, projectId) {
+  window.dispatchEvent(new CustomEvent("codex:projects-rendered", {
+    detail: {
+      projectId,
+      projects: projects.map(({ id, name, path }) => ({ id, name, path })),
+    },
+  }));
+}
+
+export function createProjectNavigator(state, {
+  refresh,
+  applyRunSettings,
+  onError = console.error,
+} = {}) {
+  const selectProject = async (projectId, { historyMode = "push" } = {}) => {
+    const normalized = String(projectId || "").trim();
+    if (!normalized || normalized === state.projectId) return;
+    activateProject(state, normalized, { historyMode });
+    state.threadId = null;
+    state.activeAgentMessage = null;
+    applyRunSettings?.();
+    await refresh?.();
+  };
+  const run = (projectId, options) => {
+    selectProject(projectId, options).catch(onError);
+  };
+  window.addEventListener("codex:project-select", (event) => {
+    run(event.detail?.projectId);
+  });
+  window.addEventListener("popstate", () => {
+    const projectId = new URLSearchParams(window.location.search).get("project");
+    if (projectId && projectId !== state.projectId) {
+      run(projectId, { historyMode: "none" });
+    }
+  });
+  return selectProject;
 }
