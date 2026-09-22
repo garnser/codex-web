@@ -117,10 +117,7 @@ function preferredTheme(){return matchMedia("(prefers-color-scheme: dark)").matc
 function currentTheme(){return document.documentElement.dataset.theme||localStorage.getItem(THEME_KEY)||preferredTheme()}
 function slackIconForThread(threadId){const bindings=state.botBindings.filter(binding=>binding.project_id===state.projectId&&binding.thread_id===threadId&&binding.provider==="slack"&&binding.slack_icon);return(bindings.find(binding=>binding.is_primary_channel)||bindings[0])?.slack_icon||""}
 
-function slackIconGlyph(iconCode) {
-  if (!iconCode) return "";
-  return SLACK_ICON_MAP[iconCode] || iconCode.replaceAll(":", "").slice(0, 2).toUpperCase();
-}
+function slackIconGlyph(iconCode){return iconCode?(SLACK_ICON_MAP[iconCode]||iconCode.replaceAll(":","").slice(0,2).toUpperCase()):""}
 
 function applyTheme(theme) {
   const normalized = theme === "dark" ? "dark" : "light";
@@ -187,9 +184,7 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
   await loadThread(newThreadId);
 }
 
-function activeProject() {
-  return state.projects.find((project) => project.id === state.projectId) || state.projects[0];
-}
+function activeProject(){return state.projects.find(project=>project.id===state.projectId)||state.projects[0]}
 
 function loadProjectSettings() {
   try {
