@@ -38,6 +38,10 @@ from codex_web.services.codex_worker_configuration import (
     CODEX_WORKER_ACCESS_TOKEN_CONFIG,
     install_codex_worker_configuration,
 )
+from codex_web.services.codex_execution_authentication import (
+    CODEX_WORKER_API_KEY_CONFIG,
+    install_codex_execution_authentication_configuration,
+)
 from codex_web.services.configuration import ConfigurationService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import (
@@ -166,6 +170,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
             ConfigurationRegistryStore(self.sqlite)
         )
         install_codex_worker_configuration(self.configuration)
+        install_codex_execution_authentication_configuration(self.configuration)
         install_anthropic_worker_configuration(self.configuration)
 
         self.backend = _FakeGitBackend(root / "workspaces")
@@ -259,6 +264,26 @@ class TurnExecutionBindingTests(unittest.TestCase):
             sandbox=sandbox,
             approval_policy="on-request",
         )
+
+    def test_explicit_api_key_credential_config_is_used_without_fallback(self) -> None:
+        self._publish_secret(
+            "secret-codex-api-key",
+            config_key=CODEX_WORKER_API_KEY_CONFIG,
+        )
+        binding = self.service.prepare(
+            thread_id="thread-api-key",
+            execution_id="turn-exec-api-key",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            credential_config_key=CODEX_WORKER_API_KEY_CONFIG,
+        )
+        self.assertEqual(binding.secret_ref, "secret-codex-api-key")
+        assignment = self.workers.get_assignment(
+            binding.assignment_id,
+            actor=self.actor,
+        )
+        self.assertEqual(assignment.secret_refs, ("secret-codex-api-key",))
 
     def test_project_readiness_blocks_before_workspace_creation(self) -> None:
         self._publish_secret()
