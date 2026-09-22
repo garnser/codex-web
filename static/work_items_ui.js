@@ -92,11 +92,12 @@ function ensureShell() {
   const dialog = document.createElement('dialog');
   dialog.id = 'work-items-dialog';
   dialog.className = 'work-items-dialog';
+  dialog.setAttribute('aria-labelledby', 'work-items-dialog-title');
   dialog.innerHTML = `
     <div class="work-items-shell">
       <header class="work-items-header">
         <div>
-          <h2>Work-item operator</h2>
+          <h2 id="work-items-dialog-title">Work-item operator</h2>
           <p>Canonical state, authoritative source, execution contract, diagnostics and history.</p>
         </div>
         <button type="button" class="icon-button work-items-close" aria-label="Close">×</button>
@@ -105,7 +106,7 @@ function ensureShell() {
         <label>Project <select class="work-items-project"></select></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
-        <span class="work-items-status" aria-live="polite"></span>
+        <span class="work-items-status" role="status" aria-live="polite"></span>
       </div>
       <details class="work-source-config" open>
         <summary>Authoritative task source</summary>
