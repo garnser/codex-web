@@ -2150,7 +2150,7 @@ codex_agent_adapter = CodexAgentRuntimeAdapter(codex_runtime)
 agent_runtime_registry.register(
     codex_agent_adapter,
     capability_revision=1,
-    sandbox_profiles=("read-only", "workspace-write"),
+    sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
     network_profiles=("brokered-model-egress",),
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")

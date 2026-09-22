@@ -236,6 +236,49 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.model_route.candidates[0].provider_id, "openai")
         self.assertEqual(len(models.calls), 1)
 
+    async def test_codex_routes_every_supported_execution_sandbox_profile(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.SHELL_TOOLS,
+        )
+        supported = ("read-only", "workspace-write", "danger-full-access")
+        self._provider("openai", capabilities)
+        self._runtime(
+            "openai",
+            "codex",
+            capabilities,
+            sandbox_profiles=supported,
+        )
+        service = AgentRoutingService(self.providers, self.runtimes)
+
+        for sandbox in supported:
+            with self.subTest(sandbox=sandbox):
+                result = await service.route(
+                    AgentRoutingRequest(
+                        project_id="project-a",
+                        required_capabilities=(AgentProviderCapability.SHELL_TOOLS,),
+                        required_sandbox_profile=sandbox,
+                        preferred_provider_ids=("openai",),
+                        allow_fallback=False,
+                    ),
+                    actor=self.actor,
+                )
+                self.assertEqual(result.selected_runtime.provider_id, "openai")
+                self.assertEqual(result.selected_runtime.runtime_id, "codex")
+                self.assertEqual(
+                    set(result.selected_runtime.sandbox_profiles),
+                    set(supported),
+                )
+
+    def test_application_codex_registration_matches_supported_sandbox_profiles(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "codex_web" / "application.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),',
+            source,
+        )
+
     async def test_unavailable_preference_falls_back_only_when_allowed(self) -> None:
         capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
         self._provider("provider-a", capabilities)
