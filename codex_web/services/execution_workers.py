@@ -621,6 +621,19 @@ class ExecutionWorkerService:
                 raise WorkerConflictError(
                     "repository target project does not match assignment"
                 )
+        if payload.repository_scope is not None:
+            scope = payload.repository_scope
+            if (
+                scope.organization_id != actor.organization_id
+                or scope.workspace_id != actor.workspace_id
+            ):
+                raise WorkerConflictError(
+                    "repository scope tenant does not match assignment actor"
+                )
+            if payload.project_id is not None and scope.project_id != payload.project_id:
+                raise WorkerConflictError(
+                    "repository scope project does not match assignment"
+                )
         if payload.execution_workspace_id is not None:
             if self.workspaces is None:
                 raise WorkerConflictError(
@@ -701,6 +714,23 @@ class ExecutionWorkerService:
                         assignment.repository_target.mutable_repository_id
                         if assignment.repository_target is not None
                         else None
+                    ),
+                    "repository_write_mode": (
+                        assignment.repository_scope.write_mode.value
+                        if assignment.repository_scope is not None
+                        else "single"
+                    ),
+                    "writable_repository_ids": ",".join(
+                        assignment.repository_scope.writable_repository_ids
+                        if assignment.repository_scope is not None
+                        else (
+                            (assignment.repository_target.mutable_repository_id,)
+                            if (
+                                assignment.repository_target is not None
+                                and assignment.repository_target.mutable_repository_id is not None
+                            )
+                            else ()
+                        )
                     ),
                     "execution_profile_id": assignment.execution_profile_id,
                     "execution_profile_revision": (

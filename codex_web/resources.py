@@ -49,6 +49,11 @@ class RepositoryTargetSource(StrEnum):
     ORCHESTRATION_ONLY = "orchestration_only"
 
 
+class RepositoryWriteMode(StrEnum):
+    SINGLE = "single"
+    COORDINATED = "coordinated"
+
+
 class RepositoryTargetEvidence(BaseModel):
     """One canonical selector that contributed to repository authority."""
 
@@ -97,6 +102,76 @@ class RepositoryExecutionTarget(BaseModel):
         elif self.mutable_repository_id is None:
             raise ValueError("repository execution target requires mutable repository")
         return self
+
+
+class RepositoryExecutionScope(BaseModel):
+    """Canonical writable/read-only repository set fixed before execution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    writable_repository_ids: tuple[str, ...] = ()
+    read_only_repository_ids: tuple[str, ...] = ()
+    write_mode: RepositoryWriteMode = RepositoryWriteMode.SINGLE
+    source: RepositoryTargetSource
+    source_ref: str | None = None
+    selection_evidence: tuple[RepositoryTargetEvidence, ...] = ()
+
+    @model_validator(mode="after")
+    def normalize(self) -> "RepositoryExecutionScope":
+        writable = tuple(
+            dict.fromkeys(
+                value.strip()
+                for value in self.writable_repository_ids
+                if value and value.strip()
+            )
+        )
+        read_only = tuple(
+            dict.fromkeys(
+                value.strip()
+                for value in self.read_only_repository_ids
+                if value and value.strip()
+            )
+        )
+        overlap = set(writable) & set(read_only)
+        if overlap:
+            raise ValueError("writable repositories cannot also be read-only context")
+        if self.source == RepositoryTargetSource.ORCHESTRATION_ONLY:
+            if writable:
+                raise ValueError("orchestration-only scope cannot contain writable repositories")
+            if self.write_mode == RepositoryWriteMode.COORDINATED:
+                raise ValueError("orchestration-only scope cannot use coordinated write mode")
+        elif self.write_mode == RepositoryWriteMode.COORDINATED:
+            if len(writable) < 2:
+                raise ValueError("coordinated repository scope requires at least two writable repositories")
+        else:
+            if len(writable) > 1:
+                raise ValueError("single repository scope cannot contain multiple writable repositories")
+            if not writable:
+                raise ValueError("repository execution scope requires a writable repository")
+        object.__setattr__(self, "writable_repository_ids", writable)
+        object.__setattr__(self, "read_only_repository_ids", read_only)
+        return self
+
+    @classmethod
+    def from_target(cls, target: RepositoryExecutionTarget) -> "RepositoryExecutionScope":
+        return cls(
+            organization_id=target.organization_id,
+            workspace_id=target.workspace_id,
+            project_id=target.project_id,
+            writable_repository_ids=(
+                (target.mutable_repository_id,)
+                if target.mutable_repository_id is not None
+                else ()
+            ),
+            read_only_repository_ids=target.read_only_repository_ids,
+            write_mode=RepositoryWriteMode.SINGLE,
+            source=target.source,
+            source_ref=target.source_ref,
+            selection_evidence=target.selection_evidence,
+        )
 
 
 class ResourceRelationshipType(StrEnum):
