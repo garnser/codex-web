@@ -640,6 +640,76 @@ class WorkItemExecutionLifecycleService:
             },
         }
 
+    def record_continuation_delivery(
+        self,
+        ref: str,
+        execution_id: str,
+        selection: dict[str, Any],
+        delivered_context: dict[str, Any],
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist the canonical context proven delivered to one execution."""
+        snapshot = selection.get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise ValueError("continuation selection is missing canonical snapshot")
+        baseline = snapshot.get("work_item_context")
+        if not isinstance(baseline, dict):
+            raise ValueError("continuation snapshot is missing Work Item context")
+
+        provenance = dict(provenance or {})
+        metrics = selection.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        current = selection.get("current")
+        if not isinstance(current, dict):
+            current = {}
+
+        return self.checkpoint(
+            ref,
+            WorkItemCheckpointCreate(
+                summary="Canonical Work Item context delivered to execution.",
+                objective=current.get("objective"),
+                execution_id=execution_id,
+                execution_contract_version=provenance.get(
+                    "execution_contract_version"
+                ),
+                agent_profile_id=provenance.get("agent_profile_id"),
+                agent_profile_revision=provenance.get(
+                    "agent_profile_revision"
+                ),
+                role_id=provenance.get("role_id"),
+                provider_id=provenance.get("provider_id"),
+                runtime_id=provenance.get("runtime_id"),
+                session_ref=provenance.get("session_ref"),
+                work_item_revision=snapshot.get("work_item_revision"),
+                work_item_hash=snapshot.get("work_item_hash"),
+                event_watermark=snapshot.get("event_watermark"),
+                delivered_context_hash=self._hash_value(delivered_context),
+                delivery_proven=True,
+                delivery_proof_ref=f"turn-start:{execution_id}",
+                delivered_work_item_context=baseline,
+                continuation_mode=str(selection.get("mode") or "full"),
+                continuation_reason=str(
+                    selection.get("reason") or "canonical_context"
+                ),
+                continuation_checkpoint_id=selection.get("checkpoint_id"),
+                context_baseline_bytes=metrics.get(
+                    "baseline_context_bytes"
+                ),
+                context_delta_bytes=metrics.get("delta_context_bytes"),
+                estimated_tokens_reused=metrics.get(
+                    "estimated_tokens_reused"
+                ),
+                fallback_to_full_context_reason=(
+                    str(selection.get("reason"))
+                    if selection.get("mode") == "full"
+                    and selection.get("reason")
+                    else None
+                ),
+            ),
+        )
+
     def record_usage(self, ref: str, payload: WorkItemUsageRecord) -> dict[str, Any]:
         state = self._state(ref)
         usage = state.execution.usage
