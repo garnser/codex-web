@@ -284,7 +284,6 @@ class TurnExecutionBindingService:
         project: Project,
         *,
         explicit_repository_id: str | None = None,
-        writable_repository_ids: tuple[str, ...] = (),
         read_only_repository_ids: tuple[str, ...] = (),
         work_item_resource_ids: tuple[str, ...] = (),
         work_item_ref: str | None = None,
