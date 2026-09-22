@@ -1108,6 +1108,28 @@ class ExecutionWorkerService:
             assignment = self._assignment(state, assignment_id, actor)
             if assignment.status not in {AssignmentStatus.LOST, AssignmentStatus.FAILED}:
                 raise WorkerConflictError("only lost or failed assignment can be retried")
+            failure = assignment.failure
+            if failure is None:
+                legacy_reason = worker_failure_reason(
+                    assignment.failure_code
+                    or (
+                        "worker_lease_expired"
+                        if assignment.status == AssignmentStatus.LOST
+                        else None
+                    )
+                )
+                failure = create_failure(
+                    legacy_reason,
+                    source_subsystem="execution_worker",
+                    worker_id=assignment.assigned_worker_id,
+                    assignment_id=assignment.id,
+                    execution_id=assignment.execution_id,
+                    source_native_code=assignment.failure_code,
+                )
+            if not failure.automatic_retry_allowed:
+                raise WorkerConflictError(
+                    "canonical failure classification does not allow automatic retry"
+                )
             replacement = assignment.model_copy(
                 update={
                     "status": AssignmentStatus.PENDING,
