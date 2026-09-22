@@ -34,6 +34,13 @@ from codex_web.entitlements import (
     METRIC_EXTERNAL_ACTION_ATTEMPTS,
     UsageEventCreate,
 )
+from codex_web.failures import (
+    FailureReason,
+    FailureRecord,
+    action_failure_reason,
+    create_failure,
+    failure_from_exception,
+)
 from codex_web.identity import (
     AuthenticationActor,
     MembershipRole,
@@ -642,6 +649,22 @@ class ActionIntentService:
             or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
             or security_decision.outcome == SecurityDecisionOutcome.DENY
         )
+        denied_failure = (
+            create_failure(
+                FailureReason.AUTHORITY_DENIED,
+                source_subsystem="action_intent",
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                provider_id=(
+                    f"{provider.provider_type}:{provider.provider_instance}"
+                ),
+                execution_id=payload.execution_id,
+                action_intent_id=intent_id,
+                details={"action_id": request.action_id},
+            )
+            if denied
+            else None
+        )
         intent = ActionIntent(
             id=intent_id,
             organization_id=actor.organization_id,
@@ -686,6 +709,7 @@ class ActionIntentService:
                 if payload.policy_decision.outcome == ActionDecisionOutcome.DENY
                 else None
             ),
+            failure=denied_failure,
             work_item_success=payload.work_item_success,
         )
 
@@ -695,6 +719,36 @@ class ActionIntentService:
 
         self.store.update(apply)
         return intent
+
+    @staticmethod
+    def _failure(
+        intent: ActionIntent,
+        reason: FailureReason,
+        *,
+        summary: str | None = None,
+        source_native_code: str | None = None,
+        source_native_status: str | int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> FailureRecord:
+        return create_failure(
+            reason,
+            source_subsystem="action_intent",
+            summary=summary,
+            correlation_id=intent.correlation_id,
+            causation_id=intent.causation_id,
+            provider_id=(
+                f"{intent.provider_type}:{intent.provider_instance}"
+            ),
+            execution_id=intent.execution_id,
+            action_intent_id=intent.id,
+            source_native_code=source_native_code,
+            source_native_status=source_native_status,
+            attempt=max(1, intent.attempt or 1),
+            details={
+                "action_id": intent.action_id,
+                **(details or {}),
+            },
+        )
 
     @staticmethod
     def _capacity_priority(intent: ActionIntent) -> WorkloadPriority:
@@ -781,15 +835,29 @@ class ActionIntentService:
                 if intent.status == ActionIntentStatus.CLAIMED:
                     status = ActionIntentStatus.PENDING
                     error = "worker claim expired before provider execution"
+                    failure = self._failure(
+                        intent,
+                        FailureReason.WORKER_LEASE_LOST,
+                        summary=error,
+                    )
                 else:
                     status = ActionIntentStatus.UNCERTAIN
-                    error = "worker lease expired after provider execution started; outcome unknown"
+                    error = (
+                        "worker lease expired after provider execution started; "
+                        "outcome unknown"
+                    )
+                    failure = self._failure(
+                        intent,
+                        FailureReason.UNKNOWN_OUTCOME,
+                        summary=error,
+                    )
                 state.intents[index] = intent.model_copy(
                     update={
                         "status": status,
                         "lease": None,
                         "updated_at": current,
                         "last_error": error,
+                        "failure": failure,
                     }
                 )
                 recovered.append(intent.id)
@@ -1014,6 +1082,7 @@ class ActionIntentService:
         status: ActionIntentStatus,
         *,
         error: str | None = None,
+        failure: FailureRecord | None = None,
         clear_lease: bool = True,
     ) -> ActionIntent:
         now = time.time()
@@ -1029,6 +1098,13 @@ class ActionIntentService:
                             "updated_at": now,
                             "completed_at": now if completed else item.completed_at,
                             "last_error": error,
+                            "failure": (
+                                None
+                                if status == ActionIntentStatus.SUCCEEDED
+                                else failure
+                                if failure is not None
+                                else item.failure
+                            ),
                         }
                     )
                     break
@@ -1194,6 +1270,11 @@ class ActionIntentService:
                     intent_id,
                     ActionIntentStatus.FAILED,
                     error=f"entitlement/quota denied before provider execution: {exc}",
+                    failure=self._failure(
+                        pending,
+                        FailureReason.BUDGET_EXHAUSTED,
+                        source_native_code=type(exc).__name__,
+                    ),
                 )
         capacity_lease = None
         component_key = self._capacity_component(pending)
@@ -1259,6 +1340,11 @@ class ActionIntentService:
                     intent.id,
                     ActionIntentStatus.UNCERTAIN,
                     error="provider execution timed out; external outcome unknown",
+                    failure=self._failure(
+                        intent,
+                        FailureReason.ACTION_TIMEOUT_UNKNOWN_OUTCOME,
+                        source_native_code="TimeoutError",
+                    ),
                 )
             except asyncio.CancelledError:
                 if self.capacity is not None and capacity_lease is not None:
@@ -1285,7 +1371,25 @@ class ActionIntentService:
                 return self._set_status(
                     intent.id,
                     ActionIntentStatus.UNCERTAIN,
-                    error=f"provider execution raised {type(exc).__name__}; external outcome unknown",
+                    error=(
+                        f"provider execution raised {type(exc).__name__}; "
+                        "external outcome unknown"
+                    ),
+                    failure=failure_from_exception(
+                        exc,
+                        source_subsystem="action_intent",
+                        default_reason=FailureReason.UNKNOWN_OUTCOME,
+                        correlation_id=intent.correlation_id,
+                        causation_id=intent.causation_id,
+                        provider_id=(
+                            f"{intent.provider_type}:"
+                            f"{intent.provider_instance}"
+                        ),
+                        execution_id=intent.execution_id,
+                        action_intent_id=intent.id,
+                        attempt=max(1, intent.attempt or 1),
+                        details={"action_id": intent.action_id},
+                    ),
                 )
 
         if self.capacity is not None and capacity_lease is not None:
@@ -1305,10 +1409,18 @@ class ActionIntentService:
                     component_key=component_key,
                     reason=result.error_code or "provider_failed",
                 )
+            native_code = result.error_code or "provider_failed"
+            reason_code = action_failure_reason(native_code)
             return self._set_status(
                 intent.id,
                 ActionIntentStatus.FAILED,
-                error=result.error_message or result.error_code or "provider returned failure",
+                error=result.error_message or native_code,
+                failure=self._failure(
+                    intent,
+                    reason_code,
+                    source_native_code=native_code,
+                    summary=None,
+                ),
             )
         if self.capacity is not None:
             self.capacity.record_success(
@@ -1325,6 +1437,10 @@ class ActionIntentService:
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="required provider/evidence verification is not satisfied",
+                failure=self._failure(
+                    intent,
+                    FailureReason.VERIFICATION_FAILED,
+                ),
             )
         current = self._intent(intent.id, actor)
         try:
@@ -1337,27 +1453,11 @@ class ActionIntentService:
             )
         return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
 
-    def retry(
+    def _schedule_retry(
         self,
-        intent_id: str,
+        intent: ActionIntent,
         payload: ActionIntentRetryRequest,
-        *,
-        actor: AuthenticationActor,
     ) -> ActionIntent:
-        intent = self._intent(intent_id, actor)
-        self._require_intent_control(intent, actor)
-        if intent.attempt >= intent.retry_policy.max_attempts:
-            raise ActionIntentConflictError("action intent retry limit reached")
-        if intent.attempt > 0 and not intent.provider_idempotency_supported:
-            raise ActionIntentUnsafeRetryError(
-                "replaying an executed non-idempotent action is unsafe; reconcile instead"
-            )
-        if intent.status not in {
-            ActionIntentStatus.FAILED,
-            ActionIntentStatus.UNCERTAIN,
-            ActionIntentStatus.REQUIRES_RECONCILIATION,
-        }:
-            raise ActionIntentConflictError("action intent is not retryable from current status")
         not_before = time.time() + intent.retry_policy.backoff_seconds
 
         def apply(state):
@@ -1370,6 +1470,7 @@ class ActionIntentService:
                             "not_before": not_before,
                             "updated_at": time.time(),
                             "last_error": payload.reason,
+                            "failure": None,
                         }
                     )
                     break
@@ -1377,6 +1478,44 @@ class ActionIntentService:
 
         updated = self.store.update(apply)
         return next(item for item in updated.intents if item.id == intent.id)
+
+    def retry(
+        self,
+        intent_id: str,
+        payload: ActionIntentRetryRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        intent = self._intent(intent_id, actor)
+        self._require_intent_control(intent, actor)
+        if intent.attempt >= intent.retry_policy.max_attempts:
+            raise ActionIntentConflictError("action intent retry limit reached")
+        if intent.status in {
+            ActionIntentStatus.UNCERTAIN,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        } or (
+            intent.failure is not None
+            and intent.failure.requires_reconciliation
+        ):
+            raise ActionIntentUnsafeRetryError(
+                "unknown or unreconciled external outcome must be reconciled before retry"
+            )
+        if intent.attempt > 0 and not intent.provider_idempotency_supported:
+            raise ActionIntentUnsafeRetryError(
+                "replaying an executed non-idempotent action is unsafe; reconcile instead"
+            )
+        if intent.status != ActionIntentStatus.FAILED:
+            raise ActionIntentConflictError(
+                "action intent is not retryable from current status"
+            )
+        if (
+            intent.failure is not None
+            and intent.failure.retryability.value == "not_retryable"
+        ):
+            raise ActionIntentUnsafeRetryError(
+                "canonical failure classification forbids retry"
+            )
+        return self._schedule_retry(intent, payload)
 
     def cancel(
         self,
@@ -1564,10 +1703,11 @@ class ActionIntentService:
             )
 
         if payload.retry_if_idempotent and intent.provider_idempotency_supported:
-            return self.retry(
-                intent.id,
-                ActionIntentRetryRequest(reason="reconciliation retry using provider idempotency"),
-                actor=actor,
+            return self._schedule_retry(
+                intent,
+                ActionIntentRetryRequest(
+                    reason="reconciliation retry using provider idempotency"
+                ),
             )
 
         return self._set_status(
