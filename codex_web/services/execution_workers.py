@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
 import time
 
@@ -14,6 +16,9 @@ from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionAssignmentCreate,
     ExecutionWorker,
+    ExecutionWorkerEnroll,
+    ExecutionWorkerEnrollmentGrant,
+    ExecutionWorkerEnrollmentRequest,
     ExecutionWorkerRegister,
     ExecutionWorkerState,
     WorkerEvent,
@@ -321,6 +326,210 @@ class ExecutionWorkerService:
             key=lambda item: (item.registered_at, item.id),
             reverse=True,
         )
+
+    def list_enrollments(
+        self,
+        actor: AuthenticationActor,
+    ) -> list[ExecutionWorkerEnrollmentGrant]:
+        self._require_admin(actor)
+        return sorted(
+            [
+                item
+                for item in self.store.load().enrollments
+                if self._same_scope(item, actor)
+            ],
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+
+    def create_enrollment(
+        self,
+        payload: ExecutionWorkerEnrollmentRequest,
+        *,
+        actor: AuthenticationActor,
+        now: float | None = None,
+    ) -> tuple[ExecutionWorkerEnrollmentGrant, str]:
+        self._require_admin(actor)
+        if self.identity is not None:
+            identity_state = self.identity.state()
+            service = next(
+                (
+                    item
+                    for item in identity_state.services
+                    if item.id == payload.service_identity_id
+                    and item.disabled_at is None
+                ),
+                None,
+            )
+            memberships = self.identity._active_memberships(
+                identity_state,
+                payload.service_identity_id,
+                actor.tenant,
+                principal_kind=PrincipalKind.SERVICE,
+            )
+            if service is None or not memberships:
+                raise WorkerConflictError(
+                    "worker service identity must exist and belong to the tenant/workspace"
+                )
+        issued_at = time.time() if now is None else now
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        created: list[ExecutionWorkerEnrollmentGrant] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            grant = ExecutionWorkerEnrollmentGrant(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                service_identity_id=payload.service_identity_id,
+                pool=payload.pool,
+                token_digest=digest,
+                allowed_capabilities=payload.allowed_capabilities,
+                max_concurrency_ceiling=payload.max_concurrency_ceiling,
+                created_by=actor.identity_id,
+                created_at=issued_at,
+                expires_at=issued_at + payload.expires_in_seconds,
+            )
+            state.enrollments.append(grant)
+            state.enrollments = state.enrollments[-1000:]
+            self._event(
+                state,
+                actor=actor,
+                event_type="worker_enrollment_created",
+                details={
+                    "enrollment_id": grant.id,
+                    "pool": grant.pool,
+                    "expires_at": grant.expires_at,
+                },
+            )
+            created.append(grant)
+            return state
+
+        self.store.update(apply)
+        return created[0], token
+
+    def enroll(
+        self,
+        payload: ExecutionWorkerEnroll,
+        *,
+        now: float | None = None,
+    ) -> ExecutionWorker:
+        enrolled_at = time.time() if now is None else now
+        digest = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
+        result: list[ExecutionWorker] = []
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            grant = next(
+                (
+                    item
+                    for item in state.enrollments
+                    if hmac.compare_digest(item.token_digest, digest)
+                ),
+                None,
+            )
+            if grant is None:
+                raise WorkerConflictError("invalid worker enrollment token")
+            if grant.used_at is not None:
+                raise WorkerConflictError("worker enrollment token already used")
+            if grant.expires_at <= enrolled_at:
+                raise WorkerConflictError("worker enrollment token expired")
+            requested = set(payload.capabilities)
+            allowed = set(grant.allowed_capabilities)
+            if not requested.issubset(allowed):
+                raise WorkerCapabilityError(
+                    "worker advertised capabilities outside enrollment scope"
+                )
+            failed_probes = [
+                capability.value
+                for capability in payload.capabilities
+                if payload.probe_results.get(capability.value) is False
+            ]
+            if failed_probes:
+                raise WorkerCapabilityError(
+                    "worker capability probe failed: " + ", ".join(failed_probes)
+                )
+            if payload.max_concurrency > grant.max_concurrency_ceiling:
+                raise WorkerCapabilityError(
+                    "worker concurrency exceeds enrollment ceiling"
+                )
+            existing = next(
+                (
+                    item
+                    for item in state.workers
+                    if item.organization_id == grant.organization_id
+                    and item.workspace_id == grant.workspace_id
+                    and item.service_identity_id == grant.service_identity_id
+                    and item.pool == grant.pool
+                    and item.lifecycle != WorkerLifecycle.REVOKED
+                ),
+                None,
+            )
+            if existing is None:
+                worker = ExecutionWorker(
+                    organization_id=grant.organization_id,
+                    workspace_id=grant.workspace_id,
+                    service_identity_id=grant.service_identity_id,
+                    pool=grant.pool,
+                    version=payload.version,
+                    capabilities=payload.capabilities,
+                    supported_execution_contract_versions=(
+                        payload.supported_execution_contract_versions
+                    ),
+                    max_concurrency=payload.max_concurrency,
+                    registered_by=grant.created_by,
+                    registered_at=enrolled_at,
+                    last_heartbeat_at=enrolled_at,
+                )
+                state.workers.append(worker)
+                event_type = "worker_enrolled"
+            else:
+                worker = existing.model_copy(
+                    update={
+                        "version": payload.version,
+                        "capabilities": payload.capabilities,
+                        "supported_execution_contract_versions": (
+                            payload.supported_execution_contract_versions
+                        ),
+                        "max_concurrency": payload.max_concurrency,
+                        "last_heartbeat_at": enrolled_at,
+                        "lifecycle": (
+                            WorkerLifecycle.ACTIVE
+                            if existing.lifecycle == WorkerLifecycle.OFFLINE
+                            else existing.lifecycle
+                        ),
+                    }
+                )
+                state.workers = [
+                    worker if item.id == existing.id else item
+                    for item in state.workers
+                ]
+                event_type = "worker_reenrolled"
+            replacement = grant.model_copy(
+                update={"used_at": enrolled_at, "worker_id": worker.id}
+            )
+            state.enrollments = [
+                replacement if item.id == grant.id else item
+                for item in state.enrollments
+            ]
+            state.events.append(
+                WorkerEvent(
+                    organization_id=grant.organization_id,
+                    workspace_id=grant.workspace_id,
+                    event_type=event_type,
+                    worker_id=worker.id,
+                    actor_id=grant.service_identity_id,
+                    details={
+                        "enrollment_id": grant.id,
+                        "pool": grant.pool,
+                        "capability_count": len(payload.capabilities),
+                    },
+                )
+            )
+            state.events = state.events[-10000:]
+            result.append(worker)
+            return state
+
+        self.store.update(apply)
+        return result[0]
 
     def register(
         self,
