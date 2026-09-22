@@ -1,3 +1,34 @@
+const writableSelections = new Map();
+
+function storedWritableIds(project, settings = {}) {
+  const explicit = Array.isArray(settings.writableRepositoryResourceIds)
+    ? settings.writableRepositoryResourceIds.filter(Boolean)
+    : [];
+  const key = project?.id || "";
+  if (explicit.length) {
+    writableSelections.set(key, Array.from(new Set(explicit)));
+  }
+  return explicit.length ? Array.from(new Set(explicit)) : (writableSelections.get(key) || []);
+}
+
+export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
+  const ids = storedWritableIds(project, settings);
+  const primary = settings.repositoryResourceId || "";
+  return primary && ids.includes(primary)
+    ? [primary, ...ids.filter((id) => id !== primary)]
+    : [...ids];
+}
+
+export function scope() {
+  const writable = document.getElementById("repository-write-targets");
+  const primary = document.getElementById("repository-target")?.value || "";
+  const ids = Array.from(writable?.selectedOptions || [], (option) => option.value);
+  const ordered = primary && ids.includes(primary)
+    ? [primary, ...ids.filter((id) => id !== primary)]
+    : ids;
+  return { writable_repository_resource_ids: ordered };
+}
+
 export function activeRepositories(resources = []) {
   return resources.filter((item) => (
     item.resource_type === "repository" && item.lifecycle === "active"
@@ -18,20 +49,58 @@ export function targetState({
   repositories = repositories || activeRepositories(resources);
   selectedId = selectedId ?? settings.repositoryResourceId ?? "";
   boundId = boundId ?? threadSettings.repository_resource_id ?? "";
+  const writableIds = storedWritableIds(project, settings);
   const byId = new Map(repositories.map((item) => [item.id, item]));
+  const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
 
-  if (boundId && selectedId && boundId !== selectedId) {
+  if (selectedId && writableIds.length && !writableIds.includes(selectedId)) {
     return {
       status: "conflict",
       blocked: true,
       code: "repository_target_conflict",
-      message: `Repository conflict: this thread is bound to ${boundId}, but ${selectedId} is selected.`,
+      message: `Repository conflict: ${selectedId} is selected as the primary target but is not in the writable set.`,
       id: selectedId,
+      provenance: "explicit primary selection conflicts with coordinated writable set",
+    };
+  }
+
+  if (boundId && requestedIds.length && !requestedIds.includes(boundId)) {
+    return {
+      status: "conflict",
+      blocked: true,
+      code: "repository_target_conflict",
+      message: `Repository conflict: this thread is bound to ${boundId}, but the writable selection does not include it.`,
+      id: selectedId || writableIds[0] || "",
       provenance: "explicit selection conflicts with thread binding",
     };
   }
 
-  const id = boundId || selectedId;
+  const missingIds = requestedIds.filter((id) => !byId.has(id));
+  if (missingIds.length) {
+    return {
+      status: "stale",
+      blocked: false,
+      code: "repository_target_stale",
+      message: `Repository ${missingIds[0]} is no longer an active Project-bound option; canonical preflight will validate it.`,
+      id: missingIds[0],
+      provenance: "explicit coordinated selection",
+    };
+  }
+
+  if (writableIds.length > 1) {
+    const labels = writableIds.map((id) => byId.get(id)?.name || id);
+    return {
+      status: "selected",
+      blocked: false,
+      code: null,
+      message: `${writableIds.length} writable repositories · ${labels.join(", ")} · explicit coordinated selection`,
+      id: selectedId || writableIds[0],
+      repositoryIds: writableIds,
+      provenance: "explicit coordinated selection",
+    };
+  }
+
+  const id = boundId || writableIds[0] || selectedId;
   if (id) {
     const repository = byId.get(id);
     if (!repository) {
@@ -84,9 +153,10 @@ export function renderControls({
   escapeHtml,
 }) {
   const mutable = document.getElementById("repository-target");
+  const writable = document.getElementById("repository-write-targets");
   const readOnly = document.getElementById("repository-read-context");
   const status = document.getElementById("repository-target-status");
-  if (!mutable || !readOnly) return;
+  if (!mutable || !writable || !readOnly) return;
 
   const policy = project?.repository_selection_policy || "deterministic";
   const repositories = activeRepositories(resources);
@@ -101,9 +171,30 @@ export function renderControls({
   ].join("");
   mutable.value = settings.repositoryResourceId || "";
 
+  const selectedWritable = new Set(storedWritableIds(project, settings));
+  writable.innerHTML = repositories
+    .map((item) => (
+      `<option value="${escapeHtml(item.id)}" ${selectedWritable.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
+    ))
+    .join("");
+  writable.onchange = () => {
+    const ids = Array.from(writable.selectedOptions, (option) => option.value);
+    writableSelections.set(project?.id || "", ids);
+    renderControls({
+      project,
+      resources,
+      settings: { ...settings, writableRepositoryResourceIds: ids },
+      threadSettings,
+      escapeHtml,
+    });
+  };
+
   const selected = new Set(settings.readOnlyRepositoryResourceIds || []);
   readOnly.innerHTML = repositories
-    .filter((item) => item.id !== settings.repositoryResourceId)
+    .filter((item) => (
+      item.id !== settings.repositoryResourceId
+      && !selectedWritable.has(item.id)
+    ))
     .map((item) => (
       `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`
     ))

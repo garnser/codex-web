@@ -265,6 +265,11 @@ class RuntimeHealthService:
 
         if not self.codex.proc or self.codex.proc.poll() is not None:
             problems.append("codex app-server process is not running")
+        elif (
+            getattr(self.codex, "reader_task", None) is not None
+            and self.codex.reader_task.done()
+        ):
+            problems.append("codex app-server response reader is not running")
         elif not self.codex.ready.is_set():
             problems.append("codex app-server is not ready")
 
