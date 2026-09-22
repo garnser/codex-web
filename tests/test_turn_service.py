@@ -423,7 +423,11 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as caught:
             await service.start(
                 "thread-1",
-                TurnCreate(message="apply fix", project_id="home"),
+                TurnCreate(
+                    message="apply fix",
+                    project_id="home",
+                    writable_repository_resource_ids=("repo-app", "repo-api"),
+                ),
                 actor=actor,
                 execution_id="thread-turn-retained",
             )
@@ -436,6 +440,10 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         retained = preflight.get(attempt_id, actor=actor)
         self.assertEqual(retained.message, "apply fix")
         self.assertEqual(retained.execution_id, "thread-turn-retained")
+        self.assertEqual(
+            retained.writable_repository_resource_ids,
+            ("repo-app", "repo-api"),
+        )
         self.assertEqual(retained.status, "blocked")
 
         execution.blocked = False
@@ -451,6 +459,10 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             execution.start_calls[-1][1]["execution_id"],
             "thread-turn-retained",
+        )
+        self.assertEqual(
+            execution.start_calls[-1][1]["writable_repository_resource_ids"],
+            ("repo-app", "repo-api"),
         )
 
         duplicate = await service.retry_preflight(
