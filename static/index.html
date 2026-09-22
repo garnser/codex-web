@@ -1119,12 +1119,13 @@
             </select>
           </label>
           <span id="execution-profile-summary" class="execution-profile-summary" role="status"></span>
-          <label class="repository-target-control" title="Repository scope for the next thread in this project">
+          <label class="repository-target-control" title="Repository scope for the next repository-mutating turn">
             <span>Repository</span>
-            <select id="repository-target">
+            <select id="repository-target" aria-describedby="repository-target-status">
               <option value="">Auto</option>
             </select>
           </label>
+          <span id="repository-target-status" class="repository-target-status" role="status" aria-live="polite"></span>
           <label class="repository-target-control" title="Optional read-only repository context for the next thread">
             <span>Read context</span>
             <select id="repository-read-context" multiple></select>
