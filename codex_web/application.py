@@ -350,6 +350,7 @@ from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_runs import WorkItemRunProjectionService
+from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.services.work_item_state import install_work_item_state_machine
 from codex_web.services.work_item_continuity import (
     DeferredWorkItemContinuityService,
@@ -1853,6 +1854,14 @@ work_item_compatibility_service = install_work_item_compatibility(
     work_item_service,
 )
 app.state.work_item_service = work_item_service
+work_item_execution_lifecycle_service = WorkItemExecutionLifecycleService(
+    None,
+    work_item_state_machine,
+    dependencies=work_item_dependencies,
+)
+app.state.work_item_execution_lifecycle_service = (
+    work_item_execution_lifecycle_service
+)
 app.state.task_source_registry = work_item_service.task_source_registry
 app.state.task_source_writeback_service = (
     work_item_service.task_source_writeback
@@ -2437,6 +2446,12 @@ turn_execution_service = install_turn_execution_service(
             workspace_id=project.workspace_id,
             objective=objective,
         )
+    ),
+    work_item_context_resolver=(
+        work_item_execution_lifecycle_service.continuation_delta
+    ),
+    work_item_context_recorder=(
+        work_item_execution_lifecycle_service.record_continuation_delivery
     ),
 )
 
