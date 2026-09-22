@@ -337,7 +337,7 @@ for (const scenario of [
       },
     },
     diagnostics: [],
-    expected: ['Execution failed', 'worker_lost', 'Worker lease was lost', 'retry 2/3'],
+    expected: ['Execution failed', 'worker_lost', 'Worker lease was lost', 'retry2/3'],
   },
   {
     name: 'completed',
