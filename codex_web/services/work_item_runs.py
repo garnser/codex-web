@@ -299,6 +299,28 @@ class WorkItemRunProjectionService:
         return rows
 
     @classmethod
+    def _repository_outcome_status(
+        cls,
+        workspace_state: Any | None,
+        item: ExecutionAssignment,
+    ) -> str | None:
+        if workspace_state is None or item.execution_workspace_id is None:
+            return None
+        workspace = next(
+            (
+                value
+                for value in workspace_state.workspaces
+                if value.id == item.execution_workspace_id
+                and value.organization_id == item.organization_id
+                and value.workspace_id == item.workspace_id
+            ),
+            None,
+        )
+        if workspace is None:
+            return None
+        return cls._value(workspace.repository_outcome_status)
+
+    @classmethod
     def _attempts(cls, worker_state: Any, item: ExecutionAssignment) -> list[dict[str, Any]]:
         relevant = sorted(
             (
@@ -479,6 +501,10 @@ class WorkItemRunProjectionService:
             ),
             "repositoryScope": self._repository_scope_view(item),
             "repositoryOutcomes": self._repository_outcomes(workspace_state, item),
+            "repositoryOutcomeStatus": self._repository_outcome_status(
+                workspace_state,
+                item,
+            ),
             "usage": usage,
             "activity": {
                 "toolCalls": usage["toolCalls"],

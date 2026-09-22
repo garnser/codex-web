@@ -80,6 +80,7 @@ function runTimelineHtml() {
             fence: run.worker?.fence,
             attempts: retries.attemptCount,
             repositories: repositoryScopeSummary(run.repositoryScope),
+            repository_outcome: run.repositoryOutcomeStatus,
             model: (usage.models || []).join(', ') || agent.modelId,
             tokens: usage.totalTokens,
             cost_usd: usage.costUsd,
@@ -173,6 +174,9 @@ function runDetailHtml(run) {
     <h5>Repository execution scope</h5>
     <div class="work-run-repositories">${repositoryScopeHtml(run.repositoryScope)}</div>
     <h5>Repository outcomes</h5>
+    <div class="work-kv work-kv-wide">${keyValueRows({
+      aggregate_outcome: run.repositoryOutcomeStatus,
+    })}</div>
     <div class="work-run-activity work-run-repository-outcomes">${repositoryOutcomesHtml(repositoryOutcomes)}</div>
     <h5>Combined repository activity</h5>
     <div class="work-run-activity work-run-repository-activity">${repositoryActivityRows}</div>

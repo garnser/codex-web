@@ -49,6 +49,14 @@ class IntegrationOutcome(StrEnum):
     DISCARDED = "discarded"
 
 
+class RepositoryOutcomeStatus(StrEnum):
+    PENDING = "pending"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+    BLOCKED = "blocked"
+    DISCARDED = "discarded"
+
+
 class WorkspaceQuota(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -153,6 +161,7 @@ class ExecutionWorkspace(BaseModel):
     error: str | None = None
     integration: WorkspaceIntegrationState = Field(default_factory=WorkspaceIntegrationState)
     repository_integrations: dict[str, WorkspaceIntegrationState] = Field(default_factory=dict)
+    repository_outcome_status: RepositoryOutcomeStatus = RepositoryOutcomeStatus.PENDING
     repository_members: tuple[ExecutionWorkspaceMember, ...] = ()
 
     @model_validator(mode="after")
@@ -222,7 +231,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.3"
+    schema_version: str = "1.4"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)

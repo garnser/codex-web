@@ -25,6 +25,7 @@ from codex_web.execution_workspaces import (
     IntegrationOutcome,
     IntegrationStrategy,
     LeaseMode,
+    RepositoryOutcomeStatus,
     WorkspaceIntegrationState,
 )
 from codex_web.execution_workers import (
@@ -244,6 +245,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             writable_repository_ids=("repo-app", "repo-api"),
             lease_id="lease-repository-outcomes",
             status=ExecutionWorkspaceStatus.CONFLICTED,
+            repository_outcome_status=RepositoryOutcomeStatus.BLOCKED,
             created_at=36.0,
             updated_at=37.0,
             repository_members=(
@@ -306,6 +308,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             for value in run["repositoryOutcomes"]
         }
 
+        self.assertEqual(run["repositoryOutcomeStatus"], "blocked")
         self.assertEqual(outcomes["repo-app"]["status"], "integrated")
         self.assertEqual(outcomes["repo-app"]["headRevision"], "app-result")
         self.assertEqual(
@@ -343,6 +346,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             writable_repository_ids=("repo-1",),
             lease_id="lease-legacy-integration",
             status=ExecutionWorkspaceStatus.INTEGRATED,
+            repository_outcome_status=RepositoryOutcomeStatus.COMPLETE,
             created_at=38.0,
             updated_at=39.0,
             integration=WorkspaceIntegrationState(
@@ -381,6 +385,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             workspace_id="default",
         )["run"]
 
+        self.assertEqual(run["repositoryOutcomeStatus"], "complete")
         self.assertEqual(len(run["repositoryOutcomes"]), 1)
         self.assertEqual(run["repositoryOutcomes"][0]["status"], "integrated")
         self.assertEqual(
@@ -645,6 +650,7 @@ class WorkItemRunUiContractTests(unittest.TestCase):
         self.assertIn("work-runs-load-more", run_ui)
         self.assertIn("repositoryScope", run_ui)
         self.assertIn("repositoryOutcomes", run_ui)
+        self.assertIn("repositoryOutcomeStatus", run_ui)
         self.assertIn("Repository execution scope", run_ui)
         self.assertIn("Repository outcomes", run_ui)
         self.assertIn("writable_repositories", run_ui)

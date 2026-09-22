@@ -9,8 +9,8 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.3",
-    ("1.0", "1.1", "1.2", "1.3"),
+    "1.4",
+    ("1.0", "1.1", "1.2", "1.3", "1.4"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
@@ -88,6 +88,70 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
             for item in payload.get("workspaces", [])
         ],
     },
+)
+
+
+def _repository_outcome_status(item: dict[str, Any]) -> str:
+    writable = list(item.get("writable_repository_ids") or [])
+    primary = item.get("repository_resource_id")
+    if not writable and primary:
+        writable = [primary]
+
+    integrations = dict(item.get("repository_integrations") or {})
+    legacy = item.get("integration")
+    if (
+        primary
+        and primary not in integrations
+        and isinstance(legacy, dict)
+        and legacy.get("recorded_at") is not None
+    ):
+        integrations[primary] = legacy
+
+    recorded = [
+        integrations.get(repository_id)
+        for repository_id in writable
+        if integrations.get(repository_id) is not None
+    ]
+    outcomes = [
+        str(value.get("outcome") or "pending")
+        for value in recorded
+        if isinstance(value, dict)
+    ]
+    if "conflict" in outcomes:
+        return "blocked"
+    if writable and len(recorded) == len(writable):
+        successful = {"merged", "rebased", "fast_forwarded"}
+        if outcomes and all(value in successful for value in outcomes):
+            return "complete"
+        if outcomes and all(value == "discarded" for value in outcomes):
+            return "discarded"
+        return "partial"
+    if recorded:
+        return "partial"
+    return "pending"
+
+
+def _migrate_1_3_to_1_4(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "schema_version": "1.4",
+        "workspaces": [
+            {
+                **dict(item),
+                "repository_outcome_status": (
+                    dict(item).get("repository_outcome_status")
+                    or _repository_outcome_status(dict(item))
+                ),
+            }
+            for item in payload.get("workspaces", [])
+        ],
+    }
+
+
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.3",
+    "1.4",
+    _migrate_1_3_to_1_4,
 )
 
 
