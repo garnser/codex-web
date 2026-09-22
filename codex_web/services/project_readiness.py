@@ -26,6 +26,12 @@ from codex_web.services.resources import (
     ResourceCatalogService,
 )
 from codex_web.services.secrets import SecretBroker
+from codex_web.services.codex_execution_authentication import (
+    CodexAuthenticationDecision,
+    CodexAuthenticationPolicyError,
+    CodexExecutionAuthenticationMode,
+    CodexExecutionAuthenticationResolver,
+)
 from codex_web.storage.project_bootstrap import ProjectBootstrapStore
 from codex_web.storage.project_readiness import ProjectReadinessStore
 
@@ -51,6 +57,7 @@ class ProjectReadinessService:
         configuration: ConfigurationService | None = None,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
+        authentication_resolver: CodexExecutionAuthenticationResolver | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -66,6 +73,7 @@ class ProjectReadinessService:
         self.runtime_credential_configs = dict(
             runtime_credential_configs or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
         )
+        self.authentication_resolver = authentication_resolver
         self.clock = clock
 
     @staticmethod
@@ -525,11 +533,96 @@ class ProjectReadinessService:
                     )
                 )
 
-        config_key = runtime_credential_config_key(
-            self.runtime_binding,
-            self.runtime_credential_configs,
-        )
-        if self.runtime_binding is None or config_key is None:
+        authentication_decision: CodexAuthenticationDecision | None = None
+        authentication_error: CodexAuthenticationPolicyError | None = None
+        if self.authentication_resolver is not None:
+            try:
+                authentication_decision = self.authentication_resolver.resolve(
+                    project_id=project.id,
+                    source="web",
+                    runtime_binding=self.runtime_binding,
+                )
+            except CodexAuthenticationPolicyError as exc:
+                authentication_error = exc
+
+        if authentication_error is not None:
+            checks.append(
+                self._check(
+                    "runtime:authentication",
+                    "authentication",
+                    ReadinessCheckStatus.BLOCKED,
+                    authentication_error.code,
+                    str(authentication_error),
+                    affected_type="authentication_mode",
+                    affected_id=project.id,
+                    remediation="Select a supported and permitted Codex authentication mode.",
+                    remediation_route="/api/configuration",
+                    details={"runtime": (
+                        f"{self.runtime_binding.provider_id}/{self.runtime_binding.runtime_id}"
+                        if self.runtime_binding is not None else None
+                    )},
+                )
+            )
+            config_key = None
+        else:
+            config_key = (
+                authentication_decision.credential_config_key
+                if authentication_decision is not None
+                else runtime_credential_config_key(
+                    self.runtime_binding,
+                    self.runtime_credential_configs,
+                )
+            )
+            if authentication_decision is not None:
+                checks.append(
+                    self._check(
+                        "runtime:authentication",
+                        "authentication",
+                        ReadinessCheckStatus.READY,
+                        "authentication_mode_selected",
+                        (
+                            "Codex authentication mode "
+                            f"{authentication_decision.mode.value} is selected."
+                        ),
+                        affected_type="authentication_mode",
+                        affected_id=authentication_decision.mode.value,
+                        details={
+                            "authentication_mode": authentication_decision.mode.value,
+                            "authentication_source": (
+                                authentication_decision.authentication_source
+                            ),
+                            "configuration_source": (
+                                authentication_decision.configuration_source
+                            ),
+                        },
+                    )
+                )
+
+        if authentication_error is not None:
+            pass
+        elif authentication_decision is not None and authentication_decision.local_session:
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "secret_reference",
+                    ReadinessCheckStatus.NOT_APPLICABLE,
+                    "credential_reference_not_required",
+                    (
+                        "Trusted local Codex session authentication does not require "
+                        "a worker credential SecretReference."
+                    ),
+                    affected_type="authentication_mode",
+                    affected_id=authentication_decision.mode.value,
+                    required=False,
+                    details={
+                        "authentication_mode": authentication_decision.mode.value,
+                        "authentication_source": (
+                            authentication_decision.authentication_source
+                        ),
+                    },
+                )
+            )
+        elif self.runtime_binding is None or config_key is None:
             checks.append(
                 self._check(
                     "runtime:credential-reference",
@@ -554,7 +647,13 @@ class ProjectReadinessService:
                     affected_id=config_key,
                     remediation="Configure the required runtime SecretReference.",
                     remediation_route="/api/configuration",
-                    details={"configuration_key": config_key},
+                    details={
+                        "configuration_key": config_key,
+                        "authentication_mode": (
+                            authentication_decision.mode.value
+                            if authentication_decision is not None else None
+                        ),
+                    },
                 )
             )
         else:
@@ -603,7 +702,7 @@ class ProjectReadinessService:
                     remediation=(
                         None
                         if active
-                        else "Configure an authorized canonical SecretReference for the selected runtime."
+                        else "Configure an authorized canonical SecretReference for the selected authentication mode."
                     ),
                     remediation_route="/api/configuration",
                     details={
@@ -613,45 +712,71 @@ class ProjectReadinessService:
                             f"{self.runtime_binding.provider_id}/"
                             f"{self.runtime_binding.runtime_id}"
                         ),
+                        "authentication_mode": (
+                            authentication_decision.mode.value
+                            if authentication_decision is not None else None
+                        ),
+                        "authentication_source": (
+                            authentication_decision.authentication_source
+                            if authentication_decision is not None else None
+                        ),
                     },
                 )
             )
 
-        worker = self.workers.execution_readiness(
-            required_capabilities=(
-                WorkerCapability.GIT,
-                WorkerCapability.COMMAND_EXECUTION,
-            ),
-            execution_contract_version="thread-turn/1.0",
-            actor=actor,
-        )
-        checks.append(
-            self._check(
-                "execution:worker",
-                "execution_worker",
-                (
-                    ReadinessCheckStatus.READY
-                    if worker.ready
-                    else ReadinessCheckStatus.BLOCKED
-                ),
-                worker.code,
-                worker.reason,
-                affected_type="execution_worker",
-                remediation=(
-                    None if worker.ready else worker.remediation
-                ),
-                remediation_route="/api/execution-workers/readiness",
-                details={
-                    "eligible_worker_ids": list(worker.eligible_worker_ids),
-                    "required_capabilities": [
-                        item.value for item in worker.required_capabilities
-                    ],
-                    "available_capabilities": [
-                        item.value for item in worker.available_capabilities
-                    ],
-                },
+        if authentication_decision is not None and authentication_decision.local_session:
+            checks.append(
+                self._check(
+                    "execution:worker",
+                    "execution_worker",
+                    ReadinessCheckStatus.NOT_APPLICABLE,
+                    "execution_worker_not_required",
+                    "Trusted local Codex session execution does not require an assignment-bound worker.",
+                    affected_type="authentication_mode",
+                    affected_id=authentication_decision.mode.value,
+                    required=False,
+                )
             )
-        )
+        elif authentication_error is None:
+            worker = self.workers.execution_readiness(
+                required_capabilities=(
+                    WorkerCapability.GIT,
+                    WorkerCapability.COMMAND_EXECUTION,
+                ),
+                execution_contract_version="thread-turn/1.0",
+                actor=actor,
+            )
+            checks.append(
+                self._check(
+                    "execution:worker",
+                    "execution_worker",
+                    (
+                        ReadinessCheckStatus.READY
+                        if worker.ready
+                        else ReadinessCheckStatus.BLOCKED
+                    ),
+                    worker.code,
+                    worker.reason,
+                    affected_type="execution_worker",
+                    remediation=(
+                        None if worker.ready else worker.remediation
+                    ),
+                    remediation_route="/api/execution-workers/readiness",
+                    details={
+                        "eligible_worker_ids": list(worker.eligible_worker_ids),
+                        "required_capabilities": [
+                            item.value for item in worker.required_capabilities
+                        ],
+                        "available_capabilities": [
+                            item.value for item in worker.available_capabilities
+                        ],
+                        "authentication_mode": (
+                            authentication_decision.mode.value
+                            if authentication_decision is not None else None
+                        ),
+                    },
+                )
+            )
 
         if self.environment_probe is None:
             environment = {
