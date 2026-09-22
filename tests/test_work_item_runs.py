@@ -533,6 +533,20 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             summary="tests passed",
             observed_at=32.0,
         )
+        repository_test_evidence = Evidence(
+            id="evidence-2",
+            organization_id="local",
+            workspace_id="default",
+            project_id="home",
+            work_item_ref="group/app#42",
+            execution_id="exec-detail",
+            resource_ids=("repo-1",),
+            evidence_type=EvidenceType.TEST_RESULT,
+            producer_identity_id="worker",
+            result=EvidenceResult.PASS,
+            summary="repo-1 focused tests passed",
+            observed_at=32.5,
+        )
         verification = Verification(
             id="verification-1",
             organization_id="local",
@@ -553,7 +567,7 @@ class WorkItemRunProjectionTests(unittest.TestCase):
             artifact_evidence=SimpleNamespace(
                 load=lambda: ArtifactEvidenceState(
                     artifacts=[artifact],
-                    evidence=[evidence],
+                    evidence=[evidence, repository_test_evidence],
                     verifications=[verification],
                 )
             ),
@@ -613,17 +627,20 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(payload["usage"]["fileEdits"], 2)
         self.assertEqual(payload["artifacts"][0]["id"], "artifact-1")
         self.assertEqual(payload["evidence"][0]["result"], "pass")
+        evidence_by_id = {value["id"]: value for value in payload["evidence"]}
+        self.assertEqual(evidence_by_id["evidence-2"]["resourceIds"], ["repo-1"])
         self.assertEqual(payload["verifications"][0]["result"], "verified")
         self.assertEqual(payload["artifacts"][0]["resourceIds"], ["repo-2"])
-        activity = {entry["kind"]: entry for entry in payload["repositoryActivity"]}
-        self.assertEqual(activity["artifact"]["repositoryIds"], ["repo-2"])
-        self.assertEqual(activity["evidence"]["repositoryIds"], ["repo-2"])
-        self.assertEqual(activity["verification"]["repositoryIds"], ["repo-2"])
-        self.assertEqual(activity["action"]["repositoryIds"], ["repo-1"])
+        activity = {entry["id"]: entry for entry in payload["repositoryActivity"]}
+        self.assertEqual(activity["artifact-1"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["evidence-1"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["evidence-2"]["repositoryIds"], ["repo-1"])
+        self.assertEqual(activity["verification-1"]["repositoryIds"], ["repo-2"])
+        self.assertEqual(activity["action-1"]["repositoryIds"], ["repo-1"])
         self.assertEqual(payload["actions"][0]["resourceIds"], ["repo-1"])
         self.assertEqual(
             [entry["occurredAt"] for entry in payload["repositoryActivity"]],
-            [31.0, 32.0, 33.0, 34.0],
+            [31.0, 32.0, 32.5, 33.0, 34.0],
         )
         self.assertEqual(payload["contextCheckpoint"]["id"], "checkpoint-2")
         self.assertEqual(
