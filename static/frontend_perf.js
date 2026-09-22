@@ -4,6 +4,8 @@ export const FRONTEND_BUDGETS = Object.freeze({
   projectUsefulMs: 1000,
   websocketVisibleMs: 250,
   turnCompletionRequests: 2,
+  maxRequestBurst: 12,
+  maxSameEndpointBurst: 4,
   maxThreadRows: 100,
   maxWorkItemRows: 60,
   maxRoutineResponseBytes: 1_000_000,
@@ -65,6 +67,32 @@ export function observeRequest({
     aborted: Boolean(aborted),
     at: Date.now(),
   });
+}
+
+export function requestWindowStatus({
+  sinceMs = 1000,
+  maxRequests = FRONTEND_BUDGETS.maxRequestBurst,
+  maxPerEndpoint = FRONTEND_BUDGETS.maxSameEndpointBurst,
+} = {}) {
+  const threshold = Date.now() - Math.max(0, Number(sinceMs || 0));
+  const requests = state.requests.filter((item) => item.at >= threshold);
+  const counts = new Map();
+  requests.forEach((item) => {
+    const key = `${item.method} ${item.endpoint}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const endpoints = [...counts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  const repeated = endpoints.filter((item) => item.count > maxPerEndpoint);
+  return {
+    ok: requests.length <= maxRequests && repeated.length === 0,
+    total: requests.length,
+    maxRequests,
+    maxPerEndpoint,
+    repeated,
+    endpoints,
+  };
 }
 
 export function observeRender(
@@ -145,12 +173,15 @@ export function budgetStatus() {
   const maxResponse = Math.max(0, ...state.requests.map((item) => item.bytes));
   const maxRender = Math.max(0, ...state.renders.map((item) => item.durationMs));
   const maxLongTask = Math.max(0, ...state.longTasks.map((item) => item.durationMs));
+  const requestWindow = requestWindowStatus();
   return {
     projectUseful: latestProject <= FRONTEND_BUDGETS.projectUsefulMs,
     websocketVisible: latestEvent <= FRONTEND_BUDGETS.websocketVisibleMs,
     responseBytes: maxResponse <= FRONTEND_BUDGETS.maxRoutineResponseBytes,
     render: maxRender <= FRONTEND_BUDGETS.maxRenderMs,
     longTask: maxLongTask <= FRONTEND_BUDGETS.maxLongTaskMs,
+    requestBurst: requestWindow.total <= requestWindow.maxRequests,
+    duplicateRequests: requestWindow.repeated.length === 0,
   };
 }
 
@@ -160,5 +191,6 @@ if (typeof window !== "undefined") {
     snapshot,
     reset,
     budgetStatus,
+    requestWindowStatus,
   };
 }
