@@ -371,6 +371,17 @@ class WorkItemExecutionLifecycleService:
                 "blockers": missing,
                 "checkpoint": checkpoint.model_dump(mode="json"),
             }
+        if (
+            checkpoint.source == "turn-execution-runtime"
+            and checkpoint.execution_outcome != "succeeded"
+        ):
+            outcome = checkpoint.execution_outcome or "unconfirmed"
+            return {
+                "trusted": False,
+                "reason": "checkpoint_execution_untrusted",
+                "blockers": [f"execution_outcome_{outcome}"],
+                "checkpoint": checkpoint.model_dump(mode="json"),
+            }
         return {
             "trusted": True,
             "reason": "delivery_proven",
@@ -559,6 +570,8 @@ class WorkItemExecutionLifecycleService:
             context_delta_bytes=payload.context_delta_bytes,
             estimated_tokens_reused=payload.estimated_tokens_reused,
             fallback_to_full_context_reason=payload.fallback_to_full_context_reason,
+            execution_outcome=payload.execution_outcome,
+            outcome_recorded_at=payload.outcome_recorded_at,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
@@ -592,6 +605,8 @@ class WorkItemExecutionLifecycleService:
                 "context_delta_bytes": checkpoint.context_delta_bytes,
                 "estimated_tokens_reused": checkpoint.estimated_tokens_reused,
                 "fallback_to_full_context_reason": checkpoint.fallback_to_full_context_reason,
+                "execution_outcome": checkpoint.execution_outcome,
+                "outcome_recorded_at": checkpoint.outcome_recorded_at,
             },
         )
         return {
@@ -635,6 +650,8 @@ class WorkItemExecutionLifecycleService:
                 for value in checkpoint.definition_refs
             ],
             "changedFiles": list(checkpoint.changed_files),
+            "executionOutcome": checkpoint.execution_outcome,
+            "outcomeRecordedAt": checkpoint.outcome_recorded_at,
             "continuation": {
                 "mode": checkpoint.continuation_mode,
                 "reason": checkpoint.continuation_reason,
@@ -678,6 +695,8 @@ class WorkItemExecutionLifecycleService:
         return self.checkpoint(
             ref,
             WorkItemCheckpointCreate(
+                source="turn-execution-runtime",
+                reason="provider accepted canonical Work Item context",
                 summary="Canonical Work Item context delivered to execution.",
                 objective=current.get("objective"),
                 execution_id=execution_id,
@@ -717,8 +736,79 @@ class WorkItemExecutionLifecycleService:
                     and selection.get("reason")
                     else None
                 ),
+                execution_outcome="pending",
             ),
         )
+
+    def record_continuation_outcome(
+        self,
+        ref: str,
+        execution_id: str,
+        outcome: str,
+    ) -> dict[str, Any] | None:
+        """Finalize trust eligibility for a runtime-created context checkpoint."""
+        normalized = str(outcome or "").strip().casefold()
+        if normalized not in {
+            "succeeded",
+            "failed",
+            "lost",
+            "poisoned",
+            "cancelled",
+            "ambiguous",
+        }:
+            raise ValueError("unsupported continuation execution outcome")
+
+        state = self._state(ref)
+        execution = state.execution
+        target = next(
+            (
+                checkpoint
+                for checkpoint in reversed(execution.checkpoint_history)
+                if checkpoint.execution_id == execution_id
+                and checkpoint.source == "turn-execution-runtime"
+            ),
+            None,
+        )
+        if target is None:
+            return None
+
+        recorded_at = time.time()
+        updated = target.model_copy(
+            update={
+                "execution_outcome": normalized,
+                "outcome_recorded_at": recorded_at,
+            }
+        )
+        execution.checkpoint_history = [
+            updated if checkpoint.id == target.id else checkpoint
+            for checkpoint in execution.checkpoint_history
+        ]
+        if (
+            execution.latest_checkpoint is not None
+            and execution.latest_checkpoint.id == target.id
+        ):
+            execution.latest_checkpoint = updated
+        state.execution = execution
+        state = self._save(state)
+        self._event(
+            state,
+            "execution_checkpoint_outcome_recorded",
+            actor=None,
+            source="turn-execution-runtime",
+            reason=f"execution {normalized}",
+            payload={
+                "checkpoint_id": updated.id,
+                "execution_id": execution_id,
+                "execution_outcome": normalized,
+                "outcome_recorded_at": recorded_at,
+                "continuation_eligible": normalized == "succeeded",
+            },
+        )
+        return {
+            "ref": ref,
+            "checkpoint": updated.model_dump(mode="json"),
+            "continuation_eligible": normalized == "succeeded",
+        }
 
     def record_usage(self, ref: str, payload: WorkItemUsageRecord) -> dict[str, Any]:
         state = self._state(ref)
