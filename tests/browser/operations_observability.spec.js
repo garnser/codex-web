@@ -70,6 +70,7 @@ test('concurrent Operations refresh triggers coalesce to one bounded request bat
   await page.route('**/api/projects', (route) => delayed(route, 'projects', []));
 
   await page.goto(fixture);
+  await page.waitForFunction(() => window.__codexOperationsReady === true);
   await page.evaluate(() => {
     document.getElementById('refresh-developer').click();
     document.getElementById('refresh-operations').click();
@@ -145,6 +146,7 @@ test('large trace sets render through a bounded DOM window', async ({ page }) =>
   await page.route('**/api/projects', (route) => route.fulfill({ json: [] }));
 
   await page.goto(fixture);
+  await page.waitForFunction(() => window.__codexOperationsReady === true);
   await page.evaluate(() => document.getElementById('refresh-operations').click());
   await expect(page.locator('#operations-status')).toContainText('500 recent trace');
   await expect(page.locator('#operations-traces')).toContainText('Showing latest 100 of 500 matching traces');
