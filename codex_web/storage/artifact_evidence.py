@@ -7,14 +7,33 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-ARTIFACT_EVIDENCE_CONTRACT = ContractSpec("artifact-evidence-state", "1.0", ("1.0",))
+ARTIFACT_EVIDENCE_CONTRACT = ContractSpec(
+    "artifact-evidence-state",
+    "1.1",
+    ("1.0", "1.1"),
+)
 ARTIFACT_EVIDENCE_MIGRATIONS = MigrationRegistry("artifact-evidence-state")
 ARTIFACT_EVIDENCE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": ARTIFACT_EVIDENCE_CONTRACT.current,
+        "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
+    },
+)
+ARTIFACT_EVIDENCE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.1",
+        "evidence": [
+            {
+                **dict(item),
+                "resource_ids": dict(item).get("resource_ids") or [],
+            }
+            for item in payload.get("evidence", [])
+        ],
     },
 )
 
