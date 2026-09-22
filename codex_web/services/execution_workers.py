@@ -64,11 +64,27 @@ class ExecutionWorkerService:
         identity: IdentityService | None = None,
         workspaces: ExecutionWorkspaceService | None = None,
         maintenance_guard=None,
+        assignment_notifier=None,
     ) -> None:
         self.store = store
         self.identity = identity
         self.workspaces = workspaces
         self.maintenance_guard = maintenance_guard
+        self.assignment_notifier = assignment_notifier
+
+    def _notify_assignment(
+        self,
+        assignment: ExecutionAssignment,
+        event_type: str,
+    ) -> None:
+        if self.assignment_notifier is None:
+            return
+        try:
+            self.assignment_notifier(assignment, event_type)
+        except Exception:
+            # Browser notification is observational; it must never break
+            # canonical worker state transitions.
+            return
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -698,7 +714,9 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
-        return created[0]
+        result = created[0]
+        self._notify_assignment(result, "assignment_created")
+        return result
 
     def list_assignments(
         self,
@@ -795,7 +813,10 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
-        return claimed[0] if claimed else None
+        result = claimed[0] if claimed else None
+        if result is not None:
+            self._notify_assignment(result, "assignment_claimed")
+        return result
 
     def _validate_lease(
         self,
@@ -871,7 +892,9 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
-        return updated[0]
+        result = updated[0]
+        self._notify_assignment(result, "assignment_renewed")
+        return result
 
     def start(
         self,
@@ -920,7 +943,9 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
-        return updated[0]
+        result = updated[0]
+        self._notify_assignment(result, "assignment_started")
+        return result
 
     def complete(
         self,
@@ -1001,7 +1026,9 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
-        return updated[0]
+        result = updated[0]
+        self._notify_assignment(result, "assignment_completed")
+        return result
 
     def mark_stale_workers_offline(
         self,
@@ -1093,6 +1120,13 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
+        if lost:
+            current = self.store.load()
+            by_id = {item.id: item for item in current.assignments}
+            for assignment_id in lost:
+                item = by_id.get(assignment_id)
+                if item is not None:
+                    self._notify_assignment(item, "assignment_lost")
         return lost
 
     def retry_lost(
@@ -1145,11 +1179,21 @@ class ExecutionWorkerService:
                 replacement if item.id == assignment.id else item
                 for item in state.assignments
             ]
+            self._event(
+                state,
+                actor=actor,
+                event_type="assignment_retried",
+                worker_id=assignment.assigned_worker_id,
+                assignment_id=assignment.id,
+                details={"fence": assignment.fence},
+            )
             updated.append(replacement)
             return state
 
         self.store.update(apply)
-        return updated[0]
+        result = updated[0]
+        self._notify_assignment(result, "assignment_retried")
+        return result
 
     def events(self, actor: AuthenticationActor) -> list[WorkerEvent]:
         self._require_admin(actor)
