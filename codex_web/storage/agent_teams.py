@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from codex_web.agent_teams import (
     AGENT_TEAM_STATE_CONTRACT,
+    AgentTeamDelegationRecord,
     AgentTeamRevision,
     AgentTeamState,
 )
@@ -16,8 +17,17 @@ AGENT_TEAM_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
+        "schema_version": "1.0",
+        "revisions": list(payload.get("revisions", [])),
+    },
+)
+AGENT_TEAM_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
         "schema_version": AGENT_TEAM_STATE_CONTRACT.current,
         "revisions": list(payload.get("revisions", [])),
+        "delegations": list(payload.get("delegations", [])),
     },
 )
 
@@ -104,3 +114,93 @@ class AgentTeamStore:
 
         self.update(apply)
         return record
+
+
+    def list_delegations(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        work_item_id: str | None = None,
+        team_id: str | None = None,
+    ) -> list[AgentTeamDelegationRecord]:
+        values = [
+            item
+            for item in self.load().delegations
+            if item.organization_id == organization_id
+            and item.workspace_id == workspace_id
+            and (work_item_id is None or item.work_item_id == work_item_id)
+            and (team_id is None or item.team_id == team_id)
+        ]
+        return sorted(values, key=lambda item: (item.created_at, item.id))
+
+    def delegation_by_dedupe_key(
+        self,
+        dedupe_key: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+    ) -> AgentTeamDelegationRecord | None:
+        return next(
+            (
+                item
+                for item in self.load().delegations
+                if item.organization_id == organization_id
+                and item.workspace_id == workspace_id
+                and item.dedupe_key == dedupe_key
+            ),
+            None,
+        )
+
+    def append_delegation(
+        self,
+        record: AgentTeamDelegationRecord,
+    ) -> AgentTeamDelegationRecord:
+        result: dict[str, AgentTeamDelegationRecord] = {}
+
+        def apply(state: AgentTeamState) -> AgentTeamState:
+            existing = next(
+                (
+                    item
+                    for item in state.delegations
+                    if item.organization_id == record.organization_id
+                    and item.workspace_id == record.workspace_id
+                    and item.dedupe_key == record.dedupe_key
+                ),
+                None,
+            )
+            if existing is not None:
+                result["value"] = existing
+                return state
+            state.delegations.append(record)
+            result["value"] = record
+            return state
+
+        self.update(apply)
+        return result["value"]
+
+    def update_delegation(
+        self,
+        record_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        updater: Callable[[AgentTeamDelegationRecord], AgentTeamDelegationRecord],
+    ) -> AgentTeamDelegationRecord:
+        result: dict[str, AgentTeamDelegationRecord] = {}
+
+        def apply(state: AgentTeamState) -> AgentTeamState:
+            for index, item in enumerate(state.delegations):
+                if (
+                    item.id == record_id
+                    and item.organization_id == organization_id
+                    and item.workspace_id == workspace_id
+                ):
+                    updated = updater(item)
+                    state.delegations[index] = updated
+                    result["value"] = updated
+                    return state
+            raise KeyError(record_id)
+
+        self.update(apply)
+        return result["value"]
