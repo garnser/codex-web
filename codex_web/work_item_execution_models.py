@@ -42,7 +42,7 @@ class WorkItemFailureReason(BaseModel):
 
 
 class WorkItemExecutionCheckpoint(BaseModel):
-    """Compact resumable state for long-running work."""
+    """Compact resumable state plus provenance for safe continuation anchoring."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -59,6 +59,24 @@ class WorkItemExecutionCheckpoint(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+
+    # Continuation provenance is optional for backward compatibility. A
+    # checkpoint without positive delivery proof remains an untrusted anchor.
+    execution_id: str | None = None
+    execution_contract_version: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    role_id: str | None = None
+    provider_id: str | None = None
+    runtime_id: str | None = None
+    session_ref: str | None = None
+    work_item_revision: str | None = None
+    work_item_hash: str | None = None
+    event_watermark: str | None = None
+    delivered_context_hash: str | None = None
+    delivery_proven: bool = False
+    delivery_proof_ref: str | None = None
+    definition_refs: list[DefinitionReference] = Field(default_factory=list)
 
 
 class WorkItemUsageAttribution(BaseModel):
@@ -127,6 +145,22 @@ class WorkItemCheckpointCreate(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+
+    execution_id: str | None = None
+    execution_contract_version: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    role_id: str | None = None
+    provider_id: str | None = None
+    runtime_id: str | None = None
+    session_ref: str | None = None
+    work_item_revision: str | None = None
+    work_item_hash: str | None = None
+    event_watermark: str | None = None
+    delivered_context_hash: str | None = None
+    delivery_proven: bool = False
+    delivery_proof_ref: str | None = None
+    definition_refs: list[DefinitionReference] = Field(default_factory=list)
 
 
 class WorkItemUsageRecord(BaseModel):

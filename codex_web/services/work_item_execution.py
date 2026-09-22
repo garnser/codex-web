@@ -240,6 +240,46 @@ class WorkItemExecutionLifecycleService:
         )
         return self.execution(ref)
 
+    def continuation_anchor(self, ref: str) -> dict[str, Any]:
+        """Assess whether the latest checkpoint is safe to use as a delta anchor."""
+        checkpoint = self._state(ref).execution.latest_checkpoint
+        if checkpoint is None:
+            return {
+                "trusted": False,
+                "reason": "checkpoint_missing",
+                "checkpoint": None,
+            }
+
+        missing: list[str] = []
+        if not checkpoint.delivery_proven:
+            missing.append("delivery_not_proven")
+        if not checkpoint.delivery_proof_ref:
+            missing.append("delivery_proof_missing")
+        if not checkpoint.execution_id:
+            missing.append("execution_id_missing")
+        if not checkpoint.work_item_revision:
+            missing.append("work_item_revision_missing")
+        if not checkpoint.work_item_hash:
+            missing.append("work_item_hash_missing")
+        if not checkpoint.event_watermark:
+            missing.append("event_watermark_missing")
+        if not checkpoint.delivered_context_hash:
+            missing.append("delivered_context_hash_missing")
+
+        if missing:
+            return {
+                "trusted": False,
+                "reason": "checkpoint_provenance_incomplete",
+                "blockers": missing,
+                "checkpoint": checkpoint.model_dump(mode="json"),
+            }
+        return {
+            "trusted": True,
+            "reason": "delivery_proven",
+            "blockers": [],
+            "checkpoint": checkpoint.model_dump(mode="json"),
+        }
+
     def checkpoint(self, ref: str, payload: WorkItemCheckpointCreate) -> dict[str, Any]:
         state = self._state(ref)
         execution = state.execution
@@ -262,6 +302,21 @@ class WorkItemExecutionLifecycleService:
             blockers=payload.blockers,
             changed_files=payload.changed_files,
             next_actions=payload.next_actions,
+            execution_id=payload.execution_id,
+            execution_contract_version=payload.execution_contract_version,
+            agent_profile_id=payload.agent_profile_id,
+            agent_profile_revision=payload.agent_profile_revision,
+            role_id=payload.role_id,
+            provider_id=payload.provider_id,
+            runtime_id=payload.runtime_id,
+            session_ref=payload.session_ref,
+            work_item_revision=payload.work_item_revision,
+            work_item_hash=payload.work_item_hash,
+            event_watermark=payload.event_watermark,
+            delivered_context_hash=payload.delivered_context_hash,
+            delivery_proven=payload.delivery_proven,
+            delivery_proof_ref=payload.delivery_proof_ref,
+            definition_refs=payload.definition_refs,
         )
         execution.latest_checkpoint = checkpoint
         execution.checkpoint_history = (
@@ -282,6 +337,12 @@ class WorkItemExecutionLifecycleService:
                 "blockers": checkpoint.blockers,
                 "changed_files": checkpoint.changed_files,
                 "next_actions": checkpoint.next_actions,
+                "execution_id": checkpoint.execution_id,
+                "work_item_revision": checkpoint.work_item_revision,
+                "work_item_hash": checkpoint.work_item_hash,
+                "event_watermark": checkpoint.event_watermark,
+                "delivery_proven": checkpoint.delivery_proven,
+                "delivery_proof_ref": checkpoint.delivery_proof_ref,
             },
         )
         return {
