@@ -1397,6 +1397,7 @@ async function sendPrompt() {
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
     repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    ...rtui.scope(),
     read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
     execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
   };
