@@ -929,6 +929,49 @@ class ExecutionWorkerApiAssuranceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"]["lifecycle"], "quarantined")
 
+    def test_mfa_admin_can_issue_single_use_enrollment_without_exposing_digest(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        issued = self.client.post(
+            "/api/execution-workers/enrollments",
+            json={
+                "service_identity_id": "api-worker-service",
+                "pool": "api-enrolled",
+                "expires_in_seconds": 120,
+                "allowed_capabilities": ["git"],
+                "max_concurrency_ceiling": 1,
+            },
+        )
+        self.assertEqual(issued.status_code, 200)
+        payload = issued.json()
+        self.assertTrue(payload["token"])
+        self.assertNotIn("token_digest", payload["item"])
+
+        enrolled = self.client.post(
+            "/api/execution-workers/enroll",
+            json={
+                "token": payload["token"],
+                "version": "2.0.0",
+                "capabilities": ["git"],
+                "max_concurrency": 1,
+                "probe_results": {"git": True},
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        self.assertEqual(enrolled.json()["item"]["pool"], "api-enrolled")
+
+        replay = self.client.post(
+            "/api/execution-workers/enroll",
+            json={
+                "token": payload["token"],
+                "version": "2.0.0",
+                "capabilities": ["git"],
+            },
+        )
+        self.assertEqual(replay.status_code, 409)
+        self.assertIn("already used", replay.json()["detail"])
+
     def test_worker_owned_heartbeat_remains_service_identity_gated_not_mfa_gated(self) -> None:
         self.actor = AuthenticationActor(
             identity_id="api-worker-service",
