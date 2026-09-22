@@ -112,7 +112,18 @@ class TurnExecutionService:
     ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
         if not work_item_ref or self.work_item_context_resolver is None:
             return "", None, None
-        selection = self.work_item_context_resolver(work_item_ref)
+        try:
+            selection = self.work_item_context_resolver(work_item_ref)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "work_item_context_unavailable",
+                    "message": str(exc),
+                    "workItemRef": work_item_ref,
+                    "retryable": True,
+                },
+            ) from exc
         mode = str(selection.get("mode") or "full")
         if mode == "delta":
             delivered = {
@@ -1435,41 +1446,42 @@ class TurnExecutionService:
                     and self.work_item_context_recorder is not None
                 ):
                     profile = getattr(assignment, "agent_profile", None)
-                    self.work_item_context_recorder(
-                        work_item_ref,
-                        canonical_execution_id,
-                        work_item_context_selection,
-                        delivered_work_item_context,
-                        provenance={
-                            "execution_contract_version": getattr(
-                                assignment,
-                                "execution_contract_version",
-                                None,
-                            ),
-                            "agent_profile_id": getattr(
-                                profile,
-                                "profile_id",
-                                None,
-                            ),
-                            "agent_profile_revision": getattr(
-                                profile,
-                                "profile_revision",
-                                None,
-                            ),
-                            "role_id": getattr(profile, "role_id", None),
-                            "provider_id": (
-                                runtime_binding.provider_id
-                                if runtime_binding is not None
-                                else None
-                            ),
-                            "runtime_id": (
-                                runtime_binding.runtime_id
-                                if runtime_binding is not None
-                                else None
-                            ),
-                            "session_ref": str(native_session_id),
-                        },
-                    )
+                    with contextlib.suppress(Exception):
+                        self.work_item_context_recorder(
+                            work_item_ref,
+                            canonical_execution_id,
+                            work_item_context_selection,
+                            delivered_work_item_context,
+                            provenance={
+                                "execution_contract_version": getattr(
+                                    assignment,
+                                    "execution_contract_version",
+                                    None,
+                                ),
+                                "agent_profile_id": getattr(
+                                    profile,
+                                    "profile_id",
+                                    None,
+                                ),
+                                "agent_profile_revision": getattr(
+                                    profile,
+                                    "profile_revision",
+                                    None,
+                                ),
+                                "role_id": getattr(profile, "role_id", None),
+                                "provider_id": (
+                                    runtime_binding.provider_id
+                                    if runtime_binding is not None
+                                    else None
+                                ),
+                                "runtime_id": (
+                                    runtime_binding.runtime_id
+                                    if runtime_binding is not None
+                                    else None
+                                ),
+                                "session_ref": str(native_session_id),
+                            },
+                        )
             except Exception as exc:
                 capacity_error = await self._capacity_error(runtime_binding, exc)
                 if capacity_error is not None:
