@@ -18,6 +18,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, QueuedTurn
 from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.provider_capacity import ProviderCapacityWaitCreate
+from codex_web.resources import RepositoryTargetSource
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_routing import (
     AgentCapacityRoutingError,
@@ -107,6 +108,37 @@ class TurnExecutionService:
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
+
+    def _work_item_writable_repository_ids(
+        self,
+        work_item_ref: str | None,
+    ) -> tuple[str, ...]:
+        if not work_item_ref:
+            return ()
+        loader = getattr(self.host, "_load_work_item_states", None)
+        if not callable(loader):
+            return ()
+        try:
+            state = loader().get(work_item_ref)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "work_item_execution_metadata_unavailable",
+                    "message": str(exc),
+                    "workItemRef": work_item_ref,
+                    "retryable": True,
+                },
+            ) from exc
+        execution = getattr(state, "execution", None) if state is not None else None
+        values = getattr(execution, "writable_repository_resource_ids", ())
+        return tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in values
+                if str(value).strip()
+            )
+        )
 
     def _work_item_continuation_context(
         self,
@@ -1050,6 +1082,43 @@ class TurnExecutionService:
             settings.developer_instructions,
         )
         requested_execution_id = execution_id or self._new_execution_id()
+        requested_writable_repositories = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in writable_repository_resource_ids
+                if str(value).strip()
+            )
+        )
+        work_item_writable_repositories = self._work_item_writable_repository_ids(
+            work_item_ref
+        )
+        if (
+            requested_writable_repositories
+            and work_item_writable_repositories
+            and requested_writable_repositories != work_item_writable_repositories
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "work_item_repository_scope_conflict",
+                    "workItemRef": work_item_ref,
+                    "requestedWritableRepositoryResourceIds": list(
+                        requested_writable_repositories
+                    ),
+                    "workItemWritableRepositoryResourceIds": list(
+                        work_item_writable_repositories
+                    ),
+                },
+            )
+        effective_writable_repositories = (
+            requested_writable_repositories
+            or work_item_writable_repositories
+        )
+        writable_repository_source = (
+            RepositoryTargetSource.EXPLICIT
+            if requested_writable_repositories
+            else RepositoryTargetSource.WORK_ITEM
+        )
 
         async with self.turn_start_lock:
             if self.thread_is_active(thread_id):
@@ -1164,25 +1233,18 @@ class TurnExecutionService:
                     effective_execution_profile_id = getattr(assignment, "execution_profile_id", None)
                 target = getattr(assignment, "repository_target", None)
                 scope = getattr(assignment, "repository_scope", None)
-                requested_writable_repositories = tuple(
-                    dict.fromkeys(
-                        value
-                        for value in writable_repository_resource_ids
-                        if value
-                    )
-                )
-                if requested_writable_repositories:
+                if effective_writable_repositories:
                     effective_writable = tuple(
                         getattr(scope, "writable_repository_ids", ())
                     )
-                    if requested_writable_repositories != effective_writable:
+                    if effective_writable_repositories != effective_writable:
                         raise HTTPException(
                             status_code=409,
                             detail={
                                 "code": "thread_repository_scope_immutable",
                                 "threadId": thread_id,
                                 "requestedWritableRepositoryResourceIds": list(
-                                    requested_writable_repositories
+                                    effective_writable_repositories
                                 ),
                                 "effectiveWritableRepositoryResourceIds": list(
                                     effective_writable
@@ -1278,8 +1340,9 @@ class TurnExecutionService:
                             or settings.repository_resource_id
                         ),
                         writable_repository_ids=(
-                            writable_repository_resource_ids
+                            effective_writable_repositories
                         ),
+                        writable_repository_source=writable_repository_source,
                         read_only_repository_ids=(
                             read_only_repository_resource_ids
                             or settings.read_only_repository_resource_ids
