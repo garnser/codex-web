@@ -6,6 +6,7 @@
   let operations = null;
   let assignments = [];
   let projects = [];
+  let refreshPromise = null;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -213,7 +214,7 @@
     }
   }
 
-  async function refresh() {
+  async function refreshOnce() {
     const windowSeconds = Number(document.getElementById("operations-window")?.value || 900);
     setStatus("Loading operator telemetry...");
     try {
@@ -242,6 +243,14 @@
     } catch (error) {
       setStatus(`Operations/Observability unavailable: ${error.message}`);
     }
+  }
+
+  function refresh() {
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = refreshOnce().finally(() => {
+      refreshPromise = null;
+    });
+    return refreshPromise;
   }
 
   function bind() {
