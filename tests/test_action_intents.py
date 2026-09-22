@@ -412,6 +412,11 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(intent.status, ActionIntentStatus.CANCELLED)
+        self.assertIsNotNone(intent.failure)
+        self.assertEqual(
+            intent.failure.reason_code.value,
+            "authority_denied",
+        )
         self.assertEqual(self.reference.values, {})
 
     async def test_caller_authority_allow_or_deny_does_not_replace_canonical_decision(self) -> None:
@@ -647,6 +652,11 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         current = self.service.get(intent.id, self.actor)
         self.assertEqual(current.status, ActionIntentStatus.FAILED)
         self.assertIsNotNone(current.completed_at)
+        self.assertIsNotNone(current.failure)
+        self.assertEqual(
+            current.failure.reason_code.value,
+            "unclassified",
+        )
 
     async def test_non_idempotent_unknown_outcome_cannot_be_replayed(self) -> None:
         provider = _NonIdempotentUnknownProvider()
