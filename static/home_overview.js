@@ -15,6 +15,7 @@ const SECTION_LABELS = {
   agents: "Agents working",
   incidents: "Active incidents",
   goals: "Project goals",
+  automations: "Recent automations",
 };
 
 let controller = null;
@@ -82,9 +83,10 @@ function renderSection(name, section) {
   wrapper.appendChild(heading);
 
   if (section.status !== "current") {
+    const denied = section.status === "denied";
     wrapper.appendChild(statePanel({
-      kind: "degraded",
-      title: "Source degraded",
+      kind: denied ? "empty" : "degraded",
+      title: denied ? "Not available to this identity" : "Source degraded",
       detail: section.detail || "This source could not be refreshed. Actions are suppressed until current state is available.",
     }));
     return wrapper;
@@ -151,6 +153,7 @@ function renderPayload(host, payload) {
     "agents",
     "incidents",
     "goals",
+    "automations",
     "recently_completed",
   ]) {
     if (payload.sections[name]) grid.appendChild(renderSection(name, payload.sections[name]));
