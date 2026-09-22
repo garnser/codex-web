@@ -5,6 +5,8 @@ const attentionEsc = (value) => String(value ?? "")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&#039;");
 
+const ATTENTION_PAGE_SIZE = 25;
+
 async function attentionApi(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -138,35 +140,62 @@ async function mutateAttention(dialog, itemId, action) {
   }
 }
 
-async function loadAttention(dialog) {
+async function refreshAttentionBadge() {
+  const badge = document.querySelector("[data-attention-count]");
+  if (!badge) return;
+  try {
+    const payload = await attentionApi("/api/attention?limit=1&status=active");
+    const active = Number(payload.total ?? (payload.attention_items || []).length);
+    badge.textContent = String(active);
+    badge.hidden = active === 0;
+  } catch {
+    // Badge availability must not make the Inbox unusable.
+  }
+}
+
+async function loadAttention(dialog, { append = false } = {}) {
   const status = dialog.querySelector("[data-attention-status]");
   const list = dialog.querySelector("[data-attention-list]");
+  const more = dialog.querySelector("[data-attention-more]");
   status.dataset.error = "false";
-  status.textContent = "Loading canonical attention…";
+  status.textContent = append ? "Loading more canonical attention…" : "Loading canonical attention…";
   try {
-    const payload = await attentionApi("/api/attention");
-    const all = payload.attention_items || [];
     const statusFilter = dialog.querySelector("[data-attention-filter]").value;
     const severityFilter = dialog.querySelector("[data-attention-severity]").value;
-    const items = filteredAttention(all, statusFilter, severityFilter);
-    list.innerHTML = items.length ? items.map(attentionCard).join("") : '<div class="attention-empty">No matching AttentionItems.</div>';
+    const params = new URLSearchParams({ limit: String(ATTENTION_PAGE_SIZE) });
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (severityFilter !== "all") params.set("severity", severityFilter);
+    if (append && dialog._attentionNextCursor != null) {
+      params.set("cursor", String(dialog._attentionNextCursor));
+    }
+    const payload = await attentionApi(`/api/attention?${params}`);
+    const page = payload.attention_items || [];
+    const existing = append ? (dialog._attentionItems || []) : [];
+    const byId = new Map(existing.map((item) => [item.id, item]));
+    page.forEach((item) => byId.set(item.id, item));
+    dialog._attentionItems = [...byId.values()];
+    dialog._attentionNextCursor = payload.next_cursor ?? null;
+    dialog._attentionTotal = Number(payload.total ?? dialog._attentionItems.length);
+
+    list.innerHTML = dialog._attentionItems.length
+      ? dialog._attentionItems.map(attentionCard).join("")
+      : '<div class="attention-empty">No matching AttentionItems.</div>';
     list.querySelectorAll("[data-attention-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const card = button.closest("[data-attention-id]");
         mutateAttention(dialog, card.dataset.attentionId, button.dataset.attentionAction);
       });
     });
-    const active = all.filter((item) => !["resolved", "expired", "superseded"].includes(item.status)).length;
-    const badge = document.querySelector("[data-attention-count]");
-    if (badge) {
-      badge.textContent = String(active);
-      badge.hidden = active === 0;
+    if (more) {
+      more.hidden = dialog._attentionNextCursor == null;
+      more.disabled = dialog._attentionNextCursor == null;
     }
-    status.textContent = `${all.length} total · ${active} active · deterministic refresh only`;
+    status.textContent = `${dialog._attentionItems.length} of ${dialog._attentionTotal} matching · deterministic refresh only`;
+    await refreshAttentionBadge();
   } catch (error) {
     status.dataset.error = "true";
     status.textContent = `Inbox unavailable: ${error.message}`;
-    list.innerHTML = '<div class="attention-empty">Canonical attention state could not be loaded.</div>';
+    if (!append) list.innerHTML = '<div class="attention-empty">Canonical attention state could not be loaded.</div>';
   }
 }
 
@@ -215,6 +244,7 @@ function installAttention() {
           </select>
         </label>
         <button type="button" class="ghost-button" data-attention-refresh>Refresh</button>
+        <button type="button" class="ghost-button" data-attention-more hidden>Load more</button>
         <span class="attention-status" data-attention-status aria-live="polite"></span>
       </div>
       <div class="attention-list" data-attention-list></div>
@@ -230,15 +260,11 @@ function installAttention() {
   });
   dialog.querySelector("[data-attention-close]").addEventListener("click", () => dialog.close());
   dialog.querySelector("[data-attention-refresh]").addEventListener("click", () => loadAttention(dialog));
+  dialog.querySelector("[data-attention-more]").addEventListener("click", () => loadAttention(dialog, { append: true }));
   dialog.querySelector("[data-attention-filter]").addEventListener("change", () => loadAttention(dialog));
   dialog.querySelector("[data-attention-severity]").addEventListener("change", () => loadAttention(dialog));
 
-  attentionApi("/api/attention").then((payload) => {
-    const active = (payload.attention_items || []).filter((item) => !["resolved", "expired", "superseded"].includes(item.status)).length;
-    const badge = button.querySelector("[data-attention-count]");
-    badge.textContent = String(active);
-    badge.hidden = active === 0;
-  }).catch(() => {});
+  refreshAttentionBadge();
 }
 
 if (document.readyState === "loading") {
