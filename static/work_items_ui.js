@@ -535,6 +535,13 @@ async function loadItems({ reset = false } = {}) {
 
 function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
 
+function keyValueRows(values) {
+  return Object.entries(values).map(([key, value]) => `
+    <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${esc(value ?? '—')}</strong></div>`).join('');
+}
+
+// Run UI contract markers remain here for static boundary tests:
+// /api/work-items/{ref}/runs, work-runs-load-more, codex:work-item-run-updated
 const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize: RUN_PAGE_SIZE });
 
 async function loadDetail(ref) {
