@@ -181,6 +181,50 @@ class WorkItemRunProjectionService:
         }
 
     @classmethod
+    def _repository_scope_view(
+        cls,
+        item: ExecutionAssignment,
+    ) -> dict[str, Any] | None:
+        scope = item.repository_scope
+        if scope is not None:
+            return {
+                "organizationId": scope.organization_id,
+                "workspaceId": scope.workspace_id,
+                "projectId": scope.project_id,
+                "writeMode": cls._value(scope.write_mode),
+                "writableRepositoryIds": list(scope.writable_repository_ids),
+                "readOnlyRepositoryIds": list(scope.read_only_repository_ids),
+                "source": cls._value(scope.source),
+                "sourceRef": scope.source_ref,
+                "selectionEvidence": [
+                    evidence.model_dump(mode="json")
+                    for evidence in scope.selection_evidence
+                ],
+            }
+
+        target = item.repository_target
+        if target is None:
+            return None
+        return {
+            "organizationId": target.organization_id,
+            "workspaceId": target.workspace_id,
+            "projectId": target.project_id,
+            "writeMode": "single",
+            "writableRepositoryIds": (
+                [target.mutable_repository_id]
+                if target.mutable_repository_id is not None
+                else []
+            ),
+            "readOnlyRepositoryIds": list(target.read_only_repository_ids),
+            "source": cls._value(target.source),
+            "sourceRef": target.source_ref,
+            "selectionEvidence": [
+                evidence.model_dump(mode="json")
+                for evidence in target.selection_evidence
+            ],
+        }
+
+    @classmethod
     def _attempts(cls, worker_state: Any, item: ExecutionAssignment) -> list[dict[str, Any]]:
         relevant = sorted(
             (
@@ -354,6 +398,7 @@ class WorkItemRunProjectionService:
                 if item.repository_target is not None
                 else None
             ),
+            "repositoryScope": self._repository_scope_view(item),
             "usage": usage,
             "activity": {
                 "toolCalls": usage["toolCalls"],

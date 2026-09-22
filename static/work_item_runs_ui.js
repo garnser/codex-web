@@ -4,6 +4,30 @@ function keyValueRows(values) {
     <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${esc(value ?? '—')}</strong></div>`).join('');
 }
 
+function repositoryScopeSummary(scope) {
+  const writable = Array.isArray(scope?.writableRepositoryIds) ? scope.writableRepositoryIds : [];
+  const readOnly = Array.isArray(scope?.readOnlyRepositoryIds) ? scope.readOnlyRepositoryIds : [];
+  if (!scope || (!writable.length && !readOnly.length)) return '—';
+  const parts = [];
+  if (writable.length) parts.push(`write: ${writable.join(', ')}`);
+  if (readOnly.length) parts.push(`read: ${readOnly.join(', ')}`);
+  return parts.join(' · ');
+}
+
+function repositoryScopeHtml(scope) {
+  if (!scope) return '<small>No repository execution scope recorded.</small>';
+  const writable = Array.isArray(scope.writableRepositoryIds) ? scope.writableRepositoryIds : [];
+  const readOnly = Array.isArray(scope.readOnlyRepositoryIds) ? scope.readOnlyRepositoryIds : [];
+  return `
+    <div class="work-kv work-kv-wide">${keyValueRows({
+      write_mode: scope.writeMode,
+      writable_repositories: writable.join(', ') || '—',
+      read_only_repositories: readOnly.join(', ') || '—',
+      selection_source: scope.source,
+      selection_ref: scope.sourceRef,
+    })}</div>`;
+}
+
 function runTimelineHtml() {
   const active = Array.isArray(state.runs?.active) ? state.runs.active : [];
   const history = Array.isArray(state.runs?.items) ? state.runs.items : [];
@@ -33,6 +57,7 @@ function runTimelineHtml() {
             worker: run.worker?.workerId,
             fence: run.worker?.fence,
             attempts: retries.attemptCount,
+            repositories: repositoryScopeSummary(run.repositoryScope),
             model: (usage.models || []).join(', ') || agent.modelId,
             tokens: usage.totalTokens,
             cost_usd: usage.costUsd,
@@ -110,6 +135,8 @@ function runDetailHtml(run) {
         })}</div>
       </div>
     </div>
+    <h5>Repository execution scope</h5>
+    <div class="work-run-repositories">${repositoryScopeHtml(run.repositoryScope)}</div>
     <h5>Attempts / retry lineage</h5>
     <div class="work-run-activity">${attemptRows}</div>
     <h5>Structured actions</h5>
