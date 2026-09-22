@@ -241,3 +241,11 @@
   .work-blocker-banner,
   .work-failure-banner { grid-template-columns: 1fr; gap: 4px; }
 }
+
+.work-items-dialog button:focus-visible,
+.work-items-dialog select:focus-visible,
+.work-items-dialog input:focus-visible,
+.work-items-dialog summary:focus-visible {
+  outline: 2px solid var(--cw-focus-color, currentColor);
+  outline-offset: 2px;
+}
