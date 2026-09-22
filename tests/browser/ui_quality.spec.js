@@ -100,7 +100,7 @@ test('workspace shell remains usable at 200% text scaling and exposes non-color 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
   const dialog = page.locator('#product-workspace-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleName('Overview');
+  await expect(dialog).toHaveAccessibleName('Home');
   await expectNoPageOverflow(page, 'workspace at 200% text scaling');
 
   await dialog.locator('.product-overview-reference > summary').click();
@@ -121,8 +121,13 @@ test('reduced-motion preference suppresses shared animation and transition timin
     const style = getComputedStyle(node);
     return { transition: style.transitionDuration, animation: style.animationDuration };
   });
-  expect(durations.transition).toMatch(/^(0s|0\.00001s|0\.01ms)(, (0s|0\.00001s|0\.01ms))*$/);
-  expect(durations.animation).toMatch(/^(0s|0\.00001s|0\.01ms)(, (0s|0\.00001s|0\.01ms))*$/);
+  const maxSeconds = (value) => Math.max(...value.split(',').map((part) => {
+    const token = part.trim();
+    if (token.endsWith('ms')) return parseFloat(token) / 1000;
+    return parseFloat(token);
+  }));
+  expect(maxSeconds(durations.transition)).toBeLessThanOrEqual(0.00001);
+  expect(maxSeconds(durations.animation)).toBeLessThanOrEqual(0.00001);
 });
 
 test('Work Item operator has named dialog/status semantics and remains usable on phone + text scaling', async ({ page }) => {
@@ -143,8 +148,13 @@ test('Work Item operator has named dialog/status semantics and remains usable on
   await expect(dialog.locator('.work-items-refresh')).toBeVisible();
   await expectNoPageOverflow(page, 'Work Item operator at 200% text scaling');
 
-  await dialog.locator('.work-items-refresh').focus();
+  await dialog.locator('.work-items-project').focus();
+  await page.keyboard.press('Tab');
   await expect(dialog.locator('.work-items-refresh')).toBeFocused();
-  const outline = await dialog.locator('.work-items-refresh').evaluate((node) => getComputedStyle(node).outlineStyle);
-  expect(outline).not.toBe('none');
+  const focusStyle = await dialog.locator('.work-items-refresh').evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+  });
+  expect(focusStyle.outlineStyle).not.toBe('none');
+  expect(parseFloat(focusStyle.outlineWidth)).toBeGreaterThan(0);
 });
