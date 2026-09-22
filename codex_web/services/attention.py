@@ -90,6 +90,29 @@ class AttentionService:
             )
         ]
 
+    def list_page(
+        self,
+        actor: AuthenticationActor,
+        *,
+        limit: int = 50,
+        cursor: int = 0,
+        status: str | None = None,
+        severity: str | None = None,
+    ) -> tuple[list[AttentionItem], int | null, int]:
+        bounded_limit = max(1, min(int(limit), 100))
+        offset = max(0, int(cursor))
+        visible = self.list(actor)
+        if status:
+            visible = [item for item in visible if item.status.value == status]
+        if severity:
+            visible = [item for item in visible if item.severity.value == severity]
+        total = len(visible)
+        page = visible[offset:offset + bounded_limit]
+        next_cursor = offset + len(page)
+        if next_cursor >= total:
+            next_cursor = None
+        return page, next_cursor, total
+
     def get(self, item_id: str, *, actor: AuthenticationActor) -> AttentionItem:
         item = self.store.get(item_id)
         if item not in self.list(actor):
