@@ -139,6 +139,7 @@ class _Execution:
     def __init__(self, queue_policy: _QueuePolicy) -> None:
         self.queue_policy = queue_policy
         self.published = []
+        self.start_calls = []
         self.active = True
 
     def enqueue_turn(self, **kwargs):
@@ -152,6 +153,7 @@ class _Execution:
             model=kwargs["model"],
             reasoning_effort=kwargs["reasoning_effort"],
             execution_id=kwargs.get("execution_id"),
+            work_item_ref=kwargs.get("work_item_ref"),
             repository_resource_id=kwargs.get("repository_resource_id"),
             read_only_repository_resource_ids=kwargs.get(
                 "read_only_repository_resource_ids",
@@ -172,6 +174,7 @@ class _Execution:
         return getattr(self, "active_execution", None)
 
     async def start_thread_turn_now(self, thread_id, **kwargs):
+        self.start_calls.append((thread_id, kwargs))
         return {"turn": {"id": "turn-1"}}
 
     def wait_for_thread_capacity(self, **kwargs):
@@ -265,6 +268,38 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/turns"))
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/queue"))
         self.assertGreater(application.EXTRACTED_ROUTE_COUNTS["turns"], 0)
+
+    async def test_work_item_ref_reaches_immediate_execution(self) -> None:
+        service, _queue, execution, _events, _settings = self._service()
+        execution.active = False
+
+        await service.start(
+            "thread-1",
+            TurnCreate(message="do work", project_id="home"),
+            work_item_ref="github:work-42",
+        )
+
+        self.assertEqual(len(execution.start_calls), 1)
+        self.assertEqual(
+            execution.start_calls[0][1]["work_item_ref"],
+            "github:work-42",
+        )
+
+    async def test_work_item_ref_survives_turn_queueing(self) -> None:
+        service, queue, _execution, _events, _settings = self._service()
+
+        result = await service.start(
+            "thread-1",
+            TurnCreate(message="queued work", project_id="home"),
+            work_item_ref="github:work-43",
+        )
+
+        self.assertTrue(result["queued"])
+        self.assertEqual(len(queue.queued), 1)
+        self.assertEqual(
+            queue.queued[0].work_item_ref,
+            "github:work-43",
+        )
 
     async def test_non_forced_resume_is_a_read_only_noop(self) -> None:
         service, _queue, _execution, _events, settings = self._service()
