@@ -9,7 +9,11 @@ from codex_web.bootstrap_engine import (
     BootstrapExecutionStatus,
 )
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    CodexExecutionAuthenticationMode,
+    ExecutionRuntimeBinding,
+    WorkerCapability,
+)
 from codex_web.identity import AuthenticationActor
 from codex_web.project_readiness import (
     ProjectReadinessCheck,
@@ -18,7 +22,6 @@ from codex_web.project_readiness import (
 )
 from codex_web.resources import ResourceType
 from codex_web.runtime_credentials import (
-    CodexExecutionAuthenticationMode,
     DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
     RuntimeAuthenticationConfigurationError,
     runtime_authentication_requirement,
