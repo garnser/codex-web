@@ -37,6 +37,7 @@ from codex_web.identity import (
 )
 from codex_web.services.execution_workers import (
     ExecutionWorkerService,
+    WorkerCapabilityError,
     WorkerConflictError,
     WorkerLeaseError,
 )
