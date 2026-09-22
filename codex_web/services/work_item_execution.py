@@ -244,6 +244,14 @@ class WorkItemExecutionLifecycleService:
             execution.timeout_seconds = payload.timeout_seconds
         if "deadline_at" in fields:
             execution.deadline_at = payload.deadline_at
+        if "writable_repository_resource_ids" in fields:
+            execution.writable_repository_resource_ids = tuple(
+                dict.fromkeys(
+                    value.strip()
+                    for value in payload.writable_repository_resource_ids
+                    if value and value.strip()
+                )
+            )
 
         failure_fields = {
             "failure_category",
@@ -310,6 +318,9 @@ class WorkItemExecutionLifecycleService:
                 "retry_backoff_seconds": execution.retry.policy.backoff_seconds,
                 "timeout_seconds": execution.timeout_seconds,
                 "deadline_at": execution.deadline_at,
+                "writable_repository_resource_ids": list(
+                    execution.writable_repository_resource_ids
+                ),
                 "failure_category": (
                     execution.failure_reason.category if execution.failure_reason else None
                 ),
