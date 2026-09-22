@@ -81,6 +81,13 @@ class WorkItemExecutionCheckpoint(BaseModel):
     delivery_proof_ref: str | None = None
     definition_refs: list[DefinitionReference] = Field(default_factory=list)
     delivered_work_item_context: dict[str, Any] | None = None
+    continuation_mode: str | None = None
+    continuation_reason: str | None = None
+    continuation_checkpoint_id: str | None = None
+    context_baseline_bytes: int | None = Field(default=None, ge=0)
+    context_delta_bytes: int | None = Field(default=None, ge=0)
+    estimated_tokens_reused: int | None = Field(default=None, ge=0)
+    fallback_to_full_context_reason: str | None = None
 
 
 class WorkItemUsageAttribution(BaseModel):
@@ -167,6 +174,13 @@ class WorkItemCheckpointCreate(BaseModel):
     delivery_proof_ref: str | None = None
     definition_refs: list[DefinitionReference] = Field(default_factory=list)
     delivered_work_item_context: dict[str, Any] | None = None
+    continuation_mode: str | None = None
+    continuation_reason: str | None = None
+    continuation_checkpoint_id: str | None = None
+    context_baseline_bytes: int | None = Field(default=None, ge=0)
+    context_delta_bytes: int | None = Field(default=None, ge=0)
+    estimated_tokens_reused: int | None = Field(default=None, ge=0)
+    fallback_to_full_context_reason: str | None = None
 
 
 class WorkItemUsageRecord(BaseModel):
