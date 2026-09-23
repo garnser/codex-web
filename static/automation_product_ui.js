@@ -249,6 +249,9 @@ function install() {
   window.addEventListener("codex:project-changed", (event) => {
     load(event.detail?.projectId || "");
   });
+  window.addEventListener("codex:projects-rendered", (event) => {
+    load(event.detail?.projectId || document.body.dataset.activeProject || "");
+  });
   window.addEventListener("hashchange", () => {
     if (window.location.hash === "#workspace/autonomy") load();
   });
