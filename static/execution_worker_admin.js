@@ -143,7 +143,8 @@
 
   function leaseHtml(item) {
     if (!item.lease) return "<small>Lease: none.</small>";
-    return `<small>Lease worker: ${escapeHtml(item.lease.worker_id)} · fence: ${escapeHtml(item.lease.fence)} · acquired: ${timeText(item.lease.acquired_at)} · renewed: ${timeText(item.lease.renewed_at)} · expires: ${timeText(item.lease.expires_at)} · bearer token: ${escapeHtml(item.lease.lease_token)}</small>`;
+    const credentialState = item.lease.lease_token ? "present (hidden)" : "none";
+    return `<small>Lease worker: ${escapeHtml(item.lease.worker_id)} · fence: ${escapeHtml(item.lease.fence)} · acquired: ${timeText(item.lease.acquired_at)} · renewed: ${timeText(item.lease.renewed_at)} · expires: ${timeText(item.lease.expires_at)} · lease credential: ${credentialState}</small>`;
   }
 
   function renderAssignments() {

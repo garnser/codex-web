@@ -1,10 +1,12 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { renderOperationsOverview } = await import(`${BASE}/static/operations_overview.js`);
   let actor = null;
   let observability = null;
   let operations = null;
   let assignments = [];
+  let workers = [];
   let projects = [];
   let refreshPromise = null;
   const MAX_TRACE_ROWS = 100;
@@ -45,6 +47,15 @@
       return rows.length ? rows.map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(value)}`).join(" · ") : "none";
     }
     return values == null ? "none" : escapeHtml(values);
+  }
+
+  function renderOverview() {
+    renderOperationsOverview({
+      observability,
+      operations,
+      assignments,
+      workers,
+    });
   }
 
   function canRecover() {
@@ -236,6 +247,7 @@
       operations = ops;
       assignments = assignmentResponse.items || [];
       actor = me;
+      renderOverview();
       renderHealth();
       renderRuntime();
       renderProviders();
@@ -259,6 +271,11 @@
   }
 
   function bind() {
+    window.addEventListener("codex:execution-worker-state-rendered", (event) => {
+      workers = event.detail?.workers || [];
+      if (event.detail?.assignments?.length) assignments = event.detail.assignments;
+      renderOverview();
+    });
     const panel = document.getElementById("developer-panel");
     document.getElementById("refresh-operations")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
