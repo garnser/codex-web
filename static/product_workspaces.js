@@ -37,7 +37,7 @@ const CARD_RULES = [
   [/^GitLab Routing$/i, "integrations"],
   [/^Agent Channel Presence$/i, "integrations"],
   [/^Model Gateway$/i, "agents"],
-  [/^Agent Providers & Sessions$/i, "agents"],
+  [/^Agent Providers & Sessions$/i, "operations"],
   [/^Agent Profiles & Teams$/i, "agents"],
   [/^Skills$/i, "skills"],
   [/^Execution Workers$/i, "workers"],
