@@ -805,6 +805,33 @@ class AgentTeamService:
         )
         return item.id
 
+    async def _resolve_recovered_attention(
+        self,
+        record: AgentTeamDelegationRecord,
+    ) -> None:
+        if self.attention is None or record.blocked or record.attention_required:
+            return
+        history = self.store.list_delegations(
+            organization_id=record.organization_id,
+            workspace_id=record.workspace_id,
+            work_item_id=record.work_item_id,
+            team_id=record.team_id,
+        )
+        for prior in history:
+            if (
+                prior.id == record.id
+                or not prior.attention_required
+                or not prior.attention_item_id
+            ):
+                continue
+            await self.attention.resolve_by_source(
+                f"agent-team:{prior.team_id}:{prior.work_item_id}:{prior.reason}",
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                actor_id="agent-team-orchestration",
+                reason=f"Agent Team routing recovered via {record.mode}",
+            )
+
     async def plan_and_record(
         self,
         team_id: str,
@@ -826,6 +853,7 @@ class AgentTeamService:
             workspace_id=actor.workspace_id,
         )
         if existing is not None and plan.mode != "deduped":
+            await self._resolve_recovered_attention(existing)
             return TeamDelegationPlan(
                 team_id=team.team_id,
                 team_revision=team.revision,
@@ -845,6 +873,7 @@ class AgentTeamService:
                 event_type="routing_plan",
             )
             await self._attention_for(record)
+            await self._resolve_recovered_attention(record)
         return plan
 
     async def decide_and_record(
@@ -872,6 +901,7 @@ class AgentTeamService:
                 decision_key=decision.decision_key,
             )
             await self._attention_for(record)
+            await self._resolve_recovered_attention(record)
         return plan
 
     def link_executions(
