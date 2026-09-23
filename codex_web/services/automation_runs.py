@@ -347,8 +347,11 @@ class AutomationRunService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
-        if current.status not in ACTIVE_AUTOMATION_RUN_STATUSES:
-            raise ValueError("Automation run is not active")
+        if current.status not in {
+            AutomationRunStatus.ADMITTED,
+            AutomationRunStatus.RUNNING,
+        }:
+            raise ValueError("Automation run is not completable")
         now = float(self.clock())
         return self.store.replace(
             current.model_copy(
