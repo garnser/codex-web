@@ -20,8 +20,14 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.7",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
+    "1.8",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"),
+)
+
+DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
+    "read-only",
+    "workspace-write",
+    "danger-full-access",
 )
 
 
@@ -89,6 +95,7 @@ class ExecutionWorker(BaseModel):
     version: str = Field(min_length=1)
     capabilities: tuple[WorkerCapability, ...]
     supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
+    supported_sandbox_profiles: tuple[SandboxMode, ...] = DEFAULT_SUPPORTED_SANDBOX_PROFILES
     lifecycle: WorkerLifecycle = WorkerLifecycle.ACTIVE
     max_concurrency: int = Field(default=1, ge=1, le=128)
     registered_by: str = Field(min_length=1)
@@ -109,6 +116,11 @@ class ExecutionWorker(BaseModel):
         )
         if not self.supported_execution_contract_versions:
             raise ValueError("worker requires at least one supported execution contract version")
+        self.supported_sandbox_profiles = tuple(
+            dict.fromkeys(self.supported_sandbox_profiles)
+        )
+        if not self.supported_sandbox_profiles:
+            raise ValueError("worker requires at least one supported sandbox profile")
         if not self.capabilities:
             raise ValueError("worker requires at least one capability")
         return self
@@ -122,6 +134,7 @@ class ExecutionWorkerRegister(BaseModel):
     version: str = Field(min_length=1)
     capabilities: tuple[WorkerCapability, ...]
     supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
+    supported_sandbox_profiles: tuple[SandboxMode, ...] = DEFAULT_SUPPORTED_SANDBOX_PROFILES
     max_concurrency: int = Field(default=1, ge=1, le=128)
 
 
@@ -169,6 +182,7 @@ class ExecutionWorkerEnroll(BaseModel):
     version: str = Field(min_length=1)
     capabilities: tuple[WorkerCapability, ...]
     supported_execution_contract_versions: tuple[str, ...] = ("1.0",)
+    supported_sandbox_profiles: tuple[SandboxMode, ...] = DEFAULT_SUPPORTED_SANDBOX_PROFILES
     max_concurrency: int = Field(default=1, ge=1, le=128)
     probe_results: dict[str, bool] = Field(default_factory=dict)
 
@@ -188,6 +202,11 @@ class ExecutionWorkerEnroll(BaseModel):
             raise ValueError("enrolled worker requires at least one capability")
         if not self.supported_execution_contract_versions:
             raise ValueError("enrolled worker requires an execution contract version")
+        self.supported_sandbox_profiles = tuple(
+            dict.fromkeys(self.supported_sandbox_profiles)
+        )
+        if not self.supported_sandbox_profiles:
+            raise ValueError("enrolled worker requires a supported sandbox profile")
         return self
 
 
@@ -217,11 +236,14 @@ class ExecutionRuntimeBinding(BaseModel):
     provider_id: str = Field(min_length=1)
     runtime_id: str = Field(min_length=1)
     capability_revision: int = Field(ge=1)
+    sandbox_profiles: tuple[SandboxMode, ...] = ()
     authentication_mode: CodexExecutionAuthenticationMode | None = None
 
     @model_serializer(mode="wrap")
     def _serialize_compatibly(self, handler):
         data = handler(self)
+        if not self.sandbox_profiles:
+            data.pop("sandbox_profiles", None)
         if self.authentication_mode is None:
             data.pop("authentication_mode", None)
         return data
