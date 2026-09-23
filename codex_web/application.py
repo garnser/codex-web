@@ -741,14 +741,6 @@ app.state.automation_run_store = automation_run_store
 app.state.automation_run_service = automation_run_service
 app.state.automation_trigger_admission_bridge = automation_trigger_admission_bridge
 app.state.automation_trigger_unsubscribe = automation_trigger_unsubscribe
-app.include_router(
-    build_automations_router(
-        automation_definition_service,
-        automation_run_service,
-        automation_trigger_admission_bridge,
-        automation_schedule_materializer,
-    )
-)
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
@@ -938,6 +930,15 @@ thread_index_repository = install_thread_index_repository(
     legacy_path=THREAD_INDEX_FILE,
 )
 project_service = ProjectService(project_repository)
+app.include_router(
+    build_automations_router(
+        automation_definition_service,
+        automation_run_service,
+        automation_trigger_admission_bridge,
+        automation_schedule_materializer,
+        projects=project_service,
+    )
+)
 project_runtime_service = ProjectRuntimeService(project_service)
 app.state.project_runtime_service = project_runtime_service
 # Compatibility names now resolve to the extracted project runtime owner.

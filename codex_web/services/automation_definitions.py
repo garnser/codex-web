@@ -16,7 +16,15 @@ from codex_web.automation_definitions import (
     validate_automation_definition,
 )
 from codex_web.compatibility import CanonicalEventEnvelope
-from codex_web.definitions import DefinitionContext, DefinitionReference, reference_for
+from codex_web.definitions import (
+    DefinitionContext,
+    DefinitionDraftCreate,
+    DefinitionPublishRequest,
+    DefinitionRecord,
+    DefinitionReference,
+    DefinitionScope,
+    reference_for,
+)
 from codex_web.scheduler import (
     MisfirePolicy,
     RecurrenceKind,
@@ -38,6 +46,53 @@ from codex_web.services.definitions import (
 class AutomationDefinitionService:
     def __init__(self, registry: DefinitionRegistryService) -> None:
         self.registry = registry
+
+    def create_draft(
+        self,
+        automation_id: str,
+        definition: AutomationDefinition,
+        *,
+        actor_id: str,
+        scope_type: DefinitionScope,
+        scope_id: str | None,
+        reason: str | None = None,
+        derived_from_record_id: str | None = None,
+    ) -> DefinitionRecord:
+        return self.registry.create_draft(
+            DefinitionDraftCreate(
+                definition_id=automation_id,
+                kind=AUTOMATION_KIND,
+                definition_schema_version=AUTOMATION_SCHEMA_VERSION,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                payload=definition.model_dump(mode="json"),
+                actor=actor_id,
+                reason=reason,
+                derived_from_record_id=derived_from_record_id,
+            )
+        )
+
+    def publish_draft(
+        self,
+        record_id: str,
+        *,
+        actor_id: str,
+        reason: str | None = None,
+        expected_active_revision: int | None = None,
+        approval_metadata: dict[str, str] | None = None,
+    ) -> DefinitionRecord:
+        record = self.registry.get_record(record_id)
+        if record.kind != AUTOMATION_KIND:
+            raise DefinitionConflictError("Definition record is not an Automation")
+        return self.registry.publish(
+            record_id,
+            DefinitionPublishRequest(
+                actor=actor_id,
+                reason=reason,
+                expected_active_revision=expected_active_revision,
+                approval_metadata=approval_metadata or {},
+            ),
+        )
 
     def resolve_reference(
         self,
