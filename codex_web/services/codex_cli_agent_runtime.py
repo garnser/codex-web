@@ -71,6 +71,7 @@ class CodexCliAgentRuntimeAdapter:
         self.start_timeout_seconds = max(0.1, float(start_timeout_seconds))
         self._listeners: set[Callable[[AgentRuntimeEvent], None]] = set()
         self._session_aliases: dict[str, str] = {}
+        self._session_settings: dict[str, tuple[str | None, str | None]] = {}
         self._provider_sessions: set[str] = set()
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -148,10 +149,13 @@ class CodexCliAgentRuntimeAdapter:
         provider_native_session_id: str,
         request: AgentRuntimeSessionRequest,
     ) -> AgentRuntimeResult:
-        del request
         session_id = provider_native_session_id.strip()
         if not session_id:
             raise ValueError("Codex CLI resume requires a session id")
+        self._session_settings[session_id] = (
+            request.sandbox,
+            request.approval_policy,
+        )
         actual = self._session_aliases.get(session_id, session_id)
         return AgentRuntimeResult(
             provider_native_session_id=actual,
@@ -186,6 +190,7 @@ class CodexCliAgentRuntimeAdapter:
             provider_native_session_id,
         )
         self._provider_sessions.discard(actual)
+        self._session_settings.pop(provider_native_session_id, None)
         return AgentRuntimeResult(
             provider_native_session_id=actual,
             payload={"closed": True},
@@ -247,11 +252,17 @@ class CodexCliAgentRuntimeAdapter:
         if actual_session_id is None and logical_session_id in self._provider_sessions:
             actual_session_id = logical_session_id
 
+        session_sandbox, session_approval = self._session_settings.get(
+            logical_session_id,
+            (None, None),
+        )
         turn_cli = CodexCliAdapter(
             executable=self.cli.executable,
-            sandbox=self.cli.sandbox,
+            sandbox=session_sandbox or self.cli.sandbox,
             approval_policy=(
-                request.approval_policy or self.cli.approval_policy
+                request.approval_policy
+                or session_approval
+                or self.cli.approval_policy
             ),
         )
         if actual_session_id:
