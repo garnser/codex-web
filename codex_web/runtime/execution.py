@@ -11,7 +11,11 @@ from typing import Any, Callable, Mapping
 from fastapi import HTTPException
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
-from codex_web.agent_runtime import AgentRuntimeSessionRequest, AgentRuntimeTurnRequest
+from codex_web.agent_runtime import (
+    AgentRuntimeEvent,
+    AgentRuntimeSessionRequest,
+    AgentRuntimeTurnRequest,
+)
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
@@ -323,10 +327,14 @@ class TurnExecutionService:
                         if trusted_local_codex_session
                         else sandbox
                     ),
-                    required_network_profile=(
-                        None
+                    required_network_profile=None,
+                    allowed_network_profiles=(
+                        ()
                         if trusted_local_codex_session
-                        else "brokered-model-egress"
+                        else (
+                            "brokered-model-egress",
+                            "direct-provider-egress",
+                        )
                     ),
                 ),
                 actor=routing_actor,
@@ -1090,6 +1098,89 @@ class TurnExecutionService:
         self.assignment_completion_tasks[assignment_id] = task
         self.thread_completion_tasks[active.thread_id] = task
 
+    @staticmethod
+    def _normalize_agent_runtime_item(item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        normalized = dict(item)
+        type_map = {
+            "agent_message": "agentMessage",
+            "command_execution": "commandExecution",
+            "file_change": "fileChange",
+        }
+        item_type = normalized.get("type")
+        if item_type in type_map:
+            normalized["type"] = type_map[item_type]
+        if "aggregated_output" in normalized and "aggregatedOutput" not in normalized:
+            normalized["aggregatedOutput"] = normalized["aggregated_output"]
+        return normalized
+
+    def _publish_agent_runtime_message(self, message: dict[str, Any]) -> None:
+        self.record_thread_activity(message)
+        hub = getattr(self.host, "hub", None)
+        if hub is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            hub.publish({"type": "codex.event", "message": message})
+        )
+
+    def record_agent_runtime_event(
+        self,
+        thread_id: str,
+        event: AgentRuntimeEvent,
+    ) -> None:
+        """Project provider-neutral runtime events into the existing thread bus."""
+
+        method = str(event.event_type or "").replace(".", "/")
+        if method == "turn/interrupted":
+            method = "turn/failed"
+
+        payload = dict(event.payload or {})
+        payload.pop("type", None)
+        params = payload
+        params["threadId"] = thread_id
+
+        if event.provider_native_turn_id:
+            params["turnId"] = event.provider_native_turn_id
+            turn = params.get("turn")
+            if not isinstance(turn, dict):
+                turn = {}
+            else:
+                turn = dict(turn)
+            turn.setdefault("id", event.provider_native_turn_id)
+            turn.setdefault("threadId", thread_id)
+            params["turn"] = turn
+
+        item = params.get("item")
+        if isinstance(item, dict):
+            normalized_item = self._normalize_agent_runtime_item(item)
+            params["item"] = normalized_item
+            if (
+                method == "item/completed"
+                and normalized_item.get("type") == "agentMessage"
+                and normalized_item.get("text")
+            ):
+                self._publish_agent_runtime_message(
+                    {
+                        "method": "item/agentMessage/delta",
+                        "params": {
+                            "threadId": thread_id,
+                            "delta": str(normalized_item["text"]),
+                        },
+                    }
+                )
+
+        if method == "turn/failed" and not params.get("error"):
+            params["error"] = "agent runtime turn failed"
+
+        self._publish_agent_runtime_message(
+            {"method": method, "params": params}
+        )
+
     def record_thread_activity(self, message: dict[str, Any]) -> None:
         h = self.host
         method = message.get("method")
@@ -1727,6 +1818,18 @@ class TurnExecutionService:
                     native_session_id,
                     runtime_turn_request,
                 )
+                remember_native_session_id = getattr(
+                    session,
+                    "remember_native_session_id",
+                    None,
+                )
+                if (
+                    callable(remember_native_session_id)
+                    and runtime_turn_result.provider_native_session_id
+                ):
+                    remember_native_session_id(
+                        runtime_turn_result.provider_native_session_id
+                    )
                 response = runtime_turn_result.payload
                 if (
                     effective_work_item_ref

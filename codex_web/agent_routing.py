@@ -31,6 +31,7 @@ class AgentRoutingRequest(BaseModel):
     required_compliance_tags: tuple[str, ...] = ()
     required_sandbox_profile: str | None = None
     required_network_profile: str | None = None
+    allowed_network_profiles: tuple[str, ...] = ()
     require_persistent_session: bool = False
     max_runtime_cost_usd: float | None = Field(default=None, ge=0.0)
     allow_fallback: bool = True
@@ -59,6 +60,7 @@ class AgentRoutingRequest(BaseModel):
             "preferred_runtime_ids",
             "required_residency_tags",
             "required_compliance_tags",
+            "allowed_network_profiles",
         ):
             values = getattr(self, field_name)
             setattr(

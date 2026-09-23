@@ -596,6 +596,15 @@ class AgentRoutingService:
                 ):
                     rejected.append(f"{key}:network_profile_mismatch")
                     continue
+            if request.allowed_network_profiles:
+                if (
+                    not registration.network_profiles
+                    or not set(registration.network_profiles).intersection(
+                        request.allowed_network_profiles
+                    )
+                ):
+                    rejected.append(f"{key}:network_profile_mismatch")
+                    continue
 
             if request.max_runtime_cost_usd is not None:
                 if registration.max_session_cost_usd is None:

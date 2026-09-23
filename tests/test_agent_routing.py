@@ -366,6 +366,67 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
             result.rejected_reasons,
         )
 
+    async def test_allowed_network_profiles_accept_brokered_or_direct_egress(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.PERSISTENT_SESSIONS,
+        )
+        self._provider("openai", capabilities)
+        self._runtime(
+            "openai",
+            "codex",
+            capabilities,
+            network_profiles=("brokered-model-egress",),
+        )
+        self._runtime(
+            "openai",
+            "codex-cli",
+            capabilities,
+            network_profiles=("direct-provider-egress",),
+        )
+        service = AgentRoutingService(self.providers, self.runtimes)
+
+        for runtime_id in ("codex", "codex-cli"):
+            with self.subTest(runtime_id=runtime_id):
+                result = await service.route(
+                    AgentRoutingRequest(
+                        project_id="project-a",
+                        allowed_runtime_ids=(runtime_id,),
+                        require_persistent_session=True,
+                        allowed_network_profiles=(
+                            "brokered-model-egress",
+                            "direct-provider-egress",
+                        ),
+                    ),
+                    actor=self.actor,
+                )
+                self.assertEqual(
+                    result.selected_runtime.runtime_id,
+                    runtime_id,
+                )
+
+        self._runtime(
+            "openai",
+            "isolated-only",
+            capabilities,
+            network_profiles=("no-egress",),
+        )
+        with self.assertRaisesRegex(
+            AgentRoutingError,
+            "network_profile_mismatch",
+        ):
+            await service.route(
+                AgentRoutingRequest(
+                    project_id="project-a",
+                    allowed_runtime_ids=("isolated-only",),
+                    allowed_network_profiles=(
+                        "brokered-model-egress",
+                        "direct-provider-egress",
+                    ),
+                ),
+                actor=self.actor,
+            )
+
     async def test_constraints_and_runtime_budget_fail_closed(self) -> None:
         capabilities = (
             AgentProviderCapability.AGENT_EXECUTION,

@@ -193,6 +193,29 @@ class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
                         )
                     )
 
+    async def test_standard_routing_allows_brokered_or_direct_provider_egress(self) -> None:
+        routing = _RoutingSuccess()
+        service = TurnExecutionService(
+            _Host(),
+            control_actor=SimpleNamespace(identity_id="control"),
+            routing_service=routing,
+        )
+
+        await service._select_runtime_binding(
+            project_id="p1",
+            sandbox="workspace-write",
+        )
+
+        request, _actor = routing.calls[0]
+        self.assertIsNone(request.required_network_profile)
+        self.assertEqual(
+            request.allowed_network_profiles,
+            (
+                "brokered-model-egress",
+                "direct-provider-egress",
+            ),
+        )
+
     async def test_network_profile_mismatch_is_structured_preflight_blocker(self) -> None:
         service = TurnExecutionService(
             _Host(),
@@ -242,6 +265,7 @@ class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(request.allow_fallback)
         self.assertIsNone(request.required_sandbox_profile)
         self.assertIsNone(request.required_network_profile)
+        self.assertEqual(request.allowed_network_profiles, ())
 
 
 class TurnExecutionQueueTests(unittest.TestCase):
