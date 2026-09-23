@@ -18,6 +18,7 @@ from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.identity import AuthenticationActor, MembershipRole
 from codex_web.scheduler import MisfirePolicy, ScheduleCreate
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.attention import AttentionItemNotFoundError, AttentionStore
 
@@ -45,11 +46,13 @@ class AttentionService:
         canonical_events: CanonicalEventIngestionService,
         *,
         scheduler: SchedulerService | None = None,
+        identity: IdentityService | None = None,
         clock: Clock = time.time,
     ) -> None:
         self.store = store
         self.canonical_events = canonical_events
         self.scheduler = scheduler
+        self.identity = identity
         self.clock = clock
         self.notification_adapters: list[AttentionNotificationAdapter] = []
 
@@ -292,6 +295,73 @@ class AttentionService:
         )
         await self._emit(updated, transition="resolved", actor_id=actor_id)
         return updated
+
+    @staticmethod
+    def _require_owner_or_admin(
+        item: AttentionItem,
+        actor: AuthenticationActor,
+    ) -> None:
+        if actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN):
+            return
+        if item.owner_identity_id == actor.identity_id:
+            return
+        raise AuthorizationError(
+            "Attention reassign/escalate requires the current owner or administrator"
+        )
+
+    async def reassign(
+        self,
+        item_id: str,
+        *,
+        actor: AuthenticationActor,
+        owner_identity_id: str,
+    ) -> AttentionItem:
+        item = self.get(item_id, actor=actor)
+        if item.status in TERMINAL_ATTENTION_STATUSES:
+            raise AttentionStateError("terminal attention item cannot be reassigned")
+        self._require_owner_or_admin(item, actor)
+        target = str(owner_identity_id or "").strip()
+        if not target:
+            raise AttentionStateError("reassignment requires a target identity")
+        if self.identity is None:
+            raise AttentionStateError(
+                "canonical identity service is unavailable for reassignment"
+            )
+        try:
+            self.identity.actor_for_identity(target, scope=actor.tenant)
+        except Exception as exc:
+            raise AttentionStateError(
+                "reassignment target is not a current tenant/workspace identity"
+            ) from exc
+        updated = self.store.transition(
+            item.id,
+            actor_id=actor.identity_id,
+            transition=lambda current: current.model_copy(
+                update={
+                    "owner_identity_id": target,
+                    "snoozed_until": None,
+                }
+            ),
+            now=self.clock(),
+        )
+        await self._emit(
+            updated,
+            transition="reassigned",
+            actor_id=actor.identity_id,
+        )
+        return updated
+
+    async def escalate_for_actor(
+        self,
+        item_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> AttentionItem:
+        item = self.get(item_id, actor=actor)
+        if item.status in TERMINAL_ATTENTION_STATUSES:
+            raise AttentionStateError("terminal attention item cannot be escalated")
+        self._require_owner_or_admin(item, actor)
+        return await self.escalate(item.id, actor_id=actor.identity_id)
 
     async def snooze(
         self,
