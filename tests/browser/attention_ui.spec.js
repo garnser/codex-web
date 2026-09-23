@@ -23,6 +23,10 @@ function item(index) {
     due_at: null,
     expires_at: null,
     deep_link: `/?work_item=work-${index}`,
+    requesting_agent_profile_id: index === 0 ? "agent-profile-a" : null,
+    requesting_agent_team_id: index === 0 ? "team-a" : null,
+    evidence_ids: index === 0 ? ["evidence-1", "evidence-2"] : [],
+    diagnostic_refs: index === 0 ? ["run:exec-1"] : [],
     escalation: null,
     escalation_schedule_id: null,
     status: "open",
@@ -159,6 +163,17 @@ test("Inbox consumes bounded pages and supports keyboard queue navigation", asyn
   await expect(dialog.locator("[data-attention-status]")).toContainText("30 of 30");
   expect(requests.some((query) => query.includes("limit=25") && query.includes("cursor=25"))).toBeTruthy();
   await expect(dialog.getByRole("button", { name: "Load more" })).toBeHidden();
+});
+
+test("Inbox renders canonical requester and evidence provenance", async ({ page }) => {
+  await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const card = page.locator('[data-attention-id="attention-0"]');
+  await expect(card).toContainText("Requester: agent-profile-a");
+  await expect(card).toContainText("Evidence: evidence-1, evidence-2");
+  await expect(card).toContainText("Diagnostics: run:exec-1");
 });
 
 test("Inbox remains usable at phone width without horizontal overflow", async ({ page }) => {

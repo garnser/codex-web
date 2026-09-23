@@ -251,8 +251,12 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         migrated = self.store.load()
-        self.assertEqual(migrated.schema_version, "1.1")
+        self.assertEqual(migrated.schema_version, "1.2")
         self.assertIsNone(migrated.items[item.id].project_id)
+        self.assertIsNone(migrated.items[item.id].requesting_agent_profile_id)
+        self.assertIsNone(migrated.items[item.id].requesting_agent_team_id)
+        self.assertEqual(migrated.items[item.id].evidence_ids, ())
+        self.assertEqual(migrated.items[item.id].diagnostic_refs, ())
         self.assertTrue(
             self.store.store.record_collection_exists(
                 self.store.record_namespace
@@ -349,6 +353,33 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(first.id, second.id)
         self.assertEqual(len(self.store.list()), 2)
+
+    async def test_attention_preserves_agent_and_evidence_provenance(self) -> None:
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                project_id="project-a",
+                type="agent.request",
+                source=AttentionSource(
+                    object_type="work_item",
+                    object_id="work-provenance",
+                ),
+                reason="Agent needs operator evidence",
+                dedupe_key="agent-evidence-provenance",
+                requesting_agent_profile_id="agent-profile-a",
+                requesting_agent_team_id="team-a",
+                evidence_ids=("evidence-1", "evidence-1", "evidence-2"),
+                diagnostic_refs=("run:exec-1", "run:exec-1", "incident:7"),
+            ),
+            actor_id="test",
+        )
+
+        persisted = self.store.get(item.id)
+        self.assertEqual(persisted.requesting_agent_profile_id, "agent-profile-a")
+        self.assertEqual(persisted.requesting_agent_team_id, "team-a")
+        self.assertEqual(persisted.evidence_ids, ("evidence-1", "evidence-2"))
+        self.assertEqual(persisted.diagnostic_refs, ("run:exec-1", "incident:7"))
 
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())

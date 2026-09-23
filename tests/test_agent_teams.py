@@ -375,6 +375,7 @@ class AgentTeamServiceTests(unittest.TestCase):
             "attention-team-1",
         )
         self.assertEqual(len(history["blockers"]), 1)
+        self.assertEqual(attention.payload.requesting_agent_team_id, "delivery")
 
     def test_work_item_history_links_executions_and_splits_usage(self) -> None:
         class _UsageStore:

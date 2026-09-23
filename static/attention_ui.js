@@ -106,6 +106,9 @@ function attentionCard(item) {
         <span><strong>Due:</strong> ${attentionEsc(attentionTime(item.due_at))}</span>
         <span><strong>Expires:</strong> ${attentionEsc(attentionTime(item.expires_at))}</span>
         <span><strong>Owner:</strong> ${attentionEsc(item.owner_identity_id || "—")}</span>
+        <span><strong>Requester:</strong> ${attentionEsc(item.requesting_agent_profile_id || item.requesting_agent_team_id || "—")}</span>
+        <span><strong>Evidence:</strong> ${attentionEsc((item.evidence_ids || []).join(", ") || "—")}</span>
+        <span><strong>Diagnostics:</strong> ${attentionEsc((item.diagnostic_refs || []).join(", ") || "—")}</span>
         <span><strong>Escalations:</strong> ${attentionEsc(item.escalation_count || 0)}</span>
       </div>
       <div class="attention-actions">

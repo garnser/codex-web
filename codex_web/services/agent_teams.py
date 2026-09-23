@@ -789,6 +789,7 @@ class AgentTeamService:
                 ),
                 reason=record.reason,
                 dedupe_key=f"agent-team:{record.team_id}:{record.work_item_id}:{record.reason}",
+                requesting_agent_team_id=record.team_id,
                 deep_link=f"/?work_item={record.work_item_id}",
                 escalation=EscalationPolicy(mandatory=True),
             ),

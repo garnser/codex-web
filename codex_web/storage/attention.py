@@ -35,6 +35,23 @@ ATTENTION_STATE_MIGRATIONS.register(
         },
     },
 )
+ATTENTION_STATE_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        "schema_version": "1.2",
+        "items": {
+            key: {
+                **dict(value),
+                "requesting_agent_profile_id": dict(value).get("requesting_agent_profile_id"),
+                "requesting_agent_team_id": dict(value).get("requesting_agent_team_id"),
+                "evidence_ids": dict(value).get("evidence_ids") or [],
+                "diagnostic_refs": dict(value).get("diagnostic_refs") or [],
+            }
+            for key, value in dict(payload.get("items") or {}).items()
+        },
+    },
+)
 
 
 class AttentionItemNotFoundError(KeyError):
