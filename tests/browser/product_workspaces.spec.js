@@ -53,7 +53,7 @@ test('dynamic cards are adopted and shared UI primitives expose distinct canonic
     card.innerHTML = '<h2>Agent Providers & Sessions</h2><button id="refresh-agent-providers">Refresh</button>';
     document.querySelector('#developer-panel .developer-grid').appendChild(card);
   });
-  await expect(page.locator('[data-product-workspace-host="agents"] > #agent-provider-card')).toHaveCount(1);
+  await expect(page.locator('[data-product-workspace-host="operations"] > #agent-provider-card')).toHaveCount(1);
 
   const api = await page.evaluate(() => ({
     concepts: window.CodexProductUI.concepts.map((item) => item.key),
