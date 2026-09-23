@@ -269,6 +269,10 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
                     set(result.selected_runtime.sandbox_profiles),
                     set(supported),
                 )
+                self.assertEqual(
+                    set(result.selected_runtime.execution_binding().sandbox_profiles),
+                    set(supported),
+                )
 
     def test_application_codex_registration_matches_supported_sandbox_profiles(self) -> None:
         source = (

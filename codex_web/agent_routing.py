@@ -94,6 +94,7 @@ class AgentRuntimeRouteCandidate(BaseModel):
             provider_id=self.provider_id,
             runtime_id=self.runtime_id,
             capability_revision=self.capability_revision,
+            sandbox_profiles=self.sandbox_profiles,
         )
 
 

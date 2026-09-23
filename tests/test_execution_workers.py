@@ -191,7 +191,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.7")
+        self.assertEqual(state.schema_version, "1.8")
+        migrated_worker = next(
+            item for item in state.workers if item.id == self.worker.id
+        )
+        self.assertEqual(
+            migrated_worker.supported_sandbox_profiles,
+            ("read-only", "workspace-write", "danger-full-access"),
+        )
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
@@ -485,6 +492,43 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertTrue(ready.ready)
         self.assertEqual(ready.code, "ready")
         self.assertEqual(len(ready.eligible_worker_ids), 1)
+
+    def test_execution_readiness_filters_worker_sandbox_profiles(self) -> None:
+        worker = self.service.ensure_local_worker(
+            service_identity_id="worker-service",
+            version="1.0.0",
+            capabilities=self.worker.capabilities,
+            supported_execution_contract_versions=(
+                "1.0",
+                "thread-turn/1.0",
+            ),
+            supported_sandbox_profiles=("read-only",),
+            actor=self.admin,
+        )
+        self.assertEqual(worker.supported_sandbox_profiles, ("read-only",))
+
+        blocked = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            required_sandbox_profile="workspace-write",
+            actor=self.admin,
+        )
+        self.assertFalse(blocked.ready)
+        self.assertEqual(blocked.code, "sandbox_profile_unsupported")
+
+        ready = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            required_sandbox_profile="read-only",
+            actor=self.admin,
+        )
+        self.assertTrue(ready.ready)
 
     def test_claim_pins_worker_into_agent_profile_execution_provenance(self) -> None:
         profile = AgentProfileExecutionBinding(

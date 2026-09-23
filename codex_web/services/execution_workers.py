@@ -217,6 +217,8 @@ class ExecutionWorkerService:
             not in worker.supported_execution_contract_versions
         ):
             return False, "execution_contract_version_mismatch"
+        if assignment.sandbox not in worker.supported_sandbox_profiles:
+            return False, "sandbox_profile_mismatch"
         if ExecutionWorkerService._active_count(state, worker.id, now) >= worker.max_concurrency:
             return False, "worker_concurrency_exhausted"
         return True, None
@@ -227,6 +229,7 @@ class ExecutionWorkerService:
         required_capabilities: tuple,
         execution_contract_version: str,
         actor: AuthenticationActor,
+        required_sandbox_profile: str | None = None,
     ) -> WorkerExecutionReadiness:
         self._require_admin(actor)
         required = tuple(
@@ -261,6 +264,10 @@ class ExecutionWorkerService:
             if set(required).issubset(set(worker.capabilities))
             and execution_contract_version
             in worker.supported_execution_contract_versions
+            and (
+                required_sandbox_profile is None
+                or required_sandbox_profile in worker.supported_sandbox_profiles
+            )
         ]
         if eligible:
             return WorkerExecutionReadiness(
@@ -297,7 +304,11 @@ class ExecutionWorkerService:
                 "worker probe, and verify the required capabilities are "
                 "advertised."
             )
-        else:
+        elif not any(
+            execution_contract_version in worker.supported_execution_contract_versions
+            for worker in active
+            if set(required).issubset(set(worker.capabilities))
+        ):
             code = "execution_contract_version_unsupported"
             reason = (
                 "no active execution worker supports execution contract "
@@ -306,6 +317,16 @@ class ExecutionWorkerService:
             remediation = (
                 "Upgrade/reconcile the execution worker so it advertises the "
                 "required execution contract version."
+            )
+        else:
+            code = "sandbox_profile_unsupported"
+            reason = (
+                "no eligible execution worker supports sandbox profile "
+                f"{required_sandbox_profile}"
+            )
+            remediation = (
+                "Select a sandbox profile supported by the execution worker "
+                "or reconcile the worker isolation capabilities."
             )
         return WorkerExecutionReadiness(
             ready=False,
@@ -520,6 +541,7 @@ class ExecutionWorkerService:
                     supported_execution_contract_versions=(
                         payload.supported_execution_contract_versions
                     ),
+                    supported_sandbox_profiles=payload.supported_sandbox_profiles,
                     max_concurrency=payload.max_concurrency,
                     registered_by=grant.created_by,
                     registered_at=enrolled_at,
@@ -535,6 +557,7 @@ class ExecutionWorkerService:
                         "supported_execution_contract_versions": (
                             payload.supported_execution_contract_versions
                         ),
+                        "supported_sandbox_profiles": payload.supported_sandbox_profiles,
                         "max_concurrency": payload.max_concurrency,
                         "last_heartbeat_at": enrolled_at,
                         "lifecycle": (
@@ -631,6 +654,7 @@ class ExecutionWorkerService:
                 supported_execution_contract_versions=(
                     payload.supported_execution_contract_versions
                 ),
+                supported_sandbox_profiles=payload.supported_sandbox_profiles,
                 max_concurrency=payload.max_concurrency,
                 registered_by=actor.identity_id,
             )
@@ -656,6 +680,11 @@ class ExecutionWorkerService:
         capabilities: tuple,
         actor: AuthenticationActor,
         supported_execution_contract_versions: tuple[str, ...] = ("1.0",),
+        supported_sandbox_profiles: tuple[str, ...] = (
+            "read-only",
+            "workspace-write",
+            "danger-full-access",
+        ),
     ) -> ExecutionWorker:
         self._require_admin(actor)
         existing = next(
@@ -691,6 +720,7 @@ class ExecutionWorkerService:
                         "supported_execution_contract_versions": (
                             supported_execution_contract_versions
                         ),
+                        "supported_sandbox_profiles": supported_sandbox_profiles,
                     }
                 )
                 state.workers = [
@@ -703,6 +733,8 @@ class ExecutionWorkerService:
                     or current.lifecycle != lifecycle
                     or current.supported_execution_contract_versions
                     != supported_execution_contract_versions
+                    or current.supported_sandbox_profiles
+                    != supported_sandbox_profiles
                 )
                 if changed:
                     self._event(
@@ -729,6 +761,7 @@ class ExecutionWorkerService:
                 supported_execution_contract_versions=(
                     supported_execution_contract_versions
                 ),
+                supported_sandbox_profiles=supported_sandbox_profiles,
                 max_concurrency=1,
             ),
             actor=actor,
