@@ -110,6 +110,8 @@ function attentionCard(item) {
       <div class="attention-actions">
         ${actionable && item.status !== "acknowledged" ? '<button type="button" class="ghost-button" data-attention-action="acknowledge">Acknowledge</button>' : ""}
         ${actionable ? '<button type="button" class="ghost-button" data-attention-action="snooze">Snooze</button>' : ""}
+        ${actionable ? '<button type="button" class="ghost-button" data-attention-action="reassign">Reassign</button>' : ""}
+        ${actionable ? '<button type="button" class="ghost-button" data-attention-action="escalate">Escalate</button>' : ""}
         ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="approve">Approve</button>' : ""}
         ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="reject">Reject</button>' : ""}
         ${actionable && !approvalOwned ? '<button type="button" class="ghost-button" data-attention-action="resolve">Resolve</button>' : ""}
@@ -136,6 +138,12 @@ async function mutateAttention(dialog, itemId, action) {
     if (action === "resolve") {
       const reason = window.prompt("Resolution reason (optional)", "") ?? "";
       body = JSON.stringify({ reason: reason.trim() || null });
+    } else if (action === "reassign") {
+      const identityId = window.prompt("Assign to identity ID", "");
+      if (identityId === null) return;
+      const ownerIdentityId = identityId.trim();
+      if (!ownerIdentityId) throw new Error("Enter a target identity ID");
+      body = JSON.stringify({ owner_identity_id: ownerIdentityId });
     } else if (action === "snooze") {
       const minutesText = window.prompt("Snooze for how many minutes?", "30");
       if (minutesText === null) return;
