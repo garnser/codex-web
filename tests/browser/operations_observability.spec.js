@@ -243,8 +243,8 @@ test('Operations overview unifies canonical health, worker lifecycle and failure
   await expect(overview).toContainText('Failures & remediation');
   await expect(overview).toContainText('worker_capability_missing');
   await expect(overview).toContainText('restore_worker_capability');
-  await expect(overview.getByRole('button', { name: 'Attention' })).toBeAttached();
-  await expect(overview.getByRole('button', { name: 'Evidence' })).toBeAttached();
+  await expect(overview.locator('button', { hasText: 'Attention' })).toHaveCount(1);
+  await expect(overview.locator('button', { hasText: 'Evidence' })).toHaveCount(1);
 
   const requestWindow = await page.evaluate(() => (
     window.__codexFrontendPerf.requestWindowStatus({ sinceMs: 5000 })
@@ -260,5 +260,6 @@ test('execution worker frontend never renders lease bearer-token material', asyn
   expect(source).toContain('lease.lease_token');
   expect(source).not.toContain('escapeHtml(item.lease.lease_token)');
   expect(source).not.toContain('bearer token:');
-  expect(source).toContain('lease credential: hidden');
+  expect(source).toContain('lease credential:');
+  expect(source).toContain('present (hidden)');
 });
