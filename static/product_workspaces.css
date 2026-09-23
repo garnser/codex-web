@@ -73,3 +73,34 @@
   .product-workspace-panels{padding:8px}.product-provenance-trail{grid-template-columns:1fr}
   .product-concept-row{grid-template-columns:1fr}.product-explain-shortcut{grid-template-columns:1fr}
 }
+
+
+/* First-class Automation product surface */
+.automation-product-card { display: grid; gap: 1rem; }
+.automation-product-heading,
+.automation-detail-header,
+.automation-actions { display: flex; gap: .75rem; align-items: flex-start; justify-content: space-between; }
+.automation-product-heading p,
+.automation-detail-header p { margin: .25rem 0 0; color: var(--muted); }
+.automation-product-layout { display: grid; grid-template-columns: minmax(15rem, .8fr) minmax(0, 2fr); gap: 1rem; min-width: 0; }
+.automation-list { display: grid; gap: .5rem; align-content: start; }
+.automation-list-item { display: grid; gap: .3rem; width: 100%; text-align: left; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); }
+.automation-list-item.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.automation-list-item small,
+.automation-run-row small,
+.automation-facts small,
+.automation-provenance dt { color: var(--muted); }
+.automation-detail { display: grid; gap: 1rem; min-width: 0; }
+.automation-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.automation-facts > div { display: grid; gap: .2rem; padding: .65rem; border: 1px solid var(--line); border-radius: .55rem; }
+.automation-provenance { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .35rem .75rem; }
+.automation-provenance dd { margin: 0; overflow-wrap: anywhere; }
+.automation-run-list { display: grid; gap: .5rem; }
+.automation-run-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .75rem; padding: .65rem; border: 1px solid var(--line); border-radius: .55rem; }
+.automation-run-row > small { grid-column: 1 / -1; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .automation-product-layout,
+  .automation-facts { grid-template-columns: 1fr; }
+  .automation-product-heading,
+  .automation-detail-header { flex-direction: column; }
+}
