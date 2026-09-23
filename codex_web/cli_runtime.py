@@ -93,9 +93,22 @@ class CliRuntimeProbe:
         *,
         which: Callable[[str], str | None] = shutil.which,
         run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        environment_allowlist: Sequence[str] = (),
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         self._which = which
         self._run = run
+        self.environment_allowlist = tuple(
+            dict.fromkeys(item for item in environment_allowlist if item)
+        )
+        self.environ = os.environ if environ is None else environ
+
+    def environment(self) -> dict[str, str]:
+        return {
+            key: self.environ[key]
+            for key in self.environment_allowlist
+            if key in self.environ
+        }
 
     def evaluate(self, adapter: CliRuntimeAdapter) -> CliRuntimeReadiness:
         requested = adapter.executable.strip()
@@ -136,7 +149,7 @@ class CliRuntimeProbe:
                 text=True,
                 timeout=10,
                 check=False,
-                env={},
+                env=self.environment(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return CliRuntimeReadiness(
