@@ -10,7 +10,11 @@ function item(index) {
     project_id: index % 2 ? "project-b" : "project-a",
     type: index % 2 ? "approval.required" : "runtime.remediation",
     severity: index === 0 ? "critical" : "high",
-    source: { object_type: "work_item", object_id: `work-${index}`, event_id: null },
+    source: {
+      object_type: index % 2 ? "approval_request" : "work_item",
+      object_id: index % 2 ? `approval-${index}` : `work-${index}`,
+      event_id: null,
+    },
     reason: `Human action required ${index}`,
     dedupe_key: `dedupe-${index}`,
     owner_identity_id: index % 2 ? "operator-b" : "operator-a",
@@ -39,6 +43,18 @@ function item(index) {
 
 async function installRoutes(page) {
   const requests = [];
+  const approvalDecisions = [];
+  await page.route("**/api/approval-requests/*/decisions", async (route) => {
+    approvalDecisions.push({
+      path: new URL(route.request().url()).pathname,
+      payload: JSON.parse(route.request().postData() || "{}"),
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ approval_request: { status: "approved" } }),
+    });
+  });
   await page.route("**/api/attention?**", async (route) => {
     const url = new URL(route.request().url());
     requests.push(url.search);
@@ -63,6 +79,7 @@ async function installRoutes(page) {
       total: all.length,
     }});
   });
+  requests.approvalDecisions = approvalDecisions;
   return requests;
 }
 
@@ -124,4 +141,29 @@ test("Inbox sends canonical project type and assignee filters", async ({ page })
   await expect.poll(() => requests.some((query) => query.includes("assignee=me"))).toBeTruthy();
 
   await expect(dialog.locator(".attention-card").first()).toContainText("Project:");
+});
+
+
+test("approval Attention uses canonical approve/reject actions and hides local resolve", async ({ page }) => {
+  const requests = await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const dialog = page.locator(".attention-dialog");
+  const approvalCard = dialog.locator('[data-attention-id="attention-1"]');
+  await expect(approvalCard).toBeVisible();
+  await expect(approvalCard.getByRole("button", { name: "Approve" })).toBeVisible();
+  await expect(approvalCard.getByRole("button", { name: "Reject" })).toBeVisible();
+  await expect(approvalCard.getByRole("button", { name: "Resolve" })).toHaveCount(0);
+
+  await approvalCard.getByRole("button", { name: "Approve" }).click();
+  await expect.poll(() => requests.approvalDecisions.length).toBe(1);
+  expect(requests.approvalDecisions[0].path).toBe(
+    "/api/approval-requests/approval-1/decisions",
+  );
+  expect(requests.approvalDecisions[0].payload.outcome).toBe("approve");
+  expect(requests.approvalDecisions[0].payload.reason).toBe("Attention Inbox decision");
+  expect(requests.approvalDecisions[0].payload.idempotency_key).toContain(
+    "attention:attention-1:approve:",
+  );
 });
