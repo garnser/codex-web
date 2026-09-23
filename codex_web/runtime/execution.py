@@ -327,10 +327,14 @@ class TurnExecutionService:
                         if trusted_local_codex_session
                         else sandbox
                     ),
-                    required_network_profile=(
-                        None
+                    required_network_profile=None,
+                    allowed_network_profiles=(
+                        ()
                         if trusted_local_codex_session
-                        else "brokered-model-egress"
+                        else (
+                            "brokered-model-egress",
+                            "direct-provider-egress",
+                        )
                     ),
                 ),
                 actor=routing_actor,
