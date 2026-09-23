@@ -18,6 +18,7 @@ from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishReques
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
+    MembershipRole,
     PrincipalKind,
 )
 from codex_web.services.automation_definitions import install_automation_definitions
@@ -102,7 +103,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             organization_id="local",
             workspace_id="default",
             assurance=AuthenticationAssurance.LOCAL_TRUSTED,
-            membership_roles=("owner",),
+            roles=(MembershipRole.OWNER,),
         )
         self.identity = _Identity(self.owner)
         self.profiles = _Profiles()
