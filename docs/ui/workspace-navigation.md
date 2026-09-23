@@ -21,9 +21,11 @@ Deep links use the current shell and preserve Project context. Browser Back/Forw
 
 ## Work Item and Run inspection
 
-Open **Work** when you need to understand or operate on a task. A Work Item shows canonical work state, authoritative external-source state, execution policy/contract information, diagnostics and history. Its Run timeline shows bounded execution records and provenance rather than replaying unbounded history in the browser.
+Open **Work** when you need to understand or operate on a task. Use the **Work Items** action in that workspace to open the canonical Work Item operator. A Work Item shows canonical work state, authoritative external-source state, execution policy/contract information, diagnostics and history. Its Run timeline shows bounded execution records and provenance rather than replaying unbounded history in the browser.
 
 When a Run is active, live updates refresh the affected Run/Work Item state incrementally. Missing or unavailable auxiliary data should degrade the relevant panel rather than make the entire workspace unusable.
+
+For end-to-end walkthroughs of Work, Team, Automation, Attention and Operations, see [Workspace workflows](workspace-workflows.md).
 
 ## State and authority
 
@@ -37,5 +39,6 @@ At phone widths, navigation and shared cards collapse to a single-column layout.
 
 - [Core concepts](../core-concepts/README.md)
 - [Getting started](../getting-started/README.md)
+- [Workspace workflows](workspace-workflows.md)
 - [Shared workspace components](components.md)
 - [Reproducible screenshots](../screenshots/README.md)
