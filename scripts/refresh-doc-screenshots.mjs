@@ -70,7 +70,12 @@ try {
     pageErrors.length = 0;
     const url = `${base}/${capture.fixture}`;
     await page.goto(url, { waitUntil: "networkidle" });
-    if (capture.open_selector) {
+    if (capture.open_event) {
+      await page.evaluate((eventName) => {
+        window.dispatchEvent(new CustomEvent(eventName));
+      }, capture.open_event);
+      await page.waitForTimeout(50);
+    } else if (capture.open_selector) {
       const trigger = page.locator(capture.open_selector);
       await trigger.waitFor({ state: "visible" });
       await trigger.click();
