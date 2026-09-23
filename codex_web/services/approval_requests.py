@@ -291,6 +291,7 @@ class ApprovalRequestService:
             ),
             payload={
                 "approval_request_id": request.id,
+                "project_id": request.project_id,
                 "transition": transition,
                 "status": request.status.value,
                 "operation": request.target.operation,
