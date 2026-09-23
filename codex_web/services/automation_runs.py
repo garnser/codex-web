@@ -163,7 +163,7 @@ class AutomationRunService:
                 update={
                     "status": AutomationRunStatus.RUNNING,
                     "work_item_ref": work_item_ref,
-                    "execution_ids": execution_ids,
+                    "execution_ids": tuple(dict.fromkeys(execution_ids)),
                     "started_at": now,
                     "updated_at": now,
                 }
@@ -195,7 +195,7 @@ class AutomationRunService:
                         if succeeded
                         else AutomationRunStatus.FAILED
                     ),
-                    "evidence_ids": evidence_ids,
+                    "evidence_ids": tuple(dict.fromkeys(evidence_ids)),
                     "updated_at": now,
                     "completed_at": now,
                 }
