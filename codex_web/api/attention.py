@@ -42,6 +42,9 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         cursor: int = Query(default=0, ge=0),
         status: str | None = Query(default=None),
         severity: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
+        item_type: str | None = Query(default=None, alias="type"),
+        assignee: str | None = Query(default=None),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         items, next_cursor, total = service.list_page(
@@ -50,6 +53,9 @@ def build_attention_router(service: AttentionService) -> APIRouter:
             cursor=cursor,
             status=status,
             severity=severity,
+            project_id=project_id,
+            item_type=item_type,
+            assignee=assignee,
         )
         return {
             "attention_items": [serialize(item) for item in items],
