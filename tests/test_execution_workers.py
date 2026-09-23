@@ -486,6 +486,43 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertEqual(ready.code, "ready")
         self.assertEqual(len(ready.eligible_worker_ids), 1)
 
+    def test_execution_readiness_filters_worker_sandbox_profiles(self) -> None:
+        worker = self.service.ensure_local_worker(
+            service_identity_id="worker-service",
+            version="1.0.0",
+            capabilities=self.worker.capabilities,
+            supported_execution_contract_versions=(
+                "1.0",
+                "thread-turn/1.0",
+            ),
+            supported_sandbox_profiles=("read-only",),
+            actor=self.admin,
+        )
+        self.assertEqual(worker.supported_sandbox_profiles, ("read-only",))
+
+        blocked = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            required_sandbox_profile="workspace-write",
+            actor=self.admin,
+        )
+        self.assertFalse(blocked.ready)
+        self.assertEqual(blocked.code, "sandbox_profile_unsupported")
+
+        ready = self.service.execution_readiness(
+            required_capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+            ),
+            execution_contract_version="thread-turn/1.0",
+            required_sandbox_profile="read-only",
+            actor=self.admin,
+        )
+        self.assertTrue(ready.ready)
+
     def test_claim_pins_worker_into_agent_profile_execution_provenance(self) -> None:
         profile = AgentProfileExecutionBinding(
             profile_id="coder",
