@@ -377,6 +377,85 @@ class AgentTeamServiceTests(unittest.TestCase):
         self.assertEqual(len(history["blockers"]), 1)
         self.assertEqual(attention.payload.requesting_agent_team_id, "delivery")
 
+    def test_recovered_routing_resolves_prior_team_attention(self) -> None:
+        class _Attention:
+            def __init__(self) -> None:
+                self.resolutions = []
+
+            async def upsert(self, payload, *, actor_id):
+                self.payload = payload
+                return type("_Item", (), {"id": "attention-team-recovery"})()
+
+            async def resolve_by_source(
+                self,
+                dedupe_key,
+                *,
+                organization_id,
+                workspace_id,
+                actor_id,
+                reason,
+            ):
+                self.resolutions.append(
+                    {
+                        "dedupe_key": dedupe_key,
+                        "organization_id": organization_id,
+                        "workspace_id": workspace_id,
+                        "actor_id": actor_id,
+                        "reason": reason,
+                    }
+                )
+                return type("_Item", (), {"id": "attention-team-recovery"})()
+
+        attention = _Attention()
+        service = AgentTeamService(
+            AgentTeamStore(self.sqlite),
+            profiles=self.profiles,
+            definitions=self.definitions,
+            attention=attention,
+        )
+        self._team()
+
+        blocked = asyncio.run(
+            service.plan_and_record(
+                "delivery",
+                TeamDelegationRequest(
+                    work_item_id="work-attention-recovery",
+                    handoff_count=4,
+                    required_capabilities=("python",),
+                ),
+                actor=self.member,
+            )
+        )
+        self.assertEqual(blocked.mode, "budget_exhausted")
+        self.assertEqual(attention.resolutions, [])
+
+        recovered = asyncio.run(
+            service.plan_and_record(
+                "delivery",
+                TeamDelegationRequest(
+                    work_item_id="work-attention-recovery",
+                    handoff_count=0,
+                    required_capabilities=("python",),
+                ),
+                actor=self.member,
+            )
+        )
+        self.assertEqual(recovered.mode, "direct")
+        self.assertEqual(len(attention.resolutions), 1)
+        self.assertEqual(
+            attention.resolutions[0],
+            {
+                "dedupe_key": (
+                    "agent-team:delivery:work-attention-recovery:"
+                    "max_handoffs_exhausted"
+                ),
+                "organization_id": "org-a",
+                "workspace_id": "workspace-a",
+                "actor_id": "agent-team-orchestration",
+                "reason": "Agent Team routing recovered via direct",
+            },
+        )
+
     def test_work_item_history_links_executions_and_splits_usage(self) -> None:
         class _UsageStore:
             def list(self):
