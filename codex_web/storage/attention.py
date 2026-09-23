@@ -367,6 +367,8 @@ class AttentionStore:
                     current
                     for current in state.items.values()
                     if current.dedupe_key == item.dedupe_key
+                    and current.organization_id == item.organization_id
+                    and current.workspace_id == item.workspace_id
                 ),
                 None,
             )
