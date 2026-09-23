@@ -93,7 +93,15 @@ export function targetState({
   repositories = repositories || activeRepositories(resources);
   selectedId = selectedId ?? settings.repositoryResourceId ?? "";
   boundId = boundId ?? threadSettings.repository_resource_id ?? "";
-  const writableIds = storedWritableIds(project, settings);
+  const storedIds = storedWritableIds(project, settings);
+  const writableControl = typeof document === "undefined"
+    ? null
+    : document.getElementById("repository-write-targets");
+  const controlIds = Array.from(
+    writableControl?.selectedOptions || [],
+    (option) => option.value,
+  );
+  const writableIds = controlIds.length ? controlIds : storedIds;
   const byId = new Map(repositories.map((item) => [item.id, item]));
   const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
 
