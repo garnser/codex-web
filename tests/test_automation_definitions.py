@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from codex_web.automation_definitions import (
     AUTOMATION_KIND,
     AUTOMATION_SCHEMA_VERSION,
+    AutomationDefinition,
     AutomationLifecycle,
     AutomationTriggerType,
 )
@@ -78,6 +79,34 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
             "work_item_policy": "reuse_or_create",
             "failure_attention": True,
         }
+
+    def test_first_class_service_creates_and_publishes_project_scoped_draft(self) -> None:
+        definition = AutomationDefinition.model_validate(self._payload())
+        draft = self.automations.create_draft(
+            "project-editor-flow",
+            definition,
+            actor_id="operator",
+            scope_type=DefinitionScope.PROJECT,
+            scope_id="project-a",
+            reason="configure project automation",
+        )
+        published = self.automations.publish_draft(
+            draft.record_id,
+            actor_id="operator",
+            reason="activate project automation",
+        )
+
+        resolved, reference = self.automations.resolve(
+            "project-editor-flow",
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+        )
+
+        self.assertEqual(published.status.value, "published")
+        self.assertEqual(resolved.name, definition.name)
+        self.assertEqual(reference.record_id, published.record_id)
+        self.assertEqual(reference.revision, published.revision)
 
     def test_definition_registry_versions_and_resolves_automation(self) -> None:
         draft = self.registry.create_draft(
