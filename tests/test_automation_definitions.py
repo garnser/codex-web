@@ -13,7 +13,7 @@ from codex_web.automation_definitions import (
     AutomationTriggerType,
 )
 from codex_web.canonical_events import CanonicalEventType
-from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest, DefinitionScope
 from codex_web.services.automation_definitions import (
     AutomationEventTriggerService,
     AutomationScheduleMaterializationError,
@@ -322,6 +322,54 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].automation_id, "gitlab-issue-routing")
+
+    def test_list_effective_respects_project_scope_and_exact_revision(self) -> None:
+        global_payload = self._payload()
+        global_payload["trigger"] = {"type": "manual"}
+        self._publish_payload("global-automation", global_payload)
+
+        project_payload = self._payload()
+        project_payload["name"] = "Project A only"
+        project_payload["trigger"] = {"type": "manual"}
+        draft = self.registry.create_draft(
+            DefinitionDraftCreate(
+                definition_id="project-automation",
+                kind=AUTOMATION_KIND,
+                definition_schema_version=AUTOMATION_SCHEMA_VERSION,
+                scope_type=DefinitionScope.PROJECT,
+                scope_id="project-a",
+                payload=project_payload,
+                actor="operator",
+            )
+        )
+        published = self.registry.publish(
+            draft.record_id,
+            DefinitionPublishRequest(actor="operator"),
+        )
+
+        visible = self.automations.list_effective(
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+        )
+        hidden = self.automations.list_effective(
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-b",
+        )
+
+        self.assertEqual(
+            [automation_id for automation_id, _definition, _ref in visible],
+            ["global-automation", "project-automation"],
+        )
+        project_item = next(
+            item for item in visible if item[0] == "project-automation"
+        )
+        self.assertEqual(project_item[2].record_id, published.record_id)
+        self.assertEqual(
+            [automation_id for automation_id, _definition, _ref in hidden],
+            ["global-automation"],
+        )
 
     def test_manual_paused_automation_is_valid_without_scheduler_configuration(self) -> None:
         payload = self._payload()
