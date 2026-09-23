@@ -747,6 +747,7 @@ app.include_router(
         automation_run_service,
         automation_trigger_admission_bridge,
         automation_schedule_materializer,
+        projects=project_service,
     )
 )
 execution_role_definition_service = install_execution_role_definitions(
