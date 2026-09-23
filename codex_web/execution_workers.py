@@ -4,7 +4,7 @@ import time
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 
 from codex_web.compatibility import ContractSpec
@@ -205,12 +205,26 @@ class WorkerExecutionReadiness(BaseModel):
     remediation: str | None = None
 
 
+class CodexExecutionAuthenticationMode(StrEnum):
+    TRUSTED_LOCAL_SESSION = "trusted_local_session"
+    DELEGATED_WORKER_TOKEN = "delegated_worker_token"
+    API_KEY = "api_key"
+
+
 class ExecutionRuntimeBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
     provider_id: str = Field(min_length=1)
     runtime_id: str = Field(min_length=1)
     capability_revision: int = Field(ge=1)
+    authentication_mode: CodexExecutionAuthenticationMode | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_compatibly(self, handler):
+        data = handler(self)
+        if self.authentication_mode is None:
+            data.pop("authentication_mode", None)
+        return data
 
 
 class ExecutionAssignmentCreate(BaseModel):

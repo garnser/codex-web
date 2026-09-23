@@ -9,7 +9,11 @@ from codex_web.bootstrap_engine import (
     BootstrapExecutionStatus,
 )
 from codex_web.configuration import ConfigurationContext, SecretReference as ConfigurationSecretReference
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    CodexExecutionAuthenticationMode,
+    ExecutionRuntimeBinding,
+    WorkerCapability,
+)
 from codex_web.identity import AuthenticationActor
 from codex_web.project_readiness import (
     ProjectReadinessCheck,
@@ -17,7 +21,11 @@ from codex_web.project_readiness import (
     ReadinessCheckStatus,
 )
 from codex_web.resources import ResourceType
-from codex_web.runtime_credentials import DEFAULT_RUNTIME_CREDENTIAL_CONFIGS, runtime_credential_config_key
+from codex_web.runtime_credentials import (
+    DEFAULT_RUNTIME_CREDENTIAL_CONFIGS,
+    RuntimeAuthenticationConfigurationError,
+    runtime_authentication_requirement,
+)
 from codex_web.services.configuration import ConfigurationError, ConfigurationNotFoundError, ConfigurationService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.projects import ProjectService
@@ -51,6 +59,7 @@ class ProjectReadinessService:
         configuration: ConfigurationService | None = None,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
+        permitted_codex_authentication_modes: tuple[CodexExecutionAuthenticationMode, ...] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -66,6 +75,7 @@ class ProjectReadinessService:
         self.runtime_credential_configs = dict(
             runtime_credential_configs or DEFAULT_RUNTIME_CREDENTIAL_CONFIGS
         )
+        self.permitted_codex_authentication_modes = permitted_codex_authentication_modes
         self.clock = clock
 
     @staticmethod
@@ -525,11 +535,69 @@ class ProjectReadinessService:
                     )
                 )
 
-        config_key = runtime_credential_config_key(
-            self.runtime_binding,
-            self.runtime_credential_configs,
+        auth_context = ConfigurationContext(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            project_id=project.id,
         )
-        if self.runtime_binding is None or config_key is None:
+        try:
+            auth = runtime_authentication_requirement(
+                self.runtime_binding,
+                configuration=self.configuration,
+                context=auth_context,
+                credential_mapping=self.runtime_credential_configs,
+                permitted_codex_modes=self.permitted_codex_authentication_modes,
+            )
+        except RuntimeAuthenticationConfigurationError as exc:
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "authentication",
+                    ReadinessCheckStatus.BLOCKED,
+                    "authentication_mode_invalid",
+                    str(exc),
+                    affected_type="configuration",
+                    affected_id="codex.execution.authentication_mode",
+                    remediation="Select one supported Codex authentication mode explicitly.",
+                    remediation_route="/api/configuration",
+                )
+            )
+            auth = None
+
+        if auth is not None and not auth.permitted:
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "authentication",
+                    ReadinessCheckStatus.BLOCKED,
+                    "authentication_mode_denied",
+                    f"Authentication mode {auth.codex_mode.value if auth.codex_mode else 'configured'} is denied by execution policy.",
+                    affected_type="agent_runtime",
+                    affected_id=f"{auth.provider_id}/{auth.runtime_id}",
+                    remediation="Select an authentication mode permitted by execution policy.",
+                    remediation_route="/api/configuration",
+                    details=auth.public(),
+                )
+            )
+        elif (
+            auth is not None
+            and auth.codex_mode == CodexExecutionAuthenticationMode.TRUSTED_LOCAL_SESSION
+        ):
+            checks.append(
+                self._check(
+                    "runtime:credential-reference",
+                    "authentication",
+                    ReadinessCheckStatus.BLOCKED,
+                    "authentication_mode_unsupported",
+                    "Trusted local Codex session authentication is selected but this execution path does not support it yet.",
+                    affected_type="agent_runtime",
+                    affected_id=f"{auth.provider_id}/{auth.runtime_id}",
+                    remediation="Use a supported explicit authentication mode for this execution path.",
+                    remediation_route="/api/configuration",
+                    details=auth.public(),
+                )
+            )
+        elif self.runtime_binding is None or auth is None or not auth.credential_required:
             checks.append(
                 self._check(
                     "runtime:credential-reference",
@@ -540,6 +608,7 @@ class ProjectReadinessService:
                     affected_type="project",
                     affected_id=project.id,
                     required=False,
+                    details=(auth.public() if auth is not None else {}),
                 )
             )
         elif self.configuration is None:
@@ -549,26 +618,20 @@ class ProjectReadinessService:
                     "secret_reference",
                     ReadinessCheckStatus.BLOCKED,
                     "credential_reference_missing",
-                    f"Runtime credential configuration {config_key} cannot be evaluated.",
+                    f"Runtime credential configuration {auth.credential_config_key} cannot be evaluated.",
                     affected_type="configuration",
-                    affected_id=config_key,
-                    remediation="Configure the required runtime SecretReference.",
+                    affected_id=auth.credential_config_key,
+                    remediation="Configure the credential required by the selected authentication mode.",
                     remediation_route="/api/configuration",
-                    details={"configuration_key": config_key},
+                    details=auth.public(),
                 )
             )
         else:
+            config_key = auth.credential_config_key
             secret_id = None
             active = False
             try:
-                effective = self.configuration.resolve(
-                    config_key,
-                    ConfigurationContext(
-                        organization_id=actor.organization_id,
-                        workspace_id=actor.workspace_id,
-                        project_id=project.id,
-                    ),
-                )
+                effective = self.configuration.resolve(config_key, auth_context)
                 reference = ConfigurationSecretReference.model_validate(effective.value)
                 secret_id = reference.secret_id
                 metadata = self.secrets.metadata(
@@ -579,20 +642,14 @@ class ProjectReadinessService:
                 active = metadata.status().value == "active"
             except (ConfigurationError, ConfigurationNotFoundError, ValueError, LookupError):
                 active = False
+            details = auth.public()
+            details["secret_reference_id"] = secret_id
             checks.append(
                 self._check(
                     "runtime:credential-reference",
                     "secret_reference",
-                    (
-                        ReadinessCheckStatus.READY
-                        if active
-                        else ReadinessCheckStatus.BLOCKED
-                    ),
-                    (
-                        "credential_reference_ready"
-                        if active
-                        else "credential_reference_missing"
-                    ),
+                    ReadinessCheckStatus.READY if active else ReadinessCheckStatus.BLOCKED,
+                    "credential_reference_ready" if active else "credential_reference_missing",
                     (
                         f"Runtime credential reference {config_key} is active and authorized."
                         if active
@@ -603,17 +660,10 @@ class ProjectReadinessService:
                     remediation=(
                         None
                         if active
-                        else "Configure an authorized canonical SecretReference for the selected runtime."
+                        else "Configure an authorized canonical SecretReference for the selected authentication mode."
                     ),
                     remediation_route="/api/configuration",
-                    details={
-                        "configuration_key": config_key,
-                        "secret_reference_id": secret_id,
-                        "runtime": (
-                            f"{self.runtime_binding.provider_id}/"
-                            f"{self.runtime_binding.runtime_id}"
-                        ),
-                    },
+                    details=details,
                 )
             )
 

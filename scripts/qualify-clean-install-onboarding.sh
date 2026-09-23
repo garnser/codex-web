@@ -23,7 +23,7 @@ json_post() {
 
 ensure_codex_credential() {
   local project_id="$1"
-  local secret_id draft_id
+  local secret_id draft_id existing_reference
 
   secret_id="$(json_get "$BASE_URL/api/secrets" | jq -r '
     [.items[] | select(.name == "CI onboarding Codex access token" and .status == "active")][0].id // empty
@@ -37,12 +37,14 @@ ensure_codex_credential() {
     }' | jq -r '.item.id')"
   fi
 
-  if json_post "$BASE_URL/api/configuration/resolve" "$(jq -nc \
+  existing_reference="$(json_post "$BASE_URL/api/configuration/resolve" "$(jq -nc \
       --arg project_id "$project_id" \
       '{
         key:"codex.worker.access_token_secret",
         context:{project_id:$project_id}
-      }')" >/dev/null 2>&1; then
+      }')" 2>/dev/null || true)"
+  if jq -e '.value.kind == "secret" and (.value.secret_id | type == "string" and length > 0)' \
+      <<<"$existing_reference" >/dev/null 2>&1; then
     return 0
   fi
 
