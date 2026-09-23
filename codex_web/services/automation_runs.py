@@ -66,6 +66,50 @@ class AutomationRunService:
             )
         return f"{definition_record_id}:source:{trigger.source_id}"
 
+    @staticmethod
+    def _dedupe_occurrence(
+        trigger: AutomationRunTrigger,
+        idempotency_key: str | None,
+    ) -> str:
+        supplied = str(idempotency_key or "").strip()
+        if supplied:
+            return supplied
+        if trigger.event_id:
+            return trigger.event_id
+        if trigger.schedule_id and trigger.scheduled_for is not None:
+            return f"{trigger.schedule_id}:{float(trigger.scheduled_for)!r}"
+        return trigger.source_id
+
+    @classmethod
+    def policy_dedupe_key(
+        cls,
+        *,
+        definition_record_id: str,
+        automation_id: str,
+        project_id: str | None,
+        template: str | None,
+        trigger: AutomationRunTrigger,
+        idempotency_key: str | None = None,
+    ) -> str:
+        normalized_template = str(template or "").strip()
+        if not normalized_template:
+            return cls.trigger_dedupe_key(
+                definition_record_id=definition_record_id,
+                trigger=trigger,
+                idempotency_key=idempotency_key,
+            )
+        rendered = normalized_template.format(
+            automation=automation_id,
+            project=str(project_id or ""),
+            occurrence=cls._dedupe_occurrence(trigger, idempotency_key),
+            event=str(trigger.event_id or ""),
+            schedule=str(trigger.schedule_id or ""),
+            source=trigger.source_id,
+        ).strip()
+        if not rendered:
+            raise ValueError("Automation dedupe policy rendered an empty key")
+        return f"{definition_record_id}:policy:{rendered}"
+
     def admit(
         self,
         automation_id: str,
@@ -93,8 +137,11 @@ class AutomationRunService:
                 workspace_id=workspace_id,
                 project_id=project_id,
             )
-        dedupe_key = self.trigger_dedupe_key(
+        dedupe_key = self.policy_dedupe_key(
             definition_record_id=reference.record_id,
+            automation_id=automation_id,
+            project_id=project_id,
+            template=automation.dedupe_key_template,
             trigger=trigger,
             idempotency_key=idempotency_key,
         )
