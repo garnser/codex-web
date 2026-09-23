@@ -5,6 +5,7 @@ import unittest
 
 from codex_web.agent_runtime import (
     AgentRuntimeHealth,
+    AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
 )
 from codex_web.cli_runtime import (
@@ -138,6 +139,40 @@ class CodexCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--json", command.argv)
         self.assertEqual(command.cwd.as_posix(), "/workspace/repo")
         self.assertNotIn("OPENAI_API_KEY", command.environment)
+
+    async def test_resume_session_carries_canonical_sandbox_into_cli_command(self) -> None:
+        runner = _Runner(
+            [
+                '{"type":"thread.started","thread_id":"native-readonly"}',
+                '{"type":"turn.completed","turn_id":"turn-readonly"}',
+            ]
+        )
+        adapter = CodexCliAgentRuntimeAdapter(
+            probe=_Probe(_ready()),
+            runner=runner,
+        )
+        await adapter.resume_session(
+            "thread-local",
+            AgentRuntimeSessionRequest(
+                project_id="home",
+                sandbox="read-only",
+                approval_policy="never",
+                workspace_cwd="/workspace/repo",
+            ),
+        )
+
+        await adapter.start_turn(
+            "thread-local",
+            AgentRuntimeTurnRequest(
+                message="Inspect only",
+                workspace_cwd="/workspace/repo",
+            ),
+        )
+        await asyncio.sleep(0)
+
+        argv = runner.commands[0][0].argv
+        sandbox_index = argv.index("--sandbox")
+        self.assertEqual(argv[sandbox_index + 1], "read-only")
 
     async def test_known_provider_session_uses_codex_resume_command(self) -> None:
         runner = _Runner(
