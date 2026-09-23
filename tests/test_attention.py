@@ -450,6 +450,65 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.resolved_by_identity_id, "operator-a")
         self.assertEqual(resolved.resolution_reason, "handled")
 
+    async def test_bulk_acknowledge_preflights_scope_and_skips_non_actionable_items(self) -> None:
+        first = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-bulk-1"),
+                reason="First remediation",
+                dedupe_key="runtime-bulk-1",
+            ),
+            actor_id="runtime-bridge",
+        )
+        second = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-bulk-2"),
+                reason="Second remediation",
+                dedupe_key="runtime-bulk-2",
+            ),
+            actor_id="runtime-bridge",
+        )
+        resolved = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-bulk-resolved"),
+                reason="Already handled",
+                dedupe_key="runtime-bulk-resolved",
+            ),
+            actor_id="runtime-bridge",
+        )
+        await self.service.resolve(resolved.id, actor=self.actor, reason="done")
+
+        updated, skipped = await self.service.acknowledge_many(
+            (first.id, first.id, second.id, resolved.id),
+            actor=self.actor,
+        )
+
+        self.assertEqual({item.id for item in updated}, {first.id, second.id})
+        self.assertEqual(skipped, (resolved.id,))
+        self.assertTrue(
+            all(item.status == AttentionStatus.ACKNOWLEDGED for item in updated)
+        )
+        self.assertEqual(
+            self.store.get(resolved.id).status,
+            AttentionStatus.RESOLVED,
+        )
+
+        before = self.store.get(first.id).revision
+        with self.assertRaises(Exception):
+            await self.service.acknowledge_many(
+                (first.id, "missing-attention"),
+                actor=self.actor,
+            )
+        self.assertEqual(self.store.get(first.id).revision, before)
+
     async def test_reassign_validates_identity_and_records_new_owner(self) -> None:
         self.service.identity = _IdentityResolver({"operator-a", "operator-b"})
         item = await self.service.upsert(
