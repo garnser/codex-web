@@ -31,6 +31,10 @@ DEFAULT_RUNTIME_CREDENTIAL_CONFIGS: dict[tuple[str, str], str] = {
 }
 
 
+class RuntimeAuthenticationConfigurationError(ValueError):
+    pass
+
+
 class RuntimeAuthenticationStatus(StrEnum):
     AVAILABLE = "available"
     NOT_REQUIRED = "not_required"
