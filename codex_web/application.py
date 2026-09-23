@@ -1067,10 +1067,23 @@ def _execution_assignment_notifier(assignment, event_type):
                     ),
                     service_scopes=("automation:execute",),
                 )
-                outcome_service.reconcile_for_execution(
+                outcome_runs = outcome_service.reconcile_for_execution(
                     assignment.execution_id,
                     actor=outcome_actor,
                 )
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is not None:
+                    for automation_run in outcome_runs:
+                        if automation_run.status.value in {"succeeded", "failed"}:
+                            loop.create_task(
+                                outcome_service.sync_attention(
+                                    automation_run,
+                                    actor=outcome_actor,
+                                )
+                            )
             except Exception:
                 # Outcome projection is observational and must not break the
                 # canonical assignment transition that triggered it.
@@ -1135,6 +1148,7 @@ app.state.execution_worker_service = execution_worker_service
 automation_outcome_reconciliation_service = AutomationOutcomeReconciliationService(
     automation_run_service,
     execution_worker_service,
+    attention=attention_service,
 )
 app.state.automation_outcome_reconciliation_service = (
     automation_outcome_reconciliation_service
