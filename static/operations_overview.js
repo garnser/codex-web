@@ -46,6 +46,7 @@ function overviewFooter() {
   footer.append(
     navigationButton("Runs / Work", "work"),
     navigationButton("Attention", "attention"),
+    navigationButton("Incidents", "autonomy", "[data-acc-incidents]"),
     navigationButton("Workers", "workers", "#execution-worker-list"),
     navigationButton("Evidence", "operations", "#artifact-list"),
     navigationButton("Add runtime", "workers", "#execution-worker-enrollment-panel"),
