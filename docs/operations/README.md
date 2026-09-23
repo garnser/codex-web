@@ -6,6 +6,7 @@ Operational state should be read from canonical APIs and the operator UI, not re
 - Incidents: [Incident domain](../architecture/incidents.md)
 - Backup/restore and RPO/RTO: [Recovery continuity](../architecture/recovery-continuity.md)
 - Capacity/backpressure: [Capacity resilience](../architecture/capacity-resilience.md)
+- CLI-backed AI runtimes: [Provider CLI execution](cli-backed-runtimes.md)
 - Frontend responsiveness: [Frontend performance budgets](frontend-performance.md)
 - Releases: [Release promotion](../architecture/releases.md)
 - Upgrades and rollback compatibility: [Upgrade and rollback procedure](upgrade-and-rollback.md) and [Safe upgrades](../architecture/safe-upgrades.md)
