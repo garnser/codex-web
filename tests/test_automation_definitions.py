@@ -103,7 +103,7 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
             project_id="project-a",
         )
 
-        self.assertEqual(published.status.value, "published")
+        self.assertEqual(published.lifecycle.value, "published")
         self.assertEqual(resolved.name, definition.name)
         self.assertEqual(reference.record_id, published.record_id)
         self.assertEqual(reference.revision, published.revision)
