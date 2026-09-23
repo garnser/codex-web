@@ -186,6 +186,108 @@
         "responsive operator shell",
         "touch-safe controls"
       ]
+    },
+    {
+      "name": "workspace-navigation",
+      "fixture": "tests/browser/product_workspaces_fixture.html",
+      "title": "Workspace navigation across core product surfaces",
+      "landmarks": [
+        "Home",
+        "Team / Agents",
+        "Automation / Autonomy",
+        "Operations / Observability"
+      ],
+      "annotations": [
+        "application shell",
+        "Team navigation",
+        "Automation navigation",
+        "Operations navigation"
+      ],
+      "open_selector": ".product-workspaces-launch"
+    },
+    {
+      "name": "home-overview",
+      "fixture": "tests/browser/home_overview_docs_fixture.html",
+      "title": "Home overview and current Project state",
+      "landmarks": [
+        "Project A",
+        "Human review needed",
+        "Ship release",
+        "Nightly verification"
+      ],
+      "annotations": [
+        "Home",
+        "active work",
+        "Attention",
+        "automation summary"
+      ]
+    },
+    {
+      "name": "agent-team-skill",
+      "fixture": "tests/browser/collaboration_workspace_docs_fixture.html",
+      "title": "Agent, Team and Skill collaboration",
+      "landmarks": [
+        "Maya",
+        "Delivery Team",
+        "Python Review"
+      ],
+      "annotations": [
+        "Agent identity",
+        "Team membership",
+        "Skill provenance"
+      ]
+    },
+    {
+      "name": "attention-inbox",
+      "fixture": "tests/browser/attention_ui_docs_fixture.html",
+      "title": "Attention Inbox",
+      "landmarks": [
+        "Inbox / Attention",
+        "Runtime remediation required",
+        "Human action required"
+      ],
+      "annotations": [
+        "Attention",
+        "severity",
+        "source links",
+        "human actions"
+      ],
+      "open_selector": "[data-attention-launch]"
+    },
+    {
+      "name": "runtime-operations",
+      "fixture": "tests/browser/runtime_enrollment_docs_fixture.html",
+      "title": "Runtime enrollment and operations",
+      "landmarks": [
+        "Runtime / Operations",
+        "Add runtime",
+        "Control-plane mutation: allowed",
+        "worker-service"
+      ],
+      "annotations": [
+        "runtime enrollment",
+        "operator assurance",
+        "capability scope"
+      ]
+    },
+    {
+      "name": "workspace-state-matrix",
+      "fixture": "tests/browser/workspace_state_matrix_fixture.html",
+      "title": "Explicit workspace state matrix",
+      "landmarks": [
+        "Loading canonical state",
+        "No records",
+        "Provider degraded",
+        "Load failed",
+        "Execution blocked"
+      ],
+      "annotations": [
+        "loading",
+        "empty",
+        "degraded",
+        "error",
+        "blocked"
+      ]
     }
   ],
   "forbidden_markers": [

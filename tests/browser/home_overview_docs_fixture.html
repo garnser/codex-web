@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home overview documentation fixture</title>
+  <link rel="stylesheet" href="../../static/workspace_components.css">
+  <link rel="stylesheet" href="../../static/home_overview.css">
+</head>
+<body data-project-id="project-a">
+  <select id="product-project-switcher" aria-label="Current Project">
+    <option value="project-a" selected>Project A</option>
+  </select>
+  <main data-home-overview></main>
+  <script>
+    const current = (items = []) => ({
+      status: "current",
+      fresh_at: 1800000000,
+      items,
+      count: items.length,
+      detail: null,
+    });
+    const payload = {
+      project: { id: "project-a", name: "Project A", path: "/workspace/project-a" },
+      generated_at: 1800000000,
+      status: "current",
+      degraded_sections: [],
+      sections: {
+        attention: current([{ id: "attention-1", title: "Human review needed", status: "open", severity: "high", owner: "human-1", updated_at: 1800000000, href: "#workspace/inbox" }]),
+        approvals: current([{ id: "approval-1", title: "Approve deployment", status: "pending", owner: "human-2", updated_at: 1800000000, href: "#approvals" }]),
+        active_work: current([{ id: "work-1", title: "Ship release", status: "implementation", stage: "implementation", owner: "agent-1", next_action: "Run release checks", updated_at: 1800000000, href: "#workspace/work" }]),
+        blocked_work: current([{ id: "work-2", title: "Blocked migration", status: "blocked", stage: "implementation", owner: "agent-2", blocked_reason: "Awaiting credentials", updated_at: 1800000000, href: "#workspace/work" }]),
+        recently_completed: current([{ id: "work-3", title: "Closed item", status: "closed", updated_at: 1799999000, href: "#workspace/work" }]),
+        agents: current([{ id: "session-1", title: "Maya", status: "running", owner: "worker-1", updated_at: 1800000000, href: "#workspace/agents" }]),
+        incidents: current([{ id: "incident-1", title: "API degradation", status: "mitigating", severity: "high", owner: "human-3", updated_at: 1800000000, href: "#workspace/operations" }]),
+        goals: current([{ id: "goal-1", title: "Release safely", status: "active", health: "on_track", owner: "human-4", completion_fraction: 0.5, updated_at: 1800000000, href: "#workspace/goals" }]),
+        automations: current([{ id: "schedule-1", title: "Nightly verification", status: "active", updated_at: 1800000000, href: "#workspace/autonomy" }]),
+      },
+    };
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+      if (url.pathname === "/api/home" && url.searchParams.get("project_id") === "project-a") {
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ detail: "fixture route not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+  </script>
+  <script type="module">
+    import { renderHomeOverview } from "../../static/home_overview.js";
+    await renderHomeOverview(document.querySelector("[data-home-overview]"), "project-a");
+    window.__ready = true;
+  </script>
+</body>
+</html>

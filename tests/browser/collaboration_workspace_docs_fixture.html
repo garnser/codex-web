@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collaboration workspace documentation fixture</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/mobile_responsive.css">
+  <link rel="stylesheet" href="/static/workspace_components.css">
+  <link rel="stylesheet" href="/static/collaboration_workspace.css">
+</head>
+<body data-project-id="project-a">
+  <details id="developer-panel" open>
+    <summary>Developer</summary>
+    <div class="developer-grid"></div>
+  </details>
+  <script>
+    const profiles = [
+      {
+        profile_id: "maya", revision: 4, name: "Maya", description: "Implementation Agent",
+        lifecycle: "active", owner_identity_id: "human-1", role_id: "implementer",
+        skill_refs: [{ definition_id: "python-review", record_id: "skill-rev-2", revision: 2 }],
+        access: { mode: "tenant" },
+        runtime_policy: { preferred_provider_ids: ["openai"], preferred_runtime_ids: ["codex"] },
+        model_policy: { model_class: "reasoning" }, execution_profile_id: "repo-write",
+        sandbox_requirement: "workspace-write", budgets: { max_concurrency: 2 },
+      },
+      {
+        profile_id: "nora", revision: 2, name: "Nora", description: "Validation Agent",
+        lifecycle: "disabled", owner_identity_id: "human-1", role_id: "validator",
+        skill_refs: [], runtime_policy: {}, model_policy: {}, budgets: { max_concurrency: 1 },
+      },
+    ];
+    const teams = [{
+      team_id: "delivery", revision: 3, name: "Delivery Team",
+      description: "Implementation and validation collaboration", lifecycle: "active",
+      owner_identity_id: "human-1", leader_profile_id: "maya",
+      members: [{ profile_id: "nora", role: "validator", capability_tags: ["validation"], required: true }],
+      budgets: { max_handoffs: 4, max_participants: 2, max_coordinator_rounds: 2, max_parallel_executions: 2 },
+      allowed_identity_ids: [], allowed_role_ids: ["operator"], escalation_target: "attention:delivery",
+    }];
+    const skills = [{
+      skill_id: "python-review", definition_id: "python-review", name: "Python Review",
+      revision: 2, lifecycle: "active",
+      provenance: { source_type: "verified-execution", source_ref: "execution-9" },
+    }];
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+      let body = null;
+      if (url.pathname === "/api/agent-profiles") body = { items: profiles };
+      else if (url.pathname === "/api/agent-teams") body = { items: teams };
+      else if (url.pathname === "/api/skills") body = { items: skills };
+      else if (url.pathname.includes("/agent-profiles/maya/executions")) body = { available: true, count: 1, activeCount: 1, items: [] };
+      else if (url.pathname.includes("/agent-profiles/maya/access")) body = { decision: { allowed: true, reasons: ["workspace membership"] } };
+      if (body === null) {
+        return new Response(JSON.stringify({ detail: "fixture route not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+  </script>
+  <script src="/static/collaboration_workspace.js" type="module"></script>
+</body>
+</html>

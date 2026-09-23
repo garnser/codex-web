@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Runtime enrollment documentation fixture</title></head>
+<body>
+  <h1>Runtime / Operations</h1>
+  <div id="execution-worker-management-assurance"></div>
+  <div id="execution-worker-management-status"></div>
+  <details id="execution-worker-enrollment-panel" open>
+    <summary>Add runtime</summary>
+    <input id="execution-worker-enrollment-identity" value="worker-service">
+    <input id="execution-worker-enrollment-pool" value="remote">
+    <input id="execution-worker-enrollment-expiry" value="300">
+    <input id="execution-worker-enrollment-concurrency" value="1">
+    <fieldset id="execution-worker-enrollment-capabilities">
+      <legend>Allowed capabilities</legend>
+      <label><input type="checkbox" value="git" checked> Git</label>
+      <label><input type="checkbox" value="command_execution" checked> Command execution</label>
+    </fieldset>
+    <button id="create-execution-worker-enrollment">Create enrollment</button>
+    <div id="execution-worker-enrollment-result"></div>
+    <div id="execution-worker-enrollment-list"></div>
+  </details>
+  <button id="recover-stale-workers">Recover stale workers</button>
+  <button id="recover-expired-assignments">Recover expired assignments</button>
+  <div id="execution-worker-list"></div>
+  <div id="execution-assignment-list"></div>
+  <script>
+    const enrollment = {
+      id: "worker-enrollment-1", service_identity_id: "worker-service", pool: "remote",
+      expires_at: 1890000300, used_at: null, worker_id: null,
+      allowed_capabilities: ["git", "command_execution"], max_concurrency_ceiling: 1,
+    };
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+      if (url.pathname === "/api/identity/me") {
+        return new Response(JSON.stringify({
+          identity_id: "admin", principal_kind: "human", assurance: "mfa",
+          roles: ["admin"], service_scopes: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.pathname === "/api/execution-workers/enrollments") {
+        const body = (init.method || "GET").toUpperCase() === "POST"
+          ? { token: "fixture-one-time-token", item: enrollment }
+          : { items: [enrollment] };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ detail: "fixture route not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    };
+  </script>
+  <script src="/static/execution_worker_management.js"></script>
+</body>
+</html>
