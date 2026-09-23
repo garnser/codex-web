@@ -50,6 +50,15 @@ async function installRoutes(page) {
   const approvalDecisions = [];
   const attentionActions = [];
   const workItemActions = [];
+  const bulkAcknowledge = [];
+  await page.route("**/api/attention/bulk/acknowledge", async (route) => {
+    bulkAcknowledge.push(JSON.parse(route.request().postData() || "{}"));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ attention_items: [], skipped_item_ids: [] }),
+    });
+  });
   await page.route("**/api/work-items/*/comment", async (route) => {
     workItemActions.push({
       action: "comment",
@@ -140,6 +149,7 @@ async function installRoutes(page) {
   requests.approvalDecisions = approvalDecisions;
   requests.attentionActions = attentionActions;
   requests.workItemActions = workItemActions;
+  requests.bulkAcknowledge = bulkAcknowledge;
   return requests;
 }
 
@@ -163,6 +173,26 @@ test("Inbox consumes bounded pages and supports keyboard queue navigation", asyn
   await expect(dialog.locator("[data-attention-status]")).toContainText("30 of 30");
   expect(requests.some((query) => query.includes("limit=25") && query.includes("cursor=25"))).toBeTruthy();
   await expect(dialog.getByRole("button", { name: "Load more" })).toBeHidden();
+});
+
+test("Inbox bulk acknowledge submits only explicitly selected actionable items", async ({ page }) => {
+  const requests = await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const dialog = page.locator(".attention-dialog");
+  const bulk = dialog.getByRole("button", { name: "Acknowledge selected" });
+  await expect(bulk).toBeDisabled();
+
+  await dialog.locator('[data-attention-id="attention-0"] [data-attention-select]').check();
+  await dialog.locator('[data-attention-id="attention-1"] [data-attention-select]').check();
+  await expect(bulk).toHaveText("Acknowledge selected (2)");
+  await bulk.click();
+
+  await expect.poll(() => requests.bulkAcknowledge.length).toBe(1);
+  expect(requests.bulkAcknowledge[0]).toEqual({
+    item_ids: ["attention-0", "attention-1"],
+  });
 });
 
 test("Inbox renders canonical requester and evidence provenance", async ({ page }) => {

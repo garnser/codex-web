@@ -29,6 +29,12 @@ class AttentionReassignRequest(BaseModel):
     owner_identity_id: str = Field(min_length=1, max_length=500)
 
 
+class AttentionBulkAcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
+
+
 def build_attention_router(service: AttentionService) -> APIRouter:
     router = APIRouter(prefix="/api/attention", tags=["attention"])
 
@@ -71,6 +77,24 @@ def build_attention_router(service: AttentionService) -> APIRouter:
             "next_cursor": next_cursor,
             "has_more": next_cursor is not None,
             "total": total,
+        }
+
+    @router.post("/bulk/acknowledge")
+    async def bulk_acknowledge(
+        payload: AttentionBulkAcknowledgeRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            items, skipped = await service.acknowledge_many(
+                payload.item_ids,
+                actor=actor,
+            )
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {
+            "attention_items": [serialize(item) for item in items],
+            "skipped_item_ids": list(skipped),
         }
 
     @router.get("/{item_id}")
