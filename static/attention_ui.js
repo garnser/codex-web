@@ -114,6 +114,7 @@ function attentionCard(item) {
         <span><strong>Escalations:</strong> ${attentionEsc(item.escalation_count || 0)}</span>
       </div>
       <div class="attention-actions">
+        ${actionable && item.status !== "acknowledged" ? `<label class="attention-select"><input type="checkbox" data-attention-select value="${attentionEsc(item.id)}" /> Select</label>` : ""}
         ${actionable && item.status !== "acknowledged" ? '<button type="button" class="ghost-button" data-attention-action="acknowledge">Acknowledge</button>' : ""}
         ${actionable ? '<button type="button" class="ghost-button" data-attention-action="snooze">Snooze</button>' : ""}
         ${actionable ? '<button type="button" class="ghost-button" data-attention-action="reassign">Reassign</button>' : ""}
@@ -135,6 +136,34 @@ function filteredAttention(items, status, severity) {
       : (status === "all" || item.status === status);
     return statusMatch && (severity === "all" || item.severity === severity);
   });
+}
+
+function updateBulkAcknowledgeState(dialog) {
+  const button = dialog.querySelector("[data-attention-bulk-ack]");
+  if (!button) return;
+  const selected = dialog.querySelectorAll("[data-attention-select]:checked").length;
+  button.disabled = selected === 0;
+  button.textContent = selected ? `Acknowledge selected (${selected})` : "Acknowledge selected";
+}
+
+async function bulkAcknowledge(dialog) {
+  const status = dialog.querySelector("[data-attention-status]");
+  const itemIds = [...dialog.querySelectorAll("[data-attention-select]:checked")]
+    .map((input) => input.value)
+    .filter(Boolean);
+  if (!itemIds.length) return;
+  status.dataset.error = "false";
+  try {
+    status.textContent = `Acknowledging ${itemIds.length} selected item${itemIds.length === 1 ? "" : "s"}…`;
+    await attentionApi("/api/attention/bulk/acknowledge", {
+      method: "POST",
+      body: JSON.stringify({ item_ids: itemIds }),
+    });
+    await loadAttention(dialog);
+  } catch (error) {
+    status.dataset.error = "true";
+    status.textContent = `Bulk acknowledge failed: ${error.message}`;
+  }
 }
 
 async function mutateAttention(dialog, itemId, action) {
@@ -315,6 +344,10 @@ async function loadAttention(dialog, { append = false } = {}) {
     list.innerHTML = dialog._attentionItems.length
       ? dialog._attentionItems.map(attentionCard).join("")
       : '<div class="attention-empty">No matching AttentionItems.</div>';
+    list.querySelectorAll("[data-attention-select]").forEach((input) => {
+      input.addEventListener("change", () => updateBulkAcknowledgeState(dialog));
+    });
+    updateBulkAcknowledgeState(dialog);
     list.querySelectorAll("[data-attention-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const card = button.closest("[data-attention-id]");
@@ -406,6 +439,7 @@ function installAttention() {
           <input data-attention-assignee placeholder="me or identity ID" />
         </label>
         <button type="button" class="ghost-button" data-attention-refresh>Refresh</button>
+        <button type="button" class="ghost-button" data-attention-bulk-ack disabled>Acknowledge selected</button>
         <button type="button" class="ghost-button" data-attention-more hidden>Load more</button>
         <span class="attention-status" data-attention-status aria-live="polite"></span>
       </div>
@@ -424,6 +458,7 @@ function installAttention() {
   });
   dialog.querySelector("[data-attention-close]").addEventListener("click", () => dialog.close());
   dialog.querySelector("[data-attention-refresh]").addEventListener("click", () => loadAttention(dialog));
+  dialog.querySelector("[data-attention-bulk-ack]").addEventListener("click", () => bulkAcknowledge(dialog));
   dialog.querySelector("[data-attention-more]").addEventListener("click", () => loadAttention(dialog, { append: true }));
   dialog.querySelector("[data-attention-filter]").addEventListener("change", () => loadAttention(dialog));
   dialog.querySelector("[data-attention-severity]").addEventListener("change", () => loadAttention(dialog));
