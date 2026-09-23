@@ -47,6 +47,15 @@ Adapters are resolved from BusinessDataSourceRegistry. Extension integrations
 should register factories only while the extension is compatible and enabled.
 A quarantined extension/source must not be resolved for synchronization.
 
+The built-in `codex-work-items` adapter is a credentialless, read-only
+projection over codex-web's canonical Work Item state. It emits one bounded
+`project_delivery` snapshot per configured Project with the current open Work
+Item count. It does not call GitLab directly or acquire provider-write
+authority; upstream TaskSource synchronization remains responsible for keeping
+the canonical Work Item projection current. Its reconciliation cursor is a
+deterministic digest of the contributing Work Item states, so unchanged polls
+are idempotent and changed counts produce new source revisions.
+
 ## Minimum-sufficient projection
 
 BusinessDataSnapshot accepts bounded scalar fields only. Arbitrary nested

@@ -214,7 +214,10 @@ class CompanyOperationsService:
                 issues.append(f"source status is {source.status.value}")
             if source.last_error:
                 issues.append(source.last_error)
-            if source.credential_ref is None:
+            if (
+                getattr(source, "credential_required", True)
+                and source.credential_ref is None
+            ):
                 issues.append("credential reference is not configured")
             if extension_issue:
                 issues.append(extension_issue)
