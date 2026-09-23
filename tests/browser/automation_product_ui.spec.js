@@ -3,7 +3,7 @@ const { test, expect } = require("@playwright/test");
 test("Automation workspace renders canonical definitions, provenance and run history", async ({ page }) => {
   const launches = [];
   const manualRuns = [];
-  await page.route("**/api/automations**", async (route) => {
+  await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/automations") {
@@ -97,7 +97,7 @@ test("Automation workspace renders canonical definitions, provenance and run his
 
 test("Automation workspace remains usable on phone layout", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.route("**/api/automations**", async (route) => {
+  await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/automations") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) });
