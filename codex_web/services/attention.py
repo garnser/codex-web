@@ -78,19 +78,7 @@ class AttentionService:
         return [
             item
             for item in self.store.list()
-            if item.organization_id == actor.tenant.organization_id
-            and item.workspace_id == actor.tenant.workspace_id
-            and (
-                (
-                    not item.recipient_identity_ids
-                    and not item.recipient_team_ids
-                    and item.owner_identity_id is None
-                )
-                or actor.identity_id in item.recipient_identity_ids
-                or bool(set(actor.team_ids) & set(item.recipient_team_ids))
-                or actor.identity_id == item.owner_identity_id
-                or actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
-            )
+            if self._visible(item, actor)
         ]
 
     def list_page(
@@ -105,41 +93,42 @@ class AttentionService:
         item_type: str | None = None,
         assignee: str | None = None,
     ) -> tuple[list[AttentionItem], int | null, int]:
-        bounded_limit = max(1, min(int(limit), 100))
-        offset = max(0, int(cursor))
-        visible = self.list(actor)
-        if status:
-            if status == "active":
-                visible = [
-                    item for item in visible
-                    if item.status not in TERMINAL_ATTENTION_STATUSES
-                ]
-            else:
-                visible = [item for item in visible if item.status.value == status]
-        if severity:
-            visible = [item for item in visible if item.severity.value == severity]
-        if project_id:
-            visible = [item for item in visible if item.project_id == project_id]
-        if item_type:
-            visible = [item for item in visible if item.type == item_type]
-        if assignee:
-            assignee_id = actor.identity_id if assignee == "me" else assignee
-            visible = [
-                item
-                for item in visible
-                if item.owner_identity_id == assignee_id
-                or assignee_id in item.recipient_identity_ids
-            ]
-        total = len(visible)
-        page = visible[offset:offset + bounded_limit]
-        next_cursor = offset + len(page)
-        if next_cursor >= total:
-            next_cursor = None
-        return page, next_cursor, total
+        return self.store.query_page(
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            identity_id=actor.identity_id,
+            team_ids=tuple(actor.team_ids),
+            is_admin=actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN),
+            limit=limit,
+            cursor=cursor,
+            status=status,
+            severity=severity,
+            project_id=project_id,
+            item_type=item_type,
+            assignee=assignee,
+        )
+
+    @staticmethod
+    def _visible(item: AttentionItem, actor: AuthenticationActor) -> bool:
+        return (
+            item.organization_id == actor.organization_id
+            and item.workspace_id == actor.workspace_id
+            and (
+                (
+                    not item.recipient_identity_ids
+                    and not item.recipient_team_ids
+                    and item.owner_identity_id is None
+                )
+                or actor.identity_id in item.recipient_identity_ids
+                or bool(set(actor.team_ids) & set(item.recipient_team_ids))
+                or actor.identity_id == item.owner_identity_id
+                or actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+            )
+        )
 
     def get(self, item_id: str, *, actor: AuthenticationActor) -> AttentionItem:
         item = self.store.get(item_id)
-        if item not in self.list(actor):
+        if not self._visible(item, actor):
             raise AttentionItemNotFoundError(item_id)
         return item
 
@@ -199,7 +188,11 @@ class AttentionService:
     async def upsert(self, payload: AttentionItemCreate, *, actor_id: str) -> AttentionItem:
         now = float(self.clock())
         item = AttentionItem.from_create(payload, actor_id=actor_id, now=now)
-        existing = self.store.get_by_dedupe_key(payload.dedupe_key)
+        existing = self.store.get_by_dedupe_key(
+            payload.dedupe_key,
+            organization_id=payload.organization_id,
+            workspace_id=payload.workspace_id,
+        )
         if existing is not None:
             item = item.model_copy(
                 update={
