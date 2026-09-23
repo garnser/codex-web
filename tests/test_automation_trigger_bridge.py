@@ -142,6 +142,51 @@ class AutomationTriggerAdmissionBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history[0].trigger.event_id, first.event.event_id)
         self.assertEqual(history[0].definition_ref.record_id, published.record_id)
 
+    async def test_event_trigger_launches_only_newly_inserted_run(self) -> None:
+        self._publish(
+            "auto-launch",
+            trigger={
+                "type": "canonical_event",
+                "event_type": CanonicalEventType.CI_PIPELINE.value,
+            },
+        )
+        launched = []
+
+        async def launch(run):
+            launched.append(run.id)
+
+        self.bridge.set_launch_handler(launch)
+        unsubscribe = self.bridge.install()
+        try:
+            first = await self.events.ingest(
+                event_type=CanonicalEventType.CI_PIPELINE,
+                source="ci:auto",
+                idempotency_key="auto-event",
+                payload={"project_id": "project-a"},
+                tenant_id="local",
+                workspace_id="default",
+            )
+            duplicate = await self.events.ingest(
+                event_type=CanonicalEventType.CI_PIPELINE,
+                source="ci:auto",
+                idempotency_key="auto-event",
+                payload={"project_id": "project-a"},
+                tenant_id="local",
+                workspace_id="default",
+            )
+        finally:
+            unsubscribe()
+
+        self.assertTrue(first.inserted)
+        self.assertFalse(duplicate.inserted)
+        self.assertEqual(len(launched), 1)
+        history = self.run_store.list(
+            organization_id="local",
+            workspace_id="default",
+            automation_id="auto-launch",
+        )
+        self.assertEqual(launched, [history[0].id])
+
     async def test_schedule_due_event_uses_materialized_definition_revision(self) -> None:
         published = self._publish(
             "one-shot",
