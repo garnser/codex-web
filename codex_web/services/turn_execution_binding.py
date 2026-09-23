@@ -1212,7 +1212,7 @@ class TurnExecutionBindingService:
             and requirement.codex_mode is not None
         ):
             effective_runtime_binding = effective_runtime_binding.model_copy(
-                update={"authentication_mode": requirement.codex_mode.value}
+                update={"authentication_mode": requirement.codex_mode}
             )
         secret_ref = authentication.secret_reference_id
         effective_limits = limits or WorkerResourceLimits(
