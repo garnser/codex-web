@@ -372,6 +372,12 @@ test("coordinated writable selection submits fixed multi-repository scope", asyn
   await expect(page.locator("#repository-target-status")).toContainText("explicit coordinated selection");
   await expect(page.locator("#repository-read-context option")).toHaveCount(0);
 
+  await page.reload();
+  await expect(page.locator("#repository-target")).toHaveValue("repo-app");
+  await expect(page.locator("#repository-write-targets")).toHaveValues(["repo-app", "repo-platform"]);
+  await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
+  await page.locator("#prompt").fill("Do coordinated work");
+
   await page.locator("#prompt").press("Enter");
   await expect.poll(() => turnCalls).toBe(1);
   expect(turnPayload.repository_resource_id).toBe("repo-app");
