@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import inspect
 import os
+import signal
 import shutil
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Awaitable, Callable, Mapping, Protocol, Sequence
 
 
 class CliRuntimeReadinessStatus(StrEnum):
@@ -147,3 +151,177 @@ class CliRuntimeProbe:
             resolved_executable=resolved,
             result=result,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CliRuntimeOutput:
+    stream: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class CliRuntimeResult:
+    exit_code: int
+
+
+CliRuntimeOutputHandler = Callable[
+    [CliRuntimeOutput],
+    None | Awaitable[None],
+]
+
+
+class CliRuntimeTimeoutError(RuntimeError):
+    pass
+
+
+class CliRuntimeRunner:
+    """Run CLI-backed providers with bounded environment and process cleanup."""
+
+    def __init__(
+        self,
+        *,
+        environment_allowlist: Sequence[str] = (),
+        environ: Mapping[str, str] | None = None,
+        create_subprocess: Callable[..., Awaitable[asyncio.subprocess.Process]] = (
+            asyncio.create_subprocess_exec
+        ),
+        terminate_process_tree: Callable[
+            [asyncio.subprocess.Process], Awaitable[None]
+        ]
+        | None = None,
+        terminate_timeout_seconds: float = 5.0,
+    ) -> None:
+        self.environment_allowlist = tuple(
+            dict.fromkeys(item for item in environment_allowlist if item)
+        )
+        self.environ = os.environ if environ is None else environ
+        self._create_subprocess = create_subprocess
+        self._terminate_process_tree = (
+            terminate_process_tree or self._terminate_tree
+        )
+        self.terminate_timeout_seconds = max(
+            0.1,
+            float(terminate_timeout_seconds),
+        )
+
+    def environment(self, command: CliRuntimeCommand) -> dict[str, str]:
+        environment = {
+            key: self.environ[key]
+            for key in self.environment_allowlist
+            if key in self.environ
+        }
+        environment.update(command.environment)
+        return environment
+
+    async def run(
+        self,
+        command: CliRuntimeCommand,
+        *,
+        on_output: CliRuntimeOutputHandler | None = None,
+        timeout_seconds: float | None = None,
+    ) -> CliRuntimeResult:
+        kwargs: dict[str, object] = {
+            "cwd": str(command.cwd),
+            "env": self.environment(command),
+            "stdin": asyncio.subprocess.DEVNULL,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            kwargs["creationflags"] = getattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0,
+            )
+
+        process = await self._create_subprocess(*command.argv, **kwargs)
+        pumps = (
+            asyncio.create_task(
+                self._pump(process.stdout, "stdout", on_output),
+                name=f"cli-runtime-{process.pid}-stdout",
+            ),
+            asyncio.create_task(
+                self._pump(process.stderr, "stderr", on_output),
+                name=f"cli-runtime-{process.pid}-stderr",
+            ),
+        )
+        try:
+            if timeout_seconds is None:
+                exit_code = await process.wait()
+            else:
+                try:
+                    exit_code = await asyncio.wait_for(
+                        process.wait(),
+                        timeout=max(0.01, float(timeout_seconds)),
+                    )
+                except asyncio.TimeoutError as exc:
+                    await self._terminate_process_tree(process)
+                    raise CliRuntimeTimeoutError(
+                        f"CLI runtime timed out after {timeout_seconds}s"
+                    ) from exc
+            await asyncio.gather(*pumps)
+            return CliRuntimeResult(exit_code=int(exit_code))
+        except asyncio.CancelledError:
+            await self._terminate_process_tree(process)
+            raise
+        finally:
+            for task in pumps:
+                if not task.done():
+                    task.cancel()
+            for task in pumps:
+                if not task.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+    @staticmethod
+    async def _pump(
+        stream: asyncio.StreamReader | None,
+        name: str,
+        on_output: CliRuntimeOutputHandler | None,
+    ) -> None:
+        if stream is None:
+            return
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                return
+            text = raw.decode(errors="replace").rstrip("\r\n")
+            if on_output is None:
+                continue
+            result = on_output(CliRuntimeOutput(stream=name, text=text))
+            if inspect.isawaitable(result):
+                await result
+
+    async def _terminate_tree(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        if process.returncode is not None:
+            return
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+        else:
+            process.terminate()
+
+        try:
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=self.terminate_timeout_seconds,
+            )
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+        else:
+            process.kill()
+        await process.wait()
