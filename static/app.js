@@ -198,6 +198,9 @@ function currentRunSettings() {
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
     profileId:saved.profileId||ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
+    writableRepositoryResourceIds: Array.isArray(saved.writableRepositoryResourceIds)
+      ? saved.writableRepositoryResourceIds
+      : [],
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
       : [],
@@ -256,6 +259,10 @@ function persistRunSettings() {
     approvalPolicy: $("approval-policy").value,
     profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
+    writableRepositoryResourceIds: Array.from(
+      $("repository-write-targets")?.selectedOptions || [],
+      (option) => option.value,
+    ),
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
       (option) => option.value,
@@ -2322,6 +2329,7 @@ $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
 });
+$("repository-write-targets").addEventListener("change", persistRunSettings);
 $("repository-read-context").addEventListener("change", persistRunSettings);
 $("sandbox").addEventListener("change", () => {
   persistRunSettings();
