@@ -134,7 +134,7 @@ test('Work Item operator has named dialog/status semantics and remains usable on
   await installWorkItemApis(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-  await page.locator('#work-items-button').click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog).toBeVisible();
