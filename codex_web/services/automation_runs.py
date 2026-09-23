@@ -162,6 +162,69 @@ class AutomationRunService:
 
 
 
+    def mark_running(
+        self,
+        run_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        work_item_ref: str | None = None,
+        execution_ids: tuple[str, ...] = (),
+    ) -> AutomationRun:
+        current = self.store.get(
+            run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if current.status != AutomationRunStatus.ADMITTED:
+            raise ValueError("only admitted Automation runs can start")
+        now = float(self.clock())
+        return self.store.replace(
+            current.model_copy(
+                update={
+                    "status": AutomationRunStatus.RUNNING,
+                    "work_item_ref": work_item_ref,
+                    "execution_ids": tuple(dict.fromkeys(execution_ids)),
+                    "started_at": now,
+                    "updated_at": now,
+                }
+            )
+        )
+
+    def complete(
+        self,
+        run_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        succeeded: bool,
+        evidence_ids: tuple[str, ...] = (),
+    ) -> AutomationRun:
+        current = self.store.get(
+            run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if current.status not in ACTIVE_AUTOMATION_RUN_STATUSES:
+            raise ValueError("Automation run is not active")
+        now = float(self.clock())
+        return self.store.replace(
+            current.model_copy(
+                update={
+                    "status": (
+                        AutomationRunStatus.SUCCEEDED
+                        if succeeded
+                        else AutomationRunStatus.FAILED
+                    ),
+                    "evidence_ids": tuple(dict.fromkeys(evidence_ids)),
+                    "updated_at": now,
+                    "completed_at": now,
+                }
+            )
+        )
+
+
+
 class AutomationTriggerAdmissionBridge:
     """Feed manual, event and schedule triggers through one canonical admission ledger."""
 
@@ -296,64 +359,3 @@ class AutomationTriggerAdmissionBridge:
             self._admit_schedule(event)
 
         return self.bus.subscribe(on_event)
-
-    def mark_running(
-        self,
-        run_id: str,
-        *,
-        organization_id: str,
-        workspace_id: str,
-        work_item_ref: str | None = None,
-        execution_ids: tuple[str, ...] = (),
-    ) -> AutomationRun:
-        current = self.store.get(
-            run_id,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-        )
-        if current.status != AutomationRunStatus.ADMITTED:
-            raise ValueError("only admitted Automation runs can start")
-        now = float(self.clock())
-        return self.store.replace(
-            current.model_copy(
-                update={
-                    "status": AutomationRunStatus.RUNNING,
-                    "work_item_ref": work_item_ref,
-                    "execution_ids": tuple(dict.fromkeys(execution_ids)),
-                    "started_at": now,
-                    "updated_at": now,
-                }
-            )
-        )
-
-    def complete(
-        self,
-        run_id: str,
-        *,
-        organization_id: str,
-        workspace_id: str,
-        succeeded: bool,
-        evidence_ids: tuple[str, ...] = (),
-    ) -> AutomationRun:
-        current = self.store.get(
-            run_id,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-        )
-        if current.status not in ACTIVE_AUTOMATION_RUN_STATUSES:
-            raise ValueError("Automation run is not active")
-        now = float(self.clock())
-        return self.store.replace(
-            current.model_copy(
-                update={
-                    "status": (
-                        AutomationRunStatus.SUCCEEDED
-                        if succeeded
-                        else AutomationRunStatus.FAILED
-                    ),
-                    "evidence_ids": tuple(dict.fromkeys(evidence_ids)),
-                    "updated_at": now,
-                    "completed_at": now,
-                }
-            )
-        )
