@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -8,9 +10,11 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI, HTTPException
 
 from codex_web.runtime.codex import (
+    SENSITIVE_CODEX_DIAGNOSTIC_ENV_KEYS,
     TRUSTED_LOCAL_CHILD_HOME,
     CodexRuntime,
     install_codex_runtime,
+    redact_codex_diagnostic,
     request_timeout,
     trusted_local_codex_command,
 )
@@ -91,6 +95,11 @@ class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
         )
         self.assertIn("allow_login_shell=false", joined)
         self.assertIn(f'HOME="{TRUSTED_LOCAL_CHILD_HOME}"', joined)
+        self.assertIn('shell_environment_policy.filters.CODEX_HOME="exclude"', joined)
+        self.assertIn('shell_environment_policy.filters.XDG_RUNTIME_DIR="exclude"', joined)
+        self.assertIn('shell_environment_policy.filters.DBUS_SESSION_BUS_ADDRESS="exclude"', joined)
+        self.assertIn('shell_environment_policy.filters.SSH_AUTH_SOCK="exclude"', joined)
+        self.assertIn('shell_environment_policy.filters.GNOME_KEYRING_CONTROL="exclude"', joined)
         self.assertNotIn("auth.json", joined)
 
     def test_runtime_uses_hardened_command_by_default(self) -> None:
@@ -101,6 +110,40 @@ class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
         command = ("custom-codex", "app-server")
         runtime = CodexRuntime(_Host(), command=command)
         self.assertEqual(runtime.command, command)
+
+    def test_diagnostics_redact_tokens_and_auth_paths(self) -> None:
+        environment = {
+            "CODEX_ACCESS_TOKEN": "codex-super-secret-token",
+            "OPENAI_API_KEY": "sk-supersecretapikey",
+            "CODEX_HOME": "/home/operator/.codex-private",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus-secret",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            text = redact_codex_diagnostic(
+                "token=codex-super-secret-token "
+                "key=sk-supersecretapikey "
+                "home=/home/operator/.codex-private "
+                "bus=unix:path=/run/user/1000/bus-secret "
+                "Authorization: Bearer bearer-super-secret"
+            )
+
+        self.assertNotIn("codex-super-secret-token", text)
+        self.assertNotIn("sk-supersecretapikey", text)
+        self.assertNotIn("/home/operator/.codex-private", text)
+        self.assertNotIn("/run/user/1000/bus-secret", text)
+        self.assertNotIn("bearer-super-secret", text)
+        self.assertIn("[REDACTED]", text)
+
+    def test_sensitive_diagnostic_carriers_cover_auth_and_keyring_paths(self) -> None:
+        self.assertTrue({
+            "CODEX_ACCESS_TOKEN",
+            "OPENAI_API_KEY",
+            "CODEX_HOME",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "SSH_AUTH_SOCK",
+            "GNOME_KEYRING_CONTROL",
+        }.issubset(set(SENSITIVE_CODEX_DIAGNOSTIC_ENV_KEYS)))
 
 
 class CodexRuntimeInstallationTests(unittest.TestCase):
@@ -131,6 +174,35 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.host = _Host()
         self.runtime = CodexRuntime(self.host)
+
+    async def test_process_launch_closes_unrelated_file_descriptors(self) -> None:
+        captured = {}
+
+        def fail_popen(*args, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop after capture")
+
+        runtime = CodexRuntime(self.host, popen=fail_popen)
+        with self.assertRaisesRegex(RuntimeError, "stop after capture"):
+            await runtime.start()
+
+        self.assertIs(captured.get("close_fds"), True)
+
+    async def test_stderr_is_redacted_before_runtime_state_and_events(self) -> None:
+        secret = "codex-stderr-secret-token"
+        runtime = CodexRuntime(self.host)
+        runtime.proc = SimpleNamespace(
+            stderr=io.StringIO(f"failure token={secret} Bearer bearer-stderr-secret\\n"),
+        )
+        with patch.dict(os.environ, {"CODEX_ACCESS_TOKEN": secret}, clear=False):
+            await runtime._stderr_loop()
+
+        self.assertNotIn(secret, runtime.last_error or "")
+        self.assertNotIn("bearer-stderr-secret", runtime.last_error or "")
+        event = self.host.hub.events[-1]
+        self.assertEqual(event["type"], "codex.stderr")
+        self.assertNotIn(secret, event["text"])
+        self.assertNotIn("bearer-stderr-secret", event["text"])
 
     async def test_rpc_response_resolves_matching_future(self) -> None:
         future = asyncio.get_running_loop().create_future()

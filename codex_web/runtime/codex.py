@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -19,6 +21,42 @@ logger = logging.getLogger(__name__)
 
 TRUSTED_LOCAL_CHILD_HOME = "/tmp/codex-local-shell-home"
 
+SENSITIVE_CODEX_DIAGNOSTIC_ENV_KEYS = (
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "CODEX_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "SSH_AUTH_SOCK",
+    "GNOME_KEYRING_CONTROL",
+)
+
+
+def redact_codex_diagnostic(value: object) -> str:
+    """Redact credential material and auth-path carriers from Codex diagnostics."""
+    text = str(value or "")
+    for key in SENSITIVE_CODEX_DIAGNOSTIC_ENV_KEYS:
+        sensitive = os.environ.get(key)
+        if sensitive and len(sensitive) >= 4:
+            text = text.replace(sensitive, "[REDACTED]")
+    text = re.sub(
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}",
+        "Bearer [REDACTED]",
+        text,
+    )
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[REDACTED]", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+        "[REDACTED]",
+        text,
+    )
+    return text[:2000]
+
 # The trusted-local app-server may read operator-owned Codex authentication
 # state itself, but repository-controlled shell commands must not inherit
 # credential carriers or a login shell that can reconstruct them.
@@ -31,6 +69,13 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     'shell_environment_policy.filters.OPENAI_API_KEY="exclude"',
     'shell_environment_policy.filters.ANTHROPIC_API_KEY="exclude"',
     'shell_environment_policy.filters.GEMINI_API_KEY="exclude"',
+    'shell_environment_policy.filters.CODEX_HOME="exclude"',
+    'shell_environment_policy.filters.XDG_CONFIG_HOME="exclude"',
+    'shell_environment_policy.filters.XDG_DATA_HOME="exclude"',
+    'shell_environment_policy.filters.XDG_RUNTIME_DIR="exclude"',
+    'shell_environment_policy.filters.DBUS_SESSION_BUS_ADDRESS="exclude"',
+    'shell_environment_policy.filters.SSH_AUTH_SOCK="exclude"',
+    'shell_environment_policy.filters.GNOME_KEYRING_CONTROL="exclude"',
     "allow_login_shell=false",
 )
 
@@ -108,6 +153,7 @@ class CodexRuntime:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                close_fds=True,
             )
             if self.metrics:
                 self.metrics.increment("codex.process_starts")
@@ -143,7 +189,8 @@ class CodexRuntime:
                     self.metrics.increment("codex.ready")
                 await self.host.hub.publish({"type": "codex.ready", "initialize": init})
             except Exception as exc:
-                self.last_error = str(exc)
+                safe_error = redact_codex_diagnostic(exc)
+                self.last_error = safe_error
                 if self.metrics:
                     self.metrics.increment("codex.initialization_failures")
                 log_event(
@@ -151,12 +198,12 @@ class CodexRuntime:
                     logging.ERROR,
                     "codex.initialize_failed",
                     "Codex app-server failed to initialize",
-                    error=str(exc),
+                    error=safe_error,
                 )
                 await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
                 with contextlib.suppress(Exception):
                     await self.stop()
-                self.last_error = str(exc)
+                self.last_error = safe_error
                 raise
 
     async def stop(self) -> None:
@@ -214,7 +261,7 @@ class CodexRuntime:
             line = await asyncio.to_thread(self.proc.stderr.readline)
             if not line:
                 return
-            text = line.rstrip("\n")
+            text = redact_codex_diagnostic(line.rstrip("\n"))
             self.last_error = text
             if self.metrics:
                 self.metrics.increment("codex.stderr_lines")
@@ -266,7 +313,8 @@ class CodexRuntime:
             # A state projection or delivery failure must not kill the stdout
             # reader. Otherwise the child remains alive and the runtime keeps
             # advertising readiness while no task consumes RPC responses.
-            self.last_error = f"Codex message handling failed: {exc}"
+            safe_error = redact_codex_diagnostic(exc)
+            self.last_error = f"Codex message handling failed: {safe_error}"
             if self.metrics:
                 self.metrics.increment("codex.message_handler_failures")
             log_event(
@@ -274,7 +322,7 @@ class CodexRuntime:
                 logging.ERROR,
                 "codex.message_handler_failed",
                 "Codex app-server message handling failed",
-                error=str(exc),
+                error=safe_error,
                 method=message.get("method"),
                 message_id=message.get("id"),
             )
