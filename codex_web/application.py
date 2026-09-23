@@ -2845,6 +2845,7 @@ automation_execution_service = AutomationExecutionService(
     turns=turn_service,
     teams=agent_team_execution_service,
     events=canonical_event_store,
+    work_items=work_item_service,
 )
 app.state.automation_execution_service = automation_execution_service
 app.include_router(
