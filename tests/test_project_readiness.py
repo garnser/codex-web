@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.bootstrap_engine import BootstrapExecutionStatus
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    CodexExecutionAuthenticationMode,
+    ExecutionRuntimeBinding,
+    WorkerCapability,
+)
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -87,14 +91,23 @@ class _Resources:
 
 
 class _Reference:
-    @staticmethod
-    def status():
-        return SimpleNamespace(value="active")
+    def __init__(self, status="active") -> None:
+        self._status = status
+
+    def status(self):
+        return SimpleNamespace(value=self._status)
 
 
 class _Secrets:
-    def __init__(self, *, available=True, raw="DO_NOT_LEAK") -> None:
+    def __init__(
+        self,
+        *,
+        available=True,
+        status="active",
+        raw="DO_NOT_LEAK",
+    ) -> None:
         self.available = available
+        self.status = status
         self.raw = raw
 
     def metadata(self, secret_id, *, actor, require_use=False):
@@ -102,7 +115,7 @@ class _Secrets:
         if not self.available:
             raise LookupError("not found")
         self.last_id = secret_id
-        return _Reference()
+        return _Reference(self.status)
 
 
 class _Configuration:
@@ -198,6 +211,8 @@ class ProjectReadinessTests(unittest.TestCase):
         configuration=None,
         runtime_binding=None,
         runtime_credential_configs=None,
+        permitted_codex_authentication_modes=None,
+        local_session_probe=None,
     ):
         return ProjectReadinessService(
             projects=_Projects(self.project),
@@ -210,6 +225,10 @@ class ProjectReadinessTests(unittest.TestCase):
             configuration=configuration,
             runtime_binding=runtime_binding,
             runtime_credential_configs=runtime_credential_configs,
+            permitted_codex_authentication_modes=(
+                permitted_codex_authentication_modes
+            ),
+            local_session_probe=local_session_probe,
             environment_probe=lambda *_args: {
                 "available": environment_ready,
                 "code": (
@@ -297,6 +316,121 @@ class ProjectReadinessTests(unittest.TestCase):
         self.assertEqual(check.status, ReadinessCheckStatus.READY)
         self.assertEqual(check.code, "credential_reference_ready")
         self.assertTrue(value.execution_ready)
+
+    def test_expired_and_revoked_runtime_authentication_are_distinct(self):
+        for status, expected in (
+            ("expired", "authentication_expired"),
+            ("revoked", "authentication_revoked"),
+        ):
+            with self.subTest(status=status):
+                runtime = ExecutionRuntimeBinding(
+                    provider_id="openai",
+                    runtime_id="codex",
+                    capability_revision=1,
+                    authentication_mode="delegated_worker_token",
+                )
+                value = self.service(
+                    secrets=_Secrets(status=status),
+                    configuration=_Configuration(
+                        value={"kind": "secret", "secret_id": "secret-codex"}
+                    ),
+                    runtime_binding=runtime,
+                ).evaluate(self.project.id, actor=_actor())
+
+                blocker = next(
+                    item
+                    for item in value.blockers
+                    if item.id == "runtime:credential-reference"
+                )
+                self.assertEqual(blocker.code, expected)
+                self.assertEqual(
+                    blocker.details["authentication_status"],
+                    status,
+                )
+                self.assertFalse(value.execution_ready)
+
+    def test_api_key_readiness_uses_api_key_configuration_contract(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="api_key",
+        )
+        configuration = _Configuration(
+            value={"kind": "secret", "secret_id": "secret-api-key"}
+        )
+        value = self.service(
+            configuration=configuration,
+            runtime_binding=runtime,
+        ).evaluate(self.project.id, actor=_actor())
+
+        check = next(
+            item for item in value.checks
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(check.code, "credential_reference_ready")
+        self.assertEqual(
+            check.details["credential_configuration_key"],
+            "codex.worker.api_key_secret",
+        )
+        self.assertEqual(
+            configuration.calls[-1][0],
+            "codex.worker.api_key_secret",
+        )
+
+    def test_trusted_local_session_readiness_distinguishes_support_and_availability(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="trusted_local_session",
+        )
+        unsupported = self.service(
+            runtime_binding=runtime,
+        ).evaluate(self.project.id, actor=_actor())
+        supported = self.service(
+            runtime_binding=runtime,
+            local_session_probe=lambda: True,
+        ).evaluate(self.project.id, actor=_actor())
+
+        unsupported_check = next(
+            item for item in unsupported.checks
+            if item.id == "runtime:credential-reference"
+        )
+        supported_check = next(
+            item for item in supported.checks
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(
+            unsupported_check.code,
+            "authentication_mode_unsupported",
+        )
+        self.assertEqual(supported_check.code, "local_session_available")
+        self.assertTrue(supported.execution_ready)
+
+    def test_authentication_policy_denial_is_explicit(self):
+        runtime = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="api_key",
+        )
+        value = self.service(
+            runtime_binding=runtime,
+            permitted_codex_authentication_modes=(
+                CodexExecutionAuthenticationMode.DELEGATED_WORKER_TOKEN,
+            ),
+        ).evaluate(self.project.id, actor=_actor())
+
+        blocker = next(
+            item for item in value.blockers
+            if item.id == "runtime:credential-reference"
+        )
+        self.assertEqual(blocker.code, "authentication_mode_denied")
+        self.assertEqual(
+            blocker.details["authentication_status"],
+            "denied",
+        )
 
     def test_runtime_without_credential_requirement_is_not_globally_blocked(self):
         runtime = ExecutionRuntimeBinding(
