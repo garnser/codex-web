@@ -208,6 +208,32 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
             all(item.owner_identity_id == self.actor.identity_id for item in assigned)
         )
 
+    async def test_attention_state_v1_migrates_without_inventing_project(self) -> None:
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-1"),
+                reason="Runtime needs attention",
+                dedupe_key="migration-runtime-1",
+            ),
+            actor_id="test",
+        )
+        legacy_item = item.model_dump(mode="json")
+        legacy_item.pop("project_id", None)
+        self.store.store.put(
+            self.store.namespace,
+            {
+                "schema_version": "1.0",
+                "items": {item.id: legacy_item},
+            },
+        )
+
+        migrated = self.store.load()
+        self.assertEqual(migrated.schema_version, "1.1")
+        self.assertIsNone(migrated.items[item.id].project_id)
+
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())
 
