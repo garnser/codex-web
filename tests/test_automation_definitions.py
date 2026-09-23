@@ -16,6 +16,8 @@ from codex_web.canonical_events import CanonicalEventType
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
 from codex_web.services.automation_definitions import (
     AutomationEventTriggerService,
+    AutomationScheduleMaterializationError,
+    AutomationScheduleMaterializer,
     install_automation_definitions,
 )
 from codex_web.services.canonical_events import (
@@ -25,6 +27,8 @@ from codex_web.services.canonical_events import (
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.services.scheduler import SchedulerService
+from codex_web.storage.scheduler import SchedulerStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -36,6 +40,16 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.automations = install_automation_definitions(self.registry)
         self.event_bus = CanonicalEventBus(CanonicalEventStore(store))
         self.events = CanonicalEventIngestionService(self.event_bus)
+        self.scheduler = SchedulerService(
+            SchedulerStore(store),
+            self.events,
+            clock=lambda: 100.0,
+        )
+        self.schedule_materializer = AutomationScheduleMaterializer(
+            self.automations,
+            self.scheduler,
+            clock=lambda: 100.0,
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -127,6 +141,101 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
             draft.record_id,
             DefinitionPublishRequest(actor="operator"),
         )
+
+    def test_one_shot_schedule_materialization_is_exact_and_idempotent(self) -> None:
+        payload = self._payload()
+        payload["trigger"] = {"type": "one_shot_schedule", "due_at": 500.0}
+        self._publish_payload("one-shot-maintenance", payload)
+
+        first = self.schedule_materializer.reconcile(
+            "one-shot-maintenance",
+            actor_id="operator",
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+        )
+        second = self.schedule_materializer.reconcile(
+            "one-shot-maintenance",
+            actor_id="operator",
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+        )
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.due_at, 500.0)
+        self.assertEqual(first.payload["automation_id"], "one-shot-maintenance")
+        self.assertEqual(first.payload["definition_revision"], 1)
+        self.assertTrue(first.payload["definition_record_id"])
+        self.assertEqual(len(self.scheduler.list()), 1)
+
+    def test_daily_cron_materializes_without_second_timer_engine(self) -> None:
+        payload = self._payload()
+        payload["trigger"] = {
+            "type": "recurring_schedule",
+            "cron": "30 2 * * *",
+            "timezone": "Europe/Stockholm",
+        }
+        self._publish_payload("daily-health", payload)
+
+        schedule = self.schedule_materializer.reconcile(
+            "daily-health",
+            actor_id="operator",
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        self.assertIsNotNone(schedule)
+        self.assertEqual(schedule.recurrence.kind.value, "daily")
+        self.assertEqual(schedule.recurrence.local_time, "02:30")
+        self.assertEqual(schedule.recurrence.timezone, "Europe/Stockholm")
+        self.assertEqual(schedule.trigger_type, "automation.definition")
+
+    def test_paused_revision_pauses_prior_materialized_schedule(self) -> None:
+        payload = self._payload()
+        payload["trigger"] = {"type": "one_shot_schedule", "due_at": 500.0}
+        self._publish_payload("pause-me", payload)
+        schedule = self.schedule_materializer.reconcile(
+            "pause-me",
+            actor_id="operator",
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        paused_payload = self._payload()
+        paused_payload["lifecycle"] = "paused"
+        paused_payload["trigger"] = {"type": "one_shot_schedule", "due_at": 700.0}
+        self._publish_payload("pause-me", paused_payload)
+
+        result = self.schedule_materializer.reconcile(
+            "pause-me",
+            actor_id="operator",
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(self.scheduler.get(schedule.id).status.value, "paused")
+        self.assertEqual(len(self.scheduler.list()), 1)
+
+    def test_unsupported_cron_fails_closed_before_schedule_creation(self) -> None:
+        payload = self._payload()
+        payload["trigger"] = {
+            "type": "recurring_schedule",
+            "cron": "0 2 * * 1",
+            "timezone": "Europe/Stockholm",
+        }
+        self._publish_payload("weekly-unsupported", payload)
+
+        with self.assertRaises(AutomationScheduleMaterializationError):
+            self.schedule_materializer.reconcile(
+                "weekly-unsupported",
+                actor_id="operator",
+                organization_id="local",
+                workspace_id="default",
+            )
+        self.assertEqual(self.scheduler.list(), [])
 
     async def test_canonical_event_trigger_filters_and_dedupes_dispatch(self) -> None:
         payload = self._payload()
