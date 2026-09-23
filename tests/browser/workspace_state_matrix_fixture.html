@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workspace state matrix fixture</title>
+  <link rel="stylesheet" href="/static/design_tokens.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workspace_components.css">
+  <style>
+    body{margin:0;padding:24px}
+    #state-matrix{display:grid;gap:16px;max-width:980px;margin:0 auto}
+    .state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    @media(max-width:640px){body{padding:12px}.state-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main id="state-matrix">
+    <h1>Workspace state matrix</h1>
+    <p>Deterministic shared states used by Home, Work, collaboration and Operations surfaces.</p>
+    <section class="state-grid" id="states"></section>
+  </main>
+  <script type="module">
+    import { statePanel, statusBadge, surfaceCard } from "/static/workspace_components.js";
+
+    const host = document.querySelector("#states");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry";
+
+    const loading = statePanel({
+      kind: "loading",
+      title: "Loading canonical state",
+      detail: "Waiting for the bounded read model.",
+      busy: true,
+    });
+    loading.id = "state-loading";
+
+    const empty = statePanel({
+      kind: "empty",
+      title: "No records",
+      detail: "The canonical query returned no matching records.",
+    });
+    empty.id = "state-empty";
+
+    const degraded = statePanel({
+      kind: "degraded",
+      title: "Provider degraded",
+      detail: "Partial canonical data is available; unsafe actions stay suppressed.",
+    });
+    degraded.id = "state-degraded";
+
+    const error = statePanel({
+      kind: "error",
+      title: "Load failed",
+      detail: "The canonical state could not be loaded.",
+      action: retry,
+    });
+    error.id = "state-error";
+
+    const blockedBody = document.createElement("div");
+    const blockedText = document.createElement("p");
+    blockedText.textContent = "Execution is retained until the worker capability blocker is remediated.";
+    blockedBody.append(
+      statusBadge("blocked", "worker_capability_missing"),
+      blockedText,
+    );
+    const blocked = surfaceCard({
+      title: "Execution blocked",
+      description: "Canonical preflight blocker",
+      status: "blocked",
+      body: blockedBody,
+      kind: "attention",
+    });
+    blocked.id = "state-blocked";
+
+    host.append(loading, empty, degraded, error, blocked);
+  </script>
+</body>
+</html>
