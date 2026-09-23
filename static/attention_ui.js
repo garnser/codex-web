@@ -71,7 +71,7 @@ function installAttentionStyles() {
       .attention-shell { max-height: 100dvh; height: 100dvh; }
       .attention-head, .attention-toolbar { padding: .7rem; }
       .attention-toolbar label { flex: 1 1 8rem; }
-      .attention-toolbar select { width: 100%; min-height: 2.75rem; }
+      .attention-toolbar select, .attention-toolbar input { width: 100%; min-height: 2.75rem; box-sizing: border-box; }
       .attention-list { padding: .7rem; }
       .attention-meta { grid-template-columns: 1fr; }
       .attention-actions > * { min-height: 2.75rem; }
