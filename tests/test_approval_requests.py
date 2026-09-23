@@ -142,10 +142,12 @@ class CanonicalApprovalRequestTests(unittest.IsolatedAsyncioTestCase):
         quorum: int = 1,
         expires_at: float | None = None,
         target: ApprovalTarget | None = None,
+        project_id: str | None = None,
     ):
         return await self.service.create(
             ApprovalRequestCreate(
                 target=target or self._target(),
+                project_id=project_id,
                 reason="review sensitive change",
                 policy_source="policy:test",
                 authority_source="authority:test",
@@ -268,6 +270,18 @@ class CanonicalApprovalRequestTests(unittest.IsolatedAsyncioTestCase):
             "does not match",
             invalidated.invalidation_reason or "",
         )
+
+    async def test_approval_events_include_project_attribution(self) -> None:
+        request = await self._request(project_id="project-a")
+        events = [
+            item
+            for item in self.event_store.recent(limit=20)
+            if item.event_type == CanonicalEventType.APPROVAL.value
+            and item.payload.get("approval_request_id") == request.id
+        ]
+
+        self.assertTrue(events)
+        self.assertEqual(events[0].payload.get("project_id"), "project-a")
 
     async def test_scheduler_expiry_survives_as_durable_timer_and_event(self) -> None:
         request = await self._request(expires_at=110.0)

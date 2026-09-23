@@ -82,6 +82,7 @@ function installAttentionStyles() {
 
 function attentionCard(item) {
   const actionable = !["resolved", "expired", "superseded"].includes(item.status);
+  const approvalOwned = item.source?.object_type === "approval_request";
   const link = item.deep_link
     ? `<a href="${attentionEsc(item.deep_link)}">Open source</a>`
     : "";
@@ -109,7 +110,9 @@ function attentionCard(item) {
       <div class="attention-actions">
         ${actionable && item.status !== "acknowledged" ? '<button type="button" class="ghost-button" data-attention-action="acknowledge">Acknowledge</button>' : ""}
         ${actionable ? '<button type="button" class="ghost-button" data-attention-action="snooze">Snooze</button>' : ""}
-        ${actionable ? '<button type="button" class="ghost-button" data-attention-action="resolve">Resolve</button>' : ""}
+        ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="approve">Approve</button>' : ""}
+        ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="reject">Reject</button>' : ""}
+        ${actionable && !approvalOwned ? '<button type="button" class="ghost-button" data-attention-action="resolve">Resolve</button>' : ""}
         ${link}
       </div>
     </article>
@@ -149,6 +152,37 @@ async function mutateAttention(dialog, itemId, action) {
   } catch (error) {
     status.dataset.error = "true";
     status.textContent = `Action failed: ${error.message}`;
+  }
+}
+
+async function decideApprovalAttention(dialog, item, outcome) {
+  const status = dialog.querySelector("[data-attention-status]");
+  status.dataset.error = "false";
+  try {
+    const requestId = item.source?.object_id;
+    if (!requestId) throw new Error("Approval source is missing a canonical request ID");
+    let reason = "Attention Inbox decision";
+    if (outcome === "reject") {
+      const supplied = window.prompt("Rejection reason (optional)", "") ?? "";
+      reason = supplied.trim() || reason;
+    }
+    const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    status.textContent = `Applying approval ${outcome}…`;
+    await attentionApi(
+      `/api/approval-requests/${encodeURIComponent(requestId)}/decisions`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          outcome,
+          reason,
+          idempotency_key: `attention:${item.id}:${outcome}:${nonce}`,
+        }),
+      },
+    );
+    await loadAttention(dialog);
+  } catch (error) {
+    status.dataset.error = "true";
+    status.textContent = `Approval failed: ${error.message}`;
   }
 }
 
@@ -224,6 +258,13 @@ async function loadAttention(dialog, { append = false } = {}) {
       button.addEventListener("click", () => {
         const card = button.closest("[data-attention-id]");
         mutateAttention(dialog, card.dataset.attentionId, button.dataset.attentionAction);
+      });
+    });
+    list.querySelectorAll("[data-approval-decision]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const card = button.closest("[data-attention-id]");
+        const item = dialog._attentionItems.find((candidate) => candidate.id === card.dataset.attentionId);
+        if (item) decideApprovalAttention(dialog, item, button.dataset.approvalDecision);
       });
     });
     if (more) {
