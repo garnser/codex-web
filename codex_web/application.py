@@ -218,6 +218,7 @@ from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+from codex_web.services.codex_cli_agent_runtime import CodexCliAgentRuntimeAdapter
 from codex_web.services.claude_agent_runtime import ClaudeAgentRuntimeAdapter
 from codex_web.services.codex_worker_configuration import CODEX_WORKER_ACCESS_TOKEN_CONFIG, install_codex_worker_configuration
 from codex_web.services.anthropic_worker_configuration import ANTHROPIC_WORKER_API_KEY_CONFIG, install_anthropic_worker_configuration
@@ -226,6 +227,7 @@ from codex_web.services.agent_model_egress import (
     model_egress_endpoints_from_base_urls,
 )
 from codex_web.services.codex_worker_session import AssignmentBoundCodexSessionManager
+from codex_web.services.cli_worker_session import AssignmentBoundCliSessionManager
 from codex_web.services.code_hosts import CodeHostRegistry, CodeHostService
 from codex_web.services.claude_worker_session import AssignmentBoundClaudeSessionManager
 from codex_web.services.context import ContextCompactionService
@@ -1053,6 +1055,12 @@ codex_execution_runtime_binding = ExecutionRuntimeBinding(
     runtime_id="codex",
     capability_revision=1,
 )
+codex_cli_execution_runtime_binding = ExecutionRuntimeBinding(
+    provider_id="openai",
+    runtime_id="codex-cli",
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
+)
 claude_execution_runtime_binding = ExecutionRuntimeBinding(
     provider_id="anthropic",
     runtime_id="claude-code",
@@ -1491,6 +1499,14 @@ assignment_bound_codex_session_manager = AssignmentBoundCodexSessionManager(
 )
 app.state.assignment_bound_codex_session_manager = assignment_bound_codex_session_manager
 
+assignment_bound_codex_cli_session_manager = AssignmentBoundCliSessionManager(
+    local_execution_worker_runtime,
+    runtime_binding=codex_cli_execution_runtime_binding,
+)
+app.state.assignment_bound_codex_cli_session_manager = (
+    assignment_bound_codex_cli_session_manager
+)
+
 def _claude_model_egress_endpoints():
     providers = model_gateway_service.list_providers(
         identity_service.local_trusted_actor()
@@ -1734,6 +1750,8 @@ def _assignment_runtime_adapter(binding, session):
     key = (binding.provider_id, binding.runtime_id)
     if key == ("openai", "codex"):
         return CodexAgentRuntimeAdapter(session)
+    if key == ("openai", "codex-cli"):
+        return codex_cli_agent_adapter
     if key == ("anthropic", "claude-code"):
         return ClaudeAgentRuntimeAdapter(session)
     raise RuntimeError(
@@ -1743,6 +1761,7 @@ def _assignment_runtime_adapter(binding, session):
 
 assignment_session_managers = {
     ("openai", "codex"): assignment_bound_codex_session_manager,
+    ("openai", "codex-cli"): assignment_bound_codex_cli_session_manager,
     ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
 }
 
@@ -2169,6 +2188,22 @@ provider_capacity_service.register_probe(
     app.state.codex_agent_runtime_adapter.capacity_snapshot,
 )
 agent_runtime_telemetry_service.subscribe(app.state.codex_agent_runtime_adapter)
+
+codex_cli_agent_adapter = CodexCliAgentRuntimeAdapter()
+agent_runtime_registry.register(
+    codex_cli_agent_adapter,
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
+    network_profiles=("direct-provider-egress",),
+)
+app.state.codex_cli_agent_runtime_adapter = agent_runtime_registry.get(
+    "openai",
+    "codex-cli",
+)
+agent_runtime_telemetry_service.subscribe(
+    app.state.codex_cli_agent_runtime_adapter
+)
+
 if not any(
     provider.id == "openai"
     and provider.organization_id == identity_service.local_trusted_actor().organization_id
@@ -2459,6 +2494,15 @@ turn_execution_service = install_turn_execution_service(
         work_item_execution_lifecycle_service.record_continuation_outcome
     ),
 )
+ 
+def _codex_cli_thread_event(event):
+    thread_id = codex_cli_agent_adapter.logical_session_id_for(
+        event.provider_native_session_id
+    )
+    if thread_id:
+        turn_execution_service.record_agent_runtime_event(thread_id, event)
+
+codex_cli_agent_adapter.subscribe_events(_codex_cli_thread_event)
 
 async def _existing_thread_runtime_request(method, params):
     values = dict(params or {})
