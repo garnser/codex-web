@@ -349,6 +349,10 @@ class CodexCliAgentRuntimeAdapter:
                         },
                     )
                 )
+                # Give the turn owner a scheduling point to persist its
+                # canonical active-turn/assignment state before later provider
+                # events can complete or fail the background process.
+                await asyncio.sleep(0)
 
         try:
             result = await self.runner.run(
