@@ -27,6 +27,7 @@ from codex_web.api.autonomy import build_autonomy_router
 from codex_web.api.autonomy_control_center import build_autonomy_control_center_router
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.automations import build_automations_router
+from codex_web.api.automation_execution import build_automation_execution_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.conversation_channels import build_conversation_channels_router
@@ -186,6 +187,7 @@ from codex_web.services.automation_runs import (
     AutomationRunService,
     AutomationTriggerAdmissionBridge,
 )
+from codex_web.services.automation_execution import AutomationExecutionService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -2784,6 +2786,19 @@ agent_team_execution_service = AgentTeamExecutionService(
 app.state.agent_team_execution_service = agent_team_execution_service
 app.include_router(
     build_agent_team_execution_router(agent_team_execution_service)
+)
+
+automation_execution_service = AutomationExecutionService(
+    automation_run_service,
+    identity=identity_service,
+    threads=thread_service,
+    turns=turn_service,
+    teams=agent_team_execution_service,
+    events=canonical_event_store,
+)
+app.state.automation_execution_service = automation_execution_service
+app.include_router(
+    build_automation_execution_router(automation_execution_service)
 )
 
 # Preserve the small historical direct-import surface through dynamic
