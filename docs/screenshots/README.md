@@ -1,6 +1,6 @@
 # Reproducible documentation screenshots
 
-The documentation screenshot set is generated from deterministic, sanitized browser fixtures already used by the UI regression suite.
+The documentation screenshot set is generated from deterministic, sanitized browser fixtures already used by the UI regression suite. The current manifest covers the redesigned workspace shell plus representative Home, Work, Team, Attention, Automation, Operations, mobile, and state-specific views.
 
 ## Refresh
 
@@ -28,7 +28,8 @@ The generated directory is intentionally build output. CI uploads it as a workfl
 - stable screenshot name;
 - required visible landmarks;
 - annotation topics;
-- forbidden secret-like markers.
+- forbidden secret-like markers;
+- the optional deterministic action used to open a captured surface (selector or UI event).
 
 If a UI change removes a required landmark, the browser documentation test fails. Update the fixture/manifest and regenerate screenshots as part of the same intentional UI/documentation change.
 
