@@ -82,14 +82,6 @@ function ensureShell() {
   link.href = 'static/work_items_ui.css';
   document.head.appendChild(link);
 
-  const button = document.createElement('button');
-  button.id = 'work-items-button';
-  button.type = 'button';
-  button.className = 'ghost-button';
-  button.textContent = 'Work Items';
-  button.title = 'Open canonical work-item operator';
-  (document.querySelector('.topbar .controls') || document.body).prepend(button);
-
   const dialog = document.createElement('dialog');
   dialog.id = 'work-items-dialog';
   dialog.className = 'work-items-dialog';
@@ -149,10 +141,10 @@ function ensureShell() {
     </div>`;
   document.body.appendChild(dialog);
 
-  button.addEventListener('click', async () => {
+  window.addEventListener('codex:open-work-items', async () => {
     const contextProject = currentProjectContext();
     if (contextProject) state.projectId = contextProject;
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     await refreshAll();
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());

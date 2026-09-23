@@ -56,6 +56,9 @@ const CARD_RULES = [
 ];
 
 const DIRECT_ACTIONS = {
+  work: [
+    { label: "Work Items", event: "codex:open-work-items" },
+  ],
   organization: [
     { label: "Executive roles", selector: "#executive-management-button" },
   ],
@@ -251,7 +254,13 @@ function renderWorkspaceActions(id) {
     button.type = "button";
     button.className = "ghost-button";
     button.textContent = action.label;
-    button.addEventListener("click", () => launchExisting(action.selector));
+    button.addEventListener("click", () => {
+      if (action.event) {
+        window.dispatchEvent(new CustomEvent(action.event));
+        return;
+      }
+      launchExisting(action.selector);
+    });
     host.appendChild(button);
   }
   if (id === "autonomy") {

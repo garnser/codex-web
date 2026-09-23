@@ -24,6 +24,10 @@ test('mature canonical cards are adopted out of Developer into first-class works
 
 test('workspace navigation delegates to existing domain launchers instead of duplicating state', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => {
+    window.__workItemsOpenEvents = 0;
+    window.addEventListener('codex:open-work-items', () => { window.__workItemsOpenEvents += 1; });
+  });
   await page.locator('.product-workspaces-launch').click();
   const switcher = page.locator('#product-workspace-switcher');
   await expect(switcher).toBeVisible();
@@ -34,6 +38,12 @@ test('workspace navigation delegates to existing domain launchers instead of dup
   await page.locator('.product-workspaces-launch').click();
   await switcher.locator('[data-product-workspace-nav="inbox"]').click();
   await expect(page.locator('[data-attention-launch]')).toHaveAttribute('data-clicked', '1');
+
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('work'));
+  const workDialog = page.locator('#product-workspace-dialog');
+  await expect(workDialog.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(1);
+  await workDialog.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' }).click();
+  await expect.poll(() => page.evaluate(() => window.__workItemsOpenEvents)).toBe(1);
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
   const dialog = page.locator('#product-workspace-dialog');
