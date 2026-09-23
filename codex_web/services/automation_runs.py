@@ -4,14 +4,22 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from codex_web.automation_definitions import AutomationLifecycle
+from codex_web.automation_definitions import AutomationLifecycle, AutomationTriggerType
 from codex_web.automation_runs import (
     ACTIVE_AUTOMATION_RUN_STATUSES,
     AutomationRun,
     AutomationRunStatus,
     AutomationRunTrigger,
+    AutomationRunTriggerKind,
 )
-from codex_web.services.automation_definitions import AutomationDefinitionService
+from codex_web.canonical_events import CanonicalEventType
+from codex_web.compatibility import CanonicalEventEnvelope
+from codex_web.definitions import DefinitionReference, reference_for
+from codex_web.services.automation_definitions import (
+    AutomationDefinitionService,
+    AutomationEventTriggerService,
+)
+from codex_web.services.canonical_events import CanonicalEventBus
 from codex_web.storage.automation_runs import AutomationRunStore
 
 
@@ -67,13 +75,24 @@ class AutomationRunService:
         workspace_id: str,
         project_id: str | None = None,
         idempotency_key: str | None = None,
+        definition_ref: DefinitionReference | None = None,
     ) -> AutomationAdmissionResult:
-        automation, reference = self.definitions.resolve(
-            automation_id,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            project_id=project_id,
-        )
+        if definition_ref is None:
+            automation, reference = self.definitions.resolve(
+                automation_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            )
+        else:
+            if definition_ref.definition_id != automation_id:
+                raise ValueError("Automation Definition reference id does not match trigger")
+            automation, reference = self.definitions.resolve_reference(
+                definition_ref,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            )
         dedupe_key = self.trigger_dedupe_key(
             definition_record_id=reference.record_id,
             trigger=trigger,
@@ -140,6 +159,143 @@ class AutomationRunService:
             inserted=inserted,
             launch_allowed=inserted and saved.status == AutomationRunStatus.ADMITTED,
         )
+
+
+
+class AutomationTriggerAdmissionBridge:
+    """Feed manual, event and schedule triggers through one canonical admission ledger."""
+
+    def __init__(
+        self,
+        runs: AutomationRunService,
+        event_triggers: AutomationEventTriggerService,
+        bus: CanonicalEventBus,
+    ) -> None:
+        self.runs = runs
+        self.event_triggers = event_triggers
+        self.bus = bus
+
+    @staticmethod
+    def _scope(event: CanonicalEventEnvelope) -> tuple[str, str, str | None]:
+        organization_id = str(event.tenant_id or "").strip()
+        workspace_id = str(event.workspace_id or "").strip()
+        project_id = str(event.payload.get("project_id") or "").strip() or None
+        if not organization_id or not workspace_id:
+            raise ValueError(
+                "Automation trigger requires canonical tenant/workspace scope"
+            )
+        return organization_id, workspace_id, project_id
+
+    def manual(
+        self,
+        automation_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        idempotency_key: str,
+        project_id: str | None = None,
+        actor_id: str,
+    ) -> AutomationAdmissionResult:
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("manual Automation trigger requires idempotency_key")
+        return self.runs.admit(
+            automation_id,
+            AutomationRunTrigger(
+                kind=AutomationRunTriggerKind.MANUAL,
+                source_id=f"manual:{actor_id}:{key}",
+            ),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            idempotency_key=key,
+        )
+
+    def _admit_event_match(
+        self,
+        event: CanonicalEventEnvelope,
+        match,
+    ) -> AutomationAdmissionResult:
+        organization_id, workspace_id, project_id = self._scope(event)
+        kind = (
+            AutomationRunTriggerKind.PROVIDER_EVENT
+            if match.automation.trigger.type == AutomationTriggerType.PROVIDER_EVENT
+            else AutomationRunTriggerKind.CANONICAL_EVENT
+        )
+        return self.runs.admit(
+            match.automation_id,
+            AutomationRunTrigger(
+                kind=kind,
+                source_id=event.event_id,
+                event_id=event.event_id,
+                occurred_at=event.occurred_at,
+                correlation_id=event.correlation_id,
+                causation_id=event.causation_id,
+            ),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            definition_ref=match.definition_ref,
+        )
+
+    def _admit_schedule(
+        self,
+        event: CanonicalEventEnvelope,
+    ) -> AutomationAdmissionResult | None:
+        if event.event_type != CanonicalEventType.SCHEDULE.value:
+            return None
+        if event.payload.get("trigger_type") != "automation.definition":
+            return None
+        materialized = event.payload.get("payload")
+        if not isinstance(materialized, dict):
+            return None
+        automation_id = str(materialized.get("automation_id") or "").strip()
+        record_id = str(materialized.get("definition_record_id") or "").strip()
+        schedule_id = str(event.payload.get("schedule_id") or "").strip()
+        scheduled_for = event.payload.get("scheduled_for")
+        if not automation_id or not record_id or not schedule_id or scheduled_for is None:
+            raise ValueError("Automation schedule event lacks canonical provenance")
+
+        record = self.runs.definitions.registry.get_record(record_id)
+        reference = reference_for(record)
+        if (
+            reference.definition_id != automation_id
+            or reference.revision != materialized.get("definition_revision")
+            or reference.checksum != materialized.get("definition_checksum")
+        ):
+            raise ValueError("Automation schedule Definition provenance mismatch")
+
+        organization_id = str(event.tenant_id or "").strip()
+        workspace_id = str(event.workspace_id or "").strip()
+        project_id = str(materialized.get("project_id") or "").strip() or None
+        if not organization_id or not workspace_id:
+            raise ValueError(
+                "Automation schedule trigger requires tenant/workspace scope"
+            )
+        return self.runs.admit(
+            automation_id,
+            AutomationRunTrigger(
+                kind=AutomationRunTriggerKind.SCHEDULE,
+                source_id=f"{schedule_id}:{float(scheduled_for)!r}",
+                schedule_id=schedule_id,
+                scheduled_for=float(scheduled_for),
+                occurred_at=event.occurred_at,
+                correlation_id=event.correlation_id,
+                causation_id=event.causation_id,
+            ),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            definition_ref=reference,
+        )
+
+    def install(self) -> Callable[[], None]:
+        async def on_event(event: CanonicalEventEnvelope) -> None:
+            for match in self.event_triggers.matches(event):
+                self._admit_event_match(event, match)
+            self._admit_schedule(event)
+
+        return self.bus.subscribe(on_event)
 
     def mark_running(
         self,
