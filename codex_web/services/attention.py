@@ -243,6 +243,10 @@ class AttentionService:
         reason: str | None = None,
     ) -> AttentionItem:
         item = self.get(item_id, actor=actor)
+        if item.source.object_type == "approval_request":
+            raise AttentionStateError(
+                "approval Attention must be resolved through the canonical ApprovalRequest"
+            )
         if item.status == AttentionStatus.RESOLVED:
             return item
         updated = self.store.transition(
