@@ -58,7 +58,12 @@ class ProjectBootstrapTaskSource(_StrictManifestModel):
 
 
 class ProjectBootstrapExecution(_StrictManifestModel):
-    repository_selection: Literal["explicit", "single", "default"] = Field(
+    repository_selection: Literal[
+        "explicit",
+        "coordinated",
+        "single",
+        "default",
+    ] = Field(
         default="explicit",
         alias="repositorySelection",
     )

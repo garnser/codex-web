@@ -288,7 +288,8 @@ class ProjectReadinessService:
                 )
             )
 
-        if project.repository_selection_policy == "explicit":
+        if project.repository_selection_policy in {"explicit", "coordinated"}:
+            coordinated = project.repository_selection_policy == "coordinated"
             checks.append(
                 self._check(
                     "repository:execution-target",
@@ -299,17 +300,26 @@ class ProjectReadinessService:
                         else ReadinessCheckStatus.BLOCKED
                     ),
                     (
-                        "repository_target_required_per_turn"
+                        (
+                            "repository_coordinated_scope_ready"
+                            if coordinated
+                            else "repository_target_required_per_turn"
+                        )
                         if repositories
                         else "repository_target_missing"
                     ),
                     (
-                        "Project repository policy requires each executable "
-                        "turn to provide a contextual repository target."
+                        (
+                            "Project repository policy fixes every active bound "
+                            "repository as the coordinated writable scope."
+                            if coordinated
+                            else "Project repository policy requires each executable "
+                            "turn to provide a contextual repository target."
+                        )
                         if repositories
                         else (
                             "Project has no active canonical repository "
-                            "Resource for explicit per-turn targeting."
+                            "Resource for repository execution."
                         )
                     ),
                     affected_type="project",
@@ -323,8 +333,12 @@ class ProjectReadinessService:
                         f"/api/projects/{project.id}/resources"
                     ),
                     details={
-                        "policy": "explicit",
-                        "target_resolution": "required_per_turn",
+                        "policy": project.repository_selection_policy,
+                        "target_resolution": (
+                            "project_repository_set"
+                            if coordinated
+                            else "required_per_turn"
+                        ),
                         "repository_count": len(repositories),
                         "repository_ids": [
                             item.id for item in repositories[:20]

@@ -983,6 +983,21 @@ class TurnExecutionBindingService:
                     "remediation_route": "/settings/execution-profiles",
                 },
             )
+        if (
+            project.repository_selection_policy == "coordinated"
+            and not writable_repository_ids
+            and not effective_orchestration_only
+        ):
+            writable_repository_ids = tuple(
+                item.id
+                for item in self.resources.project_resources(
+                    project,
+                    actor=self.control_actor,
+                )
+                if item.resource_type == ResourceType.REPOSITORY
+                and item.lifecycle == ResourceLifecycle.ACTIVE
+            )
+            writable_repository_source = RepositoryTargetSource.PROJECT_POLICY
         if writable_repository_ids:
             if effective_orchestration_only:
                 raise TurnExecutionBindingError(
@@ -1040,7 +1055,12 @@ class TurnExecutionBindingService:
                     writable_repository_ids=normalized_writable,
                     read_only_repository_ids=read_only_repository_ids,
                     source=writable_repository_source,
-                    source_ref=work_item_ref or subject.ref,
+                    source_ref=(
+                        project.id
+                        if writable_repository_source
+                        == RepositoryTargetSource.PROJECT_POLICY
+                        else work_item_ref or subject.ref
+                    ),
                 )
         else:
             repository_target = self._repository_target(

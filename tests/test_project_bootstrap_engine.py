@@ -732,51 +732,52 @@ class ProjectBootstrapEngineTests(unittest.TestCase):
         )
         self.assertNotIn(self.secrets.raw_value, serialized)
 
-    def test_explicit_repository_policy_round_trips_through_bootstrap(self):
+    def test_multi_repository_policies_round_trip_through_bootstrap(self):
         service = self.service()
-        manifest = self.manifest(repository_selection="explicit")
+        for mode in ("explicit", "coordinated"):
+            with self.subTest(mode=mode):
+                manifest = self.manifest(repository_selection=mode)
+                plan = service.plan(
+                    self.project.id,
+                    manifest,
+                    actor=_actor(),
+                    migrate_legacy=False,
+                )
 
-        plan = service.plan(
-            self.project.id,
-            manifest,
-            actor=_actor(),
-            migrate_legacy=False,
-        )
+                policy = next(
+                    item
+                    for item in plan.operations
+                    if item.id == "project:settings:repository-selection"
+                )
+                self.assertEqual(policy.disposition.value, "update")
+                self.assertEqual(
+                    policy.desired["repository_selection_policy"],
+                    mode,
+                )
 
-        policy = next(
-            item
-            for item in plan.operations
-            if item.id == "project:settings:repository-selection"
-        )
-        self.assertEqual(policy.disposition.value, "update")
-        self.assertEqual(
-            policy.desired["repository_selection_policy"],
-            "explicit",
-        )
+                execution = service.apply(plan, actor=_actor())
+                self.assertEqual(
+                    execution.status,
+                    BootstrapExecutionStatus.APPLIED,
+                )
+                project = self.repository.load()[0]
+                self.assertEqual(
+                    project.repository_selection_policy,
+                    mode,
+                )
 
-        execution = service.apply(plan, actor=_actor())
-        self.assertEqual(
-            execution.status,
-            BootstrapExecutionStatus.APPLIED,
-        )
-        project = self.repository.load()[0]
-        self.assertEqual(
-            project.repository_selection_policy,
-            "explicit",
-        )
-
-        repeat = service.plan(
-            self.project.id,
-            manifest,
-            actor=_actor(),
-            migrate_legacy=False,
-        )
-        policy = next(
-            item
-            for item in repeat.operations
-            if item.id == "project:settings:repository-selection"
-        )
-        self.assertEqual(policy.disposition.value, "ready")
+                repeat = service.plan(
+                    self.project.id,
+                    manifest,
+                    actor=_actor(),
+                    migrate_legacy=False,
+                )
+                policy = next(
+                    item
+                    for item in repeat.operations
+                    if item.id == "project:settings:repository-selection"
+                )
+                self.assertEqual(policy.disposition.value, "ready")
 
     def test_single_and_default_manifest_modes_persist_deterministic_policy(self):
         self.repository.values[0] = self.project.model_copy(

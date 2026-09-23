@@ -46,6 +46,7 @@ class RepositoryTargetSource(StrEnum):
     THREAD_PROFILE = "thread_profile"
     ROUTING_RULE = "routing_rule"
     SINGLE_REPOSITORY = "single_repository"
+    PROJECT_POLICY = "project_policy"
     ORCHESTRATION_ONLY = "orchestration_only"
 
 

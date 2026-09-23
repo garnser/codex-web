@@ -45,7 +45,9 @@ function inferredManifest() {
       };
     }).filter((item) => item.path),
     execution: {
-      repositorySelection: (state.resources || []).length === 1 ? "single" : "explicit",
+      repositorySelection: state.project.repository_selection_policy === "coordinated"
+        ? "coordinated"
+        : ((state.resources || []).length === 1 ? "single" : "explicit"),
       requiredCapabilities: ["command_execution"],
       sandbox: state.project.sandbox || "workspace-write"
     }
@@ -112,7 +114,7 @@ function render() {
     esc(readinessSummary) +
     '</p></div>' + badge(state.readiness?.status) + '</div><div class="project-setup-metrics"><div><span>Semantic</span><strong>' + (state.readiness?.semantic_ready ? "Ready" : "Blocked") +
     '</strong></div><div><span>Execution</span><strong>' + (state.readiness?.execution_ready ? "Ready" : "Blocked") +
-    '</strong></div><div><span>Repository policy</span><strong>' + esc(repositoryPolicy === "explicit" ? "Explicit per turn" : "Deterministic") +
+    '</strong></div><div><span>Repository policy</span><strong>' + esc(repositoryPolicy === "explicit" ? "Explicit per turn" : repositoryPolicy === "coordinated" ? "Coordinated Project set" : "Deterministic") +
     '</strong></div><div><span>Blockers</span><strong>' + blockers.length + '</strong></div></div>' +
     (state.error ? '<div class="project-setup-error" role="alert">' + esc(state.error) + '</div>' : "") +
     (blocked() ? '<button type="button" class="ghost-button" data-setup-fresh>Retry safe Project setup</button>' : "") + '</section>' +

@@ -76,6 +76,17 @@ class ProjectDomainTests(unittest.TestCase):
                 "deterministic",
             )
 
+            coordinated = service.set_repository_selection_policy(
+                created.id,
+                ProjectRepositorySelectionUpdate(
+                    repository_selection_policy="coordinated"
+                ),
+            )
+            self.assertEqual(
+                coordinated.repository_selection_policy,
+                "coordinated",
+            )
+
     def test_last_project_cannot_be_deleted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = ProjectRepository(Path(directory) / "projects.json")

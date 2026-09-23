@@ -20,8 +20,9 @@ Projects persist one repository-selection policy:
 
 - `deterministic` — the existing/default behavior. Project readiness requires a Project-level target to resolve deterministically before execution.
 - `explicit` — valid multi-repository topology may have no Project-wide default. Project readiness reports `repository_target_required_per_turn` and remains non-blocking as long as active repository Resources exist. Each executable turn must later provide enough canonical context to resolve one mutable repository.
+- `coordinated` — the complete active repository set bound to the Project is fixed as the writable scope before each repository execution. This is an explicit Project-level opt-in for workspaces whose normal unit of work spans repositories; turns do not repeat repository selection, and canonical preflight still validates every member before mutation.
 
-Bootstrap `repositorySelection: single` and `repositorySelection: default` map to the deterministic Project policy. Bootstrap `repositorySelection: explicit` maps to the explicit Project policy.
+Bootstrap `repositorySelection: single` and `repositorySelection: default` map to the deterministic Project policy. Bootstrap `repositorySelection: explicit` and `repositorySelection: coordinated` map directly to their corresponding Project policies.
 
 For deterministic multi-repository Projects, make the mutable target resolvable through one of the canonical sources, in precedence order:
 

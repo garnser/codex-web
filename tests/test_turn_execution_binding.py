@@ -1541,6 +1541,58 @@ class TurnExecutionBindingTests(unittest.TestCase):
             )
         )
 
+    def test_project_coordinated_policy_supplies_writable_scope(self) -> None:
+        self._publish_secret()
+        second_path = Path(self.project.path) / "repo-policy-2"
+        second_path.mkdir()
+        second = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Repository policy 2",
+                aliases=[
+                    ResourceAlias(
+                        namespace="filesystem",
+                        value=str(second_path),
+                    )
+                ],
+            ),
+            actor=self.actor,
+        )
+        self.resources.bind_project(
+            project=self.project,
+            resource_id=second.id,
+            actor=self.actor,
+        )
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "coordinated"}
+        )
+        self.projects.project = self.project
+
+        binding = self.service.prepare(
+            thread_id="thread-project-coordinated",
+            execution_id="exec-project-coordinated",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        self.assertEqual(
+            set(binding.repository_scope.writable_repository_ids),
+            {self.repository.id, second.id},
+        )
+        self.assertEqual(
+            binding.repository_scope.write_mode,
+            RepositoryWriteMode.COORDINATED,
+        )
+        self.assertEqual(
+            binding.repository_scope.source,
+            RepositoryTargetSource.PROJECT_POLICY,
+        )
+        self.assertEqual(
+            binding.repository_scope.source_ref,
+            self.project.id,
+        )
+
     def test_invalid_coordinated_scope_fails_before_workspace_or_assignment(self) -> None:
         self._publish_secret()
         unbound_path = Path(self.project.path) / "unbound"
