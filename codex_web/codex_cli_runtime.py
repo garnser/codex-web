@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from codex_web.agent_runtime import AgentRuntimeEvent
 from codex_web.cli_runtime import (
     CliRuntimeCommand,
     CliRuntimeReadiness,
@@ -97,6 +99,39 @@ class CodexCliAdapter:
             environment=dict(environment or {}),
         )
 
+    def build_resume_command(
+        self,
+        *,
+        executable: str,
+        cwd: Path,
+        session_id: str,
+        prompt: str,
+        model: str | None = None,
+        extra_args: Sequence[str] = (),
+        environment: Mapping[str, str] | None = None,
+    ) -> CliRuntimeCommand:
+        normalized_session = session_id.strip()
+        if not normalized_session:
+            raise ValueError("Codex CLI resume requires a session id")
+
+        command = self.build_command(
+            executable=executable,
+            cwd=cwd,
+            prompt=prompt,
+            model=model,
+            extra_args=(),
+            environment=environment,
+        )
+        argv = list(command.argv)
+        argv.pop()
+        argv.extend(extra_args)
+        argv.extend(("resume", normalized_session, prompt))
+        return CliRuntimeCommand(
+            argv=tuple(argv),
+            cwd=command.cwd,
+            environment=command.environment,
+        )
+
     @staticmethod
     def _approval_argument(value: str) -> str:
         normalized = value.strip().casefold()
@@ -127,3 +162,39 @@ class CodexCliAdapter:
             raise ValueError(
                 f"unsupported Codex CLI sandbox profile: {value!r}"
             ) from exc
+
+
+class CodexCliJsonEventStream:
+    """Project Codex exec JSONL into the canonical agent-runtime event shape."""
+
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+
+    def parse(self, line: str) -> AgentRuntimeEvent:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Codex CLI emitted invalid JSONL output") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Codex CLI JSONL event must be an object")
+
+        event_type = str(payload.get("type") or "").strip()
+        if not event_type:
+            raise ValueError("Codex CLI JSONL event has no type")
+
+        if event_type == "thread.started":
+            thread_id = str(payload.get("thread_id") or "").strip()
+            if not thread_id:
+                raise ValueError("Codex CLI thread.started event has no thread_id")
+            self.session_id = thread_id
+
+        return AgentRuntimeEvent(
+            event_type=event_type,
+            provider_native_session_id=self.session_id,
+            provider_native_turn_id=(
+                str(payload["turn_id"])
+                if payload.get("turn_id") is not None
+                else None
+            ),
+            payload=payload,
+        )
