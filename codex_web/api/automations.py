@@ -44,6 +44,7 @@ class AutomationScheduleReconcileRequest(BaseModel):
 class AutomationDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    automation_id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")
     definition: AutomationDefinition
     project_id: str | None = None
     reason: str | None = None
@@ -153,7 +154,7 @@ def build_automations_router(
             )
             scope_id = payload.project_id or actor.workspace_id
             record = definitions.create_draft(
-                payload.definition.name.lower().replace(" ", "-"),
+                payload.automation_id,
                 payload.definition,
                 actor_id=actor.identity_id,
                 scope_type=scope_type,
