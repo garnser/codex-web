@@ -308,7 +308,14 @@ class BusinessDataSourceService:
             raise BusinessDataSourceValidationError(
                 "BusinessDataSource must support incremental sync or discovery"
             )
-        item = draft.model_copy(update={"capabilities": capabilities})
+        item = draft.model_copy(
+            update={
+                "capabilities": capabilities,
+                "credential_required": bool(
+                    getattr(adapter, "credential_required", True)
+                ),
+            }
+        )
 
         def apply(state: BusinessDataSourceState) -> BusinessDataSourceState:
             duplicate = next(

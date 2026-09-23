@@ -333,6 +333,7 @@ class BusinessDataSourceRecord(BaseModel):
     entity_name_priority: int = Field(default=0, ge=0, le=1000)
     field_mappings: tuple[BusinessDataFieldMapping, ...] = ()
     credential_ref: str | None = None
+    credential_required: bool = True
     classification: DataClassification
     capabilities: tuple[BusinessDataSourceCapability, ...] = ()
     status: BusinessDataSourceStatus = BusinessDataSourceStatus.ACTIVE

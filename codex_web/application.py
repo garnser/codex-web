@@ -247,6 +247,11 @@ from codex_web.services.business_data_sources import (
 )
 from codex_web.services.business_kpis import BusinessKPIService
 from codex_web.services.company_operations import CompanyOperationsService
+from codex_web.services.work_item_business_data_source import (
+    WORK_ITEM_BUSINESS_DATA_SOURCE_INSTANCE,
+    WORK_ITEM_BUSINESS_DATA_SOURCE_TYPE,
+    WorkItemBusinessDataSource,
+)
 from codex_web.services.decisions import DecisionService
 from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
@@ -1848,6 +1853,17 @@ work_item_service = WorkItemService(
     identity_service=identity_service,
     work_item_list_index=work_item_list_index,
     secret_broker=secret_broker,
+)
+business_data_source_registry.register(
+    WORK_ITEM_BUSINESS_DATA_SOURCE_TYPE,
+    lambda record, _actor: WorkItemBusinessDataSource(
+        source_instance=record.source_instance,
+        project_id=record.scope,
+        load_states=work_item_dependencies.load_states,
+        load_projects=work_item_dependencies.load_projects,
+    )
+    if record.source_instance == WORK_ITEM_BUSINESS_DATA_SOURCE_INSTANCE
+    else None,
 )
 work_item_compatibility_service = install_work_item_compatibility(
     app,
