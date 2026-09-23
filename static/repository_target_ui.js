@@ -1,5 +1,6 @@
 const writableSelections = new Map();
 const WRITABLE_SELECTIONS_KEY = "codex-web:writable-repository-selections:v1";
+const PROJECT_SETTINGS_KEY = "codex-web-project-settings";
 
 function persistedWritableSelections() {
   try {
@@ -16,6 +17,11 @@ function persistWritableIds(projectId, ids) {
     const selections = persistedWritableSelections();
     selections[projectId] = ids;
     localStorage.setItem(WRITABLE_SELECTIONS_KEY, JSON.stringify(selections));
+
+    const projectSettings = JSON.parse(localStorage.getItem(PROJECT_SETTINGS_KEY) || "{}");
+    const current = projectSettings[projectId] || {};
+    projectSettings[projectId] = { ...current, writableRepositoryResourceIds: ids };
+    localStorage.setItem(PROJECT_SETTINGS_KEY, JSON.stringify(projectSettings));
   } catch {
     // Browser storage is optional; in-memory selection remains authoritative for this page.
   }
@@ -34,8 +40,16 @@ function storedWritableIds(project, settings = {}) {
   }
   if (writableSelections.has(key)) return writableSelections.get(key) || [];
   const persisted = persistedWritableSelections()[key];
-  const normalized = Array.isArray(persisted)
-    ? Array.from(new Set(persisted.filter(Boolean)))
+  let projectPersisted = [];
+  try {
+    const projectSettings = JSON.parse(localStorage.getItem(PROJECT_SETTINGS_KEY) || "{}");
+    projectPersisted = projectSettings[key]?.writableRepositoryResourceIds || [];
+  } catch {
+    projectPersisted = [];
+  }
+  const source = Array.isArray(persisted) && persisted.length ? persisted : projectPersisted;
+  const normalized = Array.isArray(source)
+    ? Array.from(new Set(source.filter(Boolean)))
     : [];
   writableSelections.set(key, normalized);
   return normalized;
