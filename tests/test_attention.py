@@ -46,6 +46,23 @@ class _FailingNotifier:
         raise RuntimeError("provider down")
 
 
+class _IdentityResolver:
+    def __init__(self, valid_ids):
+        self.valid_ids = set(valid_ids)
+
+    def actor_for_identity(self, identity_id, *, scope):
+        if identity_id not in self.valid_ids:
+            raise RuntimeError("identity not found")
+        return AuthenticationActor(
+            identity_id=identity_id,
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            roles=(MembershipRole.MEMBER,),
+            assurance=AuthenticationAssurance.MFA,
+        )
+
+
 class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -291,6 +308,76 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.status, AttentionStatus.RESOLVED)
         self.assertEqual(resolved.resolved_by_identity_id, "operator-a")
         self.assertEqual(resolved.resolution_reason, "handled")
+
+    async def test_reassign_validates_identity_and_records_new_owner(self) -> None:
+        self.service.identity = _IdentityResolver({"operator-a", "operator-b"})
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-reassign"),
+                reason="Assign remediation owner",
+                dedupe_key="runtime-reassign",
+                owner_identity_id="operator-a",
+            ),
+            actor_id="runtime-bridge",
+        )
+
+        reassigned = await self.service.reassign(
+            item.id,
+            actor=self.actor,
+            owner_identity_id="operator-b",
+        )
+        self.assertEqual(reassigned.owner_identity_id, "operator-b")
+        self.assertEqual(reassigned.updated_by, "operator-a")
+
+        with self.assertRaisesRegex(
+            AttentionStateError,
+            "current tenant/workspace identity",
+        ):
+            await self.service.reassign(
+                item.id,
+                actor=self.actor,
+                owner_identity_id="missing-identity",
+            )
+
+    async def test_manual_escalation_is_owner_or_admin_controlled(self) -> None:
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-escalate"),
+                reason="Escalate remediation",
+                dedupe_key="runtime-escalate",
+                owner_identity_id="operator-a",
+            ),
+            actor_id="runtime-bridge",
+        )
+
+        escalated = await self.service.escalate_for_actor(
+            item.id,
+            actor=self.actor,
+        )
+        self.assertEqual(escalated.status, AttentionStatus.ESCALATED)
+        self.assertEqual(escalated.escalation_count, 1)
+        self.assertEqual(escalated.updated_by, "operator-a")
+
+        outsider = self.actor.model_copy(
+            update={
+                "identity_id": "operator-outsider",
+                "roles": (MembershipRole.MEMBER,),
+            }
+        )
+        with self.assertRaisesRegex(
+            Exception,
+            "current owner or administrator",
+        ):
+            await self.service.escalate_for_actor(
+                item.id,
+                actor=outsider,
+            )
 
     async def test_scheduler_backed_escalation_is_durable_and_idempotent(self) -> None:
         await self._approval_event("pending", key="pending-expiring", expires_at=110.0)
