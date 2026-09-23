@@ -45,13 +45,13 @@ def redact_codex_diagnostic(value: object) -> str:
         if sensitive and len(sensitive) >= 4:
             text = text.replace(sensitive, "[REDACTED]")
     text = re.sub(
-        r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]{8,}",
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}",
         "Bearer [REDACTED]",
         text,
     )
-    text = re.sub(r"\\bsk-[A-Za-z0-9_-]{8,}\\b", "[REDACTED]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[REDACTED]", text)
     text = re.sub(
-        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}",
+        r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
         "[REDACTED]",
         text,
     )
