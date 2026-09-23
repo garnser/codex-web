@@ -17,6 +17,36 @@ from codex_web.observability import RuntimeMetrics, log_event
 logger = logging.getLogger(__name__)
 
 
+TRUSTED_LOCAL_CHILD_HOME = "/tmp/codex-local-shell-home"
+
+# The trusted-local app-server may read operator-owned Codex authentication
+# state itself, but repository-controlled shell commands must not inherit
+# credential carriers or a login shell that can reconstruct them.
+TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
+    'shell_environment_policy.inherit="none"',
+    "shell_environment_policy.ignore_default_excludes=false",
+    'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home"}',
+    'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
+    'shell_environment_policy.filters.CODEX_API_KEY="exclude"',
+    'shell_environment_policy.filters.OPENAI_API_KEY="exclude"',
+    'shell_environment_policy.filters.ANTHROPIC_API_KEY="exclude"',
+    'shell_environment_policy.filters.GEMINI_API_KEY="exclude"',
+    "allow_login_shell=false",
+)
+
+
+def trusted_local_codex_command(
+    *,
+    executable: str = "codex",
+    subcommand: tuple[str, ...] = ("app-server",),
+) -> tuple[str, ...]:
+    command: list[str] = [executable]
+    for value in TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG:
+        command.extend(("--config", value))
+    command.extend(subcommand)
+    return tuple(command)
+
+
 def request_timeout(method: str) -> float | None:
     if method == "initialize":
         return 15
@@ -36,13 +66,13 @@ class CodexRuntime:
         self,
         host: Any,
         *,
-        command: tuple[str, ...] = ("codex", "app-server"),
+        command: tuple[str, ...] | None = None,
         cwd: Path | None = None,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
         metrics: RuntimeMetrics | None = None,
     ) -> None:
         self.host = host
-        self.command = command
+        self.command = command or trusted_local_codex_command()
         self.cwd = cwd or Path.home()
         self._popen = popen
         self.metrics = metrics
