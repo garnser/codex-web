@@ -352,6 +352,7 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
                 reason="Escalate remediation",
                 dedupe_key="runtime-escalate",
                 owner_identity_id="operator-a",
+                recipient_identity_ids=("operator-outsider",),
             ),
             actor_id="runtime-bridge",
         )
