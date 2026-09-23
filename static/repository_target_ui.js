@@ -1,4 +1,31 @@
 const writableSelections = new Map();
+const WRITABLE_SELECTIONS_KEY = "codex-web:writable-repository-selections:v1";
+const PROJECT_SETTINGS_KEY = "codex-web-project-settings";
+
+function persistedWritableSelections() {
+  try {
+    const value = JSON.parse(localStorage.getItem(WRITABLE_SELECTIONS_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistWritableIds(projectId, ids) {
+  if (!projectId) return;
+  try {
+    const selections = persistedWritableSelections();
+    selections[projectId] = ids;
+    localStorage.setItem(WRITABLE_SELECTIONS_KEY, JSON.stringify(selections));
+
+    const projectSettings = JSON.parse(localStorage.getItem(PROJECT_SETTINGS_KEY) || "{}");
+    const current = projectSettings[projectId] || {};
+    projectSettings[projectId] = { ...current, writableRepositoryResourceIds: ids };
+    localStorage.setItem(PROJECT_SETTINGS_KEY, JSON.stringify(projectSettings));
+  } catch {
+    // Browser storage is optional; in-memory selection remains authoritative for this page.
+  }
+}
 
 function storedWritableIds(project, settings = {}) {
   const explicit = Array.isArray(settings.writableRepositoryResourceIds)
@@ -6,9 +33,26 @@ function storedWritableIds(project, settings = {}) {
     : [];
   const key = project?.id || "";
   if (explicit.length) {
-    writableSelections.set(key, Array.from(new Set(explicit)));
+    const normalized = Array.from(new Set(explicit));
+    writableSelections.set(key, normalized);
+    persistWritableIds(key, normalized);
+    return normalized;
   }
-  return explicit.length ? Array.from(new Set(explicit)) : (writableSelections.get(key) || []);
+  if (writableSelections.has(key)) return writableSelections.get(key) || [];
+  const persisted = persistedWritableSelections()[key];
+  let projectPersisted = [];
+  try {
+    const projectSettings = JSON.parse(localStorage.getItem(PROJECT_SETTINGS_KEY) || "{}");
+    projectPersisted = projectSettings[key]?.writableRepositoryResourceIds || [];
+  } catch {
+    projectPersisted = [];
+  }
+  const source = Array.isArray(persisted) && persisted.length ? persisted : projectPersisted;
+  const normalized = Array.isArray(source)
+    ? Array.from(new Set(source.filter(Boolean)))
+    : [];
+  writableSelections.set(key, normalized);
+  return normalized;
 }
 
 export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
@@ -49,7 +93,15 @@ export function targetState({
   repositories = repositories || activeRepositories(resources);
   selectedId = selectedId ?? settings.repositoryResourceId ?? "";
   boundId = boundId ?? threadSettings.repository_resource_id ?? "";
-  const writableIds = storedWritableIds(project, settings);
+  const storedIds = storedWritableIds(project, settings);
+  const writableControl = typeof document === "undefined"
+    ? null
+    : document.getElementById("repository-write-targets");
+  const controlIds = Array.from(
+    writableControl?.selectedOptions || [],
+    (option) => option.value,
+  );
+  const writableIds = controlIds.length ? controlIds : storedIds;
   const byId = new Map(repositories.map((item) => [item.id, item]));
   const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
 
@@ -179,7 +231,9 @@ export function renderControls({
     .join("");
   writable.onchange = () => {
     const ids = Array.from(writable.selectedOptions, (option) => option.value);
-    writableSelections.set(project?.id || "", ids);
+    const projectId = project?.id || "";
+    writableSelections.set(projectId, ids);
+    persistWritableIds(projectId, ids);
     renderControls({
       project,
       resources,
