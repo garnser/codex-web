@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from codex_web.agent_runtime import (
     AgentRuntimeHealth,
@@ -10,9 +14,11 @@ from codex_web.agent_runtime import (
 )
 from codex_web.cli_runtime import (
     CliRuntimeOutput,
+    CliRuntimeProbe,
     CliRuntimeReadiness,
     CliRuntimeReadinessStatus,
     CliRuntimeResult,
+    CliRuntimeRunner,
 )
 from codex_web.codex_cli_runtime import CodexCliAdapter
 from codex_web.services.codex_cli_agent_runtime import (
@@ -271,6 +277,94 @@ class CodexCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.event_type, "turn.failed")
         self.assertEqual(failure.payload["error"], "CodexCliRuntimeError")
         self.assertNotIn("stderr", failure.payload)
+
+    async def test_real_process_uses_local_cli_auth_without_direct_api_key(self) -> None:
+        if os.name != "posix":
+            self.skipTest("executable fixture requires POSIX chmod semantics")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            codex_home = root / ".codex"
+            codex_home.mkdir()
+            executable = root / "fake-codex"
+            executable.write_text(
+                "#!" + sys.executable + "\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "if args == ['login', 'status']:\n"
+                "    if os.environ.get('CODEX_HOME') and not os.environ.get('OPENAI_API_KEY'):\n"
+                "        raise SystemExit(0)\n"
+                "    raise SystemExit(7)\n"
+                "if 'exec' in args:\n"
+                "    if os.environ.get('OPENAI_API_KEY'):\n"
+                "        raise SystemExit(9)\n"
+                "    print(json.dumps({'type':'thread.started','thread_id':'native-local-auth'}), flush=True)\n"
+                "    print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'local auth ok'}}), flush=True)\n"
+                "    print(json.dumps({'type':'turn.completed','turn_id':'turn-local-auth'}), flush=True)\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(11)\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+
+            environment = {
+                "HOME": str(root),
+                "CODEX_HOME": str(codex_home),
+                "PATH": os.environ.get("PATH", ""),
+                "UNRELATED_PARENT_SECRET": "must-not-pass",
+            }
+            adapter = CodexCliAgentRuntimeAdapter(
+                cli=CodexCliAdapter(
+                    executable=str(executable),
+                    sandbox="workspace-write",
+                    approval_policy="never",
+                ),
+                probe=CliRuntimeProbe(
+                    environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
+                    environ=environment,
+                ),
+                runner=CliRuntimeRunner(
+                    environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
+                    environ=environment,
+                ),
+                start_timeout_seconds=5,
+            )
+            events = []
+            adapter.subscribe_events(events.append)
+
+            self.assertEqual(await adapter.health(), AgentRuntimeHealth.HEALTHY)
+            result = await adapter.start_turn(
+                "thread-local",
+                AgentRuntimeTurnRequest(
+                    message="Use the existing CLI login",
+                    workspace_cwd=str(workspace),
+                    approval_policy="never",
+                ),
+            )
+            for _ in range(50):
+                if any(event.event_type == "turn.completed" for event in events):
+                    break
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(
+                result.provider_native_session_id,
+                "native-local-auth",
+            )
+            self.assertIn(
+                "item.completed",
+                [event.event_type for event in events],
+            )
+            self.assertIn(
+                "turn.completed",
+                [event.event_type for event in events],
+            )
+            self.assertNotIn("OPENAI_API_KEY", environment)
+            self.assertNotIn(
+                "UNRELATED_PARENT_SECRET",
+                adapter.runner.environment_allowlist,
+            )
 
     async def test_unready_cli_fails_before_process_launch(self) -> None:
         runner = _Runner([])
