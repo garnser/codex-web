@@ -1184,6 +1184,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
     execution_worker_service,
     control_actor=identity_service.local_trusted_actor(),
     runtime_binding=codex_execution_runtime_binding,
+    secrets=secret_broker,
     execution_profiles=execution_profile_definition_service,
     control_plane_available=lambda: (
         control_plane_broker_factory.service is not None

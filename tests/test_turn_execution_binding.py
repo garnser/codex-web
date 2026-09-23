@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from codex_web.configuration import (
     ConfigurationDraftCreate,
@@ -16,6 +17,7 @@ from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.execution_workspace_backend import GitWorkspaceProvision
 from codex_web.execution_workspaces import LeaseMode, WorkspaceQuota
 from codex_web.execution_workers import (
+    CodexExecutionAuthenticationMode,
     ExecutionRuntimeBinding,
     ExecutionWorkerRegister,
     WorkerCapability,
@@ -36,6 +38,7 @@ from codex_web.services.anthropic_worker_configuration import (
 )
 from codex_web.services.codex_worker_configuration import (
     CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+    CODEX_WORKER_API_KEY_CONFIG,
     install_codex_worker_configuration,
 )
 from codex_web.services.configuration import ConfigurationService
@@ -61,6 +64,21 @@ from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+class _AuthenticationSecrets:
+    def __init__(self, status: str = "active", *, available: bool = True) -> None:
+        self.status = status
+        self.available = available
+
+    def metadata(self, secret_id, *, actor, require_use=False):
+        del secret_id, actor, require_use
+        if not self.available:
+            raise LookupError("secret unavailable")
+        status = self.status
+        return SimpleNamespace(
+            status=lambda: SimpleNamespace(value=status)
+        )
 
 
 class _Projects:
@@ -258,6 +276,111 @@ class TurnExecutionBindingTests(unittest.TestCase):
             project_id=self.project.id,
             sandbox=sandbox,
             approval_policy="on-request",
+        )
+
+    def test_turn_preflight_distinguishes_expired_and_revoked_authentication(self) -> None:
+        self._publish_secret()
+        for status, expected in (
+            ("expired", "authentication_expired"),
+            ("revoked", "authentication_revoked"),
+        ):
+            with self.subTest(status=status):
+                self.service.secrets = _AuthenticationSecrets(status)
+                with self.assertRaises(TurnExecutionBindingError) as raised:
+                    self._prepare(
+                        execution_id=f"turn-auth-{status}",
+                    )
+                self.assertEqual(raised.exception.code, expected)
+                blocker = raised.exception.public()
+                self.assertEqual(
+                    blocker["authentication"]["authentication_status"],
+                    status,
+                )
+                self.assertEqual(self.workspaces.list(self.actor), [])
+                self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_turn_preflight_reports_configured_but_unavailable_authentication(self) -> None:
+        self._publish_secret()
+        self.service.secrets = _AuthenticationSecrets(available=False)
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(execution_id="turn-auth-unavailable")
+
+        self.assertEqual(raised.exception.code, "authentication_unavailable")
+        self.assertNotEqual(
+            raised.exception.code,
+            "credential_reference_missing",
+        )
+
+    def test_turn_preflight_api_key_uses_distinct_secret_reference(self) -> None:
+        self.service.runtime_binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="api_key",
+        )
+        self.service.secrets = _AuthenticationSecrets()
+        self._publish_secret(
+            secret_id="secret-codex-api-key",
+            config_key=CODEX_WORKER_API_KEY_CONFIG,
+        )
+
+        binding = self._prepare(execution_id="turn-auth-api-key")
+        assignment = next(
+            item
+            for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+        self.assertEqual(
+            assignment.runtime_binding.authentication_mode,
+            "api_key",
+        )
+        self.assertEqual(
+            assignment.secret_refs,
+            ("secret-codex-api-key",),
+        )
+
+    def test_turn_preflight_policy_denial_is_explicit(self) -> None:
+        self.service.runtime_binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="api_key",
+        )
+        self.service.permitted_codex_authentication_modes = (
+            CodexExecutionAuthenticationMode.DELEGATED_WORKER_TOKEN,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(execution_id="turn-auth-policy-denied")
+
+        self.assertEqual(raised.exception.code, "authentication_mode_denied")
+        self.assertEqual(
+            raised.exception.public()["authentication"]["authentication_status"],
+            "denied",
+        )
+
+    def test_turn_preflight_local_session_availability_is_explicit(self) -> None:
+        self.service.runtime_binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            authentication_mode="trusted_local_session",
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as unsupported:
+            self._prepare(execution_id="turn-local-unsupported")
+        self.assertEqual(
+            unsupported.exception.code,
+            "authentication_mode_unsupported",
+        )
+
+        self.service.local_session_probe = lambda: False
+        with self.assertRaises(TurnExecutionBindingError) as unavailable:
+            self._prepare(execution_id="turn-local-unavailable")
+        self.assertEqual(
+            unavailable.exception.code,
+            "local_session_unavailable",
         )
 
     def test_runtime_sandbox_mismatch_blocks_before_credential_preflight(self) -> None:
