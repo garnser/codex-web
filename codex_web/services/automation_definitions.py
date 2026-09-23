@@ -39,6 +39,33 @@ class AutomationDefinitionService:
     def __init__(self, registry: DefinitionRegistryService) -> None:
         self.registry = registry
 
+    def resolve_reference(
+        self,
+        reference: DefinitionReference,
+        *,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[AutomationDefinition, DefinitionReference]:
+        if reference.kind != AUTOMATION_KIND:
+            raise DefinitionNotFoundError("Definition reference is not an Automation")
+        record = self.registry.get_record(reference.record_id)
+        exact = reference_for(record)
+        if exact != reference:
+            raise DefinitionConflictError(
+                "Automation Definition reference does not match canonical record"
+            )
+        context = DefinitionContext(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        if not self.registry._matches_context(record, context):
+            raise DefinitionNotFoundError(
+                "Automation Definition reference is outside the trigger scope"
+            )
+        return AutomationDefinition.model_validate(record.payload), exact
+
     def resolve(
         self,
         automation_id: str,
