@@ -264,8 +264,20 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_acknowledge_and_resolve_are_attributable(self) -> None:
-        await self._approval_event("pending", key="pending-a")
-        item = self.store.list()[0]
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(
+                    object_type="runtime",
+                    object_id="runtime-a",
+                ),
+                reason="Runtime requires operator remediation",
+                dedupe_key="runtime-a-remediation",
+            ),
+            actor_id="runtime-bridge",
+        )
 
         acknowledged = await self.service.acknowledge(item.id, actor=self.actor)
         self.assertEqual(acknowledged.status, AttentionStatus.ACKNOWLEDGED)
