@@ -40,7 +40,7 @@
         "blockers",
         "handoff and reconciliation"
       ],
-      "open_selector": "#work-items-button"
+      "open_event": "codex:open-work-items"
     },
     {
       "name": "orchestration-and-actions",
