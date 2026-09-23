@@ -28,7 +28,7 @@ from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-class AutomationDefinitionTests(unittest.TestCase):
+class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         store = SQLiteStateStore(Path(self.temp.name) / "state.db")
