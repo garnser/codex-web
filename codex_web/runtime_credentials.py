@@ -344,7 +344,10 @@ def runtime_authentication_preflight(
             requirement=requirement,
             status=RuntimeAuthenticationStatus.MISSING,
             code="credential_reference_missing",
-            message=f"Required runtime credential reference {config_key} is missing or malformed.",
+            message=(
+                "worker credential reference configuration is unavailable "
+                f"for {target}: {config_key} is missing or malformed"
+            ),
             remediation=(
                 "Configure an authorized canonical SecretReference for the "
                 "selected authentication mode."
