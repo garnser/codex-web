@@ -145,7 +145,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
     def _publish_and_admit(self, *, target_kind="agent_profile", owner=True):
         draft = self.registry.create_draft(
             DefinitionDraftCreate(
-                definition_id=f"automation-{target_kind}-{owner}",
+                definition_id=f"automation-{target_kind}-{'owner' if owner else 'no-owner'}",
                 kind=AUTOMATION_KIND,
                 definition_schema_version=AUTOMATION_SCHEMA_VERSION,
                 payload=self._payload(target_kind=target_kind, owner=owner),
