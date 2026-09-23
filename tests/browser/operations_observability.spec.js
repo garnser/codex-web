@@ -206,7 +206,7 @@ test('Operations overview unifies canonical health, worker lifecycle and failure
         execution_id: 'exec-failed',
         status: 'failed',
         failure: {
-          reason: 'worker_capability_missing',
+          reason_code: 'worker_capability_missing',
           summary: 'Required execution capability is unavailable.',
           retryability: 'after_remediation',
           remediation_key: 'restore_worker_capability',
