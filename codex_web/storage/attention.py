@@ -19,8 +19,19 @@ ATTENTION_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": ATTENTION_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         "items": dict(payload.get("items") or {}),
+    },
+)
+ATTENTION_STATE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        "schema_version": "1.1",
+        "items": {
+            key: {**dict(value), "project_id": dict(value).get("project_id")}
+            for key, value in dict(payload.get("items") or {}).items()
+        },
     },
 )
 
