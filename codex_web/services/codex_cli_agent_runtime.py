@@ -63,7 +63,9 @@ class CodexCliAgentRuntimeAdapter:
         start_timeout_seconds: float = 15.0,
     ) -> None:
         self.cli = cli or CodexCliAdapter()
-        self.probe = probe or CliRuntimeProbe()
+        self.probe = probe or CliRuntimeProbe(
+            environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
+        )
         self.runner = runner or CliRuntimeRunner(
             environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
         )
