@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.compatibility import ContractSpec
 
 
-ATTENTION_STATE_CONTRACT = ContractSpec("attention-state", "1.1", ("1.0", "1.1"))
+ATTENTION_STATE_CONTRACT = ContractSpec("attention-state", "1.2", ("1.0", "1.1", "1.2"))
 
 
 class AttentionSeverity(StrEnum):
@@ -85,6 +85,10 @@ class AttentionItemCreate(BaseModel):
     due_at: float | None = None
     expires_at: float | None = None
     deep_link: str | None = Field(default=None, max_length=2000)
+    requesting_agent_profile_id: str | None = Field(default=None, max_length=500)
+    requesting_agent_team_id: str | None = Field(default=None, max_length=500)
+    evidence_ids: tuple[str, ...] = ()
+    diagnostic_refs: tuple[str, ...] = ()
     escalation: EscalationPolicy | None = None
 
     @model_validator(mode="after")
@@ -94,6 +98,12 @@ class AttentionItemCreate(BaseModel):
         )
         self.recipient_team_ids = tuple(
             sorted({item.strip() for item in self.recipient_team_ids if item.strip()})
+        )
+        self.evidence_ids = tuple(
+            dict.fromkeys(item.strip() for item in self.evidence_ids if item.strip())
+        )
+        self.diagnostic_refs = tuple(
+            dict.fromkeys(item.strip() for item in self.diagnostic_refs if item.strip())
         )
         return self
 
@@ -116,6 +126,10 @@ class AttentionItem(BaseModel):
     due_at: float | None = None
     expires_at: float | None = None
     deep_link: str | None = None
+    requesting_agent_profile_id: str | None = None
+    requesting_agent_team_id: str | None = None
+    evidence_ids: tuple[str, ...] = ()
+    diagnostic_refs: tuple[str, ...] = ()
     escalation: EscalationPolicy | None = None
     escalation_schedule_id: str | None = None
     status: AttentionStatus = AttentionStatus.OPEN
@@ -156,6 +170,10 @@ class AttentionItem(BaseModel):
             due_at=payload.due_at,
             expires_at=payload.expires_at,
             deep_link=payload.deep_link,
+            requesting_agent_profile_id=payload.requesting_agent_profile_id,
+            requesting_agent_team_id=payload.requesting_agent_team_id,
+            evidence_ids=payload.evidence_ids,
+            diagnostic_refs=payload.diagnostic_refs,
             escalation=payload.escalation,
             created_at=timestamp,
             created_by=actor_id,
