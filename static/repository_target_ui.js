@@ -1,4 +1,25 @@
 const writableSelections = new Map();
+const WRITABLE_SELECTIONS_KEY = "codex-web:writable-repository-selections:v1";
+
+function persistedWritableSelections() {
+  try {
+    const value = JSON.parse(localStorage.getItem(WRITABLE_SELECTIONS_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistWritableIds(projectId, ids) {
+  if (!projectId) return;
+  try {
+    const selections = persistedWritableSelections();
+    selections[projectId] = ids;
+    localStorage.setItem(WRITABLE_SELECTIONS_KEY, JSON.stringify(selections));
+  } catch {
+    // Browser storage is optional; in-memory selection remains authoritative for this page.
+  }
+}
 
 function storedWritableIds(project, settings = {}) {
   const explicit = Array.isArray(settings.writableRepositoryResourceIds)
@@ -6,9 +27,18 @@ function storedWritableIds(project, settings = {}) {
     : [];
   const key = project?.id || "";
   if (explicit.length) {
-    writableSelections.set(key, Array.from(new Set(explicit)));
+    const normalized = Array.from(new Set(explicit));
+    writableSelections.set(key, normalized);
+    persistWritableIds(key, normalized);
+    return normalized;
   }
-  return explicit.length ? Array.from(new Set(explicit)) : (writableSelections.get(key) || []);
+  if (writableSelections.has(key)) return writableSelections.get(key) || [];
+  const persisted = persistedWritableSelections()[key];
+  const normalized = Array.isArray(persisted)
+    ? Array.from(new Set(persisted.filter(Boolean)))
+    : [];
+  writableSelections.set(key, normalized);
+  return normalized;
 }
 
 export function selectedWritableRepositoryIds({ project, settings = {} } = {}) {
@@ -179,7 +209,9 @@ export function renderControls({
     .join("");
   writable.onchange = () => {
     const ids = Array.from(writable.selectedOptions, (option) => option.value);
-    writableSelections.set(project?.id || "", ids);
+    const projectId = project?.id || "";
+    writableSelections.set(projectId, ids);
+    persistWritableIds(projectId, ids);
     renderControls({
       project,
       resources,
