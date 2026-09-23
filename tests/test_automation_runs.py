@@ -45,6 +45,7 @@ class AutomationRunTests(unittest.TestCase):
         *,
         lifecycle: str = "enabled",
         max_concurrency: int = 1,
+        dedupe_key_template: str | None = None,
     ):
         payload = {
             "name": automation_id,
@@ -53,6 +54,7 @@ class AutomationRunTests(unittest.TestCase):
             "target": {"kind": "agent_profile", "id": "agent-james"},
             "instructions": "Perform the bounded Automation task.",
             "budget": {"max_concurrency": max_concurrency},
+            "dedupe_key_template": dedupe_key_template,
         }
         draft = self.registry.create_draft(
             DefinitionDraftCreate(
@@ -160,6 +162,54 @@ class AutomationRunTests(unittest.TestCase):
             ),
             1,
         )
+
+    def test_definition_dedupe_policy_separates_project_scope(self) -> None:
+        self._publish(
+            "project-dedupe",
+            max_concurrency=3,
+            dedupe_key_template="{project}:{occurrence}",
+        )
+        first = self.service.admit(
+            "project-dedupe",
+            self._manual("manual-a"),
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+            idempotency_key="same-request",
+        )
+        second = self.service.admit(
+            "project-dedupe",
+            self._manual("manual-b"),
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-b",
+            idempotency_key="same-request",
+        )
+        duplicate = self.service.admit(
+            "project-dedupe",
+            self._manual("manual-c"),
+            organization_id="local",
+            workspace_id="default",
+            project_id="project-a",
+            idempotency_key="same-request",
+        )
+
+        self.assertTrue(first.inserted)
+        self.assertTrue(second.inserted)
+        self.assertFalse(duplicate.inserted)
+        self.assertEqual(first.run.id, duplicate.run.id)
+        self.assertNotEqual(first.run.id, second.run.id)
+        self.assertIn(":policy:project-a:same-request", first.run.dedupe_key)
+
+    def test_invalid_dedupe_placeholder_is_rejected_at_definition_time(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "unsupported placeholder",
+        ):
+            self._publish(
+                "invalid-dedupe",
+                dedupe_key_template="{unknown}:{occurrence}",
+            )
 
     def test_paused_automation_records_blocked_trigger_without_launch(self) -> None:
         self._publish("paused", lifecycle="paused")

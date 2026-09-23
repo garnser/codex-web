@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from string import Formatter
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -122,6 +123,30 @@ class AutomationDefinition(BaseModel):
             if key in seen:
                 raise ValueError("automation Definition references must be unique")
             seen.add(key)
+        if self.dedupe_key_template:
+            allowed_fields = {
+                "automation",
+                "project",
+                "occurrence",
+                "event",
+                "schedule",
+                "source",
+            }
+            for _literal, field_name, format_spec, conversion in Formatter().parse(
+                self.dedupe_key_template
+            ):
+                if not field_name:
+                    continue
+                if field_name not in allowed_fields:
+                    raise ValueError(
+                        "automation dedupe_key_template contains unsupported "
+                        f"placeholder: {field_name}"
+                    )
+                if format_spec or conversion:
+                    raise ValueError(
+                        "automation dedupe_key_template placeholders do not "
+                        "support formatting or conversion"
+                    )
         return self
 
 
