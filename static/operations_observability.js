@@ -52,7 +52,7 @@
   function assignmentFailure(item) {
     const failure = item?.failure || null;
     return {
-      reason: failure?.reason || item?.failure_code || null,
+      reason: failure?.reason_code || failure?.reason || item?.failure_code || null,
       summary: failure?.summary || item?.failure_message || null,
       remediation: failure?.remediation_key || null,
       retryability: failure?.retryability || null,
