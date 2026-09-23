@@ -118,6 +118,25 @@ EXECUTION_WORKER_MIGRATIONS.register(
 )
 
 
+def _migrate_1_7_to_1_8(payload: dict[str, Any]) -> dict[str, Any]:
+    workers = []
+    for raw in payload.get("workers", []):
+        item = dict(raw)
+        item.setdefault(
+            "supported_sandbox_profiles",
+            ["read-only", "workspace-write", "danger-full-access"],
+        )
+        workers.append(item)
+    return {
+        **payload,
+        "schema_version": "1.8",
+        "workers": workers,
+    }
+
+
+EXECUTION_WORKER_MIGRATIONS.register("1.7", "1.8", _migrate_1_7_to_1_8)
+
+
 class ExecutionWorkerStore:
     namespace = "execution_workers"
 
