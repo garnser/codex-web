@@ -191,7 +191,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.7")
+        self.assertEqual(state.schema_version, "1.8")
+        migrated_worker = next(
+            item for item in state.workers if item.id == self.worker.id
+        )
+        self.assertEqual(
+            migrated_worker.supported_sandbox_profiles,
+            ("read-only", "workspace-write", "danger-full-access"),
+        )
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
