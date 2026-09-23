@@ -244,6 +244,7 @@ test('Operations overview unifies canonical health, worker lifecycle and failure
   await expect(overview).toContainText('worker_capability_missing');
   await expect(overview).toContainText('restore_worker_capability');
   await expect(overview.locator('button', { hasText: 'Attention' })).toHaveCount(1);
+  await expect(overview.locator('button', { hasText: 'Incidents' })).toHaveCount(1);
   await expect(overview.locator('button', { hasText: 'Evidence' })).toHaveCount(1);
 
   const requestWindow = await page.evaluate(() => (
