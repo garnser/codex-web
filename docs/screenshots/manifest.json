@@ -203,8 +203,7 @@
         "Automation navigation",
         "Operations navigation"
       ],
-      "open_selector": ".product-workspaces-launch",
-      "baseline_pending": true
+      "open_selector": ".product-workspaces-launch"
     },
     {
       "name": "home-overview",
@@ -221,8 +220,7 @@
         "active work",
         "Attention",
         "automation summary"
-      ],
-      "baseline_pending": true
+      ]
     },
     {
       "name": "agent-team-skill",
@@ -237,8 +235,7 @@
         "Agent identity",
         "Team membership",
         "Skill provenance"
-      ],
-      "baseline_pending": true
+      ]
     },
     {
       "name": "attention-inbox",
@@ -255,8 +252,7 @@
         "source links",
         "human actions"
       ],
-      "open_selector": "[data-attention-launch]",
-      "baseline_pending": true
+      "open_selector": "[data-attention-launch]"
     },
     {
       "name": "runtime-operations",
@@ -272,8 +268,7 @@
         "runtime enrollment",
         "operator assurance",
         "capability scope"
-      ],
-      "baseline_pending": true
+      ]
     },
     {
       "name": "workspace-state-matrix",
@@ -292,8 +287,7 @@
         "degraded",
         "error",
         "blocked"
-      ],
-      "baseline_pending": true
+      ]
     }
   ],
   "forbidden_markers": [
