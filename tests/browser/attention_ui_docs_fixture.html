@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Attention Inbox documentation fixture</title></head>
+<body>
+  <main><header class="topbar"><div class="controls"></div></header></main>
+  <script>
+    const items = Array.from({ length: 8 }, (_, index) => ({
+      id: `attention-${index}`,
+      organization_id: "local", workspace_id: "default",
+      type: index % 2 ? "approval.required" : "runtime.remediation",
+      severity: index === 0 ? "critical" : "high",
+      source: { object_type: "work_item", object_id: `work-${index}`, event_id: null },
+      reason: index === 0 ? "Runtime remediation required" : `Human action required ${index}`,
+      dedupe_key: `dedupe-${index}`,
+      owner_identity_id: null, recipient_identity_ids: [], recipient_team_ids: [],
+      due_at: null, expires_at: null, deep_link: `/?work_item=work-${index}`,
+      escalation: null, escalation_schedule_id: null, status: "open",
+      acknowledged_by_identity_id: null, acknowledged_at: null, snoozed_until: null,
+      resolved_by_identity_id: null, resolved_at: null, resolution_reason: null,
+      escalation_count: 0, revision: 1, created_at: 1, created_by: "fixture",
+      updated_at: 1, updated_by: "fixture",
+    }));
+    window.fetch = async (input) => {
+      const url = new URL(typeof input === "string" ? input : input.url, window.location.origin);
+      if (url.pathname === "/api/attention") {
+        const limit = Number(url.searchParams.get("limit") || 25);
+        return new Response(JSON.stringify({
+          attention_items: items.slice(0, limit),
+          next_cursor: null,
+          has_more: false,
+          total: items.length,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ detail: "fixture route not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    };
+  </script>
+  <script type="module" src="/static/attention_ui.js"></script>
+</body>
+</html>
