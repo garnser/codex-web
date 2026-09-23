@@ -26,6 +26,7 @@ from codex_web.api.authority import build_authority_router
 from codex_web.api.autonomy import build_autonomy_router
 from codex_web.api.autonomy_control_center import build_autonomy_control_center_router
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
+from codex_web.api.automations import build_automations_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.conversation_channels import build_conversation_channels_router
@@ -176,6 +177,15 @@ from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_control_center import AutonomyControlCenterService
 from codex_web.services.autonomy_policy import AutonomyPolicyService
 from codex_web.services.autonomy_audit import AutonomyAuditService
+from codex_web.services.automation_definitions import (
+    AutomationEventTriggerService,
+    AutomationScheduleMaterializer,
+    install_automation_definitions,
+)
+from codex_web.services.automation_runs import (
+    AutomationRunService,
+    AutomationTriggerAdmissionBridge,
+)
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -405,6 +415,7 @@ from codex_web.storage.approval_requests import ApprovalRequestStore
 from codex_web.storage.attention import AttentionStore
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
+from codex_web.storage.automation_runs import AutomationRunStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.auxiliary_state import install_auxiliary_state
@@ -695,6 +706,44 @@ definition_registry_service = DefinitionRegistryService(
 )
 skill_service = SkillService(definition_registry_service)
 app.state.skill_service = skill_service
+
+automation_definition_service = install_automation_definitions(
+    definition_registry_service
+)
+automation_event_trigger_service = AutomationEventTriggerService(
+    definition_registry_service,
+    canonical_event_bus,
+)
+automation_schedule_materializer = AutomationScheduleMaterializer(
+    automation_definition_service,
+    scheduler_service,
+)
+automation_run_store = AutomationRunStore(state_store)
+automation_run_service = AutomationRunService(
+    automation_run_store,
+    automation_definition_service,
+)
+automation_trigger_admission_bridge = AutomationTriggerAdmissionBridge(
+    automation_run_service,
+    automation_event_trigger_service,
+    canonical_event_bus,
+)
+automation_trigger_unsubscribe = automation_trigger_admission_bridge.install()
+app.state.automation_definition_service = automation_definition_service
+app.state.automation_event_trigger_service = automation_event_trigger_service
+app.state.automation_schedule_materializer = automation_schedule_materializer
+app.state.automation_run_store = automation_run_store
+app.state.automation_run_service = automation_run_service
+app.state.automation_trigger_admission_bridge = automation_trigger_admission_bridge
+app.state.automation_trigger_unsubscribe = automation_trigger_unsubscribe
+app.include_router(
+    build_automations_router(
+        automation_definition_service,
+        automation_run_service,
+        automation_trigger_admission_bridge,
+        automation_schedule_materializer,
+    )
+)
 execution_role_definition_service = install_execution_role_definitions(
     definition_registry_service
 )
