@@ -191,6 +191,35 @@ class AutomationRunService:
             )
         )
 
+    def block(
+        self,
+        run_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        code: str,
+        reason: str,
+    ) -> AutomationRun:
+        current = self.store.get(
+            run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if current.status != AutomationRunStatus.ADMITTED:
+            raise ValueError("only admitted Automation runs can be blocked")
+        now = float(self.clock())
+        return self.store.replace(
+            current.model_copy(
+                update={
+                    "status": AutomationRunStatus.BLOCKED,
+                    "block_code": str(code or "automation_launch_blocked")[:200],
+                    "block_reason": str(reason or "Automation launch blocked")[:2000],
+                    "updated_at": now,
+                    "completed_at": now,
+                }
+            )
+        )
+
     def complete(
         self,
         run_id: str,
