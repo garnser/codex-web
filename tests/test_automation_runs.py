@@ -149,6 +149,7 @@ class AutomationRunTests(unittest.TestCase):
 
         self.assertTrue(first.inserted)
         self.assertFalse(duplicate.inserted)
+        self.assertFalse(duplicate.launch_allowed)
         self.assertEqual(first.run.id, duplicate.run.id)
         self.assertEqual(
             len(
