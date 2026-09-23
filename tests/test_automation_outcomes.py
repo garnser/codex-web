@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRunStatus
 from codex_web.execution_workers import AssignmentStatus
 from codex_web.identity import (
@@ -35,10 +36,58 @@ class _Store:
         return [self.run]
 
 
+class _Definitions:
+    def __init__(self, *, failure_attention=True, target_kind=AutomationTargetKind.AGENT_PROFILE):
+        self.failure_attention = failure_attention
+        self.target_kind = target_kind
+
+    def resolve_reference(self, reference, **kwargs):
+        return (
+            SimpleNamespace(
+                failure_attention=self.failure_attention,
+                owner_identity_id="automation-owner",
+                target=SimpleNamespace(
+                    kind=self.target_kind,
+                    id=(
+                        "agent-james"
+                        if self.target_kind == AutomationTargetKind.AGENT_PROFILE
+                        else "team-platform"
+                    ),
+                ),
+            ),
+            reference,
+        )
+
+
+class _Attention:
+    def __init__(self):
+        self.upserts = []
+        self.resolutions = []
+
+    async def upsert(self, payload, *, actor_id):
+        self.upserts.append((payload, actor_id))
+        return payload
+
+    async def resolve_by_source(
+        self,
+        dedupe_key,
+        *,
+        organization_id,
+        workspace_id,
+        actor_id,
+        reason,
+    ):
+        self.resolutions.append(
+            (dedupe_key, organization_id, workspace_id, actor_id, reason)
+        )
+        return None
+
+
 class _Runs:
-    def __init__(self, run):
+    def __init__(self, run, *, failure_attention=True):
         self.store = _Store(run)
         self.completed = []
+        self.definitions = _Definitions(failure_attention=failure_attention)
 
     def complete(
         self,
@@ -81,7 +130,7 @@ class _Run(SimpleNamespace):
         return _Run(**values)
 
 
-class AutomationOutcomeReconciliationTests(unittest.TestCase):
+class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.actor = AuthenticationActor(
             identity_id="operator",
@@ -98,6 +147,9 @@ class AutomationOutcomeReconciliationTests(unittest.TestCase):
             id="automation-run-1",
             organization_id="local",
             workspace_id="default",
+            project_id="home",
+            automation_id="automation-a",
+            definition_ref=SimpleNamespace(record_id="definition-1"),
             status=AutomationRunStatus.RUNNING,
             execution_ids=tuple(execution_ids),
             evidence_ids=(),
@@ -204,6 +256,76 @@ class AutomationOutcomeReconciliationTests(unittest.TestCase):
         self.assertEqual(
             result.evidence_ids,
             ("evidence-a", "failure-evidence"),
+        )
+
+    async def test_failed_run_creates_deduped_attention_with_provenance(self) -> None:
+        run = self._run("exec-a")
+        runs = _Runs(run)
+        attention = _Attention()
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(
+                    AssignmentStatus.FAILED,
+                    "failure-evidence",
+                )
+            }),
+            attention=attention,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+        await service.sync_attention(result, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(len(attention.upserts), 1)
+        payload, actor_id = attention.upserts[0]
+        self.assertEqual(payload.type, "automation.failed")
+        self.assertEqual(payload.project_id, "home")
+        self.assertEqual(payload.source.object_id, run.id)
+        self.assertEqual(
+            payload.dedupe_key,
+            "automation-run:automation-run-1:failure",
+        )
+        self.assertEqual(payload.owner_identity_id, "automation-owner")
+        self.assertEqual(payload.requesting_agent_profile_id, "agent-james")
+        self.assertEqual(payload.evidence_ids, ("failure-evidence",))
+        self.assertEqual(payload.diagnostic_refs, ("execution:exec-a",))
+        self.assertEqual(actor_id, self.actor.identity_id)
+
+    async def test_failure_attention_can_be_disabled_by_definition(self) -> None:
+        run = self._run("exec-a")
+        runs = _Runs(run, failure_attention=False)
+        attention = _Attention()
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.FAILED)}),
+            attention=attention,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+        await service.sync_attention(result, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(attention.upserts, [])
+
+    async def test_success_resolves_prior_failure_attention_idempotently(self) -> None:
+        run = self._run("exec-a")
+        runs = _Runs(run)
+        attention = _Attention()
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+            attention=attention,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+        await service.sync_attention(result, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.SUCCEEDED)
+        self.assertEqual(attention.upserts, [])
+        self.assertEqual(
+            attention.resolutions[0][0],
+            "automation-run:automation-run-1:failure",
         )
 
     def test_active_or_not_yet_materialized_assignment_keeps_run_running(self) -> None:

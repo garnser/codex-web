@@ -33,6 +33,7 @@ def build_automation_outcomes_router(
         try:
             actor = require_operator(request)
             run = service.reconcile(run_id, actor=actor)
+            await service.sync_attention(run, actor=actor)
             return {"run": run.model_dump(mode="json")}
         except AutomationRunNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Automation run not found") from exc
