@@ -948,6 +948,7 @@ attention_service = AttentionService(
     attention_store,
     canonical_event_ingestion,
     scheduler=scheduler_service,
+    identity=identity_service,
 )
 app.state.attention_store = attention_store
 app.state.attention_service = attention_service
