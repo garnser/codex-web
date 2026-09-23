@@ -68,7 +68,15 @@ class _Host:
     def _leading_owner_cue_in_action(self, action):
         return None
 
-    def _resource_ids_for_project(self, project_id):
+    def _resource_ids_for_project(
+        self,
+        project_id,
+        alias_value=None,
+        provider=None,
+    ):
+        if alias_value is not None:
+            self.resource_lookup = (project_id, alias_value, provider)
+            return ["resource-repo"]
         return ["resource-repo", "resource-prod"]
 
 
@@ -107,9 +115,23 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(state.current_owner, "carl")
         self.assertEqual(state.current_stage, "implementation_active")
         self.assertEqual(state.priority, "priority::P1")
-        self.assertEqual(state.resource_ids, ["resource-repo", "resource-prod"])
+        self.assertEqual(state.resource_ids, ["resource-repo"])
+        self.assertEqual(
+            self.host.resource_lookup,
+            ("home", "group/project", "gitlab"),
+        )
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
+
+    def test_non_gitlab_projection_retains_project_resource_scope(self) -> None:
+        self.assertEqual(
+            self.projector._project_resource_ids(
+                "home",
+                source_type="jira",
+                project_path="space/project",
+            ),
+            ["resource-repo", "resource-prod"],
+        )
 
     def test_existing_canonical_ref_is_preserved_by_source_identity(self) -> None:
         identity = self.snapshot().identity
@@ -204,6 +226,36 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         )
 
         self.assertEqual(self.host.put_calls, 0)
+
+    def test_stale_snapshot_repairs_repository_routing_metadata(self) -> None:
+        current = self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T20:00:00Z"),
+            project_id="home",
+        )
+        stored = self.host.states[current.ref]
+        stored.resource_ids = []
+        stored.project_path = None
+        self.host.put_calls = 0
+
+        stale = TaskSourceSnapshot(
+            identity=self.snapshot(revision="2026-09-17T19:00:00Z").identity,
+            title="Stale title",
+            source_state="closed",
+            labels=("owner::someone-else", "status::blocked"),
+        )
+        result = self.projector.upsert(
+            self.source,
+            stale,
+            project_id="home",
+        )
+
+        self.assertEqual(result.resource_ids, ["resource-repo"])
+        self.assertEqual(result.project_path, "group/project")
+        self.assertEqual(result.title, "External issue")
+        self.assertEqual(result.current_owner, "carl")
+        self.assertEqual(result.current_stage, "implementation_active")
+        self.assertEqual(self.host.put_calls, 1)
 
     def test_compatibility_fallback_scans_and_bulk_saves_when_indexes_absent(self) -> None:
         self.projector.dependencies = replace(

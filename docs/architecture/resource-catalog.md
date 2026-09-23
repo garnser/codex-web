@@ -78,7 +78,11 @@ Provider aliases and old names may be retained after rename so existing configur
 
 ## Execution contracts
 
-Work Items now carry `resource_ids`. Task-source projection inherits active resource IDs bound to the owning Project.
+Work Items carry `resource_ids`. Task-source projection inherits active resource
+IDs bound to the owning Project. When a provider identity deterministically
+identifies one repository, projection narrows that set through the canonical
+resource alias/provenance catalog instead of granting unrelated sibling
+repositories as execution targets.
 
 Execution contract schema **1.2** adds `target.resource_ids` while retaining the legacy repository string as compatibility context. Canonical resource IDs are deduplicated before dispatch.
 

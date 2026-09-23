@@ -25,7 +25,7 @@ class WorkItemRuntimeDependencies:
     load_states: Callable[[], dict[str, WorkItemState]]
     save_states: Callable[[dict[str, WorkItemState]], None]
     load_projects: Callable[[], list[Any]]
-    resource_ids_for_project: Callable[[str], list[str]]
+    resource_ids_for_project: Callable[..., list[str]]
     leading_owner_cue_in_action: Callable[[str | None], str | None]
     default_validation_owner: str
     default_release_owner: str

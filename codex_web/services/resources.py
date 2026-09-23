@@ -687,6 +687,9 @@ class ResourceCatalogService:
     def resource_ids_for_project(
         self,
         project: Project,
+        *,
+        alias_value: str | None = None,
+        provider: str | None = None,
     ) -> list[str]:
         """Internal projection helper; caller must supply canonical Project scope."""
 
@@ -698,14 +701,48 @@ class ResourceCatalogService:
             and item.organization_id == project.organization_id
             and item.workspace_id == project.workspace_id
         }
-        valid = {
-            item.id
-            for item in state.resources
-            if item.id in ids
-            and item.organization_id == project.organization_id
-            and item.workspace_id == project.workspace_id
-            and item.lifecycle not in {ResourceLifecycle.DISABLED, ResourceLifecycle.DELETED}
-        }
+        normalized_alias = str(alias_value or "").strip().strip("/").casefold()
+        normalized_provider = str(provider or "").strip().casefold()
+        valid = set()
+        for item in state.resources:
+            if (
+                item.id not in ids
+                or item.organization_id != project.organization_id
+                or item.workspace_id != project.workspace_id
+                or item.lifecycle
+                in {ResourceLifecycle.DISABLED, ResourceLifecycle.DELETED}
+            ):
+                continue
+            if normalized_alias:
+                if item.resource_type != ResourceType.REPOSITORY:
+                    continue
+                alias_matches = any(
+                    alias.value.strip().strip("/").casefold()
+                    == normalized_alias
+                    and (
+                        not normalized_provider
+                        or (alias.provider or "").strip().casefold()
+                        == normalized_provider
+                    )
+                    for alias in item.aliases
+                )
+                provenance = item.provenance
+                provenance_matches = bool(
+                    provenance
+                    and str(provenance.external_id or "")
+                    .strip()
+                    .strip("/")
+                    .casefold()
+                    == normalized_alias
+                    and (
+                        not normalized_provider
+                        or str(provenance.provider or "").strip().casefold()
+                        == normalized_provider
+                    )
+                )
+                if not alias_matches and not provenance_matches:
+                    continue
+            valid.add(item.id)
         return sorted(valid)
 
     def project_resources(

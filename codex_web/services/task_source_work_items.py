@@ -112,8 +112,26 @@ class TaskSourceWorkItemProjector:
                 )
         return ("local", "default")
 
-    def _project_resource_ids(self, project_id: str) -> list[str]:
+    def _project_resource_ids(
+        self,
+        project_id: str,
+        *,
+        source_type: str,
+        project_path: str | None,
+    ) -> list[str]:
         try:
+            if source_type.strip().casefold() == "gitlab" and project_path:
+                return list(
+                    dict.fromkeys(
+                        str(item)
+                        for item in self.dependencies.resource_ids_for_project(
+                            project_id,
+                            alias_value=project_path,
+                            provider="gitlab",
+                        )
+                        if str(item).strip()
+                    )
+                )
             return list(
                 dict.fromkeys(
                     str(item)
@@ -125,6 +143,21 @@ class TaskSourceWorkItemProjector:
             )
         except Exception:
             return []
+
+    def _persist(
+        self,
+        state: WorkItemState,
+        states: dict[str, WorkItemState] | None,
+    ) -> None:
+        if self.dependencies.save_state is not None:
+            self._metric("keyed_saves")
+            self.dependencies.save_state(state)
+            return
+        self._metric("compatibility_bulk_saves")
+        if states is None:
+            states = self.dependencies.load_states()
+        states[state.ref] = state
+        self.dependencies.save_states(states)
 
     def upsert(
         self,
@@ -171,12 +204,16 @@ class TaskSourceWorkItemProjector:
 
         now = time.time()
         organization_id, workspace_id = self._project_tenant(project_id)
-        resource_ids = self._project_resource_ids(project_id)
         source_timestamp = self._revision_timestamp(snapshot)
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
         priority = self._first_prefixed(tuple(labels), "priority::")
         project_path = external_ref.split("#", 1)[0] if "#" in external_ref else None
+        resource_ids = self._project_resource_ids(
+            project_id,
+            source_type=snapshot.identity.source_type,
+            project_path=project_path,
+        )
         projected_stage = projection.stage or (state.current_stage if state is not None else "implementation_active")
         projected_owner = None if projected_stage == "closed" else projection.owner
         projected_status_label = None if projected_stage == "closed" else status_label
@@ -246,6 +283,18 @@ class TaskSourceWorkItemProjector:
             previous_status_label = state.status_label
             previous_priority = state.priority
             was_closed = bool(state.closed_at)
+            routing_metadata_changed = (
+                state.organization_id != organization_id
+                or state.workspace_id != workspace_id
+                or state.project_id != project_id
+                or state.resource_ids != resource_ids
+                or (project_path and state.project_path != project_path)
+            )
+            state.organization_id = organization_id
+            state.workspace_id = workspace_id
+            state.project_id = project_id
+            state.resource_ids = resource_ids
+            state.project_path = project_path or state.project_path
 
             if (
                 source_timestamp is not None
@@ -264,6 +313,9 @@ class TaskSourceWorkItemProjector:
                         },
                     )
                 )
+                if routing_metadata_changed:
+                    state.updated_at = now
+                    self._persist(state, states)
                 return state
 
             if self.state_machine._preserve_accepted_handoff_recipient(
@@ -283,13 +335,11 @@ class TaskSourceWorkItemProjector:
                         },
                     )
                 )
+                if routing_metadata_changed:
+                    state.updated_at = now
+                    self._persist(state, states)
                 return state
 
-            state.organization_id = organization_id
-            state.workspace_id = workspace_id
-            state.project_id = project_id
-            state.resource_ids = resource_ids
-            state.project_path = project_path or state.project_path
             state.source_identity = snapshot.identity
             state.title = snapshot.title or state.title
             state.url = snapshot.identity.external_url or state.url
@@ -344,13 +394,5 @@ class TaskSourceWorkItemProjector:
 
         state = self.state_machine._ensure_work_item_lane_defaults(state)
         state.artifact_state = self.state_machine._infer_artifact_state_from_state(state)
-        if self.dependencies.save_state is not None:
-            self._metric("keyed_saves")
-            self.dependencies.save_state(state)
-        else:
-            self._metric("compatibility_bulk_saves")
-            if states is None:
-                states = self.dependencies.load_states()
-            states[ref] = state
-            self.dependencies.save_states(states)
+        self._persist(state, states)
         return state

@@ -252,6 +252,81 @@ class ResourceCatalogTests(unittest.TestCase):
             {ResourceType.REPOSITORY, ResourceType.ENVIRONMENT},
         )
 
+    def test_project_resource_ids_can_filter_repository_provider_identity(self) -> None:
+        alias_repository = self.service.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Application",
+                aliases=[
+                    ResourceAlias(
+                        namespace="gitlab",
+                        provider="gitlab",
+                        value="group/application",
+                    )
+                ],
+            ),
+            actor=self.actor,
+        )
+        provenance_repository = self.service.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="Platform",
+                provenance=ResourceProvenance(
+                    provider="gitlab",
+                    external_id="group/platform",
+                ),
+            ),
+            actor=self.actor,
+        )
+        environment = self.service.create(
+            ResourceCreate(
+                resource_type=ResourceType.ENVIRONMENT,
+                name="Production",
+            ),
+            actor=self.actor,
+        )
+        for resource in (
+            alias_repository,
+            provenance_repository,
+            environment,
+        ):
+            self.service.bind_project(
+                project=self.project,
+                resource_id=resource.id,
+                actor=self.actor,
+            )
+
+        self.assertEqual(
+            self.service.resource_ids_for_project(
+                self.project,
+                alias_value="/GROUP/APPLICATION/",
+                provider="GitLab",
+            ),
+            [alias_repository.id],
+        )
+        self.assertEqual(
+            self.service.resource_ids_for_project(
+                self.project,
+                alias_value="group/platform",
+                provider="gitlab",
+            ),
+            [provenance_repository.id],
+        )
+
+        self.service.update(
+            alias_repository.id,
+            ResourceUpdate(lifecycle=ResourceLifecycle.DISABLED),
+            actor=self.actor,
+        )
+        self.assertEqual(
+            self.service.resource_ids_for_project(
+                self.project,
+                alias_value="group/application",
+                provider="gitlab",
+            ),
+            [],
+        )
+
     def test_cross_tenant_lookup_and_binding_fail_closed(self) -> None:
         resource = self.service.create(
             ResourceCreate(resource_type=ResourceType.DATABASE, name="Primary"),
