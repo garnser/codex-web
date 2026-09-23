@@ -11,7 +11,7 @@ const baselines = JSON.parse(
 );
 
 async function visualSignature(page, capture) {
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.setViewportSize(capture.viewport || { width: 1440, height: 1000 });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.stack || error.message));
   await page.goto(`http://127.0.0.1:18766/${capture.fixture}`, {

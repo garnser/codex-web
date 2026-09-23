@@ -167,6 +167,25 @@
         "correlation identity",
         "authorized retained retry"
       ]
+    },
+    {
+      "name": "mobile-navigation",
+      "fixture": "tests/browser/mobile_responsive_fixture.html",
+      "title": "Mobile navigation and responsive operator shell",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "landmarks": [
+        "Codex Web",
+        "Responsive operator workflow",
+        "Open detail dialog"
+      ],
+      "annotations": [
+        "mobile navigation",
+        "responsive operator shell",
+        "touch-safe controls"
+      ]
     }
   ],
   "forbidden_markers": [

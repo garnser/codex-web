@@ -65,6 +65,7 @@ try {
   });
 
   for (const capture of manifest.captures) {
+    await page.setViewportSize(capture.viewport || { width: 1440, height: 1000 });
     currentCapture = capture.name;
     pageErrors.length = 0;
     const url = `${base}/${capture.fixture}`;

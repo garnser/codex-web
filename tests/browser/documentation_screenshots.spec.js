@@ -17,6 +17,7 @@ test("documentation screenshot manifest uses sanitized reachable fixtures", asyn
     const fixturePath = path.join(root, capture.fixture);
     expect(fs.existsSync(fixturePath), `missing fixture: ${capture.fixture}`).toBeTruthy();
 
+    await page.setViewportSize(capture.viewport || { width: 1440, height: 1000 });
     await page.goto(`http://127.0.0.1:18766/${capture.fixture}`, {
       waitUntil: "networkidle",
     });
