@@ -55,9 +55,19 @@ try {
     viewport: { width: 1440, height: 1000 },
     deviceScaleFactor: 1,
   });
+  let currentCapture = null;
+  const pageErrors = [];
+  page.on("pageerror", (error) => {
+    pageErrors.push({
+      capture: currentCapture,
+      message: error?.stack || error?.message || String(error),
+    });
+  });
 
   for (const capture of manifest.captures) {
     await page.setViewportSize(capture.viewport || { width: 1440, height: 1000 });
+    currentCapture = capture.name;
+    pageErrors.length = 0;
     const url = `${base}/${capture.fixture}`;
     await page.goto(url, { waitUntil: "networkidle" });
     if (capture.open_selector) {
@@ -65,6 +75,12 @@ try {
       await trigger.waitFor({ state: "visible" });
       await trigger.click();
       await page.waitForTimeout(50);
+    }
+    if (pageErrors.length) {
+      throw new Error(
+        `${capture.name}: uncaught page exception(s):\n`
+        + pageErrors.map((item) => item.message).join("\n---\n"),
+      );
     }
     const text = await page.locator("body").innerText();
     for (const marker of manifest.forbidden_markers || []) {
