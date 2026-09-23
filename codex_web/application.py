@@ -1739,9 +1739,17 @@ app.include_router(
     )
 )
 
-def _resource_ids_for_project(project_id: str) -> list[str]:
+def _resource_ids_for_project(
+    project_id: str,
+    alias_value: str | None = None,
+    provider: str | None = None,
+) -> list[str]:
     project = project_service.get(project_id)
-    return resource_catalog_service.resource_ids_for_project(project)
+    return resource_catalog_service.resource_ids_for_project(
+        project,
+        alias_value=alias_value,
+        provider=provider,
+    )
 
 core._resource_ids_for_project = _resource_ids_for_project
 approval_compatibility_actor = identity_service.local_trusted_actor()
