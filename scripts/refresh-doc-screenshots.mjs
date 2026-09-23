@@ -57,6 +57,7 @@ try {
   });
 
   for (const capture of manifest.captures) {
+    await page.setViewportSize(capture.viewport || { width: 1440, height: 1000 });
     const url = `${base}/${capture.fixture}`;
     await page.goto(url, { waitUntil: "networkidle" });
     if (capture.open_selector) {
