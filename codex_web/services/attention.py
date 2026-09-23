@@ -266,10 +266,16 @@ class AttentionService:
         self,
         dedupe_key: str,
         *,
+        organization_id: str,
+        workspace_id: str,
         actor_id: str,
         reason: str,
     ) -> AttentionItem | None:
-        existing = self.store.get_by_dedupe_key(dedupe_key)
+        existing = self.store.get_by_dedupe_key(
+            dedupe_key,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
         if existing is None or existing.status == AttentionStatus.RESOLVED:
             return existing
         updated = self.store.transition(
@@ -476,6 +482,8 @@ class AttentionService:
         if status in {"approved", "consumed", "cancelled", "superseded"}:
             await self.resolve_by_source(
                 dedupe_key,
+                organization_id=event.tenant_id,
+                workspace_id=event.workspace_id,
                 actor_id="approval-bridge",
                 reason=f"Approval transitioned to {status}",
             )
