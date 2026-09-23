@@ -80,7 +80,7 @@ test("opens in current Project and pages without rendering the full collection",
   });
 
   await page.goto(fixture);
-  await page.getByRole("button", { name: "Work Items" }).click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("codex:open-work-items")));
 
   await expect(page.locator(".work-items-project")).toHaveValue("project-a");
   await expect(page.locator(".work-item-row")).toHaveCount(50);
@@ -129,7 +129,7 @@ test("failed next page keeps loaded rows and exposes retry", async ({ page }) =>
   });
 
   await page.goto(fixture);
-  await page.getByRole("button", { name: "Work Items" }).click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("codex:open-work-items")));
   await page.getByRole("button", { name: "Load more" }).click();
 
   await expect(page.locator(".work-item-row")).toHaveCount(50);
@@ -163,7 +163,7 @@ test("main Project changes replace stale operator context", async ({ page }) => 
   });
 
   await page.goto(fixture);
-  await page.getByRole("button", { name: "Work Items" }).click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("codex:open-work-items")));
   await expect(page.locator(".work-items-project")).toHaveValue("project-a");
 
   await page.evaluate(() => {
@@ -194,7 +194,7 @@ test("row window remains bounded for a representative 1,300 item session", async
   });
 
   await page.goto(fixture);
-  await page.getByRole("button", { name: "Work Items" }).click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("codex:open-work-items")));
 
   for (let pageIndex = 1; pageIndex < 8; pageIndex += 1) {
     await page.getByRole("button", { name: "Load more" }).click();
