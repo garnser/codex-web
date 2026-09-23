@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI, HTTPException
 
-from codex_web.runtime.codex import CodexRuntime, install_codex_runtime, request_timeout
+from codex_web.runtime.codex import (
+    TRUSTED_LOCAL_CHILD_HOME,
+    CodexRuntime,
+    install_codex_runtime,
+    request_timeout,
+    trusted_local_codex_command,
+)
 
 
 class _Hub:
@@ -57,6 +63,44 @@ class _Host:
 
     async def _record_bot_outbound(self, message: dict) -> None:
         self.outbound.append(message)
+
+
+class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
+    def test_default_command_filters_repository_child_credentials(self) -> None:
+        command = trusted_local_codex_command()
+        joined = " ".join(command)
+
+        self.assertEqual(command[0], "codex")
+        self.assertEqual(command[-1], "app-server")
+        self.assertIn('shell_environment_policy.inherit="none"', joined)
+        self.assertIn(
+            "shell_environment_policy.ignore_default_excludes=false",
+            joined,
+        )
+        self.assertIn(
+            'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
+            joined,
+        )
+        self.assertIn(
+            'shell_environment_policy.filters.CODEX_API_KEY="exclude"',
+            joined,
+        )
+        self.assertIn(
+            'shell_environment_policy.filters.OPENAI_API_KEY="exclude"',
+            joined,
+        )
+        self.assertIn("allow_login_shell=false", joined)
+        self.assertIn(f'HOME="{TRUSTED_LOCAL_CHILD_HOME}"', joined)
+        self.assertNotIn("auth.json", joined)
+
+    def test_runtime_uses_hardened_command_by_default(self) -> None:
+        runtime = CodexRuntime(_Host())
+        self.assertEqual(runtime.command, trusted_local_codex_command())
+
+    def test_explicit_command_is_preserved(self) -> None:
+        command = ("custom-codex", "app-server")
+        runtime = CodexRuntime(_Host(), command=command)
+        self.assertEqual(runtime.command, command)
 
 
 class CodexRuntimeInstallationTests(unittest.TestCase):
