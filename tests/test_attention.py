@@ -19,6 +19,7 @@ from codex_web.identity import (
 )
 from codex_web.services.attention import (
     AttentionService,
+    AttentionStateError,
     install_attention_event_bridges,
 )
 from codex_web.services.canonical_events import (
@@ -242,6 +243,25 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         items = self.store.list()
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].status, AttentionStatus.OPEN)
+
+    async def test_approval_attention_cannot_be_resolved_locally(self) -> None:
+        await self._approval_event("pending", key="pending-source-owned")
+        item = self.store.list()[0]
+
+        with self.assertRaisesRegex(
+            AttentionStateError,
+            "canonical ApprovalRequest",
+        ):
+            await self.service.resolve(
+                item.id,
+                actor=self.actor,
+                reason="dismiss locally",
+            )
+
+        self.assertEqual(
+            self.store.get(item.id).status,
+            AttentionStatus.OPEN,
+        )
 
     async def test_acknowledge_and_resolve_are_attributable(self) -> None:
         await self._approval_event("pending", key="pending-a")
