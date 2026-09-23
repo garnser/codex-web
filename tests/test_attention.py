@@ -240,6 +240,8 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         legacy_item = item.model_dump(mode="json")
         legacy_item.pop("project_id", None)
+        self.store.store.delete(self.store.record_namespace)
+        self.store.store.delete(self.store.index_namespace)
         self.store.store.put(
             self.store.namespace,
             {
@@ -251,6 +253,102 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         migrated = self.store.load()
         self.assertEqual(migrated.schema_version, "1.1")
         self.assertIsNone(migrated.items[item.id].project_id)
+        self.assertTrue(
+            self.store.store.record_collection_exists(
+                self.store.record_namespace
+            )
+        )
+        self.assertFalse(self.store.store.contains(self.store.namespace))
+
+    async def test_list_page_uses_index_without_full_list_scan(self) -> None:
+        for index in range(3):
+            await self.service.upsert(
+                AttentionItemCreate(
+                    organization_id="local",
+                    workspace_id="default",
+                    type="runtime.remediation",
+                    source=AttentionSource(
+                        object_type="runtime",
+                        object_id=f"indexed-runtime-{index}",
+                    ),
+                    reason=f"Indexed remediation {index}",
+                    dedupe_key=f"indexed-remediation-{index}",
+                ),
+                actor_id="test",
+            )
+
+        original_list = self.store.list
+        self.store.list = lambda: (_ for _ in ()).throw(
+            AssertionError("full Attention list scan is forbidden")
+        )
+        try:
+            page, cursor, total = self.service.list_page(
+                self.actor,
+                limit=2,
+                status="active",
+            )
+        finally:
+            self.store.list = original_list
+
+        self.assertEqual(len(page), 2)
+        self.assertEqual(total, 3)
+        self.assertEqual(cursor, 2)
+
+    async def test_missing_query_index_rebuilds_from_canonical_records(self) -> None:
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                project_id="project-index",
+                type="runtime.remediation",
+                source=AttentionSource(
+                    object_type="runtime",
+                    object_id="runtime-index-rebuild",
+                ),
+                reason="Rebuild the query index",
+                dedupe_key="index-rebuild",
+            ),
+            actor_id="test",
+        )
+        self.store.store.delete(self.store.index_namespace)
+
+        page, _, total = self.service.list_page(
+            self.actor,
+            limit=10,
+            project_id="project-index",
+        )
+
+        self.assertEqual(total, 1)
+        self.assertEqual(page[0].id, item.id)
+        index = self.store.store.get(self.store.index_namespace)
+        self.assertEqual(index.get("version"), self.store.index_version)
+
+    async def test_dedupe_key_is_scoped_by_tenant_workspace(self) -> None:
+        first = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-local"),
+                reason="Local remediation",
+                dedupe_key="shared-provider-failure",
+            ),
+            actor_id="test",
+        )
+        second = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="other-org",
+                workspace_id="other-workspace",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-other"),
+                reason="Other tenant remediation",
+                dedupe_key="shared-provider-failure",
+            ),
+            actor_id="test",
+        )
+
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(len(self.store.list()), 2)
 
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())
