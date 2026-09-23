@@ -101,7 +101,11 @@ export function targetState({
     writableControl?.selectedOptions || [],
     (option) => option.value,
   );
-  const writableIds = controlIds.length ? controlIds : storedIds;
+  const writableIds = controlIds.length
+    ? controlIds
+    : (storedIds.length || policy !== "coordinated"
+      ? storedIds
+      : repositories.map((item) => item.id));
   const byId = new Map(repositories.map((item) => [item.id, item]));
   const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
 
@@ -145,10 +149,10 @@ export function targetState({
       status: "selected",
       blocked: false,
       code: null,
-      message: `${writableIds.length} writable repositories · ${labels.join(", ")} · explicit coordinated selection`,
+      message: `${writableIds.length} writable repositories · ${labels.join(", ")} · ${policy === "coordinated" ? "Project coordinated policy" : "explicit coordinated selection"}`,
       id: selectedId || writableIds[0],
       repositoryIds: writableIds,
-      provenance: "explicit coordinated selection",
+      provenance: policy === "coordinated" ? "Project coordinated policy" : "explicit coordinated selection",
     };
   }
 
@@ -223,7 +227,12 @@ export function renderControls({
   ].join("");
   mutable.value = settings.repositoryResourceId || "";
 
-  const selectedWritable = new Set(storedWritableIds(project, settings));
+  const storedWritable = storedWritableIds(project, settings);
+  const selectedWritable = new Set(
+    storedWritable.length || policy !== "coordinated"
+      ? storedWritable
+      : repositories.map((item) => item.id),
+  );
   writable.innerHTML = repositories
     .map((item) => (
       `<option value="${escapeHtml(item.id)}" ${selectedWritable.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`

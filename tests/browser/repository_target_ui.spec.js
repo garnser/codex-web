@@ -254,7 +254,7 @@ test("thread-bound repository stays visible and contradictory selection is block
 });
 
 
-test("coordinated writable selection submits fixed multi-repository scope", async ({ page }) => {
+test("Project coordinated policy submits all repositories without per-turn selection", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error));
   await mirrorProductionStaticMount(page);
@@ -270,7 +270,7 @@ test("coordinated writable selection submits fixed multi-repository scope", asyn
     id: "home",
     name: "Home",
     path: "/workspace/home",
-    repository_selection_policy: "explicit",
+    repository_selection_policy: "coordinated",
   };
 
   await page.route("**/api/**", async (route) => {
@@ -295,8 +295,8 @@ test("coordinated writable selection submits fixed multi-repository scope", asyn
             id: "repository:execution-target",
             domain: "repository",
             status: "ready",
-            code: "repository_target_required_per_turn",
-            message: "Repository target is selected per turn.",
+            code: "repository_coordinated_scope_ready",
+            message: "Project repository set is selected by policy.",
           }],
         }),
       });
@@ -338,7 +338,7 @@ test("coordinated writable selection submits fixed multi-repository scope", asyn
       return;
     }
     if (path === "/api/threads" && request.method() === "POST") {
-      expect(url.searchParams.get("repository_resource_id")).toBe("repo-app");
+      expect(url.searchParams.get("repository_resource_id")).toBeNull();
       threadCreated = true;
       await route.fulfill({
         status: 200,
@@ -359,28 +359,15 @@ test("coordinated writable selection submits fixed multi-repository scope", asyn
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
 
-  await page.locator("#repository-target").selectOption("repo-app");
-  await page.locator("#repository-write-targets").selectOption(["repo-platform"]);
-  await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
-
-  await page.locator("#prompt").fill("Do coordinated work");
-  await page.locator("#prompt").press("Enter");
-  expect(turnCalls).toBe(0);
-
-  await page.locator("#repository-write-targets").selectOption(["repo-app", "repo-platform"]);
-  await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
-  await expect(page.locator("#repository-target-status")).toContainText("explicit coordinated selection");
-  await expect(page.locator("#repository-read-context option")).toHaveCount(0);
-
-  await page.reload();
-  await expect(page.locator("#repository-target")).toHaveValue("repo-app");
   await expect(page.locator("#repository-write-targets")).toHaveValues(["repo-app", "repo-platform"]);
   await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
+  await expect(page.locator("#repository-target-status")).toContainText("Project coordinated policy");
+  await expect(page.locator("#repository-read-context option")).toHaveCount(0);
   await page.locator("#prompt").fill("Do coordinated work");
 
   await page.locator("#prompt").press("Enter");
   await expect.poll(() => turnCalls).toBe(1);
-  expect(turnPayload.repository_resource_id).toBe("repo-app");
+  expect(turnPayload.repository_resource_id).toBeNull();
   expect(turnPayload.writable_repository_resource_ids).toEqual(["repo-app", "repo-platform"]);
   expect(turnPayload.read_only_repository_resource_ids).toEqual([]);
   expect(pageErrors).toEqual([]);

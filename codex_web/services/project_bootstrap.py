@@ -441,9 +441,10 @@ class ProjectBootstrapService:
             selection_ready = len(manifest.repositories) == 1
         elif selection == "default":
             selection_ready = len(default_ids) == 1
-        elif selection == "explicit":
-            # Multi-repository explicit mode is deterministic because callers
-            # must name an execution target; bootstrap never guesses a default.
+        elif selection in {"explicit", "coordinated"}:
+            # Multi-repository modes are deterministic because callers either
+            # name a target or opt into the complete Project repository set;
+            # bootstrap never guesses a default.
             selection_ready = bool(manifest.repositories)
         checks.append(
             self._check(
@@ -825,8 +826,9 @@ class ProjectBootstrapService:
             )
 
         desired_repository_policy = (
-            "explicit"
-            if manifest.execution.repository_selection == "explicit"
+            manifest.execution.repository_selection
+            if manifest.execution.repository_selection
+            in {"explicit", "coordinated"}
             else "deterministic"
         )
         operations.append(
@@ -1559,8 +1561,9 @@ class ProjectBootstrapService:
                     "name": desired.project.name,
                     "sandbox": desired.execution.sandbox,
                     "repository_selection_policy": (
-                        "explicit"
-                        if desired.execution.repository_selection == "explicit"
+                        desired.execution.repository_selection
+                        if desired.execution.repository_selection
+                        in {"explicit", "coordinated"}
                         else "deterministic"
                     ),
                     "authoritative_task_source": source,

@@ -50,7 +50,7 @@ The manifest accepts references only. Fields shaped like raw tokens, passwords, 
 
 `CODEX_WEB_WORKSPACE_ROOT` must be configured for bootstrap manifest path validation. Every declared repository must resolve to an existing Git repository beneath that approved root. Path traversal and symlink escapes are rejected.
 
-Repository IDs must be unique. At most one repository may be marked `default`. `repositorySelection: single` requires exactly one repository; `repositorySelection: default` requires exactly one default repository. Multi-repository `explicit` manifests remain valid without choosing a repository implicitly.
+Repository IDs must be unique. At most one repository may be marked `default`. `repositorySelection: single` requires exactly one repository; `repositorySelection: default` requires exactly one default repository. Multi-repository `explicit` manifests remain valid without choosing a repository implicitly. Use `repositorySelection: coordinated` to opt the Project into its complete active bound repository set as the writable scope for every repository execution.
 
 ## Scaffold a starter manifest
 

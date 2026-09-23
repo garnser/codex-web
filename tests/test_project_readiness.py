@@ -531,6 +531,37 @@ class ProjectReadinessTests(unittest.TestCase):
         self.assertEqual(target.status, ReadinessCheckStatus.BLOCKED)
         self.assertEqual(target.details["policy"], "explicit")
 
+    def test_coordinated_policy_uses_complete_project_repository_set(self):
+        self.project = self.project.model_copy(
+            update={"repository_selection_policy": "coordinated"}
+        )
+        resources = _Resources(
+            repository_ids=("repo-a", "repo-b"),
+            target_error=RepositoryTargetAmbiguousError(
+                "must not resolve a singular target for coordinated policy"
+            ),
+        )
+
+        value = self.service(resources=resources).evaluate(
+            self.project.id,
+            actor=_actor(),
+        )
+
+        self.assertTrue(value.semantic_ready)
+        self.assertTrue(value.execution_ready)
+        check = next(
+            item for item in value.checks
+            if item.id == "repository:execution-target"
+        )
+        self.assertEqual(check.code, "repository_coordinated_scope_ready")
+        self.assertEqual(check.status, ReadinessCheckStatus.READY)
+        self.assertEqual(check.details["policy"], "coordinated")
+        self.assertEqual(
+            check.details["target_resolution"],
+            "project_repository_set",
+        )
+        self.assertEqual(check.details["repository_ids"], ["repo-a", "repo-b"])
+
     def test_single_repository_default_policy_remains_deterministic(self):
         value = self.service().evaluate(
             self.project.id,

@@ -10,7 +10,11 @@ from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 SandboxMode: TypeAlias = Literal["workspace-write", "read-only", "danger-full-access"]
 ApprovalPolicy: TypeAlias = Literal["on-request", "untrusted", "never"]
-RepositorySelectionPolicy: TypeAlias = Literal["deterministic", "explicit"]
+RepositorySelectionPolicy: TypeAlias = Literal[
+    "deterministic",
+    "explicit",
+    "coordinated",
+]
 ApprovalDecisionValue: TypeAlias = Literal[
     "accept",
     "acceptForSession",
