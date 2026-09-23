@@ -2801,6 +2801,17 @@ app.include_router(
     build_automation_execution_router(automation_execution_service)
 )
 
+async def _launch_admitted_automation(run):
+    await automation_execution_service.launch(
+        run.id,
+        organization_id=run.organization_id,
+        workspace_id=run.workspace_id,
+    )
+
+automation_trigger_admission_bridge.set_launch_handler(
+    _launch_admitted_automation
+)
+
 # Preserve the small historical direct-import surface through dynamic
 # compatibility proxies. Production routers continue to use thread_service and
 # turn_service above and do not depend on the legacy host.
