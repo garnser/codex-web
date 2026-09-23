@@ -103,6 +103,8 @@ function attentionCard(item) {
         <span><strong>Type:</strong> ${attentionEsc(item.type)}</span>
         <span><strong>Project:</strong> ${attentionEsc(item.project_id || "—")}</span>
         <span><strong>Source:</strong> ${attentionEsc(item.source?.object_type)} / ${attentionEsc(item.source?.object_id)}</span>
+        <span><strong>Dedupe:</strong> ${attentionEsc(item.dedupe_key || "—")}</span>
+        <span><strong>Source event:</strong> ${attentionEsc(item.source?.event_id || "—")}</span>
         <span><strong>Due:</strong> ${attentionEsc(attentionTime(item.due_at))}</span>
         <span><strong>Expires:</strong> ${attentionEsc(attentionTime(item.expires_at))}</span>
         <span><strong>Owner:</strong> ${attentionEsc(item.owner_identity_id || "—")}</span>

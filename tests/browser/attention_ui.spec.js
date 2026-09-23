@@ -13,7 +13,7 @@ function item(index) {
     source: {
       object_type: index % 2 ? "approval_request" : "work_item",
       object_id: index % 2 ? `approval-${index}` : `work-${index}`,
-      event_id: null,
+      event_id: index === 0 ? "event-1" : null,
     },
     reason: `Human action required ${index}`,
     dedupe_key: `dedupe-${index}`,
@@ -171,6 +171,8 @@ test("Inbox renders canonical requester and evidence provenance", async ({ page 
   await page.getByRole("button", { name: /Inbox/ }).click();
 
   const card = page.locator('[data-attention-id="attention-0"]');
+  await expect(card).toContainText("Dedupe: dedupe-0");
+  await expect(card).toContainText("Source event: event-1");
   await expect(card).toContainText("Requester: agent-profile-a");
   await expect(card).toContainText("Evidence: evidence-1, evidence-2");
   await expect(card).toContainText("Diagnostics: run:exec-1");
