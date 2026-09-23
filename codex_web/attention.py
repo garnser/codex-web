@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.compatibility import ContractSpec
 
 
-ATTENTION_STATE_CONTRACT = ContractSpec("attention-state", "1.0", ("1.0",))
+ATTENTION_STATE_CONTRACT = ContractSpec("attention-state", "1.1", ("1.0", "1.1"))
 
 
 class AttentionSeverity(StrEnum):
@@ -73,6 +73,7 @@ class AttentionItemCreate(BaseModel):
 
     organization_id: str = Field(min_length=1, max_length=200)
     workspace_id: str = Field(min_length=1, max_length=200)
+    project_id: str | None = Field(default=None, max_length=200)
     type: str = Field(min_length=1, max_length=200)
     severity: AttentionSeverity = AttentionSeverity.WARNING
     source: AttentionSource
@@ -103,6 +104,7 @@ class AttentionItem(BaseModel):
     id: str = Field(default_factory=lambda: f"attention-{uuid.uuid4().hex}")
     organization_id: str
     workspace_id: str
+    project_id: str | None = None
     type: str
     severity: AttentionSeverity
     source: AttentionSource
@@ -142,6 +144,7 @@ class AttentionItem(BaseModel):
         return cls(
             organization_id=payload.organization_id,
             workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
             type=payload.type,
             severity=payload.severity,
             source=payload.source,

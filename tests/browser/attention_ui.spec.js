@@ -7,12 +7,13 @@ function item(index) {
     id: `attention-${index}`,
     organization_id: "local",
     workspace_id: "default",
+    project_id: index % 2 ? "project-b" : "project-a",
     type: index % 2 ? "approval.required" : "runtime.remediation",
     severity: index === 0 ? "critical" : "high",
     source: { object_type: "work_item", object_id: `work-${index}`, event_id: null },
     reason: `Human action required ${index}`,
     dedupe_key: `dedupe-${index}`,
-    owner_identity_id: null,
+    owner_identity_id: index % 2 ? "operator-b" : "operator-a",
     recipient_identity_ids: [],
     recipient_team_ids: [],
     due_at: null,
@@ -101,4 +102,26 @@ test("Inbox remains usable at phone width without horizontal overflow", async ({
   expect(overflow).toBeLessThanOrEqual(1);
   await expect(dialog.locator(".attention-card").first()).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Acknowledge" }).first()).toBeVisible();
+});
+
+
+test("Inbox sends canonical project type and assignee filters", async ({ page }) => {
+  const requests = await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const dialog = page.locator(".attention-dialog");
+  await dialog.getByLabel("Project").fill("project-a");
+  await dialog.getByLabel("Project").press("Tab");
+  await expect.poll(() => requests.some((query) => query.includes("project_id=project-a"))).toBeTruthy();
+
+  await dialog.getByLabel("Type").fill("approval.required");
+  await dialog.getByLabel("Type").press("Tab");
+  await expect.poll(() => requests.some((query) => query.includes("type=approval.required"))).toBeTruthy();
+
+  await dialog.getByLabel("Assignee").fill("me");
+  await dialog.getByLabel("Assignee").press("Tab");
+  await expect.poll(() => requests.some((query) => query.includes("assignee=me"))).toBeTruthy();
+
+  await expect(dialog.locator(".attention-card").first()).toContainText("Project:");
 });

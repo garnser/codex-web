@@ -71,7 +71,7 @@ function installAttentionStyles() {
       .attention-shell { max-height: 100dvh; height: 100dvh; }
       .attention-head, .attention-toolbar { padding: .7rem; }
       .attention-toolbar label { flex: 1 1 8rem; }
-      .attention-toolbar select { width: 100%; min-height: 2.75rem; }
+      .attention-toolbar select, .attention-toolbar input { width: 100%; min-height: 2.75rem; box-sizing: border-box; }
       .attention-list { padding: .7rem; }
       .attention-meta { grid-template-columns: 1fr; }
       .attention-actions > * { min-height: 2.75rem; }
@@ -99,6 +99,7 @@ function attentionCard(item) {
       </div>
       <div class="attention-meta">
         <span><strong>Type:</strong> ${attentionEsc(item.type)}</span>
+        <span><strong>Project:</strong> ${attentionEsc(item.project_id || "—")}</span>
         <span><strong>Source:</strong> ${attentionEsc(item.source?.object_type)} / ${attentionEsc(item.source?.object_id)}</span>
         <span><strong>Due:</strong> ${attentionEsc(attentionTime(item.due_at))}</span>
         <span><strong>Expires:</strong> ${attentionEsc(attentionTime(item.expires_at))}</span>
@@ -195,9 +196,15 @@ async function loadAttention(dialog, { append = false } = {}) {
   try {
     const statusFilter = dialog.querySelector("[data-attention-filter]").value;
     const severityFilter = dialog.querySelector("[data-attention-severity]").value;
+    const projectFilter = dialog.querySelector("[data-attention-project]").value.trim();
+    const typeFilter = dialog.querySelector("[data-attention-type]").value.trim();
+    const assigneeFilter = dialog.querySelector("[data-attention-assignee]").value.trim();
     const params = new URLSearchParams({ limit: String(ATTENTION_PAGE_SIZE) });
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (severityFilter !== "all") params.set("severity", severityFilter);
+    if (projectFilter) params.set("project_id", projectFilter);
+    if (typeFilter) params.set("type", typeFilter);
+    if (assigneeFilter) params.set("assignee", assigneeFilter);
     if (append && dialog._attentionNextCursor != null) {
       params.set("cursor", String(dialog._attentionNextCursor));
     }
@@ -280,6 +287,15 @@ function installAttention() {
             <option value="info">Info</option>
           </select>
         </label>
+        <label>Project
+          <input data-attention-project placeholder="Project ID" />
+        </label>
+        <label>Type
+          <input data-attention-type placeholder="approval.required" />
+        </label>
+        <label>Assignee
+          <input data-attention-assignee placeholder="me or identity ID" />
+        </label>
         <button type="button" class="ghost-button" data-attention-refresh>Refresh</button>
         <button type="button" class="ghost-button" data-attention-more hidden>Load more</button>
         <span class="attention-status" data-attention-status aria-live="polite"></span>
@@ -302,6 +318,9 @@ function installAttention() {
   dialog.querySelector("[data-attention-more]").addEventListener("click", () => loadAttention(dialog, { append: true }));
   dialog.querySelector("[data-attention-filter]").addEventListener("change", () => loadAttention(dialog));
   dialog.querySelector("[data-attention-severity]").addEventListener("change", () => loadAttention(dialog));
+  dialog.querySelector("[data-attention-project]").addEventListener("change", () => loadAttention(dialog));
+  dialog.querySelector("[data-attention-type]").addEventListener("change", () => loadAttention(dialog));
+  dialog.querySelector("[data-attention-assignee]").addEventListener("change", () => loadAttention(dialog));
 
   refreshAttentionBadge();
 }

@@ -125,6 +125,7 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
                 AttentionItemCreate(
                     organization_id="local",
                     workspace_id="default",
+                    project_id=("project-a" if index < 3 else "project-b"),
                     type=f"test.attention.{index}",
                     severity=(
                         AttentionSeverity.CRITICAL
@@ -137,6 +138,7 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     reason=f"Needs human attention {index}",
                     dedupe_key=f"test-attention-{index}",
+                    owner_identity_id=("operator-a" if index in {0, 2} else "operator-b"),
                 ),
                 actor_id="test",
             )
@@ -179,6 +181,58 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active_total, 4)
         self.assertIsNone(active_cursor)
         self.assertTrue(all(item.status != AttentionStatus.RESOLVED for item in active))
+
+        project_items, _, project_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            project_id="project-b",
+        )
+        self.assertEqual(project_total, 2)
+        self.assertTrue(all(item.project_id == "project-b" for item in project_items))
+
+        typed, _, typed_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            item_type="test.attention.3",
+        )
+        self.assertEqual(typed_total, 1)
+        self.assertEqual(typed[0].type, "test.attention.3")
+
+        assigned, _, assigned_total = self.service.list_page(
+            self.actor,
+            limit=100,
+            assignee="me",
+        )
+        self.assertEqual(assigned_total, 2)
+        self.assertTrue(
+            all(item.owner_identity_id == self.actor.identity_id for item in assigned)
+        )
+
+    async def test_attention_state_v1_migrates_without_inventing_project(self) -> None:
+        item = await self.service.upsert(
+            AttentionItemCreate(
+                organization_id="local",
+                workspace_id="default",
+                type="runtime.remediation",
+                source=AttentionSource(object_type="runtime", object_id="runtime-1"),
+                reason="Runtime needs attention",
+                dedupe_key="migration-runtime-1",
+            ),
+            actor_id="test",
+        )
+        legacy_item = item.model_dump(mode="json")
+        legacy_item.pop("project_id", None)
+        self.store.store.put(
+            self.store.namespace,
+            {
+                "schema_version": "1.0",
+                "items": {item.id: legacy_item},
+            },
+        )
+
+        migrated = self.store.load()
+        self.assertEqual(migrated.schema_version, "1.1")
+        self.assertIsNone(migrated.items[item.id].project_id)
 
     async def test_notification_provider_failure_cannot_lose_canonical_item(self) -> None:
         self.service.register_notification_adapter(_FailingNotifier())
