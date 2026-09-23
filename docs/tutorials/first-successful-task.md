@@ -31,9 +31,9 @@ Do not use the first tutorial for infrastructure credentials, deployment, destru
 
 ## Execute
 
-1. Open the verified-ready Project.
-2. Create a new Codex thread.
-3. Submit the bounded task.
+1. Open the verified-ready Project and confirm it in the Project switcher.
+2. Open **Work**. Use **Threads** for the conversational task, and use **Work Items** when you need canonical task/Run inspection.
+3. Create a new Codex thread and submit the bounded task.
 4. Review any approval request before accepting it.
 5. If execution preflight blocks the turn, follow its remediation and use the retained turn's authorized Retry action rather than submitting duplicate work.
 6. Inspect the resulting diff.
@@ -92,3 +92,5 @@ install/start
 ```
 
 External TaskSources, ActionProviders, approvals, Evidence, Goals/Decisions and autonomy extend this path; they do not replace its canonical boundaries.
+
+For the current shell and the handoff from conversational work into Work Item/Run inspection, see [Workspace workflows](../ui/workspace-workflows.md).
