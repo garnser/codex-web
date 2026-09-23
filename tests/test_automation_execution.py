@@ -86,6 +86,28 @@ class _Events:
         return None
 
 
+class _WorkItems:
+    def __init__(self):
+        self.state_machine = self
+        self.states = {
+            "group/app#42": SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                project_id="home",
+            ),
+            "group/other#7": SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                project_id="other",
+            ),
+        }
+
+    def _work_item_state(self, ref):
+        if ref not in self.states:
+            raise RuntimeError("Work Item not found")
+        return self.states[ref]
+
+
 class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -110,6 +132,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.threads = _Threads(self.profiles)
         self.turns = _Turns()
         self.teams = _Teams()
+        self.work_items = _WorkItems()
         self.service = AutomationExecutionService(
             self.runs,
             identity=self.identity,
@@ -117,12 +140,19 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             turns=self.turns,
             teams=self.teams,
             events=_Events(),
+            work_items=self.work_items,
         )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _payload(self, *, target_kind="agent_profile", owner=True):
+    def _payload(
+        self,
+        *,
+        target_kind="agent_profile",
+        owner=True,
+        work_item_policy="reuse_or_create",
+    ):
         return {
             "name": "Execute canonical work",
             "lifecycle": "enabled",
@@ -138,17 +168,27 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
                 "max_concurrency": 1,
             },
             "retry": {"max_attempts": 3, "backoff_seconds": 60},
-            "work_item_policy": "reuse_or_create",
+            "work_item_policy": work_item_policy,
             "failure_attention": True,
         }
 
-    def _publish_and_admit(self, *, target_kind="agent_profile", owner=True):
+    def _publish_and_admit(
+        self,
+        *,
+        target_kind="agent_profile",
+        owner=True,
+        work_item_policy="reuse_or_create",
+    ):
         draft = self.registry.create_draft(
             DefinitionDraftCreate(
                 definition_id=f"automation-{target_kind}-{'owner' if owner else 'no-owner'}",
                 kind=AUTOMATION_KIND,
                 definition_schema_version=AUTOMATION_SCHEMA_VERSION,
-                payload=self._payload(target_kind=target_kind, owner=owner),
+                payload=self._payload(
+                    target_kind=target_kind,
+                    owner=owner,
+                    work_item_policy=work_item_policy,
+                ),
                 actor="operator",
             )
         )
@@ -211,6 +251,49 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("owner_identity_id", blocked.block_reason)
         self.assertEqual(self.threads.calls, [])
         self.assertEqual(self.turns.calls, [])
+
+    async def test_reuse_only_requires_existing_canonical_work_item(self) -> None:
+        run = self._publish_and_admit(work_item_policy="reuse_only")
+
+        blocked = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertIn("reuse_only", blocked.block_reason)
+        self.assertEqual(self.threads.calls, [])
+        self.assertEqual(self.turns.calls, [])
+
+    async def test_reused_work_item_must_match_run_project(self) -> None:
+        run = self._publish_and_admit(work_item_policy="reuse_only")
+
+        blocked = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/other#7",
+        )
+
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertIn("project does not match", blocked.block_reason)
+        self.assertEqual(self.threads.calls, [])
+
+    async def test_always_create_does_not_silently_reuse_existing_work_item(self) -> None:
+        run = self._publish_and_admit(work_item_policy="always_create")
+
+        blocked = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertIn("always_create", blocked.block_reason)
+        self.assertIn("ActionIntent", blocked.block_reason)
+        self.assertEqual(self.threads.calls, [])
 
     async def test_team_target_requires_canonical_work_item(self) -> None:
         run = self._publish_and_admit(target_kind="team")
