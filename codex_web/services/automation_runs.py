@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
 from codex_web.automation_definitions import AutomationLifecycle, AutomationTriggerType
 from codex_web.automation_runs import (
@@ -107,7 +107,7 @@ class AutomationRunService:
             return AutomationAdmissionResult(
                 run=existing,
                 inserted=False,
-                launch_allowed=existing.status == AutomationRunStatus.ADMITTED,
+                launch_allowed=False,
             )
 
         active = [
@@ -262,10 +262,28 @@ class AutomationTriggerAdmissionBridge:
         runs: AutomationRunService,
         event_triggers: AutomationEventTriggerService,
         bus: CanonicalEventBus,
+        *,
+        launch_handler: Callable[[AutomationRun], Awaitable[Any]] | None = None,
     ) -> None:
         self.runs = runs
         self.event_triggers = event_triggers
         self.bus = bus
+        self.launch_handler = launch_handler
+
+    def set_launch_handler(
+        self,
+        handler: Callable[[AutomationRun], Awaitable[Any]] | None,
+    ) -> None:
+        self.launch_handler = handler
+
+    async def _launch(self, result: AutomationAdmissionResult | None) -> None:
+        if (
+            result is None
+            or not result.launch_allowed
+            or self.launch_handler is None
+        ):
+            return
+        await self.launch_handler(result.run)
 
     @staticmethod
     def _scope(event: CanonicalEventEnvelope) -> tuple[str, str, str | None]:
@@ -384,7 +402,7 @@ class AutomationTriggerAdmissionBridge:
     def install(self) -> Callable[[], None]:
         async def on_event(event: CanonicalEventEnvelope) -> None:
             for match in self.event_triggers.matches(event):
-                self._admit_event_match(event, match)
-            self._admit_schedule(event)
+                await self._launch(self._admit_event_match(event, match))
+            await self._launch(self._admit_schedule(event))
 
         return self.bus.subscribe(on_event)
