@@ -231,6 +231,44 @@ class AttentionService:
         await self._emit(updated, transition="acknowledged", actor_id=actor.identity_id)
         return updated
 
+    async def acknowledge_many(
+        self,
+        item_ids: tuple[str, ...],
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[list[AttentionItem], tuple[str, ...]]:
+        normalized = tuple(
+            dict.fromkeys(
+                str(item_id or "").strip()
+                for item_id in item_ids
+                if str(item_id or "").strip()
+            )
+        )
+        if not normalized:
+            raise AttentionStateError("bulk acknowledge requires at least one Attention item")
+        if len(normalized) > 100:
+            raise AttentionStateError("bulk acknowledge is limited to 100 Attention items")
+
+        # Resolve and authorize the complete set before mutating any item so a
+        # stale/unauthorized selection cannot produce a partial acknowledgement.
+        items = [self.get(item_id, actor=actor) for item_id in normalized]
+        actionable = [
+            item
+            for item in items
+            if item.status not in TERMINAL_ATTENTION_STATUSES
+            and item.status != AttentionStatus.ACKNOWLEDGED
+        ]
+        skipped = tuple(
+            item.id
+            for item in items
+            if item.status in TERMINAL_ATTENTION_STATUSES
+            or item.status == AttentionStatus.ACKNOWLEDGED
+        )
+        updated: list[AttentionItem] = []
+        for item in actionable:
+            updated.append(await self.acknowledge(item.id, actor=actor))
+        return updated, skipped
+
     async def resolve(
         self,
         item_id: str,
