@@ -107,6 +107,21 @@ jobs:
             tests.test_explicit_repository_target_qualification \
             tests.test_project_readiness.ProjectReadinessTests.test_explicit_multi_repository_policy_is_ready_without_default
 
+      - name: Qualify coordinated multi-repository execution invariants
+        run: |
+          python -m unittest \
+            tests.test_turn_execution_binding.TurnExecutionBindingTests.test_single_writable_collection_preserves_single_repository_semantics \
+            tests.test_turn_execution_binding.TurnExecutionBindingTests.test_work_item_coordinated_scope_keeps_selection_provenance \
+            tests.test_turn_execution_binding.TurnExecutionBindingTests.test_coordinated_writable_scope_is_persisted_atomically \
+            tests.test_turn_execution_binding.TurnExecutionBindingTests.test_invalid_coordinated_scope_fails_before_workspace_or_assignment \
+            tests.test_execution_workspaces.ExecutionWorkspaceTests.test_coordinated_workspace_provisions_multiple_writable_members \
+            tests.test_execution_workspaces.ExecutionWorkspaceTests.test_coordinated_integration_is_recorded_per_repository \
+            tests.test_work_item_runs.WorkItemRunServiceTests.test_coordinated_repository_scope_is_projected_on_run_summary \
+            tests.test_work_item_runs.WorkItemRunServiceTests.test_repository_outcomes_are_projected_from_canonical_workspace_state \
+            tests.test_artifact_evidence.ArtifactEvidenceTests.test_evidence_can_carry_repository_resource_attribution \
+            tests.test_action_intents.ActionIntentTests.test_execution_bound_repository_action_must_stay_in_writable_scope \
+            tests.test_action_intents.ActionIntentTests.test_execution_bound_repository_action_requires_assignment_state
+
       - name: Qualify repository target browser provenance and blockers
         shell: bash
         run: |
