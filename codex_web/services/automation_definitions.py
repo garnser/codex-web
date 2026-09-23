@@ -66,6 +66,39 @@ class AutomationDefinitionService:
             )
         return AutomationDefinition.model_validate(record.payload), exact
 
+    def list_effective(
+        self,
+        *,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> list[tuple[str, AutomationDefinition, DefinitionReference]]:
+        context = DefinitionContext(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        definition_ids = sorted({
+            record.definition_id
+            for record in self.registry.list_records(kind=AUTOMATION_KIND)
+        })
+        items: list[tuple[str, AutomationDefinition, DefinitionReference]] = []
+        for automation_id in definition_ids:
+            try:
+                record = self.registry.resolve(
+                    definition_id=automation_id,
+                    kind=AUTOMATION_KIND,
+                    context=context,
+                )
+            except (DefinitionNotFoundError, DefinitionConflictError):
+                continue
+            items.append((
+                automation_id,
+                AutomationDefinition.model_validate(record.payload),
+                reference_for(record),
+            ))
+        return items
+
     def resolve(
         self,
         automation_id: str,
