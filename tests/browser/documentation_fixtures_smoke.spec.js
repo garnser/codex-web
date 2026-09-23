@@ -1,10 +1,10 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { expect, test } from "@playwright/test";
+const fs = require("node:fs");
+const path = require("node:path");
+const { expect, test } = require("@playwright/test");
 
-const root = path.resolve(import.meta.dirname, "..", "..");
+const root = path.resolve(__dirname, "..", "..");
 const manifest = JSON.parse(
-  await fs.readFile(path.join(root, "docs", "screenshots", "manifest.json"), "utf8"),
+  fs.readFileSync(path.join(root, "docs", "screenshots", "manifest.json"), "utf8"),
 );
 
 for (const capture of manifest.captures) {
