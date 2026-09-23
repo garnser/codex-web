@@ -9,6 +9,8 @@ from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
 )
 from codex_web.runtime_credentials import (
+    RuntimeAuthenticationStatus,
+    runtime_authentication_preflight,
     runtime_authentication_requirement,
 )
 from codex_web.services.codex_worker_configuration import (
@@ -35,6 +37,30 @@ class _Configuration:
         if key != CODEX_EXECUTION_AUTHENTICATION_MODE_CONFIG:
             raise KeyError(key)
         return SimpleNamespace(value=self.value, source="project")
+
+
+class _CredentialConfiguration:
+    def __init__(self, *, available: bool = True) -> None:
+        self.available = available
+        self.calls: list[str] = []
+
+    def resolve(self, key: str, context: ConfigurationContext) -> object:
+        del context
+        self.calls.append(key)
+        if not self.available:
+            raise LookupError("configuration missing")
+        return SimpleNamespace(
+            value={"kind": "secret", "secret_id": "secret-auth"},
+            source="project",
+        )
+
+
+class _SecretMetadata:
+    def __init__(self, status: str) -> None:
+        self._status = status
+
+    def status(self) -> object:
+        return SimpleNamespace(value=self._status)
 
 
 def _codex_binding(authentication_mode: str | None = None) -> ExecutionRuntimeBinding:
@@ -124,6 +150,104 @@ class RuntimeAuthenticationRequirementTests(unittest.TestCase):
     def test_invalid_explicit_mode_fails_closed_at_runtime_binding_boundary(self) -> None:
         with self.assertRaises(ValueError):
             _codex_binding("implicit-fallback")
+
+    def test_preflight_reports_trusted_local_session_available(self) -> None:
+        result = runtime_authentication_preflight(
+            _codex_binding("trusted_local_session"),
+            local_session_probe=lambda: True,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.available)
+        self.assertEqual(result.status, RuntimeAuthenticationStatus.AVAILABLE)
+        self.assertEqual(result.code, "local_session_available")
+        self.assertIsNone(result.secret_reference_id)
+
+    def test_preflight_distinguishes_unsupported_and_unavailable_local_session(self) -> None:
+        unsupported = runtime_authentication_preflight(
+            _codex_binding("trusted_local_session")
+        )
+        unavailable = runtime_authentication_preflight(
+            _codex_binding("trusted_local_session"),
+            local_session_probe=lambda: False,
+        )
+
+        self.assertEqual(
+            unsupported.status,
+            RuntimeAuthenticationStatus.UNSUPPORTED,
+        )
+        self.assertEqual(unsupported.code, "authentication_mode_unsupported")
+        self.assertEqual(
+            unavailable.status,
+            RuntimeAuthenticationStatus.UNAVAILABLE,
+        )
+        self.assertEqual(unavailable.code, "local_session_unavailable")
+
+    def test_preflight_missing_delegated_reference_is_typed(self) -> None:
+        result = runtime_authentication_preflight(
+            _codex_binding("delegated_worker_token"),
+            configuration=_CredentialConfiguration(available=False),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.available)
+        self.assertEqual(result.status, RuntimeAuthenticationStatus.MISSING)
+        self.assertEqual(result.code, "credential_reference_missing")
+        self.assertEqual(
+            result.requirement.credential_config_key,
+            CODEX_WORKER_ACCESS_TOKEN_CONFIG,
+        )
+
+    def test_preflight_api_key_uses_distinct_configuration(self) -> None:
+        configuration = _CredentialConfiguration()
+        result = runtime_authentication_preflight(
+            _codex_binding("api_key"),
+            configuration=configuration,
+            secret_metadata=lambda _secret_id: _SecretMetadata("active"),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.available)
+        self.assertEqual(result.code, "credential_reference_ready")
+        self.assertEqual(configuration.calls, [CODEX_WORKER_API_KEY_CONFIG])
+        self.assertEqual(
+            result.requirement.credential_config_key,
+            CODEX_WORKER_API_KEY_CONFIG,
+        )
+
+    def test_preflight_distinguishes_expired_and_revoked_authentication(self) -> None:
+        for status, expected in (
+            ("expired", "authentication_expired"),
+            ("revoked", "authentication_revoked"),
+        ):
+            with self.subTest(status=status):
+                result = runtime_authentication_preflight(
+                    _codex_binding("delegated_worker_token"),
+                    configuration=_CredentialConfiguration(),
+                    secret_metadata=lambda _secret_id, value=status: _SecretMetadata(value),
+                )
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertFalse(result.available)
+                self.assertEqual(result.code, expected)
+                self.assertEqual(result.status.value, status)
+
+    def test_preflight_policy_denial_is_not_reported_as_missing(self) -> None:
+        result = runtime_authentication_preflight(
+            _codex_binding("api_key"),
+            permitted_codex_modes=(
+                CodexExecutionAuthenticationMode.DELEGATED_WORKER_TOKEN,
+            ),
+            configuration=_CredentialConfiguration(available=False),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.status, RuntimeAuthenticationStatus.DENIED)
+        self.assertEqual(result.code, "authentication_mode_denied")
 
     def test_non_codex_runtime_keeps_existing_mapping_contract(self) -> None:
         binding = ExecutionRuntimeBinding(
