@@ -260,6 +260,66 @@ class TurnExecutionBindingTests(unittest.TestCase):
             approval_policy="on-request",
         )
 
+    def test_runtime_sandbox_mismatch_blocks_before_credential_preflight(self) -> None:
+        self.service.runtime_binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+            sandbox_profiles=("read-only", "workspace-write"),
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(
+                execution_id="turn-runtime-sandbox-mismatch",
+                sandbox="danger-full-access",
+            )
+
+        self.assertEqual(raised.exception.code, "sandbox_profile_unsupported")
+        blocker = raised.exception.public()
+        self.assertEqual(blocker["incompatible_layer"], "runtime")
+        self.assertEqual(
+            blocker["requested_sandbox_profile"],
+            "danger-full-access",
+        )
+        self.assertNotEqual(blocker["code"], "credential_reference_missing")
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
+    def test_worker_sandbox_mismatch_blocks_before_credential_preflight(self) -> None:
+        self.workers.ensure_local_worker(
+            service_identity_id="test-local-worker",
+            version="test-v1",
+            capabilities=(
+                WorkerCapability.GIT,
+                WorkerCapability.COMMAND_EXECUTION,
+                WorkerCapability.ARTIFACT_UPLOAD,
+            ),
+            supported_execution_contract_versions=(
+                "1.0",
+                THREAD_TURN_EXECUTION_CONTRACT_VERSION,
+                THREAD_BOOTSTRAP_EXECUTION_CONTRACT_VERSION,
+            ),
+            supported_sandbox_profiles=("read-only",),
+            actor=self.actor,
+        )
+
+        with self.assertRaises(TurnExecutionBindingError) as raised:
+            self._prepare(
+                execution_id="turn-worker-sandbox-mismatch",
+                sandbox="workspace-write",
+            )
+
+        self.assertEqual(raised.exception.code, "sandbox_profile_unsupported")
+        blocker = raised.exception.public()
+        self.assertEqual(blocker["incompatible_layer"], "worker")
+        self.assertEqual(
+            blocker["requested_sandbox_profile"],
+            "workspace-write",
+        )
+        self.assertNotEqual(blocker["code"], "credential_reference_missing")
+        self.assertEqual(self.workspaces.list(self.actor), [])
+        self.assertEqual(self.workers.list_assignments(self.actor), [])
+
     def test_project_readiness_blocks_before_workspace_creation(self) -> None:
         self._publish_secret()
         self.service.project_readiness = lambda project_id, actor: {
