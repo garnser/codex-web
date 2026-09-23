@@ -645,6 +645,66 @@ class TurnExecutionBindingService:
             },
         )
 
+    def _validate_sandbox_compatibility(
+        self,
+        sandbox: SandboxMode,
+        *,
+        runtime_binding: ExecutionRuntimeBinding | None,
+        execution_profile: ExecutionProfileContract | None,
+    ) -> LeaseMode:
+        lease_mode = self._lease_mode(sandbox)
+        if (
+            runtime_binding is not None
+            and runtime_binding.sandbox_profiles
+            and sandbox not in runtime_binding.sandbox_profiles
+        ):
+            raise TurnExecutionBindingError(
+                f"runtime does not support sandbox profile: {sandbox}",
+                code="sandbox_profile_unsupported",
+                blocker={
+                    "code": "sandbox_profile_unsupported",
+                    "message": f"runtime does not support sandbox profile: {sandbox}",
+                    "retryable": False,
+                    "target_type": "agent_runtime",
+                    "target_id": (
+                        f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}"
+                    ),
+                    "incompatible_layer": "runtime",
+                    "requested_sandbox_profile": sandbox,
+                    "supported_sandbox_profiles": list(
+                        runtime_binding.sandbox_profiles
+                    ),
+                    "remediation_route": "/api/agent-providers",
+                },
+            )
+        if (
+            execution_profile is not None
+            and execution_profile.repository_access == "read-only"
+            and sandbox != "read-only"
+        ):
+            raise TurnExecutionBindingError(
+                (
+                    f"execution profile {execution_profile.id} requires "
+                    "read-only sandboxing"
+                ),
+                code="execution_profile_incompatible",
+                blocker={
+                    "code": "execution_profile_incompatible",
+                    "message": (
+                        f"execution profile {execution_profile.id} requires "
+                        "read-only sandboxing"
+                    ),
+                    "retryable": False,
+                    "target_type": "execution_profile",
+                    "target_id": execution_profile.id,
+                    "incompatible_layer": "execution_profile",
+                    "requested_sandbox_profile": sandbox,
+                    "supported_sandbox_profiles": ["read-only"],
+                    "remediation_route": "/api/execution-profiles",
+                },
+            )
+        return lease_mode
+
     def _existing_assignment(
         self,
         *,
@@ -903,6 +963,11 @@ class TurnExecutionBindingService:
             project,
             execution_profile_id,
         )
+        lease_mode = self._validate_sandbox_compatibility(
+            sandbox,
+            runtime_binding=effective_runtime_binding,
+            execution_profile=execution_profile,
+        )
         profile_is_orchestration = bool(
             execution_profile is not None
             and execution_profile.workspace_mode == "scratch"
@@ -1151,6 +1216,7 @@ class TurnExecutionBindingService:
             required_capabilities=required_capabilities,
             execution_contract_version=execution_contract_version,
             actor=self.control_actor,
+            required_sandbox_profile=sandbox,
         )
         if not worker_readiness.ready:
             blocker = {
@@ -1173,6 +1239,16 @@ class TurnExecutionBindingService:
                 ),
                 "remediation": worker_readiness.remediation,
             }
+            if worker_readiness.code == "sandbox_profile_unsupported":
+                blocker.update(
+                    {
+                        "target_type": "sandbox_profile",
+                        "target_id": sandbox,
+                        "incompatible_layer": "worker",
+                        "requested_sandbox_profile": sandbox,
+                        "remediation_route": "/api/execution-workers",
+                    }
+                )
             raise TurnExecutionBindingError(
                 f"{worker_readiness.code}: {worker_readiness.reason}",
                 code=worker_readiness.code,
@@ -1192,7 +1268,6 @@ class TurnExecutionBindingService:
                 update={"authentication_mode": authentication.codex_mode.value}
             )
         secret_ref = self._secret_ref(project, subject, authentication)
-        lease_mode = self._lease_mode(sandbox)
         effective_limits = limits or WorkerResourceLimits(
             wall_seconds=session_seconds
         )
