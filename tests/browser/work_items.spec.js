@@ -175,7 +175,8 @@ test('work-item operator distinguishes canonical and external state with executi
   const posts = [];
   await mockOperatorApis(page, posts);
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-  await page.locator('#work-items-button').click();
+  await expect(page.locator('#work-items-button')).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog).toBeVisible();
@@ -212,7 +213,7 @@ test('source configuration writes the canonical project task-source endpoint', a
     await route.fallback();
   });
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-  await page.locator('#work-items-button').click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
   const scope = dialog.locator('.work-source-scope');
@@ -245,7 +246,7 @@ test('source configuration sends typed Jira and ServiceNow settings without secr
     await route.fallback();
   });
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-  await page.locator('#work-items-button').click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
   const type = dialog.locator('.work-source-type');
@@ -299,7 +300,7 @@ test('canonical summary keeps state, routing and related objects understandable 
   const posts = [];
   await mockOperatorApis(page, posts);
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-  await page.locator('#work-items-button').click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog.locator('.work-overview')).toContainText('implementation active');
@@ -351,7 +352,7 @@ for (const scenario of [
     const payload = operatorPayload(scenario.item, scenario.diagnostics);
     await mockOperatorApis(page, posts, payload);
     await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
-    await page.locator('#work-items-button').click();
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
     const dialog = page.locator('#work-items-dialog');
     for (const text of scenario.expected) {
       await expect(dialog).toContainText(text);
