@@ -18,6 +18,9 @@ for (const capture of manifest.captures) {
     );
     if (capture.open_selector) {
       await page.locator(capture.open_selector).click();
+      // Match the documentation capture path: some fixtures populate
+      // deterministic content on the next UI tick after opening.
+      await page.waitForTimeout(50);
     }
 
     expect(errors, `${capture.name}: uncaught page exceptions`).toEqual([]);
