@@ -44,6 +44,31 @@ function item(index) {
 async function installRoutes(page) {
   const requests = [];
   const approvalDecisions = [];
+  const attentionActions = [];
+  await page.route("**/api/attention/*/reassign", async (route) => {
+    attentionActions.push({
+      action: "reassign",
+      path: new URL(route.request().url()).pathname,
+      payload: JSON.parse(route.request().postData() || "{}"),
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ attention_item: { status: "open" } }),
+    });
+  });
+  await page.route("**/api/attention/*/escalate", async (route) => {
+    attentionActions.push({
+      action: "escalate",
+      path: new URL(route.request().url()).pathname,
+      payload: null,
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ attention_item: { status: "escalated" } }),
+    });
+  });
   await page.route("**/api/approval-requests/*/decisions", async (route) => {
     approvalDecisions.push({
       path: new URL(route.request().url()).pathname,
@@ -80,6 +105,7 @@ async function installRoutes(page) {
     }});
   });
   requests.approvalDecisions = approvalDecisions;
+  requests.attentionActions = attentionActions;
   return requests;
 }
 
@@ -166,4 +192,32 @@ test("approval Attention uses canonical approve/reject actions and hides local r
   expect(requests.approvalDecisions[0].payload.idempotency_key).toContain(
     "attention:attention-1:approve:",
   );
+});
+
+
+test("Inbox reassign and escalate use canonical Attention actions", async ({ page }) => {
+  const requests = await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const dialog = page.locator(".attention-dialog");
+  const card = dialog.locator('[data-attention-id="attention-0"]');
+  await expect(card.getByRole("button", { name: "Reassign" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Escalate" })).toBeVisible();
+
+  await card.getByRole("button", { name: "Escalate" }).click();
+  await expect.poll(() => requests.attentionActions.length).toBe(1);
+  expect(requests.attentionActions[0]).toMatchObject({
+    action: "escalate",
+    path: "/api/attention/attention-0/escalate",
+  });
+
+  page.once("dialog", (prompt) => prompt.accept("operator-c"));
+  await card.getByRole("button", { name: "Reassign" }).click();
+  await expect.poll(() => requests.attentionActions.length).toBe(2);
+  expect(requests.attentionActions[1]).toMatchObject({
+    action: "reassign",
+    path: "/api/attention/attention-0/reassign",
+    payload: { owner_identity_id: "operator-c" },
+  });
 });
