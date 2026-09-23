@@ -28,6 +28,7 @@ from codex_web.api.autonomy_control_center import build_autonomy_control_center_
 from codex_web.api.autonomy_audit import build_autonomy_audit_router
 from codex_web.api.automations import build_automations_router
 from codex_web.api.automation_execution import build_automation_execution_router
+from codex_web.api.automation_outcomes import build_automation_outcomes_router
 from codex_web.api.bots import build_bots_router
 from codex_web.api.configuration import build_configuration_router
 from codex_web.api.conversation_channels import build_conversation_channels_router
@@ -188,6 +189,7 @@ from codex_web.services.automation_runs import (
     AutomationTriggerAdmissionBridge,
 )
 from codex_web.services.automation_execution import AutomationExecutionService
+from codex_web.services.automation_outcomes import AutomationOutcomeReconciliationService
 from codex_web.services.watchdog_dispatch import install_watchdog_dispatch_policy
 from codex_web.services.agent_channel_preferences import install_agent_channel_preference_service
 from codex_web.services.bot_binding_selection import install_bot_binding_selection_service
@@ -1102,6 +1104,18 @@ app.include_router(
 )
 app.state.execution_worker_store = execution_worker_store
 app.state.execution_worker_service = execution_worker_service
+automation_outcome_reconciliation_service = AutomationOutcomeReconciliationService(
+    automation_run_service,
+    execution_worker_service,
+)
+app.state.automation_outcome_reconciliation_service = (
+    automation_outcome_reconciliation_service
+)
+app.include_router(
+    build_automation_outcomes_router(
+        automation_outcome_reconciliation_service
+    )
+)
 app.state.control_plane_broker_factory = control_plane_broker_factory
 app.state.local_execution_worker = local_execution_worker
 app.state.local_execution_backend = local_execution_backend
