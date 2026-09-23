@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
 from codex_web.services.attention import AttentionService, AttentionStateError
+from codex_web.services.identity import AuthorizationError
 from codex_web.storage.attention import AttentionItemNotFoundError
 
 
@@ -22,6 +23,12 @@ class AttentionSnoozeRequest(BaseModel):
     until: float
 
 
+class AttentionReassignRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    owner_identity_id: str = Field(min_length=1, max_length=500)
+
+
 def build_attention_router(service: AttentionService) -> APIRouter:
     router = APIRouter(prefix="/api/attention", tags=["attention"])
 
@@ -33,6 +40,8 @@ def build_attention_router(service: AttentionService) -> APIRouter:
             return HTTPException(status_code=404, detail="attention item not found")
         if isinstance(exc, AttentionStateError):
             return HTTPException(status_code=409, detail=str(exc))
+        if isinstance(exc, AuthorizationError):
+            return HTTPException(status_code=403, detail=str(exc))
         return HTTPException(status_code=400, detail=str(exc))
 
     @router.get("")
@@ -91,6 +100,32 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         actor = request_actor(request)
         try:
             item = await service.resolve(item_id, actor=actor, reason=payload.reason)
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    @router.post("/{item_id}/reassign")
+    async def reassign(
+        item_id: str,
+        payload: AttentionReassignRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = await service.reassign(
+                item_id,
+                actor=actor,
+                owner_identity_id=payload.owner_identity_id,
+            )
+        except Exception as exc:
+            raise translate(exc) from exc
+        return {"attention_item": serialize(item)}
+
+    @router.post("/{item_id}/escalate")
+    async def escalate(item_id: str, request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            item = await service.escalate_for_actor(item_id, actor=actor)
         except Exception as exc:
             raise translate(exc) from exc
         return {"attention_item": serialize(item)}
