@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from codex_web.automation_definitions import (
     AUTOMATION_KIND,
@@ -14,7 +17,16 @@ from codex_web.automation_definitions import (
 )
 from codex_web.compatibility import CanonicalEventEnvelope
 from codex_web.definitions import DefinitionContext, DefinitionReference, reference_for
+from codex_web.scheduler import (
+    MisfirePolicy,
+    RecurrenceKind,
+    ScheduleCreate,
+    ScheduleRecurrence,
+    ScheduleRecord,
+    ScheduleStatus,
+)
 from codex_web.services.canonical_events import CanonicalEventBus
+from codex_web.services.scheduler import SchedulerService
 from codex_web.services.definitions import (
     DefinitionConflictError,
     DefinitionKindSchema,
@@ -169,6 +181,180 @@ class AutomationEventTriggerService:
                     await outcome
 
         return self.bus.subscribe(on_event)
+
+
+
+class AutomationScheduleMaterializationError(RuntimeError):
+    pass
+
+
+class AutomationScheduleMaterializer:
+    """Reconcile schedule-backed Automations onto the canonical durable scheduler."""
+
+    TRIGGER_TYPE = "automation.definition"
+
+    def __init__(
+        self,
+        automations: AutomationDefinitionService,
+        scheduler: SchedulerService,
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.automations = automations
+        self.scheduler = scheduler
+        self.clock = clock
+
+    @staticmethod
+    def _automation_schedules(
+        schedules: list[ScheduleRecord],
+        automation_id: str,
+    ) -> list[ScheduleRecord]:
+        return [
+            schedule
+            for schedule in schedules
+            if schedule.trigger_type == AutomationScheduleMaterializer.TRIGGER_TYPE
+            and schedule.payload.get("automation_id") == automation_id
+        ]
+
+    @staticmethod
+    def _daily_cron(
+        cron: str,
+        timezone: str,
+        *,
+        now: float,
+    ) -> tuple[float, ScheduleRecurrence]:
+        parts = str(cron or "").split()
+        if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+            raise AutomationScheduleMaterializationError(
+                "canonical scheduler currently supports recurring Automation cron "
+                "only in fixed daily 'minute hour * * *' form"
+            )
+        try:
+            minute = int(parts[0])
+            hour = int(parts[1])
+        except ValueError as exc:
+            raise AutomationScheduleMaterializationError(
+                "daily Automation cron minute/hour must be integers"
+            ) from exc
+        if not 0 <= minute <= 59 or not 0 <= hour <= 23:
+            raise AutomationScheduleMaterializationError(
+                "daily Automation cron minute/hour is out of range"
+            )
+        try:
+            zone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise AutomationScheduleMaterializationError(
+                "Automation timezone must be a valid IANA timezone"
+            ) from exc
+
+        local_now = datetime.fromtimestamp(now, zone)
+        candidate = local_now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+            fold=0,
+        )
+        if candidate.timestamp() <= now:
+            next_date = local_now.date() + timedelta(days=1)
+            candidate = datetime(
+                next_date.year,
+                next_date.month,
+                next_date.day,
+                hour,
+                minute,
+                tzinfo=zone,
+                fold=0,
+            )
+        return (
+            candidate.timestamp(),
+            ScheduleRecurrence(
+                kind=RecurrenceKind.DAILY,
+                local_time=f"{hour:02d}:{minute:02d}",
+                timezone=timezone,
+            ),
+        )
+
+    def reconcile(
+        self,
+        automation_id: str,
+        *,
+        actor_id: str,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+    ) -> ScheduleRecord | None:
+        automation, reference = self.automations.resolve(
+            automation_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        schedules = self._automation_schedules(
+            self.scheduler.list(),
+            automation_id,
+        )
+        current = next(
+            (
+                schedule
+                for schedule in schedules
+                if schedule.payload.get("definition_record_id") == reference.record_id
+            ),
+            None,
+        )
+
+        schedule_backed = automation.trigger.type in {
+            AutomationTriggerType.ONE_SHOT_SCHEDULE,
+            AutomationTriggerType.RECURRING_SCHEDULE,
+        }
+        if automation.lifecycle != AutomationLifecycle.ENABLED or not schedule_backed:
+            for schedule in schedules:
+                if schedule.status == ScheduleStatus.ACTIVE:
+                    self.scheduler.pause(schedule.id, actor_id=actor_id)
+            return None
+
+        for schedule in schedules:
+            if (
+                schedule.payload.get("definition_record_id") != reference.record_id
+                and schedule.status == ScheduleStatus.ACTIVE
+            ):
+                self.scheduler.pause(schedule.id, actor_id=actor_id)
+
+        if current is not None:
+            if current.status == ScheduleStatus.PAUSED:
+                current = self.scheduler.resume(current.id, actor_id=actor_id)
+            return current
+
+        trigger = automation.trigger
+        recurrence = None
+        if trigger.type == AutomationTriggerType.ONE_SHOT_SCHEDULE:
+            due_at = float(trigger.due_at)
+        else:
+            due_at, recurrence = self._daily_cron(
+                str(trigger.cron),
+                str(trigger.timezone),
+                now=float(self.clock()),
+            )
+
+        return self.scheduler.create(
+            ScheduleCreate(
+                name=f"Automation: {automation.name}",
+                tenant_id=organization_id or "local",
+                workspace_id=workspace_id,
+                trigger_type=self.TRIGGER_TYPE,
+                payload={
+                    "automation_id": automation_id,
+                    "definition_record_id": reference.record_id,
+                    "definition_revision": reference.revision,
+                    "definition_checksum": reference.checksum,
+                    "project_id": project_id,
+                },
+                due_at=due_at,
+                recurrence=recurrence,
+                misfire_policy=MisfirePolicy.FIRE_ONCE,
+            ),
+            actor_id=actor_id,
+        )
 
 
 
