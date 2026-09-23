@@ -90,6 +90,38 @@ class CliRuntimeProbeTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["env"], {})
         self.assertEqual(calls[0][1]["timeout"], 10)
 
+    def test_readiness_probe_can_inherit_only_explicit_auth_context(self) -> None:
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        probe = CliRuntimeProbe(
+            which=lambda _name: "/usr/local/bin/example-cli",
+            run=run,
+            environment_allowlist=("HOME", "CODEX_HOME", "PATH"),
+            environ={
+                "HOME": "/home/operator",
+                "CODEX_HOME": "/home/operator/.codex",
+                "PATH": "/usr/local/bin:/usr/bin",
+                "OPENAI_API_KEY": "must-not-leak",
+            },
+        )
+
+        result = probe.evaluate(_Adapter())
+
+        self.assertTrue(result.ready)
+        self.assertEqual(
+            calls[0][1]["env"],
+            {
+                "HOME": "/home/operator",
+                "CODEX_HOME": "/home/operator/.codex",
+                "PATH": "/usr/local/bin:/usr/bin",
+            },
+        )
+        self.assertNotIn("OPENAI_API_KEY", calls[0][1]["env"])
+
     def test_authentication_failure_is_reported_by_adapter(self) -> None:
         def run(argv, **_kwargs):
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="login required")
