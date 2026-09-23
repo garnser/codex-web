@@ -45,6 +45,35 @@ async function installRoutes(page) {
   const requests = [];
   const approvalDecisions = [];
   const attentionActions = [];
+  const workItemActions = [];
+  await page.route("**/api/work-items/*/comment", async (route) => {
+    workItemActions.push({
+      action: "comment",
+      path: new URL(route.request().url()).pathname,
+      payload: JSON.parse(route.request().postData() || "{}"),
+    });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/api/work-items/*/retry", async (route) => {
+    workItemActions.push({
+      action: "retry",
+      path: new URL(route.request().url()).pathname,
+      payload: JSON.parse(route.request().postData() || "{}"),
+    });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/api/attention/*/resolve", async (route) => {
+    workItemActions.push({
+      action: "resolve",
+      path: new URL(route.request().url()).pathname,
+      payload: JSON.parse(route.request().postData() || "{}"),
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ attention_item: { status: "resolved" } }),
+    });
+  });
   await page.route("**/api/attention/*/reassign", async (route) => {
     attentionActions.push({
       action: "reassign",
@@ -106,6 +135,7 @@ async function installRoutes(page) {
   });
   requests.approvalDecisions = approvalDecisions;
   requests.attentionActions = attentionActions;
+  requests.workItemActions = workItemActions;
   return requests;
 }
 
@@ -219,5 +249,36 @@ test("Inbox reassign and escalate use canonical Attention actions", async ({ pag
     action: "reassign",
     path: "/api/attention/attention-0/reassign",
     payload: { owner_identity_id: "operator-c" },
+  });
+});
+
+
+test("Work Item Attention records human information and retries canonical work", async ({ page }) => {
+  const requests = await installRoutes(page);
+  await page.goto(fixture);
+  await page.getByRole("button", { name: /Inbox/ }).click();
+
+  const dialog = page.locator(".attention-dialog");
+  const card = dialog.locator('[data-attention-id="attention-0"]');
+  const respond = card.getByRole("button", { name: "Provide info & retry" });
+  await expect(respond).toBeVisible();
+
+  page.once("dialog", (prompt) => prompt.accept("Use the approved production endpoint."));
+  await respond.click();
+
+  await expect.poll(() => requests.workItemActions.length).toBe(3);
+  expect(requests.workItemActions[0]).toEqual({
+    action: "comment",
+    path: "/api/work-items/work-0/comment",
+    payload: { body: "Use the approved production endpoint." },
+  });
+  expect(requests.workItemActions[1]).toMatchObject({
+    action: "retry",
+    path: "/api/work-items/work-0/retry",
+  });
+  expect(requests.workItemActions[1].payload.reason).toContain("attention-0");
+  expect(requests.workItemActions[2]).toMatchObject({
+    action: "resolve",
+    path: "/api/attention/attention-0/resolve",
   });
 });

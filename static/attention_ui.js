@@ -83,6 +83,7 @@ function installAttentionStyles() {
 function attentionCard(item) {
   const actionable = !["resolved", "expired", "superseded"].includes(item.status);
   const approvalOwned = item.source?.object_type === "approval_request";
+  const workItemOwned = item.source?.object_type === "work_item";
   const link = item.deep_link
     ? `<a href="${attentionEsc(item.deep_link)}">Open source</a>`
     : "";
@@ -114,6 +115,7 @@ function attentionCard(item) {
         ${actionable ? '<button type="button" class="ghost-button" data-attention-action="escalate">Escalate</button>' : ""}
         ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="approve">Approve</button>' : ""}
         ${actionable && approvalOwned ? '<button type="button" class="ghost-button" data-approval-decision="reject">Reject</button>' : ""}
+        ${actionable && workItemOwned ? '<button type="button" class="ghost-button" data-work-item-response>Provide info & retry</button>' : ""}
         ${actionable && !approvalOwned ? '<button type="button" class="ghost-button" data-attention-action="resolve">Resolve</button>' : ""}
         ${link}
       </div>
@@ -194,6 +196,52 @@ async function decideApprovalAttention(dialog, item, outcome) {
   }
 }
 
+async function respondToWorkItemAttention(dialog, item) {
+  const status = dialog.querySelector("[data-attention-status]");
+  status.dataset.error = "false";
+  try {
+    const workItemRef = item.source?.object_id;
+    if (!workItemRef) throw new Error("Work Item source is missing a canonical ref");
+    const response = window.prompt("Information for the blocked Work Item", "");
+    if (response === null) return;
+    const body = response.trim();
+    if (!body) throw new Error("Enter the requested information");
+
+    status.textContent = "Recording information and retrying Work Item…";
+    const encodedRef = encodeURIComponent(workItemRef);
+    await attentionApi(
+      `/api/work-items/${encodedRef}/comment`,
+      {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      },
+    );
+    await attentionApi(
+      `/api/work-items/${encodedRef}/retry`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          actor: "attention-inbox",
+          reason: `Human information provided from Attention ${item.id}`,
+        }),
+      },
+    );
+    await attentionApi(
+      `/api/attention/${encodeURIComponent(item.id)}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reason: "Human information provided; canonical Work Item retry requested",
+        }),
+      },
+    );
+    await loadAttention(dialog);
+  } catch (error) {
+    status.dataset.error = "true";
+    status.textContent = `Work Item response failed: ${error.message}`;
+  }
+}
+
 async function refreshAttentionBadge() {
   const badge = document.querySelector("[data-attention-count]");
   if (!badge) return;
@@ -266,6 +314,13 @@ async function loadAttention(dialog, { append = false } = {}) {
       button.addEventListener("click", () => {
         const card = button.closest("[data-attention-id]");
         mutateAttention(dialog, card.dataset.attentionId, button.dataset.attentionAction);
+      });
+    });
+    list.querySelectorAll("[data-work-item-response]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const card = button.closest("[data-attention-id]");
+        const item = dialog._attentionItems.find((candidate) => candidate.id === card.dataset.attentionId);
+        if (item) respondToWorkItemAttention(dialog, item);
       });
     });
     list.querySelectorAll("[data-approval-decision]").forEach((button) => {
