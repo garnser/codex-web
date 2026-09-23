@@ -185,8 +185,7 @@
         "mobile navigation",
         "responsive operator shell",
         "touch-safe controls"
-      ],
-      "baseline_pending": true
+      ]
     }
   ],
   "forbidden_markers": [
