@@ -75,6 +75,18 @@ class CodexCliAgentRuntimeAdapter:
         self._provider_sessions: set[str] = set()
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
+    def logical_session_id_for(
+        self,
+        provider_native_session_id: str | None,
+    ) -> str | None:
+        native = str(provider_native_session_id or "").strip()
+        if not native:
+            return None
+        for logical, actual in self._session_aliases.items():
+            if actual == native:
+                return logical
+        return native if native in self._session_aliases else None
+
     async def health(self) -> AgentRuntimeHealth:
         readiness = await asyncio.to_thread(self.probe.evaluate, self.cli)
         return (
