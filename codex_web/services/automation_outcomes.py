@@ -28,6 +28,27 @@ class AutomationOutcomeReconciliationService:
         self.runs = runs
         self.workers = workers
 
+    def reconcile_for_execution(
+        self,
+        execution_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[AutomationRun, ...]:
+        """Reconcile running Automation runs that own one execution id."""
+        matches = [
+            run
+            for run in self.runs.store.list(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+            )
+            if run.status == AutomationRunStatus.RUNNING
+            and execution_id in run.execution_ids
+        ]
+        return tuple(
+            self.reconcile(run.id, actor=actor)
+            for run in matches
+        )
+
     def reconcile(
         self,
         run_id: str,

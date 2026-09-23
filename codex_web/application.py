@@ -115,6 +115,7 @@ from codex_web.devstatus import (
     render_html as render_devstatus_html,
 )
 from codex_web.models import GitLabProjectRoutingSettings
+from codex_web.identity import TenantScope
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
@@ -1048,6 +1049,32 @@ control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)
 
 def _execution_assignment_notifier(assignment, event_type):
+    if assignment.status.value in {"succeeded", "failed", "cancelled", "lost"}:
+        outcome_service = getattr(
+            app.state,
+            "automation_outcome_reconciliation_service",
+            None,
+        )
+        if outcome_service is not None:
+            try:
+                outcome_actor = identity_service.bootstrap_service_actor(
+                    identity_id="service-automation-outcome-reconciler",
+                    name="Automation Outcome Reconciler",
+                    scope=TenantScope(
+                        organization_id=assignment.organization_id,
+                        workspace_id=assignment.workspace_id,
+                    ),
+                    service_scopes=("automation:execute",),
+                )
+                outcome_service.reconcile_for_execution(
+                    assignment.execution_id,
+                    actor=outcome_actor,
+                )
+            except Exception:
+                # Outcome projection is observational and must not break the
+                # canonical assignment transition that triggered it.
+                pass
+
     if assignment.work_item_ref is None:
         return
     try:

@@ -27,6 +27,13 @@ class _Store:
         assert workspace_id == self.run.workspace_id
         return self.run
 
+    def list(self, *, organization_id, workspace_id, automation_id=None):
+        assert organization_id == self.run.organization_id
+        assert workspace_id == self.run.workspace_id
+        if automation_id is not None and automation_id != self.run.automation_id:
+            return []
+        return [self.run]
+
 
 class _Runs:
     def __init__(self, run):
@@ -102,6 +109,36 @@ class AutomationOutcomeReconciliationTests(unittest.TestCase):
             status=status,
             evidence_ids=tuple(evidence_ids),
         )
+
+    def test_reconcile_for_execution_targets_matching_running_run(self) -> None:
+        run = self._run("exec-a")
+        run.automation_id = "automation-a"
+        runs = _Runs(run)
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+        )
+
+        results = service.reconcile_for_execution("exec-a", actor=self.actor)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, AutomationRunStatus.SUCCEEDED)
+        self.assertEqual(runs.completed[0][0], run.id)
+
+    def test_reconcile_for_execution_ignores_unrelated_execution(self) -> None:
+        run = self._run("exec-a")
+        run.automation_id = "automation-a"
+        runs = _Runs(run)
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+        )
+
+        self.assertEqual(
+            service.reconcile_for_execution("exec-other", actor=self.actor),
+            (),
+        )
+        self.assertEqual(runs.completed, [])
 
     def test_all_succeeded_completes_run_and_unions_evidence(self) -> None:
         run = self._run("exec-a", "exec-b")
