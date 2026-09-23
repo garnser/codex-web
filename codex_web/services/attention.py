@@ -98,6 +98,9 @@ class AttentionService:
         cursor: int = 0,
         status: str | None = None,
         severity: str | None = None,
+        project_id: str | None = None,
+        item_type: str | None = None,
+        assignee: str | None = None,
     ) -> tuple[list[AttentionItem], int | null, int]:
         bounded_limit = max(1, min(int(limit), 100))
         offset = max(0, int(cursor))
@@ -112,6 +115,18 @@ class AttentionService:
                 visible = [item for item in visible if item.status.value == status]
         if severity:
             visible = [item for item in visible if item.severity.value == severity]
+        if project_id:
+            visible = [item for item in visible if item.project_id == project_id]
+        if item_type:
+            visible = [item for item in visible if item.type == item_type]
+        if assignee:
+            assignee_id = actor.identity_id if assignee == "me" else assignee
+            visible = [
+                item
+                for item in visible
+                if item.owner_identity_id == assignee_id
+                or assignee_id in item.recipient_identity_ids
+            ]
         total = len(visible)
         page = visible[offset:offset + bounded_limit]
         next_cursor = offset + len(page)
@@ -340,6 +355,7 @@ class AttentionService:
                 AttentionItemCreate(
                     organization_id=event.tenant_id,
                     workspace_id=event.workspace_id,
+                    project_id=payload.get("project_id"),
                     type="approval.required",
                     severity=AttentionSeverity.HIGH,
                     source=AttentionSource(
@@ -370,6 +386,7 @@ class AttentionService:
                 AttentionItemCreate(
                     organization_id=event.tenant_id,
                     workspace_id=event.workspace_id,
+                    project_id=payload.get("project_id"),
                     type=f"approval.{status}",
                     severity=(
                         AttentionSeverity.CRITICAL
