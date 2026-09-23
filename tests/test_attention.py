@@ -354,6 +354,18 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first.id, second.id)
         self.assertEqual(len(self.store.list()), 2)
 
+        resolved = await self.service.resolve_by_source(
+            "shared-provider-failure",
+            organization_id="other-org",
+            workspace_id="other-workspace",
+            actor_id="source-bridge",
+            reason="Other tenant source recovered",
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, second.id)
+        self.assertEqual(self.store.get(second.id).status, AttentionStatus.RESOLVED)
+        self.assertEqual(self.store.get(first.id).status, AttentionStatus.OPEN)
+
     async def test_attention_preserves_agent_and_evidence_provenance(self) -> None:
         item = await self.service.upsert(
             AttentionItemCreate(
