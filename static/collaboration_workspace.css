@@ -19,6 +19,8 @@
   display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
 }
 .collab-description { margin: 0; opacity: .8; }
+.collab-manage-link { width: fit-content; color: var(--accent, currentColor); font-size: .82rem; font-weight: 700; text-decoration: none; }
+.collab-manage-link:hover, .collab-manage-link:focus-visible { text-decoration: underline; }
 .collab-roster { display: grid; gap: 6px; }
 .collab-roster-row { display: grid; grid-template-columns: minmax(90px, .5fr) minmax(0, 1.5fr); gap: 8px; align-items: center; }
 .collab-roster-row > span { font-size: .72rem; opacity: .65; text-transform: uppercase; }
