@@ -172,7 +172,9 @@ test('project navigation is hierarchical, keeps active state, and separates Admi
   await expect(tree.locator('[data-project-nav-group="operations-group"] > summary')).toHaveText('Operations');
 
   const chat = tree.locator('[data-project-nav-node="chat"]');
-  await chat.click();
+  await chat.focus();
+  await expect(chat).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(chat).toHaveAttribute('aria-current', 'page');
   await expect(page).toHaveURL(/#workspace\/threads$/);
 
