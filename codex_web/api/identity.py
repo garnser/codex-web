@@ -214,6 +214,24 @@ def build_identity_router(service: IdentityService) -> APIRouter:
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 
+    @router.post("/api/identity/users")
+    async def create_human_user(
+        payload: HumanUserCreate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = require_sensitive_admin(request)
+            human, membership = service.create_human_user(
+                payload,
+                actor=actor,
+            )
+            return {
+                "human": human.model_dump(mode="json"),
+                "membership": membership.model_dump(mode="json"),
+            }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
     @router.post("/api/identity/humans")
     async def create_human(payload: HumanIdentityCreate, request: Request) -> dict[str, Any]:
         try:
