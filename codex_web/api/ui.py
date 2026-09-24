@@ -14,6 +14,8 @@ PROJECT_UI_PAGES = frozenset(
         "runs",
         "chat",
         "agents",
+        "agent-profiles",
+        "teams",
         "automations",
         "attention",
         "operations",

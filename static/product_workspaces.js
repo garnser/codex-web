@@ -53,8 +53,8 @@ const PROJECT_NAVIGATION_TREE = [
     id: "agents-group",
     label: "Agents",
     children: [
-      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agents", description: "Stable agent identity and execution preferences." },
-      { id: "teams", label: "Teams / Squads", workspace: "agents", page: "agents", description: "Bounded delegation between agent profiles." },
+      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agent-profiles", description: "Stable agent identity and execution preferences." },
+      { id: "teams", label: "Teams / Squads", workspace: "agents", page: "teams", description: "Bounded delegation between agent profiles." },
       { id: "skills", label: "Skills", workspace: "skills", description: "Versioned reusable procedures pinned to runs." },
     ],
   },
@@ -114,6 +114,16 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     purpose: "Manage reusable agent identities, teams and skills independently from the provider or runtime that executes them.",
     scope: "Project",
   },
+  "agent-profiles": {
+    title: "Agent Profiles",
+    purpose: "Manage stable reusable agent identities and their execution preferences independently from provider/runtime selection.",
+    scope: "Project",
+  },
+  teams: {
+    title: "Teams / Squads",
+    purpose: "Manage bounded delegation and collaboration between Agent Profiles inside the selected Project.",
+    scope: "Project",
+  },
   automations: {
     title: "Automations",
     purpose: "Define governed scheduled or event-driven work with explicit authority, budgets, retries and execution targets.",
@@ -142,6 +152,8 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   runs: "work",
   chat: "threads",
   agents: "agents",
+  "agent-profiles": "agents",
+  teams: "agents",
   automations: "autonomy",
   attention: "inbox",
   operations: "operations",
