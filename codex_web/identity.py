@@ -199,10 +199,14 @@ class ServiceTokenRecord(BaseModel):
     token_hash: str = Field(min_length=64, max_length=64)
     scopes: list[str] = Field(default_factory=list)
     created_at: float
+    created_by: str | None = None
     expires_at: float | None = None
     last_used_at: float | None = None
     rotation: int = Field(default=0, ge=0)
+    rotated_at: float | None = None
+    rotated_by: str | None = None
     revoked_at: float | None = None
+    revoked_by: str | None = None
     revoke_reason: str | None = None
 
     @model_validator(mode="after")
@@ -276,7 +280,7 @@ class ExternalAuthenticationResult(BaseModel):
 class IdentityState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.3"
     organizations: list[Organization] = Field(default_factory=list)
     workspaces: list[Workspace] = Field(default_factory=list)
     humans: list[HumanIdentity] = Field(default_factory=list)

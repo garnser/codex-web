@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,6 +172,63 @@ class IdentityServiceTests(unittest.TestCase):
         self.service.revoke_service_token(credentials.token_id)
         with self.assertRaises(AuthenticationError):
             self.service.authenticate_service_token(credentials.token)
+
+    def test_service_token_rotation_invalidates_old_secret_and_preserves_scope(self) -> None:
+        service_identity = self.service.create_service_identity("rotation-worker")
+        self.service.add_membership(
+            Membership(
+                identity_id=service_identity.id,
+                principal_kind=PrincipalKind.SERVICE,
+                organization_id="local",
+                workspace_id="default",
+                roles=[MembershipRole.MEMBER],
+            )
+        )
+        original = self.service.create_service_token(
+            service_identity_id=service_identity.id,
+            scope=TenantScope(),
+            scopes=["work:read", "work:write"],
+            expires_at=time.time() + 3600,
+            created_by="local-admin",
+        )
+
+        rotated = self.service.rotate_service_token(
+            original.token_id,
+            rotated_by="local-admin",
+        )
+
+        self.assertEqual(rotated.token_id, original.token_id)
+        self.assertNotEqual(rotated.token, original.token)
+        with self.assertRaises(AuthenticationError):
+            self.service.authenticate_service_token(original.token)
+        actor = self.service.authenticate_service_token(rotated.token)
+        self.assertEqual(actor.service_scopes, ("work:read", "work:write"))
+        record = next(
+            item
+            for item in self.service.state().service_tokens
+            if item.id == original.token_id
+        )
+        self.assertEqual(record.rotation, 1)
+        self.assertEqual(record.created_by, "local-admin")
+        self.assertEqual(record.rotated_by, "local-admin")
+        self.assertIsNotNone(record.rotated_at)
+
+        self.service.revoke_service_token(
+            original.token_id,
+            reason="operator-revocation",
+            revoked_by="local-admin",
+        )
+        record = next(
+            item
+            for item in self.service.state().service_tokens
+            if item.id == original.token_id
+        )
+        self.assertEqual(record.revoked_by, "local-admin")
+        with self.assertRaises(AuthenticationError):
+            self.service.rotate_service_token(
+                original.token_id,
+                rotated_by="local-admin",
+            )
 
     def test_membership_rejects_workspace_from_another_organization(self) -> None:
         def seed(state):
@@ -555,6 +613,51 @@ class IdentityMiddlewareTests(unittest.TestCase):
                         for item in snapshot["memberships"]
                     )
                 )
+
+    def test_admin_can_rotate_service_token_and_receives_new_secret_once(self) -> None:
+        service_identity = self.service.create_service_identity("api-rotation-worker")
+        self.service.add_membership(
+            Membership(
+                identity_id=service_identity.id,
+                principal_kind=PrincipalKind.SERVICE,
+                organization_id="local",
+                workspace_id="default",
+                roles=[MembershipRole.MEMBER],
+            )
+        )
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "local-trusted"}):
+            with TestClient(self._app()) as client:
+                created = client.post(
+                    "/api/identity/service-tokens",
+                    json={
+                        "service_identity_id": service_identity.id,
+                        "organization_id": "local",
+                        "workspace_id": "default",
+                        "scopes": ["automation.run"],
+                    },
+                )
+                self.assertEqual(created.status_code, 200)
+                original = created.json()
+                rotated = client.post(
+                    f"/api/identity/service-tokens/{original['token_id']}/rotate"
+                )
+                self.assertEqual(rotated.status_code, 200)
+                self.assertEqual(rotated.json()["token_id"], original["token_id"])
+                self.assertNotEqual(rotated.json()["token"], original["token"])
+
+                snapshot_response = client.get("/api/identity")
+                snapshot = snapshot_response.json()
+                record = next(
+                    item
+                    for item in snapshot["service_tokens"]
+                    if item["id"] == original["token_id"]
+                )
+                self.assertEqual(record["rotation"], 1)
+                self.assertEqual(record["created_by"], "local-admin")
+                self.assertEqual(record["rotated_by"], "local-admin")
+                self.assertIsNotNone(record["rotated_at"])
+                self.assertNotIn(original["token"], snapshot_response.text)
+                self.assertNotIn(rotated.json()["token"], snapshot_response.text)
 
     def test_admin_identity_snapshot_never_returns_credential_hashes(self) -> None:
         credentials = self.service.create_session(
