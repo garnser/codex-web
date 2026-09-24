@@ -64,8 +64,7 @@ const teams = [
 
 const skills = [
   {
-    skill_id: 'python-review',
-    definition_id: 'python-review',
+    skillId: 'python-review',
     name: 'Python Review',
     revision: 2,
     lifecycle: 'active',

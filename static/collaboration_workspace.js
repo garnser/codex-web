@@ -205,12 +205,13 @@ function teamCard(team, profilesById) {
 }
 
 function skillUsageCard(skill, consumers) {
-  const id = skill.skill_id || skill.definition_id || skill.id || skill.name;
+  const id = skill.skill_id || skill.skillId || skill.definition_id || skill.id || skill.name;
+  const definition = skill.skill || skill.definition || skill;
   const article = el("article", "collab-skill-usage");
   const top = el("div", "collab-skill-usage-head");
   top.append(
-    el("strong", "", skill.name || id),
-    statusBadge(skill.lifecycle || "active"),
+    el("strong", "", definition.name || id),
+    statusBadge(definition.lifecycle || skill.definitionLifecycle || "active"),
   );
   article.append(top, el("small", "", `Revision ${skill.revision || skill.active_revision || "—"} · used by ${consumers.length} Agent${consumers.length === 1 ? "" : "s"}`));
   if (consumers.length) {
@@ -218,7 +219,7 @@ function skillUsageCard(skill, consumers) {
     consumers.forEach((profile) => chips.appendChild(agentIdentity(profile)));
     article.appendChild(chips);
   }
-  const provenance = skill.provenance || skill.definition?.provenance;
+  const provenance = definition.provenance || skill.provenance;
   if (provenance) article.appendChild(el("small", "collab-provenance", `Source: ${provenance.source_type || "manual"}${provenance.source_ref ? ` · ${provenance.source_ref}` : ""}`));
   return article;
 }
@@ -249,7 +250,7 @@ function render(card) {
     skills.appendChild(statePanel({ kind: "empty", title: "No Skills", detail: "No visible canonical Skills are available." }));
   } else {
     state.skills.forEach((skill) => {
-      const id = skill.skill_id || skill.definition_id || skill.id || "";
+      const id = skill.skill_id || skill.skillId || skill.definition_id || skill.id || "";
       skills.appendChild(skillUsageCard(skill, consumers.get(id) || []));
     });
   }
