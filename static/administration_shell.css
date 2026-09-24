@@ -1,0 +1,24 @@
+.product-administration-shell{display:grid;min-height:min(72vh,720px);background:var(--surface);color:var(--text)}
+.product-administration-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px;border-bottom:1px solid var(--line)}
+.product-administration-header h2{margin:3px 0 0}
+.product-administration-header p{max-width:760px;margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.45}
+.product-administration-scope{display:grid;gap:2px;min-width:180px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);font-size:11px}
+.product-administration-scope span{color:var(--muted)}
+.product-administration-layout{display:grid;grid-template-columns:minmax(210px,260px) minmax(0,1fr);min-height:0}
+.product-administration-nav{display:grid;align-content:start;gap:4px;padding:12px;border-right:1px solid var(--line);background:var(--sidebar-bg)}
+.product-administration-nav button{display:grid;gap:2px;width:100%;padding:9px 10px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left}
+.product-administration-nav button:hover,.product-administration-nav button:focus-visible{background:var(--surface)}
+.product-administration-nav button[aria-current="page"]{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.product-administration-nav button:disabled{opacity:.55;cursor:not-allowed}
+.product-administration-nav small{color:var(--muted);font-size:10px;line-height:1.35}
+.product-administration-content{min-width:0;padding:16px}
+.product-administration-content .workspace-state{margin:0}
+@media(max-width:760px){
+  .product-administration-header{display:grid}
+  .product-administration-scope{min-width:0}
+  .product-administration-layout{grid-template-columns:1fr}
+  .product-administration-nav{grid-template-columns:repeat(2,minmax(0,1fr));border-right:0;border-bottom:1px solid var(--line)}
+}
+@media(max-width:480px){
+  .product-administration-nav{grid-template-columns:1fr}
+}
