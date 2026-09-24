@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 from codex_web.authority import (
@@ -16,6 +17,7 @@ from codex_web.authority import (
     AuthorityRoleDefinition,
 )
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.resources import ResourceRisk, ResourceSensitivity, ResourceType
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -207,6 +209,89 @@ class AuthorityPolicyExplorerTests(unittest.TestCase):
         self.assertEqual(
             impact["affected"]["active_work"][0]["object_id"],
             "work-1",
+        )
+
+
+    def test_effective_for_resource_filters_resource_constraints_server_side(self):
+        catalog = AuthorityRoleCatalogDefinition(
+            roles=(
+                AuthorityRoleDefinition(
+                    id="resource-reader",
+                    name="Resource reader",
+                    description="Resource-scoped read authority.",
+                    grants=(
+                        AuthorityGrant(
+                            id="repo.read",
+                            capability="repository.read",
+                            level=AuthorityLevel.READ,
+                            resource_types=(ResourceType.REPOSITORY,),
+                            resource_risks=(ResourceRisk.MEDIUM,),
+                        ),
+                        AuthorityGrant(
+                            id="prod.read",
+                            capability="environment.read",
+                            level=AuthorityLevel.READ,
+                            resource_types=(ResourceType.ENVIRONMENT,),
+                        ),
+                    ),
+                ),
+            ),
+            bindings=(
+                AuthorityRoleBinding(
+                    id="resource-binding",
+                    role_id="resource-reader",
+                    subject_kind="identity",
+                    subject_id=self.actor.identity_id,
+                    organization_id="local",
+                    workspace_id="default",
+                ),
+            ),
+        )
+        self._publish(catalog)
+        repository = SimpleNamespace(
+            id="repo-a",
+            name="Repository A",
+            resource_type=ResourceType.REPOSITORY,
+            risk=ResourceRisk.MEDIUM,
+            sensitivity=ResourceSensitivity.INTERNAL,
+        )
+
+        view = self.explorer.effective_for_resource(
+            actor=self.actor,
+            resource=repository,
+            now=1000.0,
+        )
+
+        self.assertEqual(view["resource"]["id"], "repo-a")
+        self.assertEqual(
+            [row["grant_id"] for row in view["permission_matrix"]],
+            ["repo.read"],
+        )
+        self.assertEqual(
+            [row["source_id"] for row in view["assignments"]],
+            ["resource-binding"],
+        )
+
+    def test_effective_for_resource_preserves_unconstrained_grants(self):
+        self._publish(self._catalog(level=AuthorityLevel.READ))
+        repository = SimpleNamespace(
+            id="repo-a",
+            name="Repository A",
+            resource_type=ResourceType.REPOSITORY,
+            risk=ResourceRisk.MEDIUM,
+            sensitivity=ResourceSensitivity.INTERNAL,
+        )
+
+        view = self.explorer.effective_for_resource(
+            actor=self.actor,
+            project_id="project-a",
+            resource=repository,
+            now=1000.0,
+        )
+
+        self.assertEqual(
+            {row["grant_id"] for row in view["permission_matrix"]},
+            {"base.read", "developer.deploy"},
         )
 
 
