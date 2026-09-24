@@ -9,6 +9,7 @@ from codex_web.configuration import (
     ConfigurationLifecycle,
     ConfigurationPublishRequest,
     ConfigurationRecord,
+    ConfigurationResetRequest,
     ConfigurationRollbackRequest,
     ConfigurationScope,
     ConfigurationSpec,
@@ -324,6 +325,80 @@ class ConfigurationService:
                 expected_active_revision=request.expected_active_revision,
             ),
         )
+
+    def reset_override(self, request: ConfigurationResetRequest) -> ConfigurationRecord:
+        """Supersede the explicit value at one scope so resolution can inherit."""
+
+        self.specs.get(request.key)
+        reset_records: list[ConfigurationRecord] = []
+        slot = self._scope_key(request.key, request.scope_type, request.scope_id)
+
+        def update(records: list[ConfigurationRecord]) -> list[ConfigurationRecord]:
+            matching = [
+                record
+                for record in records
+                if self._same_scope(
+                    record,
+                    request.key,
+                    request.scope_type,
+                    request.scope_id,
+                )
+            ]
+            active = next(
+                (
+                    record
+                    for record in matching
+                    if record.state == ConfigurationLifecycle.PUBLISHED
+                ),
+                None,
+            )
+            if active is None:
+                raise ConfigurationConflictError(
+                    "configuration scope has no published override to reset"
+                )
+            if (
+                request.expected_active_revision is not None
+                and request.expected_active_revision != active.revision
+            ):
+                raise ConfigurationConflictError(
+                    "active configuration revision changed before reset"
+                )
+
+            now = time.time()
+            tombstone = ConfigurationRecord(
+                key=active.key,
+                scope_type=active.scope_type,
+                scope_id=active.scope_id,
+                revision=max(record.revision for record in matching) + 1,
+                state=ConfigurationLifecycle.DISABLED,
+                value=active.value,
+                created_by=request.actor,
+                create_reason=request.reason or "revert explicit override",
+                created_at=now,
+                published_by=request.actor,
+                publish_reason=request.reason or "revert explicit override",
+                published_at=now,
+                supersedes_id=active.id,
+            )
+            result: list[ConfigurationRecord] = []
+            for record in records:
+                if record.id == active.id:
+                    result.append(
+                        record.model_copy(
+                            update={
+                                "state": ConfigurationLifecycle.SUPERSEDED,
+                                "superseded_by_id": tombstone.id,
+                            }
+                        )
+                    )
+                else:
+                    result.append(record)
+            result.append(tombstone)
+            reset_records.append(tombstone)
+            return result
+
+        self.store.update(update)
+        return reset_records[0]
 
     @staticmethod
     def _record_matches_context(
