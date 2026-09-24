@@ -1,5 +1,6 @@
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
 import { renderHomeOverview } from "./home_overview.js";
+import { renderAdministrationUsers } from "./administration_users.js";
 import {
   administrationPath,
   administrationPresentation,
@@ -296,13 +297,18 @@ function currentProjectRoute() {
   };
 }
 
-async function administrationApi(path) {
+async function administrationApi(path, options = {}) {
   const route = currentAdministrationRoute();
   const prefix = route?.prefix
     ?? currentProjectRoute()?.prefix
     ?? (window.location.pathname.startsWith("/codex") ? "/codex" : "");
   const response = await fetch(`${prefix}${path}`, {
-    headers: { Accept: "application/json" },
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
   });
   if (!response.ok) {
     let detail = null;
@@ -374,7 +380,16 @@ async function renderAdministrationRoute(page = "overview") {
     if (context.allowed) {
       const presentation = administrationPresentation(page);
       const stateHost = root.querySelector("[data-administration-page-state]");
-      if (stateHost) {
+      if (stateHost && ["users", "memberships"].includes(page)) {
+        renderAdministrationUsers(stateHost, {
+          context,
+          api: administrationApi,
+          page,
+          onChanged: async () => {
+            await renderAdministrationRoute(page);
+          },
+        });
+      } else if (stateHost) {
         stateHost.className = "workspace-state product-administration-page-placeholder";
         stateHost.innerHTML = `
           <strong>${esc(presentation.title)}</strong>
