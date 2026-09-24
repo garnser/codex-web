@@ -376,3 +376,27 @@ test('global Administration entry is hidden when canonical identity denies admin
   await page.goto('http://127.0.0.1:18766/projects/home/overview');
   await expect(page.locator('[data-project-nav-node="administration"]')).toBeHidden();
 });
+
+
+test('Work Items navigation opens the canonical operator in the main workspace host', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => {
+    window.__workItemsOpen = null;
+    window.addEventListener('codex:open-work-items', (event) => {
+      window.__workItemsOpen = {
+        mode: event.detail?.mode || null,
+        hostWorkspace: event.detail?.host?.dataset?.productWorkspaceHost || null,
+      };
+    }, { once: true });
+  });
+
+  await page.locator('[data-project-nav-node="work-items"]').click();
+
+  await expect(page).toHaveURL(/#workspace\/work$/);
+  await expect.poll(() => page.evaluate(() => window.__workItemsOpen)).toEqual({
+    mode: 'inline',
+    hostWorkspace: 'work',
+  });
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Work Items');
+});
