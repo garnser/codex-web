@@ -71,6 +71,32 @@ function permissionRows(result, repositoryId = "") {
   `).join("");
 }
 
+function subjectRows(result) {
+  const items = result?.items || [];
+  if (!items.length) {
+    return '<div class="workspace-state">No active human identities have matching canonical grants for this selected scope.</div>';
+  }
+  return items.map((item) => {
+    const identity = item.identity || {};
+    const sources = (item.assignments || []).map((assignment) => (
+      `${assignment.source_type === "delegation" ? "Delegated" : "Direct"} ${assignment.role_id} · ${assignment.source_id}`
+    ));
+    const capabilities = (item.permission_matrix || []).map((row) => `${row.capability} (${row.level})`);
+    return `
+      <article class="administration-user-card" data-access-subject="${esc(identity.id)}">
+        <header>
+          <div>
+            <h3>${esc(identity.display_name || identity.id)}</h3>
+            <p>${esc(identity.email || "No email")} · human identity ${esc(identity.id)}</p>
+          </div>
+        </header>
+        <p><strong>Authority sources</strong> · ${esc(sources.join(" · ") || "No matching source")}</p>
+        <p><strong>Effective grants</strong> · ${esc(capabilities.join(" · ") || "No matching grants")}</p>
+      </article>
+    `;
+  }).join("");
+}
+
 function query(params) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -113,6 +139,14 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
         </label>
       </div>
       <small>Repository registration/binding describes where a repository exists. Authorization to use it comes from canonical Role grants and is shown below.</small>
+      <div class="administration-membership-actions">
+        <button type="button" data-access-target-load>Who can access this selected scope?</button>
+      </div>
+      <small>Select a Project, repository, or both. The subject list is computed by the server from canonical Role bindings, delegations and grant constraints.</small>
+    </section>
+    <section>
+      <h3>People with access to selected scope</h3>
+      <div data-access-target-results><div class="workspace-state">Choose a Project or repository, then load the canonical access-subject projection.</div></div>
     </section>
     <section>
       <h3>Assignments</h3>
@@ -130,6 +164,8 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   const repository = container.querySelector("[data-access-repository]");
   const assignments = container.querySelector("[data-access-assignments]");
   const grants = container.querySelector("[data-access-grants]");
+  const targetButton = container.querySelector("[data-access-target-load]");
+  const targetResults = container.querySelector("[data-access-target-results]");
   let current = null;
 
   const setMessage = (value, kind = "info") => {
@@ -178,7 +214,31 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
     ].join("");
   }).catch((error) => setMessage(error?.message || "Unable to load access scope.", "error"));
 
+  const loadSubjects = async () => {
+    if (!project.value && !repository.value) {
+      setMessage("Select a Project or repository before loading who has access.", "error");
+      targetResults.innerHTML = '<div class="workspace-state">A Project or repository scope is required for this object-centric view.</div>';
+      return;
+    }
+    setMessage("Loading canonical access subjects…");
+    targetButton.disabled = true;
+    try {
+      const result = await api(`/api/authority/access-subjects${query({
+        project_id: project.value,
+        resource_id: repository.value,
+      })}`);
+      setMessage("");
+      targetResults.innerHTML = subjectRows(result);
+    } catch (error) {
+      setMessage(error?.message || "Unable to load canonical access subjects.", "error");
+      targetResults.innerHTML = '<div class="workspace-state">No access projection is available until the canonical request succeeds.</div>';
+    } finally {
+      targetButton.disabled = false;
+    }
+  };
+
   identity.addEventListener("change", () => void loadEffective());
   project.addEventListener("change", () => void loadEffective());
   repository.addEventListener("change", renderResult);
+  targetButton.addEventListener("click", () => void loadSubjects());
 }

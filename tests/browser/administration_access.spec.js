@@ -165,3 +165,115 @@ test("routed Administration Access uses canonical authority endpoint and fails c
   await expect(page.locator("[data-access-message]")).toContainText("administrator MFA/step-up required");
   await expect(page.locator("[data-access-grants]")).toContainText("No effective operational grants");
 });
+
+
+test("Administration Access answers who can access a selected Project and repository from one canonical projection", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAccess } = await import("/static/administration_access.js");
+    const calls = [];
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      identity: { humans: [], memberships: [] },
+    };
+    const api = async (path) => {
+      calls.push(path);
+      if (path === "/api/projects") return [{ id: "project-a", name: "Project A" }];
+      if (path.startsWith("/api/resources")) {
+        return { items: [{ id: "repo-a", name: "Repository A", resource_type: "repository" }] };
+      }
+      if (path === "/api/authority/access-subjects?project_id=project-a&resource_id=repo-a") {
+        return {
+          items: [{
+            identity: { id: "human-a", display_name: "Alice", email: "alice@example.test" },
+            assignments: [{
+              source_type: "binding",
+              source_id: "binding-a",
+              role_id: "developer",
+            }],
+            permission_matrix: [{
+              capability: "repository.write",
+              level: "execute",
+            }],
+          }, {
+            identity: { id: "human-b", display_name: "Bob", email: null },
+            assignments: [{
+              source_type: "delegation",
+              source_id: "delegation-b",
+              role_id: "reviewer",
+            }],
+            permission_matrix: [{
+              capability: "repository.read",
+              level: "read",
+            }],
+          }],
+        };
+      }
+      throw new Error(`unexpected API ${path}`);
+    };
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAccess(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.querySelector("[data-access-project]").value = "project-a";
+    host.querySelector("[data-access-repository]").value = "repo-a";
+    host.querySelector("[data-access-target-load]").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    return {
+      calls,
+      subjectIds: [...host.querySelectorAll("[data-access-subject]")].map((item) => item.dataset.accessSubject),
+      text: host.querySelector("[data-access-target-results]")?.textContent,
+    };
+  });
+
+  expect(result.calls).toContain("/api/authority/access-subjects?project_id=project-a&resource_id=repo-a");
+  expect(result.subjectIds).toEqual(["human-a", "human-b"]);
+  expect(result.text).toContain("Direct developer");
+  expect(result.text).toContain("Delegated reviewer");
+  expect(result.text).toContain("repository.write (execute)");
+  expect(result.text).toContain("repository.read (read)");
+});
+
+test("object-centric Access requires an explicit Project or repository scope before querying", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAccess } = await import("/static/administration_access.js");
+    const calls = [];
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      identity: { humans: [], memberships: [] },
+    };
+    const api = async (path) => {
+      calls.push(path);
+      if (path === "/api/projects") return [];
+      if (path.startsWith("/api/resources")) return { items: [] };
+      throw new Error("access projection must not be called without explicit scope");
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAccess(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.querySelector("[data-access-target-load]").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return {
+      calls,
+      message: host.querySelector("[data-access-message]")?.textContent,
+      results: host.querySelector("[data-access-target-results]")?.textContent,
+    };
+  });
+
+  expect(result.calls).toEqual([
+    "/api/projects",
+    "/api/resources?resource_type=repository&lifecycle=active",
+  ]);
+  expect(result.message).toContain("Select a Project or repository");
+  expect(result.results).toContain("scope is required");
+});
