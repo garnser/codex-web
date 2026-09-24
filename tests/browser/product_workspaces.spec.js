@@ -157,3 +157,49 @@ test('workspace deep links participate in browser back navigation', async ({ pag
   await expect(page).toHaveURL(/#workspace\/resources$/);
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Resources');
 });
+
+
+test('project navigation is hierarchical, keeps active state, and separates Administration', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const tree = page.locator('.product-project-nav-tree');
+  await expect(tree).toBeVisible();
+  await expect(tree).toHaveAttribute('aria-label', 'Project navigation');
+
+  await expect(tree.locator('[data-project-nav-group="work-group"] > summary')).toHaveText('Work');
+  await expect(tree.locator('[data-project-nav-group="agents-group"] > summary')).toHaveText('Agents');
+  await expect(tree.locator('[data-project-nav-group="automation-group"] > summary')).toHaveText('Automation');
+  await expect(tree.locator('[data-project-nav-group="operations-group"] > summary')).toHaveText('Operations');
+
+  const chat = tree.locator('[data-project-nav-node="chat"]');
+  await chat.click();
+  await expect(chat).toHaveAttribute('aria-current', 'page');
+  await expect(page).toHaveURL(/#workspace\/threads$/);
+
+  const automationGroup = tree.locator('[data-project-nav-group="automation-group"]');
+  await automationGroup.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(automationGroup).toHaveAttribute('open', '');
+
+  const global = page.locator('.product-global-nav');
+  await expect(global).toHaveAttribute('aria-label', 'Global navigation');
+  await expect(global.locator('[data-project-nav-node="administration"]')).toHaveText('Administration');
+  await expect(tree.locator('[data-project-nav-node="administration"]')).toHaveCount(0);
+});
+
+test('hierarchical navigation remains usable at phone width', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const navigation = page.locator('.product-project-navigation');
+  await expect(navigation).toBeVisible();
+  const box = await navigation.boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+
+  const attention = navigation.locator('[data-project-nav-node="attention"]');
+  await attention.focus();
+  await expect(attention).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('[data-attention-launch]')).toHaveAttribute('data-clicked', '1');
+});
