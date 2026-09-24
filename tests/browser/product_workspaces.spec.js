@@ -89,7 +89,7 @@ test('overview Explain Action routes to canonical Autonomy explain UI without mo
   await dialog.locator('[data-product-explain-id]').fill('action-intent-123');
   await dialog.locator('[data-product-explain]').click();
 
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Automation / Autonomy');
+  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Automations');
   await expect(page.locator('[data-acc-intent]')).toHaveValue('action-intent-123');
   await expect(page.locator('[data-acc-explain]')).toHaveAttribute('data-clicked', '1');
 });
@@ -151,7 +151,7 @@ test('workspace deep links participate in browser back navigation', async ({ pag
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('operations'));
   await expect(page).toHaveURL(/#workspace\/operations$/);
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Operations / Observability');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Operations');
 
   await page.goBack();
   await expect(page).toHaveURL(/#workspace\/resources$/);
@@ -206,4 +206,40 @@ test('hierarchical navigation remains usable at phone width', async ({ page }) =
   await expect(attention).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.locator('[data-attention-launch]')).toHaveAttribute('data-clicked', '1');
+});
+
+
+test('major Project destinations explain purpose and scope without hover', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  await expect(page.locator('.product-field-help')).toContainText('Project scope');
+  const runs = page.locator('[data-project-nav-node="runs"]');
+  await expect(runs.locator('.product-project-nav-help')).toContainText('What executed');
+  const runtime = page.locator('[data-project-nav-node="runtime"]');
+  await expect(runtime.locator('.product-project-nav-help')).toContainText('executions run');
+
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
+  const dialog = page.locator('#product-workspace-dialog');
+  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Overview');
+  await expect(dialog.locator('[data-product-workspace-description]')).toContainText('current work');
+  await expect(dialog.locator('[data-project-page-scope]')).toHaveText('Scope: Project');
+});
+
+test('routed pages use page-specific purpose text for shared workspace surfaces', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+
+  await page.goto('http://127.0.0.1:18766/projects/home/runs');
+
+  const dialog = page.locator('#product-workspace-dialog');
+  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Runs / Execution');
+  await expect(dialog.locator('[data-product-workspace-description]')).toContainText('what agents and workers actually executed');
+  await expect(dialog.locator('[data-project-page-scope]')).toHaveText('Scope: Project execution');
+  await expect(page.locator('[data-project-nav-node="runs"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveAttribute('aria-current', 'false');
 });
