@@ -127,7 +127,7 @@ test('Agent, Team and Skill surfaces use stable canonical identities and lifecyc
   await expect(maya.locator('[data-identity-id="maya"]')).toBeVisible();
   await expect(maya).not.toContainText('openai');
   const manageSkills = maya.locator('[data-manage-agent-skills="maya"]');
-  await expect(manageSkills).toHaveText('Manage Skills');
+  await expect(manageSkills).toHaveText('Manage');
   await expect(manageSkills).toHaveAttribute('href', '/projects/home/skills');
   await expect(manageSkills).toHaveAttribute('aria-label', 'Manage Skills for Maya');
 
