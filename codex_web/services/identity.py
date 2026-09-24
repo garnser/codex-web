@@ -595,6 +595,7 @@ class IdentityService:
         scope: TenantScope,
         scopes: Iterable[str],
         expires_at: float | None = None,
+        created_by: str | None = None,
     ) -> ServiceTokenCredentials:
         state = self.store.load()
         identity = next(
@@ -622,6 +623,7 @@ class IdentityService:
             token_hash=_hash(raw),
             scopes=list(scopes),
             created_at=time.time(),
+            created_by=created_by,
             expires_at=expires_at,
         )
 
@@ -677,14 +679,66 @@ class IdentityService:
         self.store.update(apply)
         return actor
 
-    def revoke_service_token(self, token_id: str, *, reason: str = "revoked") -> None:
+    def rotate_service_token(
+        self,
+        token_id: str,
+        *,
+        rotated_by: str | None = None,
+    ) -> ServiceTokenCredentials:
+        now = time.time()
+        raw = _token()
+        rotated: list[ServiceTokenRecord] = []
+
+        def apply(state: IdentityState) -> IdentityState:
+            for index, item in enumerate(state.service_tokens):
+                if item.id != token_id:
+                    continue
+                if item.revoked_at is not None:
+                    raise AuthenticationError("revoked service token cannot be rotated")
+                if item.expires_at is not None and now >= item.expires_at:
+                    raise AuthenticationError(
+                        "expired service token cannot be rotated; create a replacement"
+                    )
+                replacement = item.model_copy(
+                    update={
+                        "token_hash": _hash(raw),
+                        "last_used_at": None,
+                        "rotation": item.rotation + 1,
+                        "rotated_at": now,
+                        "rotated_by": rotated_by,
+                    }
+                )
+                state.service_tokens[index] = replacement
+                rotated.append(replacement)
+                return state
+            raise AuthenticationError("service token not found")
+
+        self.store.update(apply)
+        record = rotated[0]
+        return ServiceTokenCredentials(
+            token_id=record.id,
+            token=raw,
+            expires_at=record.expires_at,
+        )
+
+    def revoke_service_token(
+        self,
+        token_id: str,
+        *,
+        reason: str = "revoked",
+        revoked_by: str | None = None,
+    ) -> None:
         now = time.time()
 
         def apply(state: IdentityState) -> IdentityState:
             for index, item in enumerate(state.service_tokens):
                 if item.id == token_id:
                     state.service_tokens[index] = item.model_copy(
-                        update={"revoked_at": item.revoked_at or now, "revoke_reason": reason}
+                        update={
+                            "revoked_at": item.revoked_at or now,
+                            "revoked_by": item.revoked_by or revoked_by,
+                            "revoke_reason": reason,
+                        }
                     )
                     return state
             raise AuthenticationError("service token not found")
