@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -36,9 +37,16 @@ class OperatorUiService:
         self.load_work_item_states = load_work_item_states
         self.event_hub = event_hub
 
-    def index_html(self) -> str:
+    def index_html(self, *, base_href: str | None = None) -> str:
         version = self.version()
         html = (self.static_dir / "index.html").read_text()
+        if base_href is not None:
+            normalized_base = "/" + str(base_href).strip("/") if str(base_href).strip("/") else ""
+            html = html.replace(
+                "<head>",
+                f'<head>\n    <base href="{escape(normalized_base + "/", quote=True)}" />',
+                1,
+            )
         html = html.replace(
             'href="static/styles.css"',
             f'href="static/styles.css?v={version}"',
