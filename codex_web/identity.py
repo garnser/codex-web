@@ -307,6 +307,24 @@ class HumanIdentityCreate(BaseModel):
     email: str | None = None
 
 
+class HumanUserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str | None = None
+    display_name: str = Field(min_length=1)
+    email: str | None = None
+    roles: list[MembershipRole] = Field(default_factory=lambda: [MembershipRole.MEMBER])
+    team_ids: list[str] = Field(default_factory=list)
+    organization_wide: bool = False
+
+    @model_validator(mode="after")
+    def normalize(self) -> "HumanUserCreate":
+        if not self.roles:
+            raise ValueError("human user requires at least one role")
+        self.roles = list(dict.fromkeys(self.roles))
+        self.team_ids = list(dict.fromkeys(self.team_ids))
+        return self
+
+
 class ServiceIdentityCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: str | None = None
