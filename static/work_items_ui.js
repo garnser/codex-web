@@ -7,7 +7,6 @@ const PAGE_SIZE=50;
 const ROW_WINDOW=60;
 const RUN_PAGE_SIZE=20;
 const WORK_ITEM_PROJECT_KEY='codex-web-work-item-project';
-
 const state={
   projects: [],
   catalog: { items: [], sync: {} },
