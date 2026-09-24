@@ -208,6 +208,11 @@ function currentRunSettings() {
 }
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
+function primaryWritableRepositoryId(settings=currentRunSettings()){
+  return settings.repositoryResourceId
+    || rtui.selectedWritableRepositoryIds({project:activeProject(),settings})[0]
+    || "";
+}
 function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
 function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
@@ -1353,7 +1358,8 @@ async function newThread() {
     approval_policy: settings.approvalPolicy,
   });
   ep.applyThreadQuery(qs,settings);
-  if(settings.repositoryResourceId)qs.set("repository_resource_id",settings.repositoryResourceId);
+  const primaryRepositoryId=primaryWritableRepositoryId(settings);
+  if(primaryRepositoryId)qs.set("repository_resource_id",primaryRepositoryId);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
@@ -1403,7 +1409,7 @@ async function sendPrompt() {
     approval_policy: runSettings.approvalPolicy,
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
-    repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    repository_resource_id: selectedThreadSettings.repository_resource_id || primaryWritableRepositoryId(runSettings) || null,
     ...rtui.scope(),
     read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
     execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
