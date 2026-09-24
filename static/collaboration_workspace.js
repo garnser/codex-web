@@ -16,6 +16,16 @@ function el(tag, className, text) {
   return node;
 }
 
+function projectPageHref(page) {
+  const path = window.location.pathname;
+  const route = path.match(/^(\/codex)?\/projects\/([^/]+)/);
+  const prefix = route?.[1] || (path.startsWith("/codex") ? "/codex" : "");
+  const projectId = route?.[2]
+    ? decodeURIComponent(route[2])
+    : document.body?.dataset.activeProject || "home";
+  return `${prefix}/projects/${encodeURIComponent(projectId)}/${page}`;
+}
+
 function lifecycle(item) {
   return String(item?.lifecycle || "unknown").toLowerCase();
 }
@@ -147,8 +157,13 @@ function agentCard(profile) {
     { label: "Role", value: profile.role_id },
     { label: "Owner", value: profile.owner_identity_id },
     { label: "Revision", value: profile.revision },
-    { label: "Skills", value: (profile.skill_refs || []).map(refId).filter(Boolean).join(", ") || "None" },
+    { label: "Skills", value: (profile.skill_refs || profile.skillRefs || []).map(refId).filter(Boolean).join(", ") || "None" },
   ]));
+  const manageSkills = el("a", "collab-manage-link", "Manage Skills");
+  manageSkills.href = projectPageHref("skills");
+  manageSkills.dataset.manageAgentSkills = profile.profile_id;
+  manageSkills.setAttribute("aria-label", `Manage Skills for ${profile.name || profile.profile_id}`);
+  article.appendChild(manageSkills);
   const details = el("details", "collab-agent-context");
   const summary = el("summary", "", "Work, access and execution context");
   const body = el("div", "collab-agent-details");
