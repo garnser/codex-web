@@ -22,6 +22,7 @@ from codex_web.services.identity import (
     IdentityService,
 )
 from codex_web.services.projects import ProjectNotFoundError, ProjectService
+from codex_web.services.resources import ResourceCatalogError, ResourceNotFoundError
 from codex_web.services.work_items import WorkItemService
 
 
@@ -35,13 +36,13 @@ class AuthoritySimulationHttpRequest(BaseModel):
 
 
 def _error(exc: Exception) -> HTTPException:
-    if isinstance(exc, (DefinitionNotFoundError, ProjectNotFoundError)):
+    if isinstance(exc, (DefinitionNotFoundError, ProjectNotFoundError, ResourceNotFoundError)):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (DefinitionConflictError,)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (AuthorizationError,)):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, (DefinitionError, IdentityError, LookupError, ValueError)):
+    if isinstance(exc, (DefinitionError, IdentityError, ResourceCatalogError, LookupError, ValueError)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -138,6 +139,7 @@ def build_authority_router(
                     IdentityError,
                     AuthorizationError,
                     ProjectNotFoundError,
+                    ResourceCatalogError,
                     LookupError,
                     ValueError,
                 ),
