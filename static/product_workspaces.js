@@ -44,7 +44,7 @@ const PROJECT_NAVIGATION_TREE = [
     children: [
       { id: "work-items", label: "Work Items", workspace: "work", page: "work-items", description: "Canonical tasks, blockers and ownership." },
       { id: "runs", label: "Runs / Execution", workspace: "work", page: "runs", description: "What executed, where, and with what result." },
-      { id: "chat", label: "Chat / Threads", workspace: "threads", page: "chat", description: "Interactive agent work in this Project." },
+      { id: "chat", label: "Threads", workspace: "threads", page: "chat", description: "Interactive agent work in this Project." },
       { id: "goals", label: "Goals", workspace: "goals" },
       { id: "decisions", label: "Decisions", workspace: "decisions" },
     ],
@@ -105,7 +105,7 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     scope: "Project execution",
   },
   chat: {
-    title: "Chat / Threads",
+    title: "Threads",
     purpose: "Work interactively with an agent inside the selected Project; repository and execution policy still apply to every turn.",
     scope: "Project",
   },
