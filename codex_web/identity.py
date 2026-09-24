@@ -129,6 +129,7 @@ class Membership(BaseModel):
     roles: list[MembershipRole] = Field(default_factory=lambda: [MembershipRole.MEMBER])
     team_ids: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
+    created_by: str | None = None
     updated_at: float | None = None
     updated_by: str | None = None
     revoked_at: float | None = None
