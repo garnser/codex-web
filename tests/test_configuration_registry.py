@@ -12,6 +12,7 @@ from codex_web.configuration import (
     ConfigurationContext,
     ConfigurationDraftCreate,
     ConfigurationPublishRequest,
+    ConfigurationResetRequest,
     ConfigurationRollbackRequest,
     ConfigurationScope,
     ConfigurationSpec,
@@ -184,6 +185,51 @@ class ConfigurationServiceTests(unittest.TestCase):
         self.assertEqual(effective.record_id, rolled_back.id)
         history = self.service.list_records(key="runtime.retry_limit")
         self.assertEqual(len(history), 3)
+
+    def test_reset_override_preserves_history_and_falls_back_to_inheritance(self) -> None:
+        global_record = self._publish("runtime.retry_limit", 2)
+        project_record = self._publish(
+            "runtime.retry_limit",
+            5,
+            scope_type=ConfigurationScope.PROJECT,
+            scope_id="project-a",
+        )
+
+        tombstone = self.service.reset_override(
+            ConfigurationResetRequest(
+                key="runtime.retry_limit",
+                scope_type=ConfigurationScope.PROJECT,
+                scope_id="project-a",
+                actor="operator",
+                reason="return to inherited value",
+                expected_active_revision=project_record.revision,
+            )
+        )
+
+        self.assertEqual(tombstone.state.value, "disabled")
+        self.assertEqual(tombstone.supersedes_id, project_record.id)
+        self.assertGreater(tombstone.revision, project_record.revision)
+        effective = self.service.resolve(
+            "runtime.retry_limit",
+            ConfigurationContext(project_id="project-a"),
+        )
+        self.assertEqual(effective.value, 2)
+        self.assertEqual(effective.record_id, global_record.id)
+        history = self.service.list_records(key="runtime.retry_limit")
+        prior = next(item for item in history if item.id == project_record.id)
+        self.assertEqual(prior.state.value, "superseded")
+        self.assertEqual(prior.superseded_by_id, tombstone.id)
+
+        with self.assertRaises(ConfigurationConflictError):
+            self.service.reset_override(
+                ConfigurationResetRequest(
+                    key="runtime.retry_limit",
+                    scope_type=ConfigurationScope.PROJECT,
+                    scope_id="project-a",
+                    actor="operator",
+                    expected_active_revision=project_record.revision,
+                )
+            )
 
     def test_feature_targeting_expiry_and_kill_switch_are_deterministic(self) -> None:
         beta = self._publish(
@@ -469,6 +515,40 @@ class ConfigurationApiTests(unittest.TestCase):
             resolved.json()["effective"]["record_id"],
             record_id,
         )
+
+    def test_reset_endpoint_reverts_explicit_override_to_default(self) -> None:
+        draft = self.client.post(
+            "/api/configuration/drafts",
+            json=self._draft_payload(),
+        ).json()["record"]
+        publish = self.client.post(
+            f"/api/configuration/{draft['id']}/publish",
+            json={},
+        )
+        self.assertEqual(publish.status_code, 200)
+        active = publish.json()["record"]
+
+        reset = self.client.post(
+            "/api/configuration/reset",
+            json={
+                "key": "feature.api_fixture",
+                "scope_type": "workspace",
+                "scope_id": "ws-a",
+                "reason": "use inherited default",
+                "expected_active_revision": active["revision"],
+            },
+        )
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(reset.json()["record"]["state"], "disabled")
+        self.assertEqual(reset.json()["record"]["supersedes_id"], active["id"])
+
+        resolved = self.client.post(
+            "/api/configuration/resolve",
+            json={"key": "feature.api_fixture", "context": {}},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        self.assertFalse(resolved.json()["effective"]["value"])
+        self.assertEqual(resolved.json()["effective"]["source"], "default")
 
     def test_low_assurance_human_cannot_mutate_but_can_read(self) -> None:
         self.actor = self.actor.model_copy(
