@@ -13,8 +13,8 @@ from codex_web.definitions import DefinitionReference
 
 AUTOMATION_RUN_STATE_CONTRACT = ContractSpec(
     "automation-run-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 
 
@@ -28,6 +28,7 @@ class AutomationRunTriggerKind(StrEnum):
 class AutomationRunStatus(StrEnum):
     ADMITTED = "admitted"
     RUNNING = "running"
+    WAITING_FOR_WORK_ITEM = "waiting_for_work_item"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -35,7 +36,11 @@ class AutomationRunStatus(StrEnum):
 
 
 ACTIVE_AUTOMATION_RUN_STATUSES = frozenset(
-    {AutomationRunStatus.ADMITTED, AutomationRunStatus.RUNNING}
+    {
+        AutomationRunStatus.ADMITTED,
+        AutomationRunStatus.RUNNING,
+        AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+    }
 )
 
 
@@ -80,6 +85,7 @@ class AutomationRun(BaseModel):
     block_code: str | None = None
     block_reason: str | None = None
     work_item_ref: str | None = None
+    work_item_action_intent_id: str | None = None
     execution_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     attempt: int = Field(default=1, ge=1)
