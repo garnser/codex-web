@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.executive_management import build_executive_management_router
 from codex_web.authority import (
     AuthorityDecision,
     AuthorityDecisionOutcome,
@@ -270,6 +275,50 @@ class ExecutiveManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
+
+    async def test_context_timeout_returns_retryable_error_without_persisting_activation(self):
+        original_prepare = self.service.prepare
+
+        def slow_prepare(payload, *, actor):
+            time.sleep(0.05)
+            return original_prepare(payload, actor=actor)
+
+        self.service.prepare = slow_prepare
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(
+            build_executive_management_router(
+                self.service,
+                context_timeout_seconds=0.01,
+            )
+        )
+        client = TestClient(app)
+        try:
+            payload = ExecutiveActivationCreate(
+                subject="Project context timeout",
+                request="Review the project work graph without blocking the web worker.",
+                requested_role_ids=("cto",),
+            )
+            response = client.post(
+                "/api/executive/activations",
+                json=payload.model_dump(mode="json"),
+            )
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.json()["detail"]["code"],
+                "executive_context_timeout",
+            )
+            self.assertTrue(response.json()["detail"]["retryable"])
+            time.sleep(0.08)
+            self.assertEqual(self.service.list(actor=self.actor), ())
+        finally:
+            client.close()
+            self.service.prepare = original_prepare
 
     async def test_deterministic_selection_invokes_only_relevant_roles_and_preserves_disagreement(self):
         activation = self.service.create(

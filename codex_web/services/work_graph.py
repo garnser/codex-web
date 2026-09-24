@@ -275,14 +275,20 @@ class WorkGraphService:
             return "completed"
         return None
 
-    def readiness(
-        self,
+    @classmethod
+    def _readiness_from_loaded(
+        cls,
         ref: str,
-        *,
-        scope: TenantScope,
+        item: WorkItemState,
+        items: dict[str, WorkItemState],
+        blocking_edges: Iterable[WorkGraphEdge],
     ) -> WorkReadiness:
-        item = self._item(ref, scope)
-        outcome = self._terminal_outcome(item)
+        """Resolve readiness from one preloaded project snapshot.
+
+        Callers that already loaded canonical Work Items and graph edges can
+        avoid re-reading the full project for every node.
+        """
+        outcome = cls._terminal_outcome(item)
         if outcome is not None:
             return WorkReadiness(
                 ref=ref,
@@ -301,44 +307,37 @@ class WorkGraphService:
                 f"canonical blocking findings: {len(item.blocking_findings)}"
             )
 
-        if item.project_id:
-            items = self._project_items(item.project_id, scope)
-            for edge in self._visible_edges(project_id=item.project_id, scope=scope):
-                if (
-                    edge.relation != WorkGraphRelation.BLOCKS
-                    or edge.target_ref != ref
-                ):
-                    continue
-                blocker = items.get(edge.source_ref)
-                if blocker is None:
-                    blocking_refs.append(edge.source_ref)
-                    reasons.append(
-                        f"dependency {edge.source_ref} is missing from the project graph"
+        for edge in blocking_edges:
+            blocker = items.get(edge.source_ref)
+            if blocker is None:
+                blocking_refs.append(edge.source_ref)
+                reasons.append(
+                    f"dependency {edge.source_ref} is missing from the project graph"
+                )
+                continue
+            blocker_outcome = cls._terminal_outcome(blocker)
+            if blocker_outcome == "completed":
+                continue
+            blocking_refs.append(blocker.ref)
+            if blocker_outcome in {"failed", "cancelled"}:
+                reason = (
+                    f"dependency {blocker.ref} ended {blocker_outcome}; "
+                    f"downstream behavior is {edge.failure_behavior.value}"
+                )
+                reasons.append(reason)
+                impacts.append(
+                    WorkDependencyImpact(
+                        blocker_ref=blocker.ref,
+                        blocked_ref=ref,
+                        blocker_outcome=blocker_outcome,
+                        behavior=edge.failure_behavior,
+                        reason=reason,
                     )
-                    continue
-                blocker_outcome = self._terminal_outcome(blocker)
-                if blocker_outcome == "completed":
-                    continue
-                blocking_refs.append(blocker.ref)
-                if blocker_outcome in {"failed", "cancelled"}:
-                    reason = (
-                        f"dependency {blocker.ref} ended {blocker_outcome}; "
-                        f"downstream behavior is {edge.failure_behavior.value}"
-                    )
-                    reasons.append(reason)
-                    impacts.append(
-                        WorkDependencyImpact(
-                            blocker_ref=blocker.ref,
-                            blocked_ref=ref,
-                            blocker_outcome=blocker_outcome,
-                            behavior=edge.failure_behavior,
-                            reason=reason,
-                        )
-                    )
-                else:
-                    reasons.append(
-                        f"dependency {blocker.ref} has not completed successfully"
-                    )
+                )
+            else:
+                reasons.append(
+                    f"dependency {blocker.ref} has not completed successfully"
+                )
 
         if reasons:
             return WorkReadiness(
@@ -349,6 +348,37 @@ class WorkGraphService:
                 failure_impacts=tuple(impacts),
             )
         return WorkReadiness(ref=ref, status=WorkReadinessStatus.RUNNABLE)
+
+    def readiness(
+        self,
+        ref: str,
+        *,
+        scope: TenantScope,
+    ) -> WorkReadiness:
+        all_items = self._all_items()
+        item = all_items.get(ref)
+        if item is None or not self._scope_matches(item, scope):
+            raise WorkGraphNotFoundError("work item not found")
+        if not item.project_id:
+            return self._readiness_from_loaded(ref, item, {ref: item}, ())
+        items = {
+            candidate_ref: candidate
+            for candidate_ref, candidate in all_items.items()
+            if self._scope_matches(candidate, scope)
+            and candidate.project_id == item.project_id
+        }
+        blocking_edges = [
+            edge
+            for edge in self._visible_edges(project_id=item.project_id, scope=scope)
+            if edge.relation == WorkGraphRelation.BLOCKS
+            and edge.target_ref == ref
+        ]
+        return self._readiness_from_loaded(
+            ref,
+            item,
+            items,
+            blocking_edges,
+        )
 
     def traverse(
         self,
@@ -364,20 +394,20 @@ class WorkGraphService:
         if direction not in {"downstream", "upstream"}:
             raise ValueError("direction must be downstream or upstream")
         edges = self._visible_edges(project_id=item.project_id, scope=scope)
+        adjacency: dict[str, set[str]] = {}
+        for edge in edges:
+            if relation is not None and edge.relation != relation:
+                continue
+            source = edge.source_ref if direction == "downstream" else edge.target_ref
+            target = edge.target_ref if direction == "downstream" else edge.source_ref
+            adjacency.setdefault(source, set()).add(target)
+
         pending = deque([ref])
         seen = {ref}
         result: list[str] = []
         while pending:
             current = pending.popleft()
-            neighbors: set[str] = set()
-            for edge in edges:
-                if relation is not None and edge.relation != relation:
-                    continue
-                if direction == "downstream" and edge.source_ref == current:
-                    neighbors.add(edge.target_ref)
-                if direction == "upstream" and edge.target_ref == current:
-                    neighbors.add(edge.source_ref)
-            for neighbor in sorted(neighbors):
+            for neighbor in sorted(adjacency.get(current, ())):
                 if neighbor in seen:
                     continue
                 seen.add(neighbor)
@@ -458,10 +488,19 @@ class WorkGraphService:
         impacts: list[WorkDependencyImpact] = []
         runnable: list[str] = []
         completed = failed = cancelled = blocked = 0
+        blocking_by_target: dict[str, list[WorkGraphEdge]] = {}
+        for edge in edges:
+            if edge.relation == WorkGraphRelation.BLOCKS:
+                blocking_by_target.setdefault(edge.target_ref, []).append(edge)
 
         for ref in sorted(items):
             item = items[ref]
-            readiness = self.readiness(ref, scope=scope)
+            readiness = self._readiness_from_loaded(
+                ref,
+                item,
+                items,
+                blocking_by_target.get(ref, ()),
+            )
             outcome = self._terminal_outcome(item)
             if outcome == "completed":
                 completed += 1

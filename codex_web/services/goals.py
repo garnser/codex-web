@@ -771,17 +771,13 @@ class GoalService:
             completion_fraction=(completed / total if total else 0.0),
         )
 
-    def health(
-        self,
-        goal_id: str,
+    @staticmethod
+    def _health_from_progress(
+        goal: GoalRecord,
+        progress: GoalProgress,
         *,
-        scope: TenantScope,
-        now: float | None = None,
+        now: float,
     ) -> GoalHealthSnapshot:
-        goal = self.get(goal_id, scope=scope)
-        progress = self.progress(goal_id, scope=scope)
-        current = time.time() if now is None else now
-
         if goal.status == GoalStatus.PAUSED:
             return GoalHealthSnapshot(
                 health=GoalHealth.BLOCKED,
@@ -814,7 +810,7 @@ class GoalService:
             risks.append(f"{progress.cancelled} bound work item(s) cancelled")
         if (
             goal.target_date is not None
-            and current > goal.target_date
+            and now > goal.target_date
             and progress.completion_fraction < 1.0
         ):
             risks.append("goal target date has passed")
@@ -840,6 +836,21 @@ class GoalService:
             reasons=("bound work has no deterministic blocking/risk signal",),
         )
 
+    def health(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+        now: float | None = None,
+    ) -> GoalHealthSnapshot:
+        goal = self.get(goal_id, scope=scope)
+        progress = self.progress(goal_id, scope=scope)
+        return self._health_from_progress(
+            goal,
+            progress,
+            now=time.time() if now is None else now,
+        )
+
     def snapshot(
         self,
         goal_id: str,
@@ -847,8 +858,14 @@ class GoalService:
         scope: TenantScope,
         now: float | None = None,
     ) -> GoalSnapshot:
+        goal = self.get(goal_id, scope=scope)
+        progress = self.progress(goal_id, scope=scope)
         return GoalSnapshot(
-            goal=self.get(goal_id, scope=scope),
-            progress=self.progress(goal_id, scope=scope),
-            health=self.health(goal_id, scope=scope, now=now),
+            goal=goal,
+            progress=progress,
+            health=self._health_from_progress(
+                goal,
+                progress,
+                now=time.time() if now is None else now,
+            ),
         )

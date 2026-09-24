@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -430,6 +432,32 @@ class GoalApiAssuranceTests(unittest.TestCase):
             ],
             "budget": {"max_model_calls": 3, "max_cost_usd": 2.0},
         }
+
+    def test_slow_graph_list_does_not_block_goal_event_requests(self) -> None:
+        original_snapshot = self.service.work_graph.snapshot
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_snapshot(project_id, *, scope):
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("slow graph test was not released")
+            return original_snapshot(project_id, scope=scope)
+
+        self.service.work_graph.snapshot = slow_snapshot
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                listing = pool.submit(self.client.get, "/api/goals")
+                self.assertTrue(started.wait(timeout=2))
+                events = pool.submit(self.client.get, "/api/goals/events")
+                event_response = events.result(timeout=2)
+                self.assertEqual(event_response.status_code, 200)
+                release.set()
+                list_response = listing.result(timeout=5)
+                self.assertEqual(list_response.status_code, 200)
+        finally:
+            release.set()
+            self.service.work_graph.snapshot = original_snapshot
 
     def test_work_item_reverse_trace_is_readable_without_step_up(self) -> None:
         response = self.client.get(

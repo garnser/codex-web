@@ -1004,12 +1004,13 @@ class ExecutiveManagementService:
         )
         return state
 
-    def create(
+    def prepare(
         self,
         payload: ExecutiveActivationCreate,
         *,
         actor: AuthenticationActor,
     ) -> ExecutiveActivation:
+        """Resolve bounded canonical context without creating durable state."""
         catalog, reference = self._catalog(
             actor=actor,
             project_id=payload.project_id,
@@ -1042,7 +1043,7 @@ class ExecutiveManagementService:
                 f"roles plus synthesis ({required_calls} calls required)"
             )
         now = float(self.clock())
-        activation = ExecutiveActivation(
+        return ExecutiveActivation(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             initiated_by=actor.identity_id,
@@ -1066,6 +1067,22 @@ class ExecutiveManagementService:
             created_at=now,
             updated_at=now,
         )
+
+    def persist_prepared(
+        self,
+        activation: ExecutiveActivation,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutiveActivation:
+        """Persist an activation only after context preparation completed."""
+        if (
+            activation.organization_id != actor.organization_id
+            or activation.workspace_id != actor.workspace_id
+            or activation.initiated_by != actor.identity_id
+        ):
+            raise ExecutiveContextError(
+                "prepared Executive activation no longer matches the authenticated scope"
+            )
         self.store.create(activation)
 
         def initial(state, current):
@@ -1080,6 +1097,17 @@ class ExecutiveManagementService:
             )
 
         return self.store.update(activation.id, initial)
+
+    def create(
+        self,
+        payload: ExecutiveActivationCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutiveActivation:
+        return self.persist_prepared(
+            self.prepare(payload, actor=actor),
+            actor=actor,
+        )
 
     def list(self, *, actor: AuthenticationActor) -> tuple[ExecutiveActivation, ...]:
         return self.store.list(

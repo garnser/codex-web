@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -32,6 +34,8 @@ from codex_web.storage.executive_activations import (
 
 def build_executive_management_router(
     service: ExecutiveManagementService,
+    *,
+    context_timeout_seconds: float = 5.0,
 ) -> APIRouter:
     router = APIRouter(
         prefix="/api/executive",
@@ -156,7 +160,27 @@ def build_executive_management_router(
     ) -> dict[str, Any]:
         actor = consultant(request)
         try:
-            item = service.create(payload, actor=actor)
+            prepared = await asyncio.wait_for(
+                asyncio.to_thread(
+                    service.prepare,
+                    payload,
+                    actor=actor,
+                ),
+                timeout=max(0.001, float(context_timeout_seconds)),
+            )
+            item = service.persist_prepared(prepared, actor=actor)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "executive_context_timeout",
+                    "message": (
+                        "Executive activation context was not available within "
+                        "the bounded request window; no activation was persisted"
+                    ),
+                    "retryable": True,
+                },
+            ) from exc
         except Exception as exc:
             raise error(exc) from exc
         return {"item": item.model_dump(mode="json")}
