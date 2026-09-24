@@ -26,6 +26,7 @@ def install_artifact_content_configuration(
                 ConfigurationScope.WORKSPACE,
                 ConfigurationScope.PROJECT,
             ],
+            category="Advanced",
             description=(
                 "Artifact byte-content backend id. The value selects a registered "
                 "backend only and never contains credentials, bucket secrets, or keys."
