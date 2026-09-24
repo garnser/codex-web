@@ -844,6 +844,7 @@ class IdentityService:
             workspace_id=None if payload.organization_wide else actor.workspace_id,
             roles=payload.roles,
             team_ids=payload.team_ids,
+            created_by=actor.identity_id,
         )
 
         def apply(state: IdentityState) -> IdentityState:
@@ -988,6 +989,10 @@ class IdentityService:
             ):
                 raise TenantIsolationError(
                     "membership is outside active organization/workspace"
+                )
+            if membership.created_by is None:
+                membership = membership.model_copy(
+                    update={"created_by": actor.identity_id}
                 )
         state = self.store.load()
         if membership.principal_kind == PrincipalKind.HUMAN:

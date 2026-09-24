@@ -274,6 +274,7 @@ class IdentityServiceTests(unittest.TestCase):
         self.assertEqual(membership.identity_id, human.id)
         self.assertEqual(membership.organization_id, admin.organization_id)
         self.assertEqual(membership.workspace_id, admin.workspace_id)
+        self.assertEqual(membership.created_by, admin.identity_id)
         actor = self.service.actor_for_identity(human.id, scope=TenantScope())
         self.assertIn(MembershipRole.APPROVER, actor.roles)
 
@@ -295,6 +296,30 @@ class IdentityServiceTests(unittest.TestCase):
                 for item in self.service.state().humans
             )
         )
+
+    def test_actor_scoped_membership_creation_records_creator(self) -> None:
+        human = self.service.create_human_identity(
+            display_name="Membership Target",
+            identity_id="human-membership-provenance",
+        )
+        admin = self.service.local_trusted_actor()
+        membership = self.service.add_membership(
+            Membership(
+                identity_id=human.id,
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id=admin.organization_id,
+                workspace_id=admin.workspace_id,
+                roles=[MembershipRole.MEMBER],
+            ),
+            actor=admin,
+        )
+        self.assertEqual(membership.created_by, admin.identity_id)
+        persisted = next(
+            item
+            for item in self.service.state().memberships
+            if item.id == membership.id
+        )
+        self.assertEqual(persisted.created_by, admin.identity_id)
 
     def test_admin_scoped_membership_creation_rejects_other_workspace(self) -> None:
         def seed(state):
@@ -456,6 +481,10 @@ class IdentityMiddlewareTests(unittest.TestCase):
                 self.assertEqual(
                     payload["membership"]["workspace_id"],
                     "default",
+                )
+                self.assertEqual(
+                    payload["membership"]["created_by"],
+                    "local-admin",
                 )
                 snapshot = client.get("/api/identity").json()
                 self.assertTrue(
