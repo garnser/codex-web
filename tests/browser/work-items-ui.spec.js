@@ -249,3 +249,32 @@ test("without active Project context Work Items waits for an explicit selection"
   await expect(page.locator(".work-items-list")).toContainText("Select a Project");
   expect(listRequests).toBe(0);
 });
+
+
+test("search stays server-side and composes with cursor pagination", async ({ page }) => {
+  await installCommonRoutes(page);
+  const requests = [];
+  await page.route("**/api/work-items?**", async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(Object.fromEntries(url.searchParams.entries()));
+    const cursor = url.searchParams.get("cursor");
+    await route.fulfill({
+      json: cursor
+        ? { items: workItems(2, 50), nextCursor: null, hasMore: false }
+        : { items: workItems(50, 0), nextCursor: "p2", hasMore: true },
+    });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("codex:open-work-items")));
+  await expect(page.locator(".work-item-row")).toHaveCount(50);
+
+  await page.locator(".work-items-search").fill("platform");
+  await expect.poll(() => requests.at(-1)?.q).toBe("platform");
+  expect(requests.at(-1)?.cursor).toBeUndefined();
+
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect.poll(() => requests.at(-1)?.cursor).toBe("p2");
+  expect(requests.at(-1)?.q).toBe("platform");
+  expect(requests.at(-1)?.limit).toBe("50");
+});
