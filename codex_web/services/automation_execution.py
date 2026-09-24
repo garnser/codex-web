@@ -14,6 +14,7 @@ from codex_web.services.automation_runs import AutomationRunService
 from codex_web.services.identity import IdentityService
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
+from codex_web.services.work_items import WorkItemService
 from codex_web.storage.canonical_events import CanonicalEventStore
 
 
@@ -33,6 +34,7 @@ class AutomationExecutionService:
         turns: TurnService,
         teams: AgentTeamExecutionService,
         events: CanonicalEventStore,
+        work_items: WorkItemService | None = None,
     ) -> None:
         self.runs = runs
         self.identity = identity
@@ -40,6 +42,7 @@ class AutomationExecutionService:
         self.turns = turns
         self.teams = teams
         self.events = events
+        self.work_items = work_items
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -122,6 +125,54 @@ class AutomationExecutionService:
         ).strip()
         return value or None
 
+    def _validated_work_item_ref(
+        self,
+        run: AutomationRun,
+        value: str | None,
+    ) -> str | None:
+        ref = str(value or "").strip()
+        if not ref:
+            return None
+        if self.work_items is None:
+            return ref
+        state = self.work_items.state_machine._work_item_state(ref)
+        if (
+            state.organization_id != run.organization_id
+            or state.workspace_id != run.workspace_id
+        ):
+            raise AutomationExecutionError(
+                "Automation Work Item is outside the run tenant/workspace"
+            )
+        if state.project_id != run.project_id:
+            raise AutomationExecutionError(
+                "Automation Work Item project does not match the run project"
+            )
+        return ref
+
+    def _resolve_work_item_ref(
+        self,
+        run: AutomationRun,
+        *,
+        policy: str,
+        explicit_ref: str | None,
+        event_ref: str | None,
+    ) -> str | None:
+        candidate = self._validated_work_item_ref(
+            run,
+            str(explicit_ref or "").strip() or event_ref,
+        )
+        if policy == "always_create":
+            raise AutomationExecutionError(
+                "Automation work_item_policy=always_create requires a new "
+                "canonical Work Item through ActionIntent before launch"
+            )
+        if policy == "reuse_only" and candidate is None:
+            raise AutomationExecutionError(
+                "Automation work_item_policy=reuse_only requires an existing "
+                "canonical Work Item"
+            )
+        return candidate
+
     def _block(self, run: AutomationRun, code: str, reason: str) -> AutomationRun:
         return self.runs.block(
             run.id,
@@ -162,9 +213,11 @@ class AutomationExecutionService:
                     "Automation execution requires an explicit canonical project id"
                 )
             context = self._trigger_context(run)
-            selected_work_item_ref = (
-                str(work_item_ref or "").strip()
-                or self._event_work_item_ref(context)
+            selected_work_item_ref = self._resolve_work_item_ref(
+                run,
+                policy=automation.work_item_policy,
+                explicit_ref=work_item_ref,
+                event_ref=self._event_work_item_ref(context),
             )
             message = self._message(automation.instructions, context)
 
