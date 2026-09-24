@@ -168,17 +168,20 @@ export function renderAdministrationAuthentication(container, {
     message.textContent = value || "";
   };
 
-  const refresh = async () => {
-    if (typeof onChanged === "function") await onChanged();
-  };
-
   revokeOthers.addEventListener("click", async () => {
     if (!window.confirm("Revoke all of your other active sessions?")) return;
     revokeOthers.disabled = true;
     try {
       const result = await api("/api/identity/sessions/revoke-others", { method: "POST" });
+      context.identity.sessions = (context.identity.sessions || []).map((item) => (
+        item.identity_id === context.actor?.identity_id
+        && item.id !== context.actor?.session_id
+        && item.revoked_at == null
+          ? { ...item, revoked_at: Date.now() / 1000, revoke_reason: "revoked-other-sessions" }
+          : item
+      ));
+      sessions.innerHTML = sessionRows(context);
       setMessage(`Revoked ${Number(result?.revoked || 0)} other session(s).`);
-      await refresh();
     } catch (error) {
       setMessage(error?.message || "Unable to revoke other sessions.", "error");
       revokeOthers.disabled = false;
@@ -193,8 +196,13 @@ export function renderAdministrationAuthentication(container, {
     button.disabled = true;
     try {
       await api(`/api/identity/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      context.identity.sessions = (context.identity.sessions || []).map((item) => (
+        item.id === sessionId
+          ? { ...item, revoked_at: Date.now() / 1000, revoke_reason: `revoked-by:${context.actor?.identity_id || "administrator"}` }
+          : item
+      ));
+      sessions.innerHTML = sessionRows(context);
       setMessage("Session revoked.");
-      await refresh();
     } catch (error) {
       setMessage(error?.message || "Unable to revoke session.", "error");
       button.disabled = false;
@@ -268,8 +276,13 @@ export function renderAdministrationAuthentication(container, {
     button.disabled = true;
     try {
       await api(`/api/identity/service-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
+      context.identity.service_tokens = (context.identity.service_tokens || []).map((item) => (
+        item.id === tokenId
+          ? { ...item, revoked_at: Date.now() / 1000, revoke_reason: `revoked-by:${context.actor?.identity_id || "administrator"}` }
+          : item
+      ));
+      tokens.innerHTML = tokenRows(context);
       setMessage("Service token revoked.");
-      await refresh();
     } catch (error) {
       setMessage(error?.message || "Unable to revoke service token.", "error");
       button.disabled = false;
