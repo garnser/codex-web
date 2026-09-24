@@ -8,12 +8,14 @@ from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRun, AutomationRunStatus
 from codex_web.execution_workers import AssignmentStatus
 from codex_web.identity import AuthenticationActor
+from codex_web.scheduler import MisfirePolicy, ScheduleCreate
 from codex_web.services.attention import AttentionService
 from codex_web.services.automation_runs import AutomationRunService
 from codex_web.services.execution_workers import (
     AssignmentNotFoundError,
     ExecutionWorkerService,
 )
+from codex_web.services.scheduler import SchedulerService
 
 
 class AutomationOutcomeReconciliationService:
@@ -33,12 +35,14 @@ class AutomationOutcomeReconciliationService:
         *,
         attention: AttentionService | None = None,
         runtime_usage: Any | None = None,
+        scheduler: SchedulerService | None = None,
         clock=time.time,
     ) -> None:
         self.runs = runs
         self.workers = workers
         self.attention = attention
         self.runtime_usage = runtime_usage
+        self.scheduler = scheduler
         self.clock = clock
 
     def reconcile_for_execution(
@@ -166,6 +170,89 @@ class AutomationOutcomeReconciliationService:
             or f"canonical execution ended as {failed.status.value}"
         )
         return f"automation_execution_{code}", str(summary)[:1000]
+
+    @staticmethod
+    def _automatic_retry_safe(assignments) -> bool:
+        if not assignments:
+            return False
+        for assignment in assignments:
+            if assignment.status not in {
+                AssignmentStatus.FAILED,
+                AssignmentStatus.LOST,
+            }:
+                return False
+            failure = getattr(assignment, "failure", None)
+            if failure is None or not failure.automatic_retry_allowed:
+                return False
+        return True
+
+    def _existing_retry_schedule(
+        self,
+        run: AutomationRun,
+        *,
+        next_attempt: int,
+    ):
+        if self.scheduler is None:
+            return None
+        return next(
+            (
+                schedule
+                for schedule in self.scheduler.list()
+                if schedule.trigger_type == "automation.retry"
+                and schedule.tenant_id == run.organization_id
+                and schedule.workspace_id == run.workspace_id
+                and schedule.payload.get("retry_of_run_id") == run.id
+                and schedule.payload.get("retry_attempt") == next_attempt
+            ),
+            None,
+        )
+
+    def _schedule_retry(
+        self,
+        run: AutomationRun,
+        assignments,
+        automation,
+        *,
+        actor: AuthenticationActor,
+    ):
+        if self.scheduler is None:
+            return None
+        if run.attempt >= automation.retry.max_attempts:
+            return None
+        if not self._automatic_retry_safe(assignments):
+            return None
+
+        next_attempt = run.attempt + 1
+        existing = self._existing_retry_schedule(
+            run,
+            next_attempt=next_attempt,
+        )
+        if existing is not None:
+            return existing
+
+        due_at = float(self.clock()) + float(automation.retry.backoff_seconds)
+        reference = run.definition_ref
+        return self.scheduler.create(
+            ScheduleCreate(
+                name=f"Automation retry: {automation.name}",
+                tenant_id=run.organization_id,
+                workspace_id=run.workspace_id,
+                trigger_type="automation.retry",
+                payload={
+                    "automation_id": run.automation_id,
+                    "definition_record_id": reference.record_id,
+                    "definition_revision": reference.revision,
+                    "definition_checksum": reference.checksum,
+                    "project_id": run.project_id,
+                    "retry_of_run_id": run.id,
+                    "retry_attempt": next_attempt,
+                    "work_item_ref": run.work_item_ref,
+                },
+                due_at=due_at,
+                misfire_policy=MisfirePolicy.FIRE_ONCE,
+            ),
+            actor_id=actor.identity_id,
+        )
 
     def _budget_evaluation(
         self,
@@ -323,7 +410,24 @@ class AutomationOutcomeReconciliationService:
             for item in assignments
         )
         if not succeeded:
+            automation, _reference = self.runs.definitions.resolve_reference(
+                run.definition_ref,
+                organization_id=run.organization_id,
+                workspace_id=run.workspace_id,
+                project_id=run.project_id,
+            )
+            retry_schedule = self._schedule_retry(
+                run,
+                assignments,
+                automation,
+                actor=actor,
+            )
             result_code, result_reason = self._execution_failure(assignments)
+            if retry_schedule is not None:
+                result_reason = (
+                    f"{result_reason} Retry attempt {run.attempt + 1} is "
+                    f"scheduled for {retry_schedule.due_at:g}."
+                )[:1000]
             return self.runs.complete(
                 run.id,
                 organization_id=run.organization_id,
