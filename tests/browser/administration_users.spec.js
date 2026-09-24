@@ -121,12 +121,6 @@ test("routed Users administration saves roles and revokes through canonical memb
       }),
     });
   });
-  await page.route("**/api/identity/memberships/**", async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    await route.continue();
-  });
-
   await page.route("**/api/identity", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
