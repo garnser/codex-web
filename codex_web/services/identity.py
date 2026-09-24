@@ -21,6 +21,7 @@ from codex_web.identity import (
     ExternalAuthenticationResult,
     ExternalIdentityLink,
     HumanIdentity,
+    HumanUserCreate,
     IdentityState,
     Membership,
     MembershipRole,
@@ -823,6 +824,55 @@ class IdentityService:
 
         self.store.update(apply)
         return workspace
+
+    def create_human_user(
+        self,
+        payload: HumanUserCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> tuple[HumanIdentity, Membership]:
+        self.require_admin(actor)
+        human = HumanIdentity(
+            id=payload.id or f"human-{uuid.uuid4().hex}",
+            display_name=payload.display_name,
+            email=payload.email,
+        )
+        membership = Membership(
+            identity_id=human.id,
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id=actor.organization_id,
+            workspace_id=None if payload.organization_wide else actor.workspace_id,
+            roles=payload.roles,
+            team_ids=payload.team_ids,
+        )
+
+        def apply(state: IdentityState) -> IdentityState:
+            if any(item.id == human.id for item in state.humans):
+                raise IdentityError("human identity already exists")
+            if not any(
+                item.id == actor.organization_id and item.disabled_at is None
+                for item in state.organizations
+            ):
+                raise IdentityError("active organization not found")
+            if membership.workspace_id is not None:
+                workspace = next(
+                    (
+                        item
+                        for item in state.workspaces
+                        if item.id == membership.workspace_id
+                        and item.organization_id == actor.organization_id
+                        and item.disabled_at is None
+                    ),
+                    None,
+                )
+                if workspace is None:
+                    raise TenantIsolationError("active workspace is unavailable")
+            state.humans.append(human)
+            state.memberships.append(membership)
+            return state
+
+        self.store.update(apply)
+        return human, membership
 
     def create_human_identity(
         self,
