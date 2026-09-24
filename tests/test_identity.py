@@ -257,6 +257,28 @@ class IdentityServiceTests(unittest.TestCase):
         with self.assertRaises(TenantIsolationError):
             self.service.revoke_membership("membership-other", actor=admin)
 
+    def test_admin_scoped_membership_creation_rejects_other_workspace(self) -> None:
+        def seed(state):
+            state.workspaces.append(
+                Workspace(id="other-workspace", organization_id="local", name="Other")
+            )
+            state.humans.append(HumanIdentity(id="human-create", display_name="Create Target"))
+            return state
+
+        self.state_store.update(seed)
+        admin = self.service.local_trusted_actor()
+        with self.assertRaises(TenantIsolationError):
+            self.service.add_membership(
+                Membership(
+                    identity_id="human-create",
+                    principal_kind=PrincipalKind.HUMAN,
+                    organization_id="local",
+                    workspace_id="other-workspace",
+                    roles=[MembershipRole.MEMBER],
+                ),
+                actor=admin,
+            )
+
     def test_rate_limiter_blocks_after_bounded_failures_and_resets(self) -> None:
         limiter = AuthenticationRateLimiter(max_failures=2, window_seconds=60)
         limiter.failure("ip:1")
