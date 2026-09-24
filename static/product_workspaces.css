@@ -3,7 +3,7 @@
 .product-project-context select{width:100%;min-width:0}
 .product-project-indicator{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.product-project-navigation{display:grid;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface-soft)}
+.product-project-navigation{display:grid;gap:10px;max-height:min(48vh,520px);overflow:auto;overscroll-behavior:contain;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface-soft)}
 .product-project-nav-tree,.product-global-nav{display:grid;gap:4px}
 .product-project-nav-leaf{width:100%;min-width:0;padding:7px 9px;text-align:left;border:0;border-radius:7px;background:transparent;color:var(--text);font-size:12px}
 .product-project-nav-leaf:hover,.product-project-nav-leaf:focus-visible{background:var(--surface)}
