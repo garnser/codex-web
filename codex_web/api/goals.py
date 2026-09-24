@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -57,19 +59,23 @@ def build_goals_router(service: GoalService) -> APIRouter:
         priority: GoalPriority | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
-        rows = service.list(
-            scope=actor.tenant,
-            status=status,
-            owner_identity_id=owner_identity_id,
-            priority=priority,
-        )
-        return {
-            "items": [
-                service.snapshot(item.id, scope=actor.tenant).model_dump(mode="json")
-                for item in rows
-            ],
-            "count": len(rows),
-        }
+
+        def load():
+            rows = service.list(
+                scope=actor.tenant,
+                status=status,
+                owner_identity_id=owner_identity_id,
+                priority=priority,
+            )
+            return {
+                "items": [
+                    service.snapshot(item.id, scope=actor.tenant).model_dump(mode="json")
+                    for item in rows
+                ],
+                "count": len(rows),
+            }
+
+        return await asyncio.to_thread(load)
 
     @router.get("/events")
     async def events(
@@ -98,17 +104,20 @@ def build_goals_router(service: GoalService) -> APIRouter:
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
-            rows = service.goals_for_work_item(ref, scope=actor.tenant)
+            def load():
+                rows = service.goals_for_work_item(ref, scope=actor.tenant)
+                return {
+                    "work_item_ref": ref,
+                    "items": [
+                        service.snapshot(item.id, scope=actor.tenant).model_dump(mode="json")
+                        for item in rows
+                    ],
+                    "count": len(rows),
+                }
+
+            return await asyncio.to_thread(load)
         except (GoalError, ValueError) as exc:
             raise _error(exc) from exc
-        return {
-            "work_item_ref": ref,
-            "items": [
-                service.snapshot(item.id, scope=actor.tenant).model_dump(mode="json")
-                for item in rows
-            ],
-            "count": len(rows),
-        }
 
     @router.post("")
     async def create_goal(
@@ -117,25 +126,30 @@ def build_goals_router(service: GoalService) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
-            goal = service.create(
+            goal = await asyncio.to_thread(
+                service.create,
                 payload,
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
             )
-        except (AuthorizationError, GoalError, ValueError) as exc:
-            raise _error(exc) from exc
-        return {
-            "snapshot": service.snapshot(
+            snapshot = await asyncio.to_thread(
+                service.snapshot,
                 goal.id,
                 scope=actor.tenant,
-            ).model_dump(mode="json")
-        }
+            )
+        except (AuthorizationError, GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {"snapshot": snapshot.model_dump(mode="json")}
 
     @router.get("/{goal_id}")
     async def get_goal(goal_id: str, request: Request) -> dict[str, Any]:
         actor = request_actor(request)
         try:
-            snapshot = service.snapshot(goal_id, scope=actor.tenant)
+            snapshot = await asyncio.to_thread(
+                service.snapshot,
+                goal_id,
+                scope=actor.tenant,
+            )
         except (GoalError, ValueError) as exc:
             raise _error(exc) from exc
         return {"snapshot": snapshot.model_dump(mode="json")}
@@ -218,20 +232,21 @@ def build_goals_router(service: GoalService) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
-            goal = service.transition(
+            goal = await asyncio.to_thread(
+                service.transition,
                 goal_id,
                 payload,
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
             )
-        except (AuthorizationError, GoalError, ValueError) as exc:
-            raise _error(exc) from exc
-        return {
-            "snapshot": service.snapshot(
+            snapshot = await asyncio.to_thread(
+                service.snapshot,
                 goal.id,
                 scope=actor.tenant,
-            ).model_dump(mode="json")
-        }
+            )
+        except (AuthorizationError, GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {"snapshot": snapshot.model_dump(mode="json")}
 
     @router.get("/{goal_id}/revisions")
     async def revisions(goal_id: str, request: Request) -> dict[str, Any]:
