@@ -415,7 +415,10 @@ function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) 
   if (!dialog) return false;
   closeSwitcher();
   setActiveInternal(id, { page, updateLocation });
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    if (currentProjectRoute()) dialog.show();
+    else dialog.showModal();
+  }
   return true;
 }
 
