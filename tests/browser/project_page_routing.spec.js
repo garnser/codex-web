@@ -277,5 +277,5 @@ test('Configuration is a first-class routed Project page backed by canonical set
   const settings = page.locator('[data-product-workspace-host="settings"]');
   await expect(settings).toBeVisible();
   await expect(settings).toContainText('Configuration & Features');
-  await expect(settings.locator('#refresh-configuration')).toHaveCount(1);
+  await expect(settings.locator('#refresh-config')).toHaveCount(1);
 });
