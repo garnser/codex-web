@@ -8,6 +8,7 @@ from pathlib import Path
 from codex_web.models import ProjectCreate
 from codex_web.services.projects import InvalidProjectPathError, ProjectService
 from codex_web.storage.projects import ProjectRepository
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.workspaces import WorkspaceMapper, WorkspacePathError
 
 
@@ -117,6 +118,65 @@ class WorkspaceMapperTests(unittest.TestCase):
 
             self.assertEqual(mapper.runtime_path(project), project.resolve())
             self.assertEqual(mapper.storage_path(project), str(project.resolve()))
+
+    def test_relative_stored_path_without_workspace_root_is_not_rewritten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_file = Path(directory) / "projects.json"
+            original = [
+                {
+                    "id": "product",
+                    "name": "Product",
+                    "path": "customer/product",
+                    "model": None,
+                    "sandbox": "workspace-write",
+                    "approval_policy": "on-request",
+                }
+            ]
+            data_file.write_text(json.dumps(original))
+            repository = ProjectRepository(
+                data_file,
+                workspace_mapper=WorkspaceMapper(),
+            )
+
+            with self.assertRaisesRegex(
+                WorkspacePathError,
+                "CODEX_WEB_WORKSPACE_ROOT",
+            ):
+                repository.load()
+
+            self.assertEqual(json.loads(data_file.read_text()), original)
+
+    def test_relative_shared_state_without_workspace_root_is_not_rewritten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "projects.json"
+            original = [
+                {
+                    "id": "product",
+                    "name": "Product",
+                    "path": "customer/product",
+                    "model": None,
+                    "sandbox": "workspace-write",
+                    "approval_policy": "on-request",
+                }
+            ]
+            data_file.write_text(json.dumps(original))
+            store = SQLiteStateStore(root / "state.sqlite3")
+            store.put("projects", original)
+            repository = ProjectRepository(
+                data_file,
+                workspace_mapper=WorkspaceMapper(),
+                store=store,
+            )
+
+            with self.assertRaisesRegex(
+                WorkspacePathError,
+                "CODEX_WEB_WORKSPACE_ROOT",
+            ):
+                repository.load()
+
+            self.assertEqual(store.get("projects"), original)
+            self.assertEqual(json.loads(data_file.read_text()), original)
 
 
 if __name__ == "__main__":

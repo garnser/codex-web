@@ -8,7 +8,7 @@ from pathlib import Path
 from codex_web.models import Project
 from codex_web.storage.json_files import atomic_write_text
 from codex_web.storage.state_store import StateStore
-from codex_web.workspaces import WorkspaceMapper
+from codex_web.workspaces import WorkspaceMapper, WorkspacePathError
 
 
 class ProjectRepository:
@@ -62,6 +62,21 @@ class ProjectRepository:
             raise ValueError("project state must be a list")
         return raw_payload
 
+    def _validate_portable_paths(
+        self,
+        raw_payload: list[dict[str, object]],
+    ) -> None:
+        if self.workspace_mapper.root is not None:
+            return
+        for item in raw_payload:
+            raw_path = str(item.get("path") or "").strip()
+            if raw_path and not Path(raw_path).expanduser().is_absolute():
+                raise WorkspacePathError(
+                    "Portable relative project paths require "
+                    "CODEX_WEB_WORKSPACE_ROOT; refusing to resolve and "
+                    "rewrite them relative to the current working directory"
+                )
+
     def load(self) -> list[Project]:
         if self.store is None:
             raw_payload = self._legacy_or_default_payload()
@@ -70,6 +85,7 @@ class ProjectRepository:
             if raw_payload is None:
                 raw_payload = self._legacy_or_default_payload()
                 self.store.put(self.namespace, raw_payload)
+        self._validate_portable_paths(raw_payload)
         stored_projects = [Project.model_validate(item) for item in raw_payload]
         projects = [self._runtime_project(project) for project in stored_projects]
 
