@@ -46,7 +46,11 @@ test('navigation uses stable Project paths and browser Back restores prior page'
   const navigation = page.locator('.product-project-navigation');
   const automationGroup = navigation.locator('[data-project-nav-group="automation-group"]');
   if (!(await automationGroup.evaluate((element) => element.open))) {
-    await automationGroup.locator('summary').click();
+    const summary = automationGroup.locator('summary');
+    await summary.focus();
+    await expect(summary).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(automationGroup).toHaveAttribute('open', '');
   }
   await navigation.locator('[data-project-nav-node="automations"]').click();
   await expect(page).toHaveURL(/\/projects\/home\/automations$/);
