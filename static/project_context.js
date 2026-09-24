@@ -1,8 +1,19 @@
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
 
+function projectIdFromPath(pathname = window.location.pathname) {
+  const match = String(pathname || "").match(/\/projects\/([^/]+)(?:\/|$)/);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 export function initialProjectId() {
   return (
-    new URLSearchParams(window.location.search).get("project")
+    projectIdFromPath()
+    || new URLSearchParams(window.location.search).get("project")
     || sessionStorage.getItem(ACTIVE_PROJECT_KEY)
     || "home"
   );
@@ -15,7 +26,13 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
   sessionStorage.setItem(ACTIVE_PROJECT_KEY, normalized);
   if (document.body) document.body.dataset.projectId = normalized;
   const url = new URL(window.location.href);
-  url.searchParams.set("project", normalized);
+  const routed = url.pathname.match(/^(.*\/projects\/)[^/]+(\/[^/]+\/?)$/);
+  if (routed) {
+    url.pathname = `${routed[1]}${encodeURIComponent(normalized)}${routed[2]}`;
+    url.searchParams.delete("project");
+  } else {
+    url.searchParams.set("project", normalized);
+  }
   if (historyMode === "push") {
     history.pushState({ ...history.state, projectId: normalized }, "", url);
   } else if (historyMode !== "none") {
@@ -60,7 +77,10 @@ export function createProjectNavigator(state, {
     run(event.detail?.projectId);
   });
   window.addEventListener("popstate", () => {
-    const projectId = new URLSearchParams(window.location.search).get("project");
+    const projectId = (
+      projectIdFromPath()
+      || new URLSearchParams(window.location.search).get("project")
+    );
     if (projectId && projectId !== state.projectId) {
       run(projectId, { historyMode: "none" });
     }
