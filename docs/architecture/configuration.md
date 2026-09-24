@@ -55,6 +55,8 @@ Normal mutation flow:
 4. publish using the expected active revision where concurrent administration is possible;
 5. supersede the previous published revision at the same key/scope.
 
+Removing an explicit override is also versioned: reset creates a disabled tombstone that supersedes the active revision at that exact scope. Resolution then falls through to the next applicable published scope or the code-owned default. Reset never writes null and never deletes history.
+
 Rollback does not rewrite history. It creates and publishes a new revision containing the selected historical value and records the rollback source revision.
 
 The persisted registry is schema-versioned and uses the platform migration registry. Missing/newer unsupported schema paths fail visibly rather than being reinterpreted.
@@ -92,6 +94,7 @@ The canonical service is exposed through `/api/configuration`:
 - `POST /{record_id}/validate`
 - `POST /{record_id}/publish`
 - `POST /rollback`
+- `POST /reset`
 - `POST /resolve`
 - `GET /{record_id}/impact`
 

@@ -11,6 +11,7 @@ from codex_web.configuration import (
     ConfigurationDraftCreate,
     ConfigurationPublishRequest,
     ConfigurationRecord,
+    ConfigurationResetRequest,
     ConfigurationRollbackRequest,
     ConfigurationScope,
     FeatureTargeting,
@@ -56,6 +57,16 @@ class ConfigurationRollbackApiRequest(BaseModel):
     scope_id: str | None = None
     target_revision: int = Field(ge=1)
     actor: str | None = None  # legacy compatibility; authenticated actor wins.
+    reason: str | None = None
+    expected_active_revision: int | None = None
+
+
+class ConfigurationResetApiRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1)
+    scope_type: ConfigurationScope
+    scope_id: str | None = None
     reason: str | None = None
     expected_active_revision: int | None = None
 
@@ -365,6 +376,39 @@ def build_configuration_router(
                     scope_type=payload.scope_type,
                     scope_id=scope_id,
                     target_revision=payload.target_revision,
+                    actor=actor.identity_id,
+                    reason=payload.reason,
+                    expected_active_revision=payload.expected_active_revision,
+                )
+            )
+        except (
+            AuthorizationError,
+            ConfigurationConflictError,
+            ConfigurationError,
+            ConfigurationNotFoundError,
+            ValueError,
+        ) as exc:
+            raise _error(exc) from exc
+        return {"record": record.model_dump(mode="json")}
+
+    @router.post("/reset")
+    async def reset_override(
+        payload: ConfigurationResetApiRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = authenticated(request)
+        try:
+            scope_id = require_scope(
+                actor,
+                scope_type=payload.scope_type,
+                scope_id=payload.scope_id,
+                mutation=True,
+            )
+            record = service.reset_override(
+                ConfigurationResetRequest(
+                    key=payload.key,
+                    scope_type=payload.scope_type,
+                    scope_id=scope_id,
                     actor=actor.identity_id,
                     reason=payload.reason,
                     expected_active_revision=payload.expected_active_revision,

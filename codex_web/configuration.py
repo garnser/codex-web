@@ -272,6 +272,24 @@ class ConfigurationRollbackRequest(BaseModel):
     expected_active_revision: int | None = None
 
 
+class ConfigurationResetRequest(BaseModel):
+    """Remove the explicit value at one exact scope slot.
+
+    Reset preserves history by superseding the current published revision with
+    a disabled tombstone. Resolution then falls through to the next applicable
+    scope or code-owned default.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1)
+    scope_type: ConfigurationScope
+    scope_id: str | None = None
+    actor: str = Field(min_length=1)
+    reason: str | None = None
+    expected_active_revision: int | None = None
+
+
 def feature_target_matches(
     record: ConfigurationRecord,
     context: ConfigurationContext,
