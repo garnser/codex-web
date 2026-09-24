@@ -2,6 +2,8 @@
 .product-project-context label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .product-project-context select{width:100%;min-width:0}
 .product-field-help{color:var(--muted);font-size:10px;line-height:1.35}
+.product-project-context-state{padding:7px 9px;border:1px solid var(--danger);border-radius:7px;background:var(--danger-soft);color:var(--danger);font-size:10px;line-height:1.35}
+.project-context-unavailable .product-project-nav-leaf:disabled{opacity:.45;cursor:not-allowed}
 .product-project-indicator{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .product-project-navigation{display:grid;gap:10px;width:100%;min-width:0;max-width:100%;max-height:min(48vh,520px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface-soft)}
