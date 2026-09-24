@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRunStatus
 from codex_web.execution_workers import AssignmentStatus
+from codex_web.failures import FailureReason, create_failure
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -43,6 +44,7 @@ class _Definitions:
         failure_attention=True,
         target_kind=AutomationTargetKind.AGENT_PROFILE,
         budget=None,
+        retry=None,
     ):
         self.failure_attention = failure_attention
         self.target_kind = target_kind
@@ -52,12 +54,18 @@ class _Definitions:
             max_cost_usd=None,
             max_duration_seconds=None,
         )
+        self.retry = retry or SimpleNamespace(
+            max_attempts=1,
+            backoff_seconds=0,
+        )
 
     def resolve_reference(self, reference, **kwargs):
         return (
             SimpleNamespace(
                 failure_attention=self.failure_attention,
                 budget=self.budget,
+                retry=self.retry,
+                name="Automation A",
                 owner_identity_id="automation-owner",
                 target=SimpleNamespace(
                     kind=self.target_kind,
@@ -97,12 +105,20 @@ class _Attention:
 
 
 class _Runs:
-    def __init__(self, run, *, failure_attention=True, budget=None):
+    def __init__(
+        self,
+        run,
+        *,
+        failure_attention=True,
+        budget=None,
+        retry=None,
+    ):
         self.store = _Store(run)
         self.completed = []
         self.definitions = _Definitions(
             failure_attention=failure_attention,
             budget=budget,
+            retry=retry,
         )
 
     def complete(
@@ -145,6 +161,29 @@ class _Workers:
         return value
 
 
+class _Scheduler:
+    def __init__(self):
+        self.records = []
+        self.created = []
+
+    def list(self):
+        return list(self.records)
+
+    def create(self, payload, *, actor_id):
+        record = SimpleNamespace(
+            id=f"schedule-{len(self.records) + 1}",
+            trigger_type=payload.trigger_type,
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            payload=dict(payload.payload),
+            due_at=payload.due_at,
+            actor_id=actor_id,
+        )
+        self.records.append(record)
+        self.created.append((payload, actor_id))
+        return record
+
+
 class _UsageStore:
     def __init__(self, records=()):
         self.records = list(records)
@@ -179,22 +218,33 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             workspace_id="default",
             project_id="home",
             automation_id="automation-a",
-            definition_ref=SimpleNamespace(record_id="definition-1"),
+            definition_ref=SimpleNamespace(
+                record_id="definition-1",
+                revision=1,
+                checksum="definition-checksum-1",
+            ),
             status=AutomationRunStatus.RUNNING,
             execution_ids=tuple(execution_ids),
             evidence_ids=(),
             started_at=100.0,
             result_code=None,
             result_reason=None,
+            attempt=1,
+            work_item_ref="group/app#42",
         )
 
     @staticmethod
-    def _assignment(status, *evidence_ids, completed_at=120.0):
+    def _assignment(
+        status,
+        *evidence_ids,
+        completed_at=120.0,
+        failure=None,
+    ):
         return SimpleNamespace(
             status=status,
             evidence_ids=tuple(evidence_ids),
             completed_at=completed_at,
-            failure=None,
+            failure=failure,
             failure_code=None,
             failure_message=None,
         )
@@ -440,6 +490,119 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             "automation_duration_budget_exhausted",
         )
         self.assertIn("15", result.result_reason)
+
+    def test_transient_execution_failure_schedules_durable_retry(self) -> None:
+        run = self._run("exec-a")
+        retry = SimpleNamespace(max_attempts=3, backoff_seconds=30)
+        runs = _Runs(run, retry=retry)
+        scheduler = _Scheduler()
+        transient = create_failure(
+            FailureReason.PROCESS_FAILURE,
+            source_subsystem="execution_worker",
+        )
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(
+                    AssignmentStatus.FAILED,
+                    "failure-evidence",
+                    failure=transient,
+                )
+            }),
+            scheduler=scheduler,
+            clock=lambda: 100.0,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(len(scheduler.created), 1)
+        payload, actor_id = scheduler.created[0]
+        self.assertEqual(payload.trigger_type, "automation.retry")
+        self.assertEqual(payload.due_at, 130.0)
+        self.assertEqual(payload.payload["retry_of_run_id"], run.id)
+        self.assertEqual(payload.payload["retry_attempt"], 2)
+        self.assertEqual(payload.payload["work_item_ref"], "group/app#42")
+        self.assertEqual(actor_id, self.actor.identity_id)
+        self.assertIn("Retry attempt 2", result.result_reason)
+
+    def test_mixed_success_and_failure_never_replays_automation(self) -> None:
+        run = self._run("exec-a", "exec-b")
+        retry = SimpleNamespace(max_attempts=3, backoff_seconds=5)
+        runs = _Runs(run, retry=retry)
+        scheduler = _Scheduler()
+        transient = create_failure(
+            FailureReason.PROCESS_FAILURE,
+            source_subsystem="execution_worker",
+        )
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(AssignmentStatus.SUCCEEDED),
+                "exec-b": self._assignment(
+                    AssignmentStatus.FAILED,
+                    failure=transient,
+                ),
+            }),
+            scheduler=scheduler,
+            clock=lambda: 100.0,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(scheduler.created, [])
+
+    def test_non_transient_failure_is_not_automatically_retried(self) -> None:
+        run = self._run("exec-a")
+        retry = SimpleNamespace(max_attempts=3, backoff_seconds=5)
+        runs = _Runs(run, retry=retry)
+        scheduler = _Scheduler()
+        blocked = create_failure(
+            FailureReason.CONFIGURATION_MISSING_OR_INVALID,
+            source_subsystem="execution_worker",
+        )
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(
+                    AssignmentStatus.FAILED,
+                    failure=blocked,
+                )
+            }),
+            scheduler=scheduler,
+            clock=lambda: 100.0,
+        )
+
+        service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(scheduler.created, [])
+
+    def test_retry_limit_prevents_another_schedule(self) -> None:
+        run = self._run("exec-a")
+        run.attempt = 3
+        retry = SimpleNamespace(max_attempts=3, backoff_seconds=5)
+        runs = _Runs(run, retry=retry)
+        scheduler = _Scheduler()
+        transient = create_failure(
+            FailureReason.PROCESS_FAILURE,
+            source_subsystem="execution_worker",
+        )
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(
+                    AssignmentStatus.FAILED,
+                    failure=transient,
+                )
+            }),
+            scheduler=scheduler,
+            clock=lambda: 100.0,
+        )
+
+        service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(scheduler.created, [])
 
     async def test_failed_run_creates_deduped_attention_with_provenance(self) -> None:
         run = self._run("exec-a")

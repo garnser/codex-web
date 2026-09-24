@@ -120,6 +120,9 @@ class AutomationRunService:
         project_id: str | None = None,
         idempotency_key: str | None = None,
         definition_ref: DefinitionReference | None = None,
+        dedupe_key_override: str | None = None,
+        attempt: int = 1,
+        work_item_ref: str | None = None,
     ) -> AutomationAdmissionResult:
         if definition_ref is None:
             automation, reference = self.definitions.resolve(
@@ -137,14 +140,20 @@ class AutomationRunService:
                 workspace_id=workspace_id,
                 project_id=project_id,
             )
-        dedupe_key = self.policy_dedupe_key(
-            definition_record_id=reference.record_id,
-            automation_id=automation_id,
-            project_id=project_id,
-            template=automation.dedupe_key_template,
-            trigger=trigger,
-            idempotency_key=idempotency_key,
-        )
+        dedupe_key = str(dedupe_key_override or "").strip()
+        if not dedupe_key:
+            dedupe_key = self.policy_dedupe_key(
+                definition_record_id=reference.record_id,
+                automation_id=automation_id,
+                project_id=project_id,
+                template=automation.dedupe_key_template,
+                trigger=trigger,
+                idempotency_key=idempotency_key,
+            )
+        if len(dedupe_key) > 1000:
+            raise ValueError("Automation dedupe key exceeds canonical limit")
+        if attempt < 1:
+            raise ValueError("Automation attempt must be at least one")
         existing = self.store.find_by_dedupe(
             dedupe_key,
             organization_id=organization_id,
@@ -195,6 +204,8 @@ class AutomationRunService:
             target_id=automation.target.id,
             block_code=block_code,
             block_reason=block_reason,
+            work_item_ref=work_item_ref,
+            attempt=attempt,
             created_at=now,
             updated_at=now,
             completed_at=now if status == AutomationRunStatus.BLOCKED else None,
@@ -479,7 +490,8 @@ class AutomationTriggerAdmissionBridge:
     ) -> AutomationAdmissionResult | None:
         if event.event_type != CanonicalEventType.SCHEDULE.value:
             return None
-        if event.payload.get("trigger_type") != "automation.definition":
+        trigger_type = str(event.payload.get("trigger_type") or "")
+        if trigger_type not in {"automation.definition", "automation.retry"}:
             return None
         materialized = event.payload.get("payload")
         if not isinstance(materialized, dict):
@@ -507,22 +519,90 @@ class AutomationTriggerAdmissionBridge:
             raise ValueError(
                 "Automation schedule trigger requires tenant/workspace scope"
             )
-        return self.runs.admit(
+        trigger = AutomationRunTrigger(
+            kind=AutomationRunTriggerKind.SCHEDULE,
+            source_id=f"{schedule_id}:{float(scheduled_for)!r}",
+            schedule_id=schedule_id,
+            scheduled_for=float(scheduled_for),
+            occurred_at=event.occurred_at,
+            correlation_id=event.correlation_id,
+            causation_id=event.causation_id,
+        )
+
+        if trigger_type == "automation.definition":
+            return self.runs.admit(
+                automation_id,
+                trigger,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                definition_ref=reference,
+            )
+
+        retry_of_run_id = str(materialized.get("retry_of_run_id") or "").strip()
+        try:
+            retry_attempt = int(materialized.get("retry_attempt"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Automation retry schedule lacks retry attempt") from exc
+        if not retry_of_run_id or retry_attempt < 2:
+            raise ValueError("Automation retry schedule lacks canonical retry provenance")
+
+        prior = self.runs.store.get(
+            retry_of_run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if (
+            prior.status != AutomationRunStatus.FAILED
+            or prior.automation_id != automation_id
+            or prior.definition_ref != reference
+            or retry_attempt != prior.attempt + 1
+            or prior.project_id != project_id
+        ):
+            raise ValueError("Automation retry schedule provenance mismatch")
+
+        current_automation, current_reference = self.runs.definitions.resolve(
             automation_id,
-            AutomationRunTrigger(
-                kind=AutomationRunTriggerKind.SCHEDULE,
-                source_id=f"{schedule_id}:{float(scheduled_for)!r}",
-                schedule_id=schedule_id,
-                scheduled_for=float(scheduled_for),
-                occurred_at=event.occurred_at,
-                correlation_id=event.correlation_id,
-                causation_id=event.causation_id,
-            ),
             organization_id=organization_id,
             workspace_id=workspace_id,
             project_id=project_id,
-            definition_ref=reference,
         )
+        del current_automation
+        result = self.runs.admit(
+            automation_id,
+            trigger,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            definition_ref=current_reference,
+            dedupe_key_override=(
+                f"{reference.record_id}:retry:{prior.id}:{retry_attempt}"
+            ),
+            attempt=retry_attempt,
+            work_item_ref=prior.work_item_ref,
+        )
+        if (
+            not result.inserted
+            or result.run.status != AutomationRunStatus.ADMITTED
+        ):
+            return result
+        if current_reference != reference:
+            blocked = self.runs.block(
+                result.run.id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                code="automation_retry_revision_changed",
+                reason=(
+                    "Automation Definition changed after the failed attempt; "
+                    "automatic retry requires operator review."
+                ),
+            )
+            return AutomationAdmissionResult(
+                run=blocked,
+                inserted=True,
+                launch_allowed=False,
+            )
+        return result
 
     def install(self) -> Callable[[], None]:
         async def on_event(event: CanonicalEventEnvelope) -> None:
