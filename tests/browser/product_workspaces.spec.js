@@ -211,6 +211,26 @@ test('converted section destinations keep coherent browser history and routed pa
   await expect(page.locator('[data-project-nav-node="goals"]')).toHaveAttribute('aria-current', 'page');
 });
 
+test('routed Threads page preserves visible sidebar space for the thread list', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+
+  const threads = page.locator('.threads-section');
+  const projectList = page.locator('.sidebar > section:not(.threads-section)');
+  await expect(page.locator('body')).toHaveClass(/product-chat-page/);
+  await expect(threads).toBeVisible();
+  await expect(projectList).toBeHidden();
+  const box = await threads.boundingBox();
+  expect(box.height).toBeGreaterThanOrEqual(240);
+});
+
 
 test('project navigation is hierarchical, keeps active state, and separates Administration', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');

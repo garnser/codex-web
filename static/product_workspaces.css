@@ -177,6 +177,15 @@ body.product-routed-project-page:not(.product-chat-page) > .main {
 body.product-routed-project-page.product-chat-page > .main {
   display: grid;
 }
+body.product-routed-project-page.product-chat-page .sidebar > section:not(.threads-section) {
+  display: none;
+}
+body.product-routed-project-page.product-chat-page .product-project-navigation {
+  max-height: min(34vh, 340px);
+}
+body.product-routed-project-page.product-chat-page .threads-section {
+  min-height: 240px;
+}
 body.product-routed-project-page #developer-panel {
   display: none !important;
 }
