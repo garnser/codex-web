@@ -285,7 +285,8 @@ test('Administration global navigation opens the dedicated routed shell with can
   await expect(page.locator('[data-administration-title]')).toHaveText('Access');
   await expect(page.locator('.product-administration-scope')).toContainText('org-a');
   await expect(page.locator('.product-administration-scope')).toContainText('workspace-a');
-  await expect(page.locator('.product-project-nav-tree')).toBeHidden();
+  await expect(page.locator('.product-project-nav-tree')).toBeVisible();
+  await expect(page.locator('[data-project-nav-node="overview"]')).toHaveAttribute('aria-current', 'false');
   await expect(page.locator('[data-project-nav-node="administration"]')).toHaveAttribute('aria-current', 'page');
 
   await page.locator('[data-administration-page="authentication"]').click();
