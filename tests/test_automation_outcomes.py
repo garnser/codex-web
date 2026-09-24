@@ -218,7 +218,11 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             workspace_id="default",
             project_id="home",
             automation_id="automation-a",
-            definition_ref=SimpleNamespace(record_id="definition-1"),
+            definition_ref=SimpleNamespace(
+                record_id="definition-1",
+                revision=1,
+                checksum="definition-checksum-1",
+            ),
             status=AutomationRunStatus.RUNNING,
             execution_ids=tuple(execution_ids),
             evidence_ids=(),
