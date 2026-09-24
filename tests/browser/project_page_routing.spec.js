@@ -135,3 +135,69 @@ test('stale Project state disables scoped actions and recovers through explicit 
   await expect(page.locator('body')).toHaveAttribute('data-active-project', 'home');
   await expect(page.locator('[data-project-nav-node="overview"]')).toBeEnabled();
 });
+
+
+async function serveLegacyRootShell(page) {
+  await page.route('http://127.0.0.1:18766/', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: fixtureHtml });
+  });
+}
+
+test('legacy Project entry migrates to Overview and does not mount Chat as the page', async ({ page }) => {
+  await serveLegacyRootShell(page);
+
+  await page.goto('http://127.0.0.1:18766/');
+
+  await expect(page).toHaveURL(/\/projects\/home\/overview$/);
+  await expect(page.locator('body')).toHaveClass(/product-routed-project-page/);
+  await expect(page.locator('body')).not.toHaveClass(/product-chat-page/);
+  await expect(page.locator('.main')).toBeHidden();
+  await expect(page.locator('#product-workspace-dialog')).toBeVisible();
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Overview');
+});
+
+test('legacy Chat hash migrates to routed Chat and retires the Developer control surface', async ({ page }) => {
+  await serveLegacyRootShell(page);
+
+  await page.goto('http://127.0.0.1:18766/#workspace/threads');
+
+  await expect(page).toHaveURL(/\/projects\/home\/chat$/);
+  await expect(page.locator('body')).toHaveClass(/product-chat-page/);
+  await expect(page.locator('.main')).toBeVisible();
+  await expect(page.locator('#developer-panel')).toBeHidden();
+  await expect(page.locator('#developer-panel')).toHaveAttribute('data-product-compatibility-source', 'true');
+  await expect(page.locator('#developer-panel').locator('xpath=..')).toHaveJSProperty('tagName', 'BODY');
+  await expect(page.locator('#repository-target')).toBeVisible();
+  await expect(page.locator('#sandbox')).toBeVisible();
+  await expect(page.locator('#approval-policy')).toBeVisible();
+  await expect(page.locator('#rename-thread')).toBeVisible();
+  await expect(page.locator('#archive-thread')).toBeVisible();
+});
+
+test('primary Project navigation tree exposes every migration destination', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const expected = [
+    'overview',
+    'work-items',
+    'runs',
+    'chat',
+    'goals',
+    'decisions',
+    'agent-profiles',
+    'teams',
+    'skills',
+    'automations',
+    'integrations',
+    'attention',
+    'runtime',
+    'providers',
+    'incidents',
+    'project-settings',
+  ];
+  for (const id of expected) {
+    await expect(page.locator(`[data-project-nav-node="${id}"]`)).toHaveCount(1);
+  }
+  await expect(page.locator('[data-project-nav-node="administration"]')).toHaveCount(1);
+});
