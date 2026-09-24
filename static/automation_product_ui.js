@@ -5,6 +5,8 @@ const state = {
   runs: [],
   loading: false,
   error: "",
+  editing: false,
+  creating: false,
 };
 
 function esc(value) {
@@ -42,8 +44,8 @@ function statusClass(status) {
 
 function triggerLabel(trigger = {}) {
   const kind = trigger.type || "unknown";
-  if (kind === "schedule") return trigger.cron ? `Schedule · ${trigger.cron}` : "Schedule";
-  if (kind === "one_shot") return trigger.run_at ? `One shot · ${trigger.run_at}` : "One shot";
+  if (kind === "recurring_schedule") return trigger.cron ? `Schedule · ${trigger.cron}` : "Schedule";
+  if (kind === "one_shot_schedule") return trigger.due_at ? `One shot · ${new Date(trigger.due_at * 1000).toLocaleString()}` : "One shot";
   if (kind === "canonical_event") return `Event · ${trigger.event_type || "canonical"}`;
   if (kind === "provider_event") return `Provider event · ${trigger.event_type || trigger.provider_id || "provider"}`;
   return kind === "manual" ? "Manual" : kind;
@@ -73,6 +75,174 @@ function runRow(run) {
       <span class="product-status-badge ${statusClass(run.status)}">${esc(run.status)}</span>
       <small>${esc(refs.join(" · ") || run.block_reason || "No linked execution yet")}</small>
     </article>`;
+}
+
+
+function numberValue(value) {
+  return value == null ? "" : String(value);
+}
+
+function editorMarkup(item) {
+  if (!state.editing) return "";
+  const definition = item?.definition || {};
+  const trigger = definition.trigger || { type: "manual" };
+  const target = definition.target || { kind: "agent_profile", id: "" };
+  const budget = definition.budget || {};
+  const retry = definition.retry || {};
+  const automationId = state.creating ? "" : (item?.id || "");
+  return `
+    <form class="automation-editor" data-automation-editor>
+      <div class="automation-product-heading">
+        <div>
+          <h3>${state.creating ? "New Automation" : "Edit Automation"}</h3>
+          <p>Draft and publish through the canonical Definition Registry. Existing pinned Skill, execution-profile and authority references are preserved.</p>
+        </div>
+        <button type="button" class="ghost-button" data-automation-edit-cancel>Cancel</button>
+      </div>
+      <div class="form-grid">
+        <label>Automation ID
+          <input name="automation_id" value="${esc(automationId)}" ${state.creating ? "" : "readonly"} required pattern="[a-z0-9][a-z0-9._-]*" />
+        </label>
+        <label>Name
+          <input name="name" value="${esc(definition.name || "")}" required />
+        </label>
+        <label>Lifecycle
+          <select name="lifecycle">
+            <option value="paused" ${definition.lifecycle !== "enabled" ? "selected" : ""}>Paused</option>
+            <option value="enabled" ${definition.lifecycle === "enabled" ? "selected" : ""}>Enabled</option>
+          </select>
+        </label>
+        <label>Work Item policy
+          <select name="work_item_policy">
+            ${["reuse_or_create", "always_create", "reuse_only"].map((value) =>
+              `<option value="${value}" ${(definition.work_item_policy || "reuse_or_create") === value ? "selected" : ""}>${value}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <label>Trigger type
+          <select name="trigger_type">
+            ${["manual", "recurring_schedule", "one_shot_schedule", "canonical_event", "provider_event"].map((value) =>
+              `<option value="${value}" ${trigger.type === value ? "selected" : ""}>${value}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <label>Event type
+          <input name="event_type" value="${esc(trigger.event_type || "")}" placeholder="ci.pipeline" />
+        </label>
+        <label>Provider ID
+          <input name="provider_id" value="${esc(trigger.provider_id || "")}" placeholder="gitlab" />
+        </label>
+        <label>Cron
+          <input name="cron" value="${esc(trigger.cron || "")}" placeholder="0 2 * * *" />
+        </label>
+        <label>Timezone
+          <input name="timezone" value="${esc(trigger.timezone || "")}" placeholder="Europe/Stockholm" />
+        </label>
+        <label>One-shot due at
+          <input name="due_at" type="datetime-local" value="${trigger.due_at ? new Date(trigger.due_at * 1000).toISOString().slice(0, 16) : ""}" />
+        </label>
+        <label>Target
+          <select name="target_kind">
+            <option value="agent_profile" ${target.kind !== "team" ? "selected" : ""}>Agent Profile</option>
+            <option value="team" ${target.kind === "team" ? "selected" : ""}>Team</option>
+          </select>
+        </label>
+        <label>Target ID
+          <input name="target_id" value="${esc(target.id || "")}" required />
+        </label>
+        <label>Owner identity
+          <input name="owner_identity_id" value="${esc(definition.owner_identity_id || "")}" />
+        </label>
+        <label class="checkbox-line">
+          <input name="approval_required" type="checkbox" ${definition.approval_required ? "checked" : ""} />
+          Approval required
+        </label>
+        <label>Max input tokens
+          <input name="max_input_tokens" type="number" min="0" value="${esc(numberValue(budget.max_input_tokens))}" />
+        </label>
+        <label>Max output tokens
+          <input name="max_output_tokens" type="number" min="0" value="${esc(numberValue(budget.max_output_tokens))}" />
+        </label>
+        <label>Max cost USD
+          <input name="max_cost_usd" type="number" min="0" step="0.01" value="${esc(numberValue(budget.max_cost_usd))}" />
+        </label>
+        <label>Max duration seconds
+          <input name="max_duration_seconds" type="number" min="1" value="${esc(numberValue(budget.max_duration_seconds))}" />
+        </label>
+        <label>Max concurrency
+          <input name="max_concurrency" type="number" min="1" max="100" value="${esc(numberValue(budget.max_concurrency ?? 1))}" required />
+        </label>
+        <label>Retry attempts
+          <input name="retry_max_attempts" type="number" min="1" max="100" value="${esc(numberValue(retry.max_attempts ?? 1))}" required />
+        </label>
+        <label>Retry backoff seconds
+          <input name="retry_backoff_seconds" type="number" min="0" step="0.1" value="${esc(numberValue(retry.backoff_seconds ?? 0))}" required />
+        </label>
+      </div>
+      <label>Description
+        <textarea name="description" rows="2">${esc(definition.description || "")}</textarea>
+      </label>
+      <label>Instructions
+        <textarea name="instructions" rows="5" required>${esc(definition.instructions || "")}</textarea>
+      </label>
+      <div class="automation-actions">
+        <button class="primary-button" type="submit">Publish Automation</button>
+      </div>
+    </form>`;
+}
+
+function nullableNumber(form, name) {
+  const raw = form.elements[name].value.trim();
+  return raw === "" ? null : Number(raw);
+}
+
+function definitionFromEditor(form, existing) {
+  const triggerType = form.elements.trigger_type.value;
+  const trigger = { type: triggerType };
+  if (triggerType === "recurring_schedule") {
+    trigger.cron = form.elements.cron.value.trim();
+    trigger.timezone = form.elements.timezone.value.trim();
+  } else if (triggerType === "one_shot_schedule") {
+    const value = form.elements.due_at.value;
+    trigger.due_at = value ? new Date(value).getTime() / 1000 : null;
+  } else if (triggerType === "canonical_event") {
+    trigger.event_type = form.elements.event_type.value.trim();
+    trigger.event_filter = existing?.trigger?.event_filter || {};
+  } else if (triggerType === "provider_event") {
+    trigger.event_type = form.elements.event_type.value.trim();
+    trigger.provider_id = form.elements.provider_id.value.trim();
+    trigger.event_filter = existing?.trigger?.event_filter || {};
+  }
+  return {
+    name: form.elements.name.value.trim(),
+    description: form.elements.description.value.trim() || null,
+    lifecycle: form.elements.lifecycle.value,
+    trigger,
+    target: {
+      kind: form.elements.target_kind.value,
+      id: form.elements.target_id.value.trim(),
+    },
+    instructions: form.elements.instructions.value.trim(),
+    skill_refs: existing?.skill_refs || [],
+    execution_profile_ref: existing?.execution_profile_ref || null,
+    authority_ref: existing?.authority_ref || null,
+    approval_required: form.elements.approval_required.checked,
+    budget: {
+      max_input_tokens: nullableNumber(form, "max_input_tokens"),
+      max_output_tokens: nullableNumber(form, "max_output_tokens"),
+      max_cost_usd: nullableNumber(form, "max_cost_usd"),
+      max_duration_seconds: nullableNumber(form, "max_duration_seconds"),
+      max_concurrency: Number(form.elements.max_concurrency.value),
+    },
+    retry: {
+      max_attempts: Number(form.elements.retry_max_attempts.value),
+      backoff_seconds: Number(form.elements.retry_backoff_seconds.value),
+    },
+    dedupe_key_template: existing?.dedupe_key_template || null,
+    work_item_policy: form.elements.work_item_policy.value,
+    failure_attention: existing?.failure_attention ?? true,
+    owner_identity_id: form.elements.owner_identity_id.value.trim() || null,
+  };
 }
 
 function detailMarkup(item) {
@@ -114,6 +284,7 @@ function detailMarkup(item) {
       </details>
       <div class="automation-actions">
         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" ? "disabled" : ""}>Run now</button>
+        <button type="button" class="ghost-button" data-automation-edit>Edit</button>
         <button type="button" class="ghost-button" data-automation-refresh>Refresh</button>
       </div>
       <section>
@@ -138,7 +309,10 @@ function render() {
   card.innerHTML = `
     <div class="automation-product-heading">
       <div><h2>Automations</h2><p>Versioned triggers and runs over the canonical scheduler, event bus, Agent/Team execution and Work Items.</p></div>
-      <button type="button" class="ghost-button" data-automation-refresh-list>Refresh</button>
+      <div class="automation-actions">
+        <button type="button" class="primary-button" data-automation-new>New Automation</button>
+        <button type="button" class="ghost-button" data-automation-refresh-list>Refresh</button>
+      </div>
     </div>
     ${state.error ? `<div class="workspace-state workspace-state-error">${esc(state.error)}</div>` : ""}
     <div class="automation-product-layout">
@@ -152,7 +326,7 @@ function render() {
             </button>`).join("") :
             '<div class="workspace-state workspace-state-empty">No effective Automations for this Project.</div>'}
       </nav>
-      <div class="automation-detail-host">${detailMarkup(selected())}</div>
+      <div class="automation-detail-host">${editorMarkup(selected()) || detailMarkup(selected())}</div>
     </div>`;
 
   card.querySelectorAll("[data-automation-id]").forEach((button) => {
@@ -162,6 +336,27 @@ function render() {
     button.addEventListener("click", () => load());
   });
   card.querySelector("[data-automation-run-now]")?.addEventListener("click", runNow);
+  card.querySelector("[data-automation-edit]")?.addEventListener("click", () => {
+    state.editing = true;
+    state.creating = false;
+    render();
+  });
+  card.querySelector("[data-automation-new]")?.addEventListener("click", () => {
+    state.editing = true;
+    state.creating = true;
+    render();
+  });
+  card.querySelector("[data-automation-edit-cancel]")?.addEventListener("click", () => {
+    state.editing = false;
+    state.creating = false;
+    render();
+  });
+  card.querySelector("[data-automation-editor]")?.addEventListener("submit", (event) => {
+    saveEditor(event).catch((error) => {
+      state.error = error.message;
+      render();
+    });
+  });
 }
 
 async function loadRuns(id) {
@@ -207,6 +402,44 @@ async function load(projectId = document.body.dataset.activeProject || "") {
     state.loading = false;
     render();
   }
+}
+
+
+async function saveEditor(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const existingItem = state.creating ? null : selected();
+  const definition = definitionFromEditor(form, existingItem?.definition || {});
+  const automationId = form.elements.automation_id.value.trim();
+  const draft = await api("/api/automations/drafts", {
+    method: "POST",
+    body: JSON.stringify({
+      automation_id: automationId,
+      definition,
+      project_id: state.projectId || null,
+      reason: state.creating ? "Created from Automation workspace" : "Edited from Automation workspace",
+      derived_from_record_id: existingItem?.definitionRef?.record_id || null,
+    }),
+  });
+  const recordId = draft?.record?.record_id;
+  if (!recordId) throw new Error("Automation draft returned no record id");
+  const published = await api(`/api/automations/drafts/${encodeURIComponent(recordId)}/publish`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason: "Publish from Automation workspace",
+      expected_active_revision: existingItem?.definitionRef?.revision || null,
+      approval_metadata: {},
+    }),
+  });
+  if (published.scheduleError) {
+    state.error = `Automation published, but schedule needs repair: ${published.scheduleError}`;
+  } else {
+    state.error = "";
+  }
+  state.editing = false;
+  state.creating = false;
+  state.selectedId = automationId;
+  await load(state.projectId);
 }
 
 async function runNow() {
