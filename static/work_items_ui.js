@@ -3,6 +3,7 @@ import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
+import { installWorkItemsMount, workItemsSurfaceActive } from './work_items_mount_ui.js';
 const PAGE_SIZE = 50;
 const ROW_WINDOW = 60;
 const RUN_PAGE_SIZE = 20;
@@ -101,13 +102,11 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
-  window.addEventListener('codex:open-work-items', async () => {
+  installWorkItemsMount(dialog, async () => {
     const contextProject = currentProjectContext();
     if (contextProject) state.projectId = contextProject;
-    if (!dialog.open) dialog.showModal();
     await refreshAll();
   });
-  dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
   installWorkItemSearch(dialog, () => {
     state.selectedRef = '';
@@ -638,8 +637,7 @@ async function runItemAction(action) {
 }
 window.addEventListener('codex:work-item-run-updated', (event) => {
   const ref = String(event.detail?.workItemRef || '');
-  const dialog = document.querySelector('#work-items-dialog');
-  if (!dialog?.open || !ref || ref !== state.selectedRef) return;
+  if (!workItemsSurfaceActive() || !ref || ref !== state.selectedRef) return;
   if (state.runRefreshTimer) clearTimeout(state.runRefreshTimer);
   state.runRefreshTimer = setTimeout(() => {
     state.runRefreshTimer = null;
@@ -655,7 +653,7 @@ window.addEventListener('codex:project-changed', async (event) => {
   state.selectedRef = '';
   persistWorkItemProject(projectId);
   resetPaging();
-  if (document.querySelector('#work-items-dialog')?.open) {
+  if (workItemsSurfaceActive()) {
     renderProjectSelect();
     renderSourceConfig();
     await loadItems({ reset: true });

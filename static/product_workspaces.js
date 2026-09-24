@@ -238,9 +238,6 @@ const CARD_RULES = [
 ];
 
 const DIRECT_ACTIONS = {
-  work: [
-    { label: "Work Items", event: "codex:open-work-items" },
-  ],
   organization: [
     { label: "Executive roles", selector: "#executive-management-button" },
   ],
@@ -660,6 +657,20 @@ function setActiveInternal(id, { updateLocation = true, page = null } = {}) {
   if (scope) scope.textContent = presentation?.scope ? `Scope: ${presentation.scope}` : "";
   renderWorkspaceActions(id);
   refreshWorkspaceCards(id);
+  const inlineWorkItems = document.querySelector(
+    '[data-product-workspace-host="work"] > .work-items-shell',
+  );
+  if (inlineWorkItems) {
+    inlineWorkItems.hidden = !(id === "work" && activePage === "work-items");
+  }
+  if (id === "work" && activePage === "work-items") {
+    const host = workspaceHost("work");
+    if (host) {
+      window.dispatchEvent(new CustomEvent("codex:open-work-items", {
+        detail: { mode: "inline", host },
+      }));
+    }
+  }
   if (id === "overview") {
     const host = document.querySelector("[data-home-overview]");
     if (host) void renderHomeOverview(host);
@@ -878,7 +889,9 @@ function updateEmptyStates() {
   document.querySelectorAll(".product-workspace-host").forEach((host) => {
     const empty = host.querySelector(":scope > .product-workspace-empty");
     const hasContent = Boolean(
-      host.querySelector(":scope > .developer-card, :scope > .product-section-dialog")
+      host.querySelector(
+        ":scope > .developer-card, :scope > .product-section-dialog, :scope > .work-items-shell"
+      )
     );
     if (empty) empty.hidden = hasContent;
   });
