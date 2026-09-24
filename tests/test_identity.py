@@ -16,6 +16,7 @@ from codex_web.identity import (
     HumanIdentity,
     Membership,
     MembershipRole,
+    MembershipUpdate,
     Organization,
     PrincipalKind,
     ServiceIdentity,
@@ -190,6 +191,72 @@ class IdentityServiceTests(unittest.TestCase):
                 )
             )
 
+    def test_membership_roles_can_be_replaced_and_revocation_removes_authority(self) -> None:
+        human = self.service.create_human_identity(
+            display_name="Scoped User",
+            identity_id="human-scoped",
+        )
+        membership = self.service.add_membership(
+            Membership(
+                identity_id=human.id,
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id="local",
+                workspace_id="default",
+                roles=[MembershipRole.MEMBER],
+            )
+        )
+        admin = self.service.local_trusted_actor()
+
+        updated = self.service.update_membership(
+            membership.id,
+            MembershipUpdate(roles=[MembershipRole.APPROVER, MembershipRole.MEMBER]),
+            actor=admin,
+        )
+        self.assertEqual(
+            updated.roles,
+            [MembershipRole.APPROVER, MembershipRole.MEMBER],
+        )
+        self.assertEqual(updated.updated_by, admin.identity_id)
+        self.assertIsNotNone(updated.updated_at)
+
+        actor = self.service.actor_for_identity(human.id, scope=TenantScope())
+        self.assertIn(MembershipRole.APPROVER, actor.roles)
+
+        revoked = self.service.revoke_membership(membership.id, actor=admin)
+        self.assertIsNotNone(revoked.revoked_at)
+        self.assertEqual(revoked.revoked_by, admin.identity_id)
+        with self.assertRaises(TenantIsolationError):
+            self.service.actor_for_identity(human.id, scope=TenantScope())
+
+    def test_membership_mutation_cannot_cross_active_workspace(self) -> None:
+        def seed(state):
+            state.workspaces.append(
+                Workspace(id="other-workspace", organization_id="local", name="Other")
+            )
+            state.humans.append(HumanIdentity(id="human-other", display_name="Other User"))
+            state.memberships.append(
+                Membership(
+                    id="membership-other",
+                    identity_id="human-other",
+                    principal_kind=PrincipalKind.HUMAN,
+                    organization_id="local",
+                    workspace_id="other-workspace",
+                    roles=[MembershipRole.MEMBER],
+                )
+            )
+            return state
+
+        self.state_store.update(seed)
+        admin = self.service.local_trusted_actor()
+        with self.assertRaises(TenantIsolationError):
+            self.service.update_membership(
+                "membership-other",
+                MembershipUpdate(roles=[MembershipRole.ADMIN]),
+                actor=admin,
+            )
+        with self.assertRaises(TenantIsolationError):
+            self.service.revoke_membership("membership-other", actor=admin)
+
     def test_rate_limiter_blocks_after_bounded_failures_and_resets(self) -> None:
         limiter = AuthenticationRateLimiter(max_failures=2, window_seconds=60)
         limiter.failure("ip:1")
@@ -269,6 +336,46 @@ class IdentityMiddlewareTests(unittest.TestCase):
                     headers={CSRF_HEADER: credentials.csrf_token},
                 )
                 self.assertEqual(response.status_code, 200)
+
+    def test_admin_can_update_and_revoke_membership_through_canonical_api(self) -> None:
+        human = self.service.create_human_identity(
+            display_name="API User",
+            identity_id="human-api",
+        )
+        membership = self.service.add_membership(
+            Membership(
+                identity_id=human.id,
+                principal_kind=PrincipalKind.HUMAN,
+                organization_id="local",
+                workspace_id="default",
+                roles=[MembershipRole.MEMBER],
+            )
+        )
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "local-trusted"}):
+            with TestClient(self._app()) as client:
+                response = client.patch(
+                    f"/api/identity/memberships/{membership.id}",
+                    json={"roles": ["approver", "member"]},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["roles"], ["approver", "member"])
+                self.assertEqual(response.json()["updated_by"], "local-admin")
+
+                response = client.delete(
+                    f"/api/identity/memberships/{membership.id}",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNotNone(response.json()["revoked_at"])
+                self.assertEqual(response.json()["revoked_by"], "local-admin")
+
+                snapshot = client.get("/api/identity").json()
+                persisted = next(
+                    item
+                    for item in snapshot["memberships"]
+                    if item["id"] == membership.id
+                )
+                self.assertIsNotNone(persisted["revoked_at"])
+                self.assertEqual(persisted["revoked_by"], "local-admin")
 
     def test_admin_identity_snapshot_never_returns_credential_hashes(self) -> None:
         credentials = self.service.create_session(
