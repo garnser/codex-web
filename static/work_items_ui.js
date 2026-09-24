@@ -4,10 +4,10 @@ import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
 
-const PAGE_SIZE = 50;
-const ROW_WINDOW = 60;
-const RUN_PAGE_SIZE = 20;
-const WORK_ITEM_PROJECT_KEY = 'codex-web-work-item-project';
+const PAGE_SIZE=50;
+const ROW_WINDOW=60;
+const RUN_PAGE_SIZE=20;
+const WORK_ITEM_PROJECT_KEY='codex-web-work-item-project';
 
 const state = {
   projects: [],
