@@ -254,7 +254,7 @@ test("thread-bound repository stays visible and contradictory selection is block
 });
 
 
-test("Project coordinated policy submits all repositories without per-turn selection", async ({ page }) => {
+test("coordinated writable selection submits fixed multi-repository scope", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error));
   await mirrorProductionStaticMount(page);
@@ -270,7 +270,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
     id: "home",
     name: "Home",
     path: "/workspace/home",
-    repository_selection_policy: "coordinated",
+    repository_selection_policy: "explicit",
   };
 
   await page.route("**/api/**", async (route) => {
@@ -295,8 +295,8 @@ test("Project coordinated policy submits all repositories without per-turn selec
             id: "repository:execution-target",
             domain: "repository",
             status: "ready",
-            code: "repository_coordinated_scope_ready",
-            message: "Project repository set is selected by policy.",
+            code: "repository_target_required_per_turn",
+            message: "Repository target is selected per turn.",
           }],
         }),
       });
@@ -338,7 +338,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
       return;
     }
     if (path === "/api/threads" && request.method() === "POST") {
-      expect(url.searchParams.get("repository_resource_id")).toBeNull();
+      expect(url.searchParams.get("repository_resource_id")).toBe("repo-app");
       threadCreated = true;
       await route.fulfill({
         status: 200,
@@ -359,15 +359,146 @@ test("Project coordinated policy submits all repositories without per-turn selec
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
 
+  await page.locator("#repository-target").selectOption("repo-app");
+  await page.locator("#repository-write-targets").selectOption(["repo-platform"]);
+  await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
+
+  await page.locator("#prompt").fill("Do coordinated work");
+  await page.locator("#prompt").press("Enter");
+  expect(turnCalls).toBe(0);
+
+  await page.locator("#repository-write-targets").selectOption(["repo-app", "repo-platform"]);
+  await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
+  await expect(page.locator("#repository-target-status")).toContainText("explicit coordinated selection");
+  await expect(page.locator("#repository-read-context option")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.locator("#repository-target")).toHaveValue("repo-app");
   await expect(page.locator("#repository-write-targets")).toHaveValues(["repo-app", "repo-platform"]);
   await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
-  await expect(page.locator("#repository-target-status")).toContainText("Project coordinated policy");
-  await expect(page.locator("#repository-read-context option")).toHaveCount(0);
   await page.locator("#prompt").fill("Do coordinated work");
 
   await page.locator("#prompt").press("Enter");
   await expect.poll(() => turnCalls).toBe(1);
-  expect(turnPayload.repository_resource_id).toBeNull();
+  expect(turnPayload.repository_resource_id).toBe("repo-app");
+  expect(turnPayload.writable_repository_resource_ids).toEqual(["repo-app", "repo-platform"]);
+  expect(turnPayload.read_only_repository_resource_ids).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+
+test("coordinated writable-only selection derives bootstrap primary and preserves full scope", async ({ page }) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await mirrorProductionStaticMount(page);
+
+  let threadCreated = false;
+  let bootstrapRepositoryId = null;
+  let turnPayload = null;
+  const project = {
+    id: "home",
+    name: "Home",
+    path: "/workspace/home",
+    repository_selection_policy: "explicit",
+  };
+  const resources = [
+    { id: "repo-app", name: "Application", resource_type: "repository", lifecycle: "active" },
+    { id: "repo-platform", name: "Platform", resource_type: "repository", lifecycle: "active" },
+  ];
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+
+    if (path === "/api/projects") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([project]) });
+      return;
+    }
+    if (path === "/api/projects/home/readiness") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: "home",
+          semantic_ready: true,
+          execution_ready: true,
+          status: "ready",
+          checks: [{
+            id: "repository:execution-target",
+            domain: "repository",
+            status: "ready",
+            code: "repository_target_required_per_turn",
+            message: "Repository target is selected per turn.",
+          }],
+        }),
+      });
+      return;
+    }
+    if (path === "/api/projects/home/ui-state") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project,
+          executionProfiles: {
+            items: [{
+              id: "repository-write",
+              name: "Repository write",
+              repositoryAccess: "write",
+              workspaceMode: "repository",
+              requiredWorkerCapabilities: [],
+            }],
+            default_profile_id: "repository-write",
+          },
+          resources: { items: resources },
+          bindings: { items: [] },
+          threadSettings: threadCreated ? {
+            "thread-1": {
+              repository_resource_id: bootstrapRepositoryId,
+              read_only_repository_resource_ids: [],
+              execution_profile_id: "repository-write",
+            },
+          } : {},
+          channels: { items: [] },
+          threads: { data: threadCreated ? [{ id: "thread-1", name: "Coordinated", cwd: "/workspace/home" }] : [] },
+        }),
+      });
+      return;
+    }
+    if (path === "/api/models") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) });
+      return;
+    }
+    if (path === "/api/threads" && request.method() === "POST") {
+      bootstrapRepositoryId = url.searchParams.get("repository_resource_id");
+      threadCreated = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: "thread-1", name: "Coordinated", cwd: "/workspace/home" }),
+      });
+      return;
+    }
+    if (path === "/api/threads/thread-1/turns" && request.method() === "POST") {
+      turnPayload = JSON.parse(request.postData() || "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ queued: false }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto("http://127.0.0.1:18766/static/index.html");
+  await page.locator("#repository-write-targets").selectOption(["repo-app", "repo-platform"]);
+  await expect(page.locator("#repository-target")).toHaveValue("");
+  await expect(page.locator("#repository-target-status")).toContainText("2 writable repositories");
+
+  await page.locator("#prompt").fill("Coordinate both repositories");
+  await page.locator("#prompt").press("Enter");
+
+  await expect.poll(() => bootstrapRepositoryId).toBe("repo-app");
+  await expect.poll(() => turnPayload).not.toBeNull();
+  expect(turnPayload.repository_resource_id).toBe("repo-app");
   expect(turnPayload.writable_repository_resource_ids).toEqual(["repo-app", "repo-platform"]);
   expect(turnPayload.read_only_repository_resource_ids).toEqual([]);
   expect(pageErrors).toEqual([]);
