@@ -419,18 +419,25 @@ function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) 
   return true;
 }
 
+function closeInternalWorkspace() {
+  const dialog = document.getElementById("product-workspace-dialog");
+  if (dialog?.open) dialog.close();
+}
+
 function openWorkspace(id, { page = null, updateLocation = true } = {}) {
   const item = workspaceById(id);
   const resolvedPage = page || WORKSPACE_DEFAULT_PAGE[item.id] || item.id;
   activePage = resolvedPage;
   if (document.body) document.body.dataset.projectPage = resolvedPage;
   if (item.kind === "launcher") {
+    closeInternalWorkspace();
     activeWorkspace = item.id;
     syncNavigationState(item.id, resolvedPage);
     if (updateLocation) setWorkspaceLocation(item.id, resolvedPage);
     return launchExisting(item.selector);
   }
   if (item.kind === "focus") {
+    closeInternalWorkspace();
     activeWorkspace = item.id;
     syncNavigationState(item.id, resolvedPage);
     if (updateLocation) setWorkspaceLocation(item.id, resolvedPage);
