@@ -1,5 +1,5 @@
 import*as ep from"./execution_profile_controls.js";
-import{loadProjectUiState}from"./project_ui_state.js";
+import{loadProjectUiState,ProjectContextUnavailableError}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
@@ -1063,19 +1063,44 @@ async function refresh({ reloadProjects = false } = {}) {
   const startedAt=performance.now();
 
   const task=(async()=>{
-    const snapshot=await loadProjectUiState({
-      api,
-      projectId,
-      search,
-      projects:state.projects,
-      reloadProjects,
-      models:state.models,
-      cachedStatic:state.projectUiStatic[projectId]||null,
-      signal:controller.signal,
-      onModelError:(error)=>{
-        logEvent("models.error",{message:error.message});
-      },
-    });
+    let snapshot;
+    try {
+      snapshot=await loadProjectUiState({
+        api,
+        projectId,
+        search,
+        projects:state.projects,
+        reloadProjects,
+        models:state.models,
+        cachedStatic:state.projectUiStatic[projectId]||null,
+        signal:controller.signal,
+        onModelError:(error)=>{
+          logEvent("models.error",{message:error.message});
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof ProjectContextUnavailableError)) throw error;
+      if (
+        controller.signal.aborted
+        || generation!==state.refreshGeneration
+        || projectId!==state.projectId
+      ) return;
+      state.projects=error.projects||[];
+      state.projectResources=[];
+      state.botBindings=[];
+      state.threadSettings={};
+      state.botChannels=[];
+      state.threads={data:[]};
+      state.threadId=null;
+      renderProjects();
+      renderThreads();
+      clearMessages();
+      window.dispatchEvent(new CustomEvent("codex:project-context-unavailable",{
+        detail:{projectId,projects:state.projects},
+      }));
+      logEvent("project.context_unavailable",{projectId});
+      return;
+    }
     if(
       controller.signal.aborted
       || generation!==state.refreshGeneration
