@@ -203,7 +203,7 @@
         "Automation navigation",
         "Operations navigation"
       ],
-      "open_selector": ".product-workspaces-launch"
+      "open_selector": ".product-all-workspaces"
     },
     {
       "name": "home-overview",
