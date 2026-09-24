@@ -13,8 +13,8 @@ from codex_web.definitions import DefinitionReference
 
 AUTOMATION_RUN_STATE_CONTRACT = ContractSpec(
     "automation-run-state",
-    "1.1",
-    ("1.0", "1.1"),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
 )
 
 
@@ -84,6 +84,8 @@ class AutomationRun(BaseModel):
     target_id: str
     block_code: str | None = None
     block_reason: str | None = None
+    result_code: str | None = None
+    result_reason: str | None = None
     work_item_ref: str | None = None
     work_item_action_intent_id: str | None = None
     execution_ids: tuple[str, ...] = ()

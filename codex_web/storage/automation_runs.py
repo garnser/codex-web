@@ -39,6 +39,23 @@ AUTOMATION_RUN_MIGRATIONS.register(
     },
 )
 
+AUTOMATION_RUN_MIGRATIONS.register(
+    "1.1",
+    "1.2",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.2",
+        "runs": [
+            {
+                **dict(item),
+                "result_code": dict(item).get("result_code"),
+                "result_reason": dict(item).get("result_reason"),
+            }
+            for item in payload.get("runs", [])
+        ],
+    },
+)
+
 
 class AutomationRunNotFoundError(KeyError):
     pass

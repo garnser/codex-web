@@ -37,14 +37,27 @@ class _Store:
 
 
 class _Definitions:
-    def __init__(self, *, failure_attention=True, target_kind=AutomationTargetKind.AGENT_PROFILE):
+    def __init__(
+        self,
+        *,
+        failure_attention=True,
+        target_kind=AutomationTargetKind.AGENT_PROFILE,
+        budget=None,
+    ):
         self.failure_attention = failure_attention
         self.target_kind = target_kind
+        self.budget = budget or SimpleNamespace(
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_cost_usd=None,
+            max_duration_seconds=None,
+        )
 
     def resolve_reference(self, reference, **kwargs):
         return (
             SimpleNamespace(
                 failure_attention=self.failure_attention,
+                budget=self.budget,
                 owner_identity_id="automation-owner",
                 target=SimpleNamespace(
                     kind=self.target_kind,
@@ -84,10 +97,13 @@ class _Attention:
 
 
 class _Runs:
-    def __init__(self, run, *, failure_attention=True):
+    def __init__(self, run, *, failure_attention=True, budget=None):
         self.store = _Store(run)
         self.completed = []
-        self.definitions = _Definitions(failure_attention=failure_attention)
+        self.definitions = _Definitions(
+            failure_attention=failure_attention,
+            budget=budget,
+        )
 
     def complete(
         self,
@@ -97,8 +113,12 @@ class _Runs:
         workspace_id,
         succeeded,
         evidence_ids=(),
+        result_code=None,
+        result_reason=None,
     ):
-        self.completed.append((run_id, succeeded, evidence_ids))
+        self.completed.append(
+            (run_id, succeeded, evidence_ids, result_code, result_reason)
+        )
         self.store.run = self.store.run.model_copy(
             update={
                 "status": (
@@ -107,6 +127,8 @@ class _Runs:
                     else AutomationRunStatus.FAILED
                 ),
                 "evidence_ids": evidence_ids,
+                "result_code": result_code,
+                "result_reason": result_reason,
             }
         )
         return self.store.run
@@ -121,6 +143,14 @@ class _Workers:
         if value is None:
             raise AssignmentNotFoundError("execution assignment not found")
         return value
+
+
+class _UsageStore:
+    def __init__(self, records=()):
+        self.records = list(records)
+
+    def list(self):
+        return list(self.records)
 
 
 class _Run(SimpleNamespace):
@@ -153,13 +183,20 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             status=AutomationRunStatus.RUNNING,
             execution_ids=tuple(execution_ids),
             evidence_ids=(),
+            started_at=100.0,
+            result_code=None,
+            result_reason=None,
         )
 
     @staticmethod
-    def _assignment(status, *evidence_ids):
+    def _assignment(status, *evidence_ids, completed_at=120.0):
         return SimpleNamespace(
             status=status,
             evidence_ids=tuple(evidence_ids),
+            completed_at=completed_at,
+            failure=None,
+            failure_code=None,
+            failure_message=None,
         )
 
     def test_reconcile_for_execution_targets_matching_running_run(self) -> None:
@@ -227,6 +264,8 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
                     "automation-run-1",
                     True,
                     ("evidence-a", "shared", "evidence-b"),
+                    "automation_succeeded",
+                    "Canonical execution completed within configured Automation budgets.",
                 )
             ],
         )
@@ -257,6 +296,150 @@ class AutomationOutcomeReconciliationTests(unittest.IsolatedAsyncioTestCase):
             result.evidence_ids,
             ("evidence-a", "failure-evidence"),
         )
+
+    def test_input_token_budget_exhaustion_fails_successful_execution(self) -> None:
+        run = self._run("exec-a")
+        budget = SimpleNamespace(
+            max_input_tokens=100,
+            max_output_tokens=None,
+            max_cost_usd=None,
+            max_duration_seconds=None,
+        )
+        runs = _Runs(run, budget=budget)
+        usage = _UsageStore([
+            SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                execution_id="exec-a",
+                input_tokens=125,
+                output_tokens=20,
+                cost_usd=0.3,
+                evidence_ids=("usage-evidence",),
+            )
+        ])
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+            runtime_usage=usage,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(
+            result.result_code,
+            "automation_input_tokens_budget_exhausted",
+        )
+        self.assertIn("125", result.result_reason)
+        self.assertIn("100", result.result_reason)
+        self.assertEqual(result.evidence_ids, ("usage-evidence",))
+
+    def test_configured_cost_budget_fails_closed_when_metric_unavailable(self) -> None:
+        run = self._run("exec-a")
+        budget = SimpleNamespace(
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_cost_usd=1.0,
+            max_duration_seconds=None,
+        )
+        runs = _Runs(run, budget=budget)
+        usage = _UsageStore([
+            SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                execution_id="exec-a",
+                input_tokens=20,
+                output_tokens=5,
+                cost_usd=None,
+                evidence_ids=(),
+            )
+        ])
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({"exec-a": self._assignment(AssignmentStatus.SUCCEEDED)}),
+            runtime_usage=usage,
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(result.result_code, "automation_budget_unverifiable")
+        self.assertIn("cost_usd", result.result_reason)
+
+    def test_missing_terminal_usage_keeps_run_running_until_telemetry_arrives(self) -> None:
+        run = self._run("exec-a", "exec-b")
+        budget = SimpleNamespace(
+            max_input_tokens=1000,
+            max_output_tokens=None,
+            max_cost_usd=None,
+            max_duration_seconds=None,
+        )
+        runs = _Runs(run, budget=budget)
+        usage = _UsageStore([
+            SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                execution_id="exec-a",
+                input_tokens=20,
+                output_tokens=5,
+                cost_usd=0.1,
+                evidence_ids=(),
+            )
+        ])
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(AssignmentStatus.SUCCEEDED),
+                "exec-b": self._assignment(AssignmentStatus.SUCCEEDED),
+            }),
+            runtime_usage=usage,
+        )
+
+        pending = service.reconcile(run.id, actor=self.actor)
+        self.assertEqual(pending.status, AutomationRunStatus.RUNNING)
+        self.assertEqual(runs.completed, [])
+
+        usage.records.append(
+            SimpleNamespace(
+                organization_id="local",
+                workspace_id="default",
+                execution_id="exec-b",
+                input_tokens=30,
+                output_tokens=6,
+                cost_usd=0.2,
+                evidence_ids=(),
+            )
+        )
+        completed = service.reconcile(run.id, actor=self.actor)
+        self.assertEqual(completed.status, AutomationRunStatus.SUCCEEDED)
+
+    def test_duration_budget_uses_canonical_run_and_assignment_times(self) -> None:
+        run = self._run("exec-a")
+        budget = SimpleNamespace(
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_cost_usd=None,
+            max_duration_seconds=10,
+        )
+        runs = _Runs(run, budget=budget)
+        service = AutomationOutcomeReconciliationService(
+            runs,
+            _Workers({
+                "exec-a": self._assignment(
+                    AssignmentStatus.SUCCEEDED,
+                    completed_at=115.0,
+                )
+            }),
+        )
+
+        result = service.reconcile(run.id, actor=self.actor)
+
+        self.assertEqual(result.status, AutomationRunStatus.FAILED)
+        self.assertEqual(
+            result.result_code,
+            "automation_duration_budget_exhausted",
+        )
+        self.assertIn("15", result.result_reason)
 
     async def test_failed_run_creates_deduped_attention_with_provenance(self) -> None:
         run = self._run("exec-a")

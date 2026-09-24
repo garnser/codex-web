@@ -346,6 +346,8 @@ class AutomationRunService:
         workspace_id: str,
         succeeded: bool,
         evidence_ids: tuple[str, ...] = (),
+        result_code: str | None = None,
+        result_reason: str | None = None,
     ) -> AutomationRun:
         current = self.store.get(
             run_id,
@@ -367,6 +369,8 @@ class AutomationRunService:
                         else AutomationRunStatus.FAILED
                     ),
                     "evidence_ids": tuple(dict.fromkeys(evidence_ids)),
+                    "result_code": result_code,
+                    "result_reason": result_reason,
                     "updated_at": now,
                     "completed_at": now,
                 }

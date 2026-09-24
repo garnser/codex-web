@@ -1429,6 +1429,48 @@ agent_runtime_telemetry_service = AgentRuntimeTelemetryService(
     artifact_evidence=artifact_evidence_service,
     attribution_resolver=_runtime_usage_attribution,
 )
+automation_outcome_reconciliation_service.runtime_usage = agent_runtime_usage_store
+
+def _notify_automation_runtime_usage(record):
+    if not record.execution_id:
+        return
+    try:
+        actor = identity_service.bootstrap_service_actor(
+            identity_id="service-automation-budget-reconciler",
+            name="Automation Budget Reconciler",
+            scope=TenantScope(
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+            ),
+            service_scopes=("automation:execute",),
+        )
+        outcome_runs = (
+            automation_outcome_reconciliation_service.reconcile_for_execution(
+                record.execution_id,
+                actor=actor,
+            )
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            for automation_run in outcome_runs:
+                if automation_run.status.value in {"succeeded", "failed"}:
+                    loop.create_task(
+                        automation_outcome_reconciliation_service.sync_attention(
+                            automation_run,
+                            actor=actor,
+                        )
+                    )
+    except Exception:
+        # Runtime usage projection is observational and must not break
+        # canonical telemetry persistence.
+        return
+
+agent_runtime_telemetry_service.observation_notifier = (
+    _notify_automation_runtime_usage
+)
 app.state.agent_runtime_usage_store = agent_runtime_usage_store
 app.state.agent_runtime_telemetry_service = agent_runtime_telemetry_service
 app.include_router(build_agent_runtime_usage_router(agent_runtime_telemetry_service))
