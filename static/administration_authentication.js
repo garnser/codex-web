@@ -53,6 +53,34 @@ function sessionRows(context) {
   }).join("");
 }
 
+function authenticationStatusView(status) {
+  const external = status?.external_identity || {};
+  const recovery = status?.recovery || {};
+  const providers = (external.providers || [])
+    .map((item) => `${item.provider} (${Number(item.linked_identity_count || 0)} linked)`)
+    .join(", ");
+  const recoveryProviders = (recovery.providers || [])
+    .map((item) => `${item.provider} (${Number(item.active_factor_count || 0)} active)`)
+    .join(", ");
+
+  return `
+    <div class="administration-user-card" data-auth-status-loaded>
+      <header>
+        <div>
+          <h3>${esc(status?.identity_mode || "unknown")} identity mode</h3>
+          <p>Current assurance: ${esc(status?.current_assurance || "unknown")} · step-up ${status?.step_up_active ? "active" : "not active"}</p>
+        </div>
+        <span class="product-status-badge ${status?.step_up_active ? "status-positive" : ""}">${status?.step_up_active ? "Step-up active" : "Step-up required for sensitive changes"}</span>
+      </header>
+      <p>Session authentication: ${status?.session_authentication_supported ? "supported" : "unavailable"} · service-token authentication: ${status?.service_token_authentication_supported ? "supported" : "unavailable"}.</p>
+      <p>External identity mapping: ${external.configured ? esc(providers || "configured") : "not configured"}.</p>
+      <small>Linked identities: ${Number(external.linked_identity_count || 0)}. External claims grant authority: ${external.claims_grant_authority ? "yes" : "no — codex-web authorization remains canonical and separately scoped"}.</small>
+      <p>Recovery factors: ${recovery.configured ? esc(recoveryProviders || `${Number(recovery.active_factor_count || 0)} active`) : "none configured"}.</p>
+      <small>Active Workspace sessions: ${Number(status?.active_session_count || 0)} · active service tokens: ${Number(status?.active_service_token_count || 0)}.</small>
+    </div>
+  `;
+}
+
 function tokenRows(context) {
   const items = (context?.identity?.service_tokens || [])
     .filter((item) => (
@@ -146,8 +174,9 @@ export function renderAdministrationAuthentication(container, {
 
     <section>
       <h3>Authentication mechanisms</h3>
-      <div class="workspace-state">
-        Current request assurance: ${esc(context.actor?.assurance || "unknown")}. Session and service-token controls are backed by canonical identity APIs. SSO/OIDC provider configuration and MFA policy are not editable here unless a canonical configuration API exists; external identity claims do not grant codex-web authorization by themselves.
+      <p>Configuration and status below come from the canonical identity boundary. External SSO/OIDC claims establish identity only; they never become codex-web authorization implicitly.</p>
+      <div class="workspace-state workspace-state-loading" data-auth-status role="status">
+        Loading canonical authentication status…
       </div>
     </section>
   `;
@@ -161,6 +190,24 @@ export function renderAdministrationAuthentication(container, {
   const createButton = container.querySelector("[data-auth-create-token]");
   const revokeOthers = container.querySelector("[data-auth-revoke-others]");
   const createdSecret = container.querySelector("[data-auth-created-secret]");
+  const authStatus = container.querySelector("[data-auth-status]");
+
+  const loadAuthenticationStatus = async () => {
+    try {
+      const status = await api("/api/identity/authentication-status");
+      authStatus.className = "";
+      authStatus.innerHTML = authenticationStatusView(status);
+    } catch (error) {
+      authStatus.className = "workspace-state workspace-state-denied";
+      authStatus.innerHTML = `
+        <strong>Authentication status requires administrator step-up</strong>
+        <p>${esc(error?.message || "Canonical authentication status is unavailable.")}</p>
+        <small>No authentication configuration is inferred from browser state when the canonical status projection is unavailable.</small>
+      `;
+    }
+  };
+
+  void loadAuthenticationStatus();
 
   const setMessage = (value, kind = "info") => {
     message.hidden = !value;
