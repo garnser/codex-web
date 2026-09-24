@@ -267,6 +267,93 @@ class AutomationRunTests(unittest.TestCase):
         )
         self.assertTrue(third.launch_allowed)
 
+
+    def test_work_item_creation_wait_state_is_durable_and_resumable(self) -> None:
+        self._publish("work-item-wait", max_concurrency=2)
+        admitted = self.service.admit(
+            "work-item-wait",
+            self._manual("manual-wait"),
+            organization_id="local",
+            workspace_id="default",
+            idempotency_key="wait-1",
+        )
+
+        self.clock = 105.0
+        waiting = self.service.wait_for_work_item(
+            admitted.run.id,
+            organization_id="local",
+            workspace_id="default",
+            action_intent_id="action-intent-1",
+        )
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+        self.assertEqual(
+            waiting.work_item_action_intent_id,
+            "action-intent-1",
+        )
+        self.assertIsNone(waiting.work_item_ref)
+
+        restarted = AutomationRunService(
+            self.store,
+            self.definitions,
+            clock=lambda: self.clock,
+        )
+        persisted = self.store.get(
+            waiting.id,
+            organization_id="local",
+            workspace_id="default",
+        )
+        self.assertEqual(
+            persisted.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+
+        self.clock = 110.0
+        resumed = restarted.resume_with_work_item(
+            waiting.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+        self.assertEqual(resumed.status, AutomationRunStatus.ADMITTED)
+        self.assertEqual(resumed.work_item_ref, "group/app#42")
+        self.assertEqual(
+            resumed.work_item_action_intent_id,
+            "action-intent-1",
+        )
+
+    def test_waiting_for_work_item_consumes_concurrency_budget(self) -> None:
+        self._publish("wait-concurrency", max_concurrency=1)
+        first = self.service.admit(
+            "wait-concurrency",
+            self._manual("manual-first"),
+            organization_id="local",
+            workspace_id="default",
+            idempotency_key="first",
+        )
+        self.service.wait_for_work_item(
+            first.run.id,
+            organization_id="local",
+            workspace_id="default",
+            action_intent_id="action-intent-1",
+        )
+
+        second = self.service.admit(
+            "wait-concurrency",
+            self._manual("manual-second"),
+            organization_id="local",
+            workspace_id="default",
+            idempotency_key="second",
+        )
+        self.assertFalse(second.launch_allowed)
+        self.assertEqual(
+            second.run.block_code,
+            "automation_concurrency_exhausted",
+        )
+
+
     def test_run_keeps_exact_definition_revision_and_links_canonical_outcomes(self) -> None:
         first_definition = self._publish("revisioned")
         first = self.service.admit(

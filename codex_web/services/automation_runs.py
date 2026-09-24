@@ -209,6 +209,72 @@ class AutomationRunService:
 
 
 
+    def wait_for_work_item(
+        self,
+        run_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        action_intent_id: str,
+    ) -> AutomationRun:
+        current = self.store.get(
+            run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if current.status != AutomationRunStatus.ADMITTED:
+            raise ValueError(
+                "only admitted Automation runs can wait for Work Item creation"
+            )
+        intent_id = str(action_intent_id or "").strip()
+        if not intent_id:
+            raise ValueError("Work Item wait requires an ActionIntent id")
+        now = float(self.clock())
+        return self.store.replace(
+            current.model_copy(
+                update={
+                    "status": AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+                    "work_item_action_intent_id": intent_id,
+                    "updated_at": now,
+                    "completed_at": None,
+                }
+            )
+        )
+
+    def resume_with_work_item(
+        self,
+        run_id: str,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        work_item_ref: str,
+    ) -> AutomationRun:
+        current = self.store.get(
+            run_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if current.status != AutomationRunStatus.WAITING_FOR_WORK_ITEM:
+            raise ValueError(
+                "only Work-Item-waiting Automation runs can resume"
+            )
+        ref = str(work_item_ref or "").strip()
+        if not ref:
+            raise ValueError("Automation resume requires a canonical Work Item ref")
+        now = float(self.clock())
+        return self.store.replace(
+            current.model_copy(
+                update={
+                    "status": AutomationRunStatus.ADMITTED,
+                    "work_item_ref": ref,
+                    "block_code": None,
+                    "block_reason": None,
+                    "updated_at": now,
+                    "completed_at": None,
+                }
+            )
+        )
+
     def mark_running(
         self,
         run_id: str,
@@ -281,8 +347,11 @@ class AutomationRunService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
-        if current.status not in ACTIVE_AUTOMATION_RUN_STATUSES:
-            raise ValueError("Automation run is not active")
+        if current.status not in {
+            AutomationRunStatus.ADMITTED,
+            AutomationRunStatus.RUNNING,
+        }:
+            raise ValueError("Automation run is not completable")
         now = float(self.clock())
         return self.store.replace(
             current.model_copy(
