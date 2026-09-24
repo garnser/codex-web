@@ -154,7 +154,7 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
         <button type="button" data-access-add-binding>Stage direct assignment</button>
         <button type="button" data-access-target-load>Who can access this selected scope?</button>
       </div>
-      <small>New authority can require independent approval before it becomes effective. Removing a direct assignment is confirmed and still goes through the canonical versioned authority catalog.</small>
+      <small>Direct Role assignment is scoped to the selected Project, or to the current Workspace when no Project is selected. The repository selector filters repository-effective access; it does not silently narrow a direct Role binding. New authority can require independent approval before it becomes effective. Removing a direct assignment is confirmed and still goes through the canonical versioned authority catalog.</small>
       <small>Select a Project, repository, or both. The subject list is computed by the server from canonical Role bindings, delegations and grant constraints.</small>
     </section>
     <section>
