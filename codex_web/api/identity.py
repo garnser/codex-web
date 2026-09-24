@@ -80,10 +80,14 @@ def _public_state(service: IdentityService, actor) -> dict[str, Any]:
                 "workspace_id": item.workspace_id,
                 "scopes": item.scopes,
                 "created_at": item.created_at,
+                "created_by": item.created_by,
                 "expires_at": item.expires_at,
                 "last_used_at": item.last_used_at,
                 "rotation": item.rotation,
+                "rotated_at": item.rotated_at,
+                "rotated_by": item.rotated_by,
                 "revoked_at": item.revoked_at,
+                "revoked_by": item.revoked_by,
                 "revoke_reason": item.revoke_reason,
             }
             for item in state.service_tokens
@@ -400,7 +404,7 @@ def build_identity_router(service: IdentityService) -> APIRouter:
     @router.post("/api/identity/service-tokens")
     async def create_service_token(payload: ServiceTokenCreate, request: Request) -> dict[str, Any]:
         try:
-            require_sensitive_admin(request)
+            actor = require_sensitive_admin(request)
             credentials = service.create_service_token(
                 service_identity_id=payload.service_identity_id,
                 scope=TenantScope(
@@ -409,6 +413,7 @@ def build_identity_router(service: IdentityService) -> APIRouter:
                 ),
                 scopes=payload.scopes,
                 expires_at=payload.expires_at,
+                created_by=actor.identity_id,
             )
             # Raw token is returned once at creation and never appears in list APIs.
             return credentials.model_dump(mode="json")
@@ -464,13 +469,32 @@ def build_identity_router(service: IdentityService) -> APIRouter:
             raise identity_http_error(exc) from exc
         return {"ok": True}
 
+    @router.post("/api/identity/service-tokens/{token_id}/rotate")
+    async def rotate_service_token(token_id: str, request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            credentials = service.rotate_service_token(
+                token_id,
+                rotated_by=actor.identity_id,
+            )
+            # Rotated raw token is returned once and never appears in list APIs.
+            return credentials.model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
     @router.delete("/api/identity/service-tokens/{token_id}")
     async def revoke_service_token(token_id: str, request: Request) -> dict[str, bool]:
         actor = request_actor(request)
         try:
             IdentityService.require_admin(actor)
             IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
-            service.revoke_service_token(token_id, reason=f"revoked-by:{actor.identity_id}")
+            service.revoke_service_token(
+                token_id,
+                reason=f"revoked-by:{actor.identity_id}",
+                revoked_by=actor.identity_id,
+            )
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
         return {"ok": True}
