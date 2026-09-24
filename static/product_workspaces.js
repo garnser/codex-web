@@ -696,7 +696,7 @@ function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) 
   return true;
 }
 
-function mountLauncherWorkspace(item, { page = null, updateLocation = true } = {}) {
+function mountLauncherWorkspace(item, { page = null, updateLocation = true, invokeLauncher = true } = {}) {
   const pageSurface = document.getElementById("product-workspace-page");
   const host = workspaceHost(item.id);
   const launcher = document.querySelector(item.selector);
@@ -713,7 +713,14 @@ function mountLauncherWorkspace(item, { page = null, updateLocation = true } = {
   // open a modal; immediately convert that same dialog into a non-modal,
   // routed page surface so no duplicate UI-owned state is introduced.
   if (dialog.open) dialog.close();
-  launcher.click();
+  if (invokeLauncher) {
+    launcher.dataset.productSectionInternalLaunch = "true";
+    try {
+      launcher.click();
+    } finally {
+      delete launcher.dataset.productSectionInternalLaunch;
+    }
+  }
   if (dialog.open) dialog.close();
   if (dialog.parentElement !== host) host.appendChild(dialog);
   dialog.classList.add("product-section-dialog");
@@ -721,6 +728,26 @@ function mountLauncherWorkspace(item, { page = null, updateLocation = true } = {
   dialog.show();
   updateEmptyStates();
   return true;
+}
+
+function installLegacyLauncherRouting() {
+  for (const item of WORKSPACES.filter((workspace) => workspace.kind === "launcher" && workspace.dialogSelector)) {
+    const launcher = document.querySelector(item.selector);
+    if (!launcher || launcher.dataset.productSectionRouting === "true") continue;
+    launcher.dataset.productSectionRouting = "true";
+    launcher.addEventListener("click", () => {
+      if (launcher.dataset.productSectionInternalLaunch === "true") return;
+      // Legacy listeners run first and may briefly open the dialog modally.
+      // Dock that same canonical surface after the click dispatch completes.
+      queueMicrotask(() => {
+        mountLauncherWorkspace(item, {
+          page: WORKSPACE_DEFAULT_PAGE[item.id] || item.id,
+          updateLocation: true,
+          invokeLauncher: false,
+        });
+      });
+    });
+  }
 }
 
 function closeInternalWorkspace() {
@@ -1029,6 +1056,7 @@ function buildShell() {
     </div>`;
   document.body.appendChild(pageSurface);
   buildPanels();
+  installLegacyLauncherRouting();
   pageSurface.querySelector("[data-open-workspace-switcher]").addEventListener("click", () => {
     if (!switcher.open) switcher.showModal();
   });
