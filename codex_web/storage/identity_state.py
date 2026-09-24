@@ -7,14 +7,31 @@ from codex_web.identity import IdentityState
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-IDENTITY_STATE_CONTRACT = ContractSpec("identity-state", "1.0", ("1.0",))
+IDENTITY_STATE_CONTRACT = ContractSpec("identity-state", "1.1", ("1.0", "1.1"))
 IDENTITY_STATE_MIGRATIONS = MigrationRegistry("identity-state")
 IDENTITY_STATE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": IDENTITY_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
+    },
+)
+IDENTITY_STATE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.1",
+        "memberships": [
+            {
+                **dict(item),
+                "updated_at": dict(item).get("updated_at"),
+                "updated_by": dict(item).get("updated_by"),
+                "revoked_by": dict(item).get("revoked_by"),
+            }
+            for item in payload.get("memberships", [])
+        ],
     },
 )
 
