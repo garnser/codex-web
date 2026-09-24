@@ -3,12 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
 from codex_web.authority import AuthorityEvaluationRequest
 from codex_web.definitions import DefinitionScope
 from codex_web.identity import AuthenticationAssurance
+from codex_web.services.authority_access_management import (
+    AuthorityAccessManagementError,
+    AuthorityAccessManagementService,
+)
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.definitions import (
@@ -26,6 +30,22 @@ from codex_web.services.resources import ResourceCatalogError, ResourceNotFoundE
 from codex_web.services.work_items import WorkItemService
 
 
+class AuthorityDirectBindingHttpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    identity_id: str = Field(min_length=1)
+    role_id: str = Field(min_length=1)
+    project_id: str | None = None
+    reason: str = Field(min_length=1)
+
+
+class AuthorityDirectBindingRemovalHttpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: str | None = None
+    reason: str = Field(min_length=1)
+
+
 class AuthoritySimulationHttpRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -38,7 +58,7 @@ class AuthoritySimulationHttpRequest(BaseModel):
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, (DefinitionNotFoundError, ProjectNotFoundError, ResourceNotFoundError)):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, (DefinitionConflictError,)):
+    if isinstance(exc, (DefinitionConflictError, AuthorityAccessManagementError)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (AuthorizationError,)):
         return HTTPException(status_code=403, detail=str(exc))
@@ -55,6 +75,10 @@ def build_authority_router(
     projects: ProjectService,
 ) -> APIRouter:
     router = APIRouter(tags=["authority-policy"])
+    access_management = AuthorityAccessManagementService(
+        authority,
+        explorer.registry,
+    )
 
     def admin(request: Request):
         actor = request_actor(request)
@@ -111,6 +135,107 @@ def build_authority_router(
             projects.get(str(record.scope_id), actor.tenant)
             return
         raise AuthorizationError("authority definition is outside tenant/project scope")
+
+    def access_change_payload(result: dict[str, Any]) -> dict[str, Any]:
+        assessment = result.get("assessment")
+        return {
+            "status": result["status"],
+            "binding": (
+                result["binding"].model_dump(mode="json")
+                if result.get("binding") is not None
+                else None
+            ),
+            "record": (
+                result["record"].model_dump(mode="json")
+                if result.get("record") is not None
+                else None
+            ),
+            "assessment": (
+                {
+                    "requires_independent_approval": (
+                        assessment.requires_independent_approval
+                    ),
+                    "reasons": list(assessment.reasons),
+                }
+                if assessment is not None
+                else None
+            ),
+        }
+
+    @router.post("/api/authority/direct-bindings")
+    async def add_direct_binding(
+        payload: AuthorityDirectBindingHttpRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            subject(actor, payload.identity_id)
+            effective_project = work_item_project(
+                actor,
+                None,
+                payload.project_id,
+            )
+            return access_change_payload(
+                access_management.add_direct_binding(
+                    actor=actor,
+                    identity_id=payload.identity_id,
+                    role_id=payload.role_id,
+                    project_id=effective_project,
+                    reason=payload.reason,
+                )
+            )
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    AuthorityAccessManagementError,
+                    DefinitionError,
+                    IdentityError,
+                    AuthorizationError,
+                    ProjectNotFoundError,
+                    LookupError,
+                    ValueError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.delete("/api/authority/direct-bindings/{binding_id}")
+    async def remove_direct_binding(
+        binding_id: str,
+        payload: AuthorityDirectBindingRemovalHttpRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            effective_project = work_item_project(
+                actor,
+                None,
+                payload.project_id,
+            )
+            return access_change_payload(
+                access_management.remove_direct_binding(
+                    actor=actor,
+                    binding_id=binding_id,
+                    project_id=effective_project,
+                    reason=payload.reason,
+                )
+            )
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    AuthorityAccessManagementError,
+                    DefinitionError,
+                    IdentityError,
+                    AuthorizationError,
+                    ProjectNotFoundError,
+                    LookupError,
+                    ValueError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
 
     @router.get("/api/authority/effective")
     async def effective(
