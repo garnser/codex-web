@@ -1019,6 +1019,7 @@ function buildShell() {
       <select id="product-project-switcher" aria-label="Current Project">
         <option value="">Loading projects…</option>
       </select>
+      <button type="button" class="ghost-button product-all-workspaces" data-workspace-switcher-launch="true">All workspaces</button>
       <small class="product-field-help">Sets the Project scope for navigation, work, repository targets and new executions.</small>
       <div class="product-project-context-state" data-project-context-state role="status" hidden></div>
     `;
@@ -1027,12 +1028,6 @@ function buildShell() {
     const navigation = document.createElement("div");
     navigation.className = "product-project-navigation";
     buildProjectNavigation(navigation);
-    const all = document.createElement("button");
-    all.type = "button";
-    all.className = "ghost-button product-all-workspaces";
-    all.dataset.workspaceSwitcherLaunch = "true";
-    all.textContent = "All workspaces";
-    navigation.appendChild(all);
     projectContext.insertAdjacentElement("afterend", navigation);
   }
 
@@ -1099,35 +1094,6 @@ function buildShell() {
       if (!switcher.open) switcher.showModal();
     });
   });
-
-  const topbar = document.querySelector(".topbar .controls");
-  if (topbar) {
-    const projectIndicator = document.createElement("button");
-    projectIndicator.type = "button";
-    projectIndicator.className = "ghost-button product-project-indicator";
-    projectIndicator.dataset.projectIndicator = "true";
-    projectIndicator.textContent = "Project: loading…";
-    projectIndicator.setAttribute("aria-label", "Current Project");
-    projectIndicator.addEventListener("click", () => {
-      const select = document.getElementById("product-project-switcher");
-      if (document.body.classList.contains("sidebar-collapsed")) {
-        document.getElementById("sidebar-toggle")?.click();
-      }
-      select?.focus();
-    });
-    topbar.prepend(projectIndicator);
-
-    const launch = document.createElement("button");
-    launch.type = "button";
-    launch.className = "ghost-button product-workspaces-launch";
-    launch.dataset.workspaceSwitcherLaunch = "topbar";
-    launch.textContent = "Workspaces";
-    launch.title = "Open product workspaces (Ctrl/⌘ K)";
-    launch.addEventListener("click", () => {
-      if (!switcher.open) switcher.showModal();
-    });
-    topbar.prepend(launch);
-  }
 
   installProjectContext();
   setActiveInternal("overview", { updateLocation: false, page: "overview" });
