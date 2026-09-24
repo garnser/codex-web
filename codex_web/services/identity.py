@@ -924,7 +924,21 @@ class IdentityService:
         self.store.update(apply)
         return revoked[0]
 
-    def add_membership(self, membership: Membership) -> Membership:
+    def add_membership(
+        self,
+        membership: Membership,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> Membership:
+        if actor is not None:
+            self.require_admin(actor)
+            if (
+                membership.organization_id != actor.organization_id
+                or membership.workspace_id not in {None, actor.workspace_id}
+            ):
+                raise TenantIsolationError(
+                    "membership is outside active organization/workspace"
+                )
         state = self.store.load()
         if membership.principal_kind == PrincipalKind.HUMAN:
             exists = any(item.id == membership.identity_id for item in state.humans)
