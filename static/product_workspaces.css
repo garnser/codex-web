@@ -136,3 +136,126 @@ body.product-routed-project-page.product-chat-page > .main {
 body.product-routed-project-page #developer-panel {
   display: none !important;
 }
+
+
+/* Dedicated organization-level Administration shell */
+.product-administration-root {
+  min-width: 0;
+  overflow: auto;
+  padding: 18px;
+}
+.product-administration-shell {
+  display: grid;
+  gap: 16px;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.product-administration-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.product-administration-header h2 {
+  margin: 4px 0;
+}
+.product-administration-header p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 72ch;
+}
+.product-administration-scope {
+  display: grid;
+  gap: 3px;
+  min-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-strong, var(--surface));
+}
+.product-administration-scope span,
+.product-administration-header small,
+.product-administration-nav small,
+.product-administration-page-placeholder small {
+  color: var(--muted);
+}
+.product-administration-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+.product-administration-nav {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.product-administration-nav button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.product-administration-nav button[aria-current="page"] {
+  border-color: var(--line-strong);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.product-administration-content {
+  min-width: 0;
+}
+.product-administration-page-placeholder {
+  display: grid;
+  gap: 6px;
+}
+body.product-administration-page > .main {
+  display: none !important;
+}
+body.product-administration-page .product-project-context,
+body.product-administration-page .product-project-nav-tree,
+body.product-administration-page .product-all-workspaces {
+  display: none !important;
+}
+body.product-administration-page .product-global-nav {
+  margin-top: 0;
+}
+body.product-administration-page [data-project-nav-node="administration"] {
+  border-color: var(--line-strong);
+}
+
+@media (max-width: 760px) {
+  .product-administration-root {
+    padding: 10px;
+  }
+  .product-administration-header {
+    flex-direction: column;
+  }
+  .product-administration-scope {
+    width: 100%;
+    min-width: 0;
+  }
+  .product-administration-layout {
+    grid-template-columns: 1fr;
+  }
+  .product-administration-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .product-administration-nav button {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .product-administration-nav {
+    grid-template-columns: 1fr;
+  }
+}
