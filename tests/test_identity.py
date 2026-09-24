@@ -482,6 +482,10 @@ class IdentityMiddlewareTests(unittest.TestCase):
                     payload["membership"]["workspace_id"],
                     "default",
                 )
+                self.assertEqual(
+                    payload["membership"]["created_by"],
+                    "local-admin",
+                )
                 snapshot = client.get("/api/identity").json()
                 self.assertTrue(
                     any(
