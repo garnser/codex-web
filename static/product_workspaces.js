@@ -27,14 +27,14 @@ const WORKSPACES = [
 
 
 const PROJECT_NAVIGATION_TREE = [
-  { id: "overview", label: "Overview", workspace: "overview" },
+  { id: "overview", label: "Overview", workspace: "overview", page: "overview" },
   {
     id: "work-group",
     label: "Work",
     children: [
-      { id: "work-items", label: "Work Items", workspace: "work" },
-      { id: "runs", label: "Runs / Execution", workspace: "work" },
-      { id: "chat", label: "Chat / Threads", workspace: "threads" },
+      { id: "work-items", label: "Work Items", workspace: "work", page: "work-items" },
+      { id: "runs", label: "Runs / Execution", workspace: "work", page: "runs" },
+      { id: "chat", label: "Chat / Threads", workspace: "threads", page: "chat" },
       { id: "goals", label: "Goals", workspace: "goals" },
       { id: "decisions", label: "Decisions", workspace: "decisions" },
     ],
@@ -43,8 +43,8 @@ const PROJECT_NAVIGATION_TREE = [
     id: "agents-group",
     label: "Agents",
     children: [
-      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents" },
-      { id: "teams", label: "Teams / Squads", workspace: "agents" },
+      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agents" },
+      { id: "teams", label: "Teams / Squads", workspace: "agents", page: "agents" },
       { id: "skills", label: "Skills", workspace: "skills" },
     ],
   },
@@ -52,26 +52,50 @@ const PROJECT_NAVIGATION_TREE = [
     id: "automation-group",
     label: "Automation",
     children: [
-      { id: "automations", label: "Automations", workspace: "autonomy" },
+      { id: "automations", label: "Automations", workspace: "autonomy", page: "automations" },
       { id: "integrations", label: "Integrations / Extensions", workspace: "integrations" },
     ],
   },
-  { id: "attention", label: "Attention", workspace: "inbox" },
+  { id: "attention", label: "Attention", workspace: "inbox", page: "attention" },
   {
     id: "operations-group",
     label: "Operations",
     children: [
       { id: "runtime", label: "Runtimes / Workers", workspace: "workers" },
-      { id: "providers", label: "Providers", workspace: "operations" },
-      { id: "incidents", label: "Incidents / Failures", workspace: "operations" },
+      { id: "providers", label: "Providers", workspace: "operations", page: "operations" },
+      { id: "incidents", label: "Incidents / Failures", workspace: "operations", page: "operations" },
     ],
   },
-  { id: "project-settings", label: "Project Settings", workspace: "setup" },
+  { id: "project-settings", label: "Project Settings", workspace: "setup", page: "project-settings" },
 ];
 
 const GLOBAL_NAVIGATION = [
   { id: "administration", label: "Administration", workspace: "organization" },
 ];
+
+const PROJECT_PAGE_WORKSPACES = Object.freeze({
+  overview: "overview",
+  "work-items": "work",
+  runs: "work",
+  chat: "threads",
+  agents: "agents",
+  automations: "autonomy",
+  attention: "inbox",
+  operations: "operations",
+  "project-settings": "setup",
+});
+
+const WORKSPACE_DEFAULT_PAGE = Object.freeze({
+  overview: "overview",
+  work: "work-items",
+  threads: "chat",
+  agents: "agents",
+  autonomy: "automations",
+  inbox: "attention",
+  operations: "operations",
+  workers: "operations",
+  setup: "project-settings",
+});
 
 const CARD_RULES = [
   [/^Project Setup & Readiness$/i, "setup"],
@@ -142,6 +166,7 @@ const EXPLAIN_STAGES = [
 ];
 
 let activeWorkspace = "overview";
+let activePage = "overview";
 
 function esc(value) {
   return String(value ?? "")
@@ -193,6 +218,58 @@ function workspaceById(id) {
 function setHash(id) {
   const desired = `#workspace/${id}`;
   if (window.location.hash !== desired) window.location.hash = desired;
+}
+
+function currentProjectRoute() {
+  const match = window.location.pathname.match(/^(.*)\/projects\/([^/]+)\/([^/]+)\/?$/);
+  if (!match) return null;
+  let projectId = match[2];
+  try {
+    projectId = decodeURIComponent(projectId);
+  } catch {
+    // Keep the raw route segment for deterministic recovery.
+  }
+  return {
+    prefix: match[1] || "",
+    projectId,
+    page: match[3],
+  };
+}
+
+function legacyStaticRoutingContext() {
+  return (
+    window.location.pathname.includes("/tests/")
+    || window.location.pathname.endsWith("/static/index.html")
+  );
+}
+
+function navigationProjectId() {
+  return (
+    currentProjectRoute()?.projectId
+    || document.body?.dataset.activeProject
+    || document.getElementById("product-project-switcher")?.value
+    || new URLSearchParams(window.location.search).get("project")
+    || "home"
+  );
+}
+
+function setWorkspaceLocation(id, page = null, { replace = false } = {}) {
+  const routePage = page || WORKSPACE_DEFAULT_PAGE[id];
+  if (!routePage || legacyStaticRoutingContext()) {
+    setHash(id);
+    return;
+  }
+  const current = currentProjectRoute();
+  const prefix = current?.prefix ?? (window.location.pathname.startsWith("/codex") ? "/codex" : "");
+  const projectId = navigationProjectId();
+  const url = new URL(window.location.href);
+  url.pathname = `${prefix}/projects/${encodeURIComponent(projectId)}/${routePage}`;
+  url.searchParams.delete("project");
+  url.hash = "";
+  const state = { ...history.state, projectId, projectPage: routePage };
+  if (replace) history.replaceState(state, "", url);
+  else history.pushState(state, "", url);
+  if (document.body) document.body.dataset.projectPage = routePage;
 }
 
 function closeSwitcher() {
@@ -269,21 +346,24 @@ function refreshWorkspaceCards(id) {
   });
 }
 
-function syncNavigationState(id) {
+function syncNavigationState(id, page = null) {
   document.querySelectorAll("[data-product-workspace-nav]").forEach((button) => {
-    const selected = button.dataset.productWorkspaceNav === id;
+    const buttonPage = button.dataset.projectPage || "";
+    const selected = button.dataset.productWorkspaceNav === id
+      && (!page || !buttonPage || buttonPage === page);
     button.classList.toggle("active", selected);
     button.setAttribute("aria-current", selected ? "page" : "false");
     if (selected) button.closest("details[data-project-nav-group]")?.setAttribute("open", "");
   });
 }
 
-function setActiveInternal(id, { updateHash = true } = {}) {
+function setActiveInternal(id, { updateLocation = true, page = null } = {}) {
   activeWorkspace = id;
+  activePage = page || WORKSPACE_DEFAULT_PAGE[id] || id;
   document.querySelectorAll("[data-product-workspace-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.productWorkspacePanel !== id;
   });
-  syncNavigationState(id);
+  syncNavigationState(id, activePage);
   const item = workspaceById(id);
   const title = document.querySelector("[data-product-workspace-title]");
   const description = document.querySelector("[data-product-workspace-description]");
@@ -295,7 +375,7 @@ function setActiveInternal(id, { updateHash = true } = {}) {
     const host = document.querySelector("[data-home-overview]");
     if (host) void renderHomeOverview(host);
   }
-  if (updateHash) setHash(id);
+  if (updateLocation) setWorkspaceLocation(id, activePage);
 }
 
 function renderWorkspaceActions(id) {
@@ -330,30 +410,43 @@ function renderWorkspaceActions(id) {
   }
 }
 
-function openInternalWorkspace(id) {
+function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) {
   const dialog = document.getElementById("product-workspace-dialog");
   if (!dialog) return false;
   closeSwitcher();
-  setActiveInternal(id);
-  if (!dialog.open) dialog.showModal();
+  setActiveInternal(id, { page, updateLocation });
+  if (!dialog.open) {
+    if (currentProjectRoute()) dialog.show();
+    else dialog.showModal();
+  }
   return true;
 }
 
-function openWorkspace(id) {
+function closeInternalWorkspace() {
+  const dialog = document.getElementById("product-workspace-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+function openWorkspace(id, { page = null, updateLocation = true } = {}) {
   const item = workspaceById(id);
+  const resolvedPage = page || WORKSPACE_DEFAULT_PAGE[item.id] || item.id;
+  activePage = resolvedPage;
+  if (document.body) document.body.dataset.projectPage = resolvedPage;
   if (item.kind === "launcher") {
+    closeInternalWorkspace();
     activeWorkspace = item.id;
-    syncNavigationState(item.id);
-    setHash(item.id);
+    syncNavigationState(item.id, resolvedPage);
+    if (updateLocation) setWorkspaceLocation(item.id, resolvedPage);
     return launchExisting(item.selector);
   }
   if (item.kind === "focus") {
+    closeInternalWorkspace();
     activeWorkspace = item.id;
-    syncNavigationState(item.id);
-    setHash(item.id);
+    syncNavigationState(item.id, resolvedPage);
+    if (updateLocation) setWorkspaceLocation(item.id, resolvedPage);
     return focusSidebar(item.selector);
   }
-  return openInternalWorkspace(item.id);
+  return openInternalWorkspace(item.id, { page: resolvedPage, updateLocation });
 }
 
 function overviewMarkup() {
@@ -450,8 +543,9 @@ function navigationLeaf(item) {
   button.className = "product-project-nav-leaf";
   button.dataset.projectNavNode = item.id;
   button.dataset.productWorkspaceNav = item.workspace;
+  if (item.page) button.dataset.projectPage = item.page;
   button.textContent = item.label;
-  button.addEventListener("click", () => openWorkspace(item.workspace));
+  button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
   return button;
 }
 
@@ -644,7 +738,7 @@ function buildShell() {
   }
 
   installProjectContext();
-  setActiveInternal("overview", { updateHash: false });
+  setActiveInternal("overview", { updateLocation: false, page: "overview" });
 }
 
 function projectLabel(project) {
@@ -687,7 +781,15 @@ function installProjectContext() {
     }));
   });
   window.addEventListener("codex:projects-rendered", (event) => {
-    renderProjectContext(event.detail || {});
+    const detail = event.detail || {};
+    const routedProjectId = currentProjectRoute()?.projectId || "";
+    const effectiveProjectId = routedProjectId || detail.projectId || "";
+    renderProjectContext({ ...detail, projectId: effectiveProjectId });
+    if (routedProjectId && detail.projectId && routedProjectId !== detail.projectId) {
+      window.dispatchEvent(new CustomEvent("codex:project-select", {
+        detail: { projectId: routedProjectId },
+      }));
+    }
   });
   window.addEventListener("codex:project-changed", (event) => {
     const projectId = event.detail?.projectId || "";
@@ -697,6 +799,17 @@ function installProjectContext() {
       const option = select.selectedOptions[0];
       const indicator = document.querySelector("[data-project-indicator]");
       if (indicator) indicator.textContent = `Project: ${option?.textContent || projectId}`;
+      const route = currentProjectRoute();
+      if (route && route.projectId !== projectId) {
+        const url = new URL(window.location.href);
+        url.pathname = `${route.prefix}/projects/${encodeURIComponent(projectId)}/${route.page}`;
+        url.searchParams.delete("project");
+        history.pushState(
+          { ...history.state, projectId, projectPage: route.page },
+          "",
+          url,
+        );
+      }
       if (activeWorkspace === "overview") {
         const host = document.querySelector("[data-home-overview]");
         if (host) void renderHomeOverview(host, projectId);
@@ -742,12 +855,30 @@ function installKeyboard() {
   });
 }
 
-function installHashRouting() {
+function installRouting() {
   const route = () => {
+    const projectRoute = currentProjectRoute();
+    if (projectRoute) {
+      const workspaceId = PROJECT_PAGE_WORKSPACES[projectRoute.page];
+      if (!workspaceId) return;
+      if (document.body) document.body.dataset.projectPage = projectRoute.page;
+      if (workspaceId !== activeWorkspace || projectRoute.page !== activePage) {
+        openWorkspace(workspaceId, {
+          page: projectRoute.page,
+          updateLocation: false,
+        });
+      } else {
+        syncNavigationState(workspaceId, projectRoute.page);
+      }
+      return;
+    }
+
     const match = window.location.hash.match(/^#workspace\/([a-z0-9-]+)$/);
     if (!match) return;
     const item = WORKSPACES.find((workspace) => workspace.id === match[1]);
-    if (item && item.id !== activeWorkspace) openWorkspace(item.id);
+    if (item && item.id !== activeWorkspace) {
+      openWorkspace(item.id, { updateLocation: false });
+    }
   };
   window.addEventListener("hashchange", route);
   window.addEventListener("popstate", route);
@@ -760,7 +891,7 @@ function install() {
   updateEmptyStates();
   installObservers();
   installKeyboard();
-  installHashRouting();
+  installRouting();
 
   window.CodexProductUI = Object.freeze({
     openWorkspace,
