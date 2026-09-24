@@ -154,6 +154,7 @@ class AutomationExecutionService:
         automation,
         *,
         actor,
+        work_item_ref: str | None,
     ) -> AutomationRun:
         if self.approvals is None:
             raise AutomationExecutionError(
@@ -185,6 +186,7 @@ class AutomationExecutionService:
             organization_id=run.organization_id,
             workspace_id=run.workspace_id,
             approval_request_id=request.id,
+            work_item_ref=work_item_ref,
         )
 
     async def resume_for_approval_request(
@@ -574,12 +576,20 @@ class AutomationExecutionService:
                 raise AutomationExecutionError(
                     "Automation execution requires an explicit canonical project id"
                 )
+            context = self._trigger_context(run)
+            selected_work_item_ref = self._resolve_work_item_ref(
+                run,
+                policy=automation.work_item_policy,
+                explicit_ref=work_item_ref,
+                event_ref=self._event_work_item_ref(context),
+            )
             if automation.approval_required:
                 if run.approval_request_id is None:
                     return await self._wait_for_approval(
                         run,
                         automation,
                         actor=actor,
+                        work_item_ref=selected_work_item_ref,
                     )
                 if self.approvals is None:
                     raise AutomationExecutionError(
@@ -593,13 +603,6 @@ class AutomationExecutionService:
                     raise AutomationExecutionError(
                         "Automation approval has not been canonically consumed"
                     )
-            context = self._trigger_context(run)
-            selected_work_item_ref = self._resolve_work_item_ref(
-                run,
-                policy=automation.work_item_policy,
-                explicit_ref=work_item_ref,
-                event_ref=self._event_work_item_ref(context),
-            )
             if (
                 selected_work_item_ref is None
                 and automation.work_item_policy in {"reuse_or_create", "always_create"}
