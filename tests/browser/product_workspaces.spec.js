@@ -89,7 +89,7 @@ test('overview Explain Action routes to canonical Autonomy explain UI without mo
   await dialog.locator('[data-product-explain-id]').fill('action-intent-123');
   await dialog.locator('[data-product-explain]').click();
 
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Automation / Autonomy');
+  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Automations');
   await expect(page.locator('[data-acc-intent]')).toHaveValue('action-intent-123');
   await expect(page.locator('[data-acc-explain]')).toHaveAttribute('data-clicked', '1');
 });
@@ -151,7 +151,7 @@ test('workspace deep links participate in browser back navigation', async ({ pag
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('operations'));
   await expect(page).toHaveURL(/#workspace\/operations$/);
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Operations / Observability');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Operations');
 
   await page.goBack();
   await expect(page).toHaveURL(/#workspace\/resources$/);
