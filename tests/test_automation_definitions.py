@@ -197,6 +197,8 @@ class AutomationDefinitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.payload["automation_id"], "one-shot-maintenance")
         self.assertEqual(first.payload["definition_revision"], 1)
         self.assertTrue(first.payload["definition_record_id"])
+        self.assertEqual(first.misfire_policy.value, "fire_once")
+        self.assertEqual(first.misfire_grace_seconds, 3600.0)
         self.assertEqual(len(self.scheduler.list()), 1)
 
     def test_daily_cron_materializes_without_second_timer_engine(self) -> None:
