@@ -356,7 +356,10 @@ from codex_web.services.native_recovery import (
     NativeRecoveryService,
 )
 from codex_web.services.slack_provider import install_slack_provider_service
-from codex_web.services.task_source_action_provider import TaskSourceActionProvider
+from codex_web.services.task_source_action_provider import (
+    TASK_SOURCE_CREATE_ACTION_ID,
+    TaskSourceActionProvider,
+)
 from codex_web.services.task_source_sync_jobs import GitLabSyncJobService
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
@@ -2867,6 +2870,19 @@ app.state.automation_execution_service = automation_execution_service
 app.include_router(
     build_automation_execution_router(automation_execution_service)
 )
+
+def _notify_automation_action_intent(intent):
+    if intent.action_id != TASK_SOURCE_CREATE_ACTION_ID:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(
+        automation_execution_service.resume_for_action_intent(intent)
+    )
+
+action_intent_service.status_notifier = _notify_automation_action_intent
 
 async def _launch_admitted_automation(run):
     await automation_execution_service.launch(

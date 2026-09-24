@@ -113,6 +113,7 @@ class ActionIntentService:
         capacity: CapacityService | None = None,
         execution_workers: Any | None = None,
         maintenance_guard=None,
+        status_notifier=None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -125,6 +126,7 @@ class ActionIntentService:
         self.capacity = capacity
         self.execution_workers = execution_workers
         self.maintenance_guard = maintenance_guard
+        self.status_notifier = status_notifier
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -1196,7 +1198,15 @@ class ActionIntentService:
             return state
 
         updated = self.store.update(apply)
-        return next(item for item in updated.intents if item.id == intent_id)
+        result = next(item for item in updated.intents if item.id == intent_id)
+        if self.status_notifier is not None:
+            try:
+                self.status_notifier(result)
+            except Exception:
+                # Projection hooks are observational and cannot break
+                # canonical ActionIntent state transitions.
+                pass
+        return result
 
     async def _verify_completion(
         self,

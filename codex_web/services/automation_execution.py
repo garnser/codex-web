@@ -4,7 +4,11 @@ import json
 import uuid
 from typing import Any
 
-from codex_web.action_intents import ActionIntentCreate
+from codex_web.action_intents import (
+    ActionIntent,
+    ActionIntentCreate,
+    ActionIntentStatus,
+)
 from codex_web.action_providers import ActionRequest
 from codex_web.agent_teams import TeamDelegationRequest, TeamExecutionRequest
 from codex_web.automation_definitions import AutomationTargetKind
@@ -170,11 +174,13 @@ class AutomationExecutionService:
         explicit_ref: str | None,
         event_ref: str | None,
     ) -> str | None:
-        if policy == "always_create":
+        if policy == "always_create" and run.work_item_ref is None:
             return None
         candidate = self._validated_work_item_ref(
             run,
-            str(explicit_ref or "").strip() or event_ref,
+            str(explicit_ref or "").strip()
+            or run.work_item_ref
+            or event_ref,
         )
         if policy == "reuse_only" and candidate is None:
             raise AutomationExecutionError(
@@ -280,6 +286,109 @@ class AutomationExecutionService:
             workspace_id=run.workspace_id,
             action_intent_id=intent.id,
         )
+
+    @staticmethod
+    def _successful_work_item_ref(history: dict[str, Any]) -> str | None:
+        for receipt in reversed(history.get("receipts") or []):
+            result = receipt.get("result") or {}
+            if result.get("status") != "succeeded":
+                continue
+            output = result.get("output") or {}
+            ref = str(output.get("work_item_ref") or "").strip()
+            if ref:
+                return ref
+        return None
+
+    async def resume_for_action_intent(
+        self,
+        intent: ActionIntent,
+    ) -> tuple[AutomationRun, ...]:
+        if self.action_intents is None:
+            return ()
+        matches = [
+            run
+            for run in self.runs.store.list(
+                organization_id=intent.organization_id,
+                workspace_id=intent.workspace_id,
+            )
+            if run.status == AutomationRunStatus.WAITING_FOR_WORK_ITEM
+            and run.work_item_action_intent_id == intent.id
+        ]
+        results: list[AutomationRun] = []
+        for run in matches:
+            if intent.status == ActionIntentStatus.SUCCEEDED:
+                automation, _reference = self.runs.definitions.resolve_reference(
+                    run.definition_ref,
+                    organization_id=run.organization_id,
+                    workspace_id=run.workspace_id,
+                    project_id=run.project_id,
+                )
+                actor = self._actor(run, automation.owner_identity_id)
+                history = self.action_intents.history(intent.id, actor)
+                work_item_ref = self._successful_work_item_ref(history)
+                if not work_item_ref:
+                    results.append(
+                        self.runs.block(
+                            run.id,
+                            organization_id=run.organization_id,
+                            workspace_id=run.workspace_id,
+                            code="automation_work_item_creation_missing_result",
+                            reason=(
+                                "task-source.create succeeded without a canonical "
+                                "Work Item reference"
+                            ),
+                        )
+                    )
+                    continue
+                try:
+                    work_item_ref = self._validated_work_item_ref(
+                        run,
+                        work_item_ref,
+                    )
+                except Exception as exc:
+                    results.append(
+                        self.runs.block(
+                            run.id,
+                            organization_id=run.organization_id,
+                            workspace_id=run.workspace_id,
+                            code="automation_work_item_creation_invalid_result",
+                            reason=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                    continue
+                resumed = self.runs.resume_with_work_item(
+                    run.id,
+                    organization_id=run.organization_id,
+                    workspace_id=run.workspace_id,
+                    work_item_ref=work_item_ref,
+                )
+                results.append(
+                    await self.launch(
+                        resumed.id,
+                        organization_id=resumed.organization_id,
+                        workspace_id=resumed.workspace_id,
+                        work_item_ref=work_item_ref,
+                    )
+                )
+                continue
+            if intent.status in {
+                ActionIntentStatus.FAILED,
+                ActionIntentStatus.CANCELLED,
+                ActionIntentStatus.ROLLED_BACK,
+            }:
+                results.append(
+                    self.runs.block(
+                        run.id,
+                        organization_id=run.organization_id,
+                        workspace_id=run.workspace_id,
+                        code="automation_work_item_creation_failed",
+                        reason=(
+                            intent.last_error
+                            or f"task-source.create ended as {intent.status.value}"
+                        ),
+                    )
+                )
+        return tuple(results)
 
     def _block(self, run: AutomationRun, code: str, reason: str) -> AutomationRun:
         return self.runs.block(

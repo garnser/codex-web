@@ -318,8 +318,13 @@ class AutomationRunService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
-        if current.status != AutomationRunStatus.ADMITTED:
-            raise ValueError("only admitted Automation runs can be blocked")
+        if current.status not in {
+            AutomationRunStatus.ADMITTED,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        }:
+            raise ValueError(
+                "only admitted or Work-Item-waiting Automation runs can be blocked"
+            )
         now = float(self.clock())
         return self.store.replace(
             current.model_copy(
