@@ -25,6 +25,54 @@ const WORKSPACES = [
   { id: "memory", label: "Memory", group: "Organization", kind: "launcher", selector: "#memory-button", description: "Governed organizational memory and retrieval." },
 ];
 
+
+const PROJECT_NAVIGATION_TREE = [
+  { id: "overview", label: "Overview", workspace: "overview" },
+  {
+    id: "work-group",
+    label: "Work",
+    children: [
+      { id: "work-items", label: "Work Items", workspace: "work" },
+      { id: "runs", label: "Runs / Execution", workspace: "work" },
+      { id: "chat", label: "Chat / Threads", workspace: "threads" },
+      { id: "goals", label: "Goals", workspace: "goals" },
+      { id: "decisions", label: "Decisions", workspace: "decisions" },
+    ],
+  },
+  {
+    id: "agents-group",
+    label: "Agents",
+    children: [
+      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents" },
+      { id: "teams", label: "Teams / Squads", workspace: "agents" },
+      { id: "skills", label: "Skills", workspace: "skills" },
+    ],
+  },
+  {
+    id: "automation-group",
+    label: "Automation",
+    children: [
+      { id: "automations", label: "Automations", workspace: "autonomy" },
+      { id: "integrations", label: "Integrations / Extensions", workspace: "integrations" },
+    ],
+  },
+  { id: "attention", label: "Attention", workspace: "inbox" },
+  {
+    id: "operations-group",
+    label: "Operations",
+    children: [
+      { id: "runtime", label: "Runtimes / Workers", workspace: "workers" },
+      { id: "providers", label: "Providers", workspace: "operations" },
+      { id: "incidents", label: "Incidents / Failures", workspace: "operations" },
+    ],
+  },
+  { id: "project-settings", label: "Project Settings", workspace: "setup" },
+];
+
+const GLOBAL_NAVIGATION = [
+  { id: "administration", label: "Administration", workspace: "organization" },
+];
+
 const CARD_RULES = [
   [/^Project Setup & Readiness$/i, "setup"],
   [/^Work Graph$/i, "work"],
@@ -221,16 +269,21 @@ function refreshWorkspaceCards(id) {
   });
 }
 
+function syncNavigationState(id) {
+  document.querySelectorAll("[data-product-workspace-nav]").forEach((button) => {
+    const selected = button.dataset.productWorkspaceNav === id;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+    if (selected) button.closest("details[data-project-nav-group]")?.setAttribute("open", "");
+  });
+}
+
 function setActiveInternal(id, { updateHash = true } = {}) {
   activeWorkspace = id;
   document.querySelectorAll("[data-product-workspace-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.productWorkspacePanel !== id;
   });
-  document.querySelectorAll("[data-product-workspace-nav]").forEach((button) => {
-    const selected = button.dataset.productWorkspaceNav === id;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-current", selected ? "page" : "false");
-  });
+  syncNavigationState(id);
   const item = workspaceById(id);
   const title = document.querySelector("[data-product-workspace-title]");
   const description = document.querySelector("[data-product-workspace-description]");
@@ -290,11 +343,13 @@ function openWorkspace(id) {
   const item = workspaceById(id);
   if (item.kind === "launcher") {
     activeWorkspace = item.id;
+    syncNavigationState(item.id);
     setHash(item.id);
     return launchExisting(item.selector);
   }
   if (item.kind === "focus") {
     activeWorkspace = item.id;
+    syncNavigationState(item.id);
     setHash(item.id);
     return focusSidebar(item.selector);
   }
@@ -388,6 +443,60 @@ function updateEmptyStates() {
   });
 }
 
+
+function navigationLeaf(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "product-project-nav-leaf";
+  button.dataset.projectNavNode = item.id;
+  button.dataset.productWorkspaceNav = item.workspace;
+  button.textContent = item.label;
+  button.addEventListener("click", () => openWorkspace(item.workspace));
+  return button;
+}
+
+function buildProjectNavigation(container) {
+  container.innerHTML = "";
+  const projectTree = document.createElement("nav");
+  projectTree.className = "product-project-nav-tree";
+  projectTree.setAttribute("aria-label", "Project navigation");
+
+  for (const item of PROJECT_NAVIGATION_TREE) {
+    if (!item.children) {
+      projectTree.appendChild(navigationLeaf(item));
+      continue;
+    }
+    const group = document.createElement("details");
+    group.dataset.projectNavGroup = item.id;
+    group.className = "product-project-nav-group";
+    group.open = ["work-group", "agents-group"].includes(item.id);
+    const summary = document.createElement("summary");
+    summary.textContent = item.label;
+    summary.setAttribute("aria-label", item.label);
+    group.appendChild(summary);
+    const children = document.createElement("div");
+    children.className = "product-project-nav-children";
+    item.children.forEach((child) => children.appendChild(navigationLeaf(child)));
+    group.appendChild(children);
+    projectTree.appendChild(group);
+  }
+  container.appendChild(projectTree);
+
+  const global = document.createElement("nav");
+  global.className = "product-global-nav";
+  global.setAttribute("aria-label", "Global navigation");
+  const heading = document.createElement("span");
+  heading.className = "product-global-nav-label";
+  heading.textContent = "Global";
+  global.appendChild(heading);
+  GLOBAL_NAVIGATION.forEach((item) => {
+    const button = navigationLeaf(item);
+    button.classList.add("product-global-nav-leaf");
+    global.appendChild(button);
+  });
+  container.appendChild(global);
+}
+
 function buildSwitcherNav(container) {
   const groups = [...new Set(WORKSPACES.map((item) => item.group))];
   for (const group of groups) {
@@ -429,24 +538,16 @@ function buildShell() {
     `;
     brand.insertAdjacentElement("afterend", projectContext);
 
-    const quick = document.createElement("nav");
-    quick.className = "product-workspace-quicknav";
-    quick.setAttribute("aria-label", "Primary workflows");
-    for (const id of ["overview", "work", "agents", "autonomy", "operations", "organization"]) {
-      const item = workspaceById(id);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.quickWorkspace = id;
-      button.textContent = item.label.replace(" / Attention", "").replace(" / Observability", "");
-      button.addEventListener("click", () => openWorkspace(id));
-      quick.appendChild(button);
-    }
+    const navigation = document.createElement("div");
+    navigation.className = "product-project-navigation";
+    buildProjectNavigation(navigation);
     const all = document.createElement("button");
     all.type = "button";
+    all.className = "ghost-button product-all-workspaces";
     all.dataset.workspaceSwitcherLaunch = "true";
     all.textContent = "All workspaces";
-    quick.appendChild(all);
-    projectContext.insertAdjacentElement("afterend", quick);
+    navigation.appendChild(all);
+    projectContext.insertAdjacentElement("afterend", navigation);
   }
 
   const switcher = document.createElement("dialog");
