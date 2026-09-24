@@ -1068,5 +1068,21 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(capacity.release(blocker.id))
 
 
+    async def test_status_notifier_observes_terminal_transition(self) -> None:
+        observed = []
+        self.service.status_notifier = (
+            lambda intent: observed.append((intent.id, intent.status))
+        )
+        intent = self._create()
+
+        completed = await self._execute(intent)
+
+        self.assertEqual(completed.status, ActionIntentStatus.SUCCEEDED)
+        self.assertIn(
+            (intent.id, ActionIntentStatus.SUCCEEDED),
+            observed,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
