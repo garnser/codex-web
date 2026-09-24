@@ -342,3 +342,36 @@ test('Administration shell remains within the viewport at phone width', async ({
   await page.locator('[data-administration-page="users"]').focus();
   await expect(page.locator('[data-administration-page="users"]')).toBeFocused();
 });
+
+
+test('global Administration entry is hidden when canonical identity denies admin access', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-user',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'administrator required' }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+  await expect(page.locator('[data-project-nav-node="administration"]')).toBeHidden();
+});
