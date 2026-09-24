@@ -4,14 +4,23 @@ import json
 import uuid
 from typing import Any
 
+from codex_web.action_intents import ActionIntentCreate
+from codex_web.action_providers import ActionRequest
 from codex_web.agent_teams import TeamDelegationRequest, TeamExecutionRequest
 from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRun, AutomationRunStatus
 from codex_web.identity import TenantScope
 from codex_web.models import TurnCreate
+from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.action_providers import ActionProviderRegistry
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.automation_runs import AutomationRunService
 from codex_web.services.identity import IdentityService
+from codex_web.services.task_source_action_provider import (
+    TASK_SOURCE_ACTION_PROVIDER_INSTANCE,
+    TASK_SOURCE_ACTION_PROVIDER_TYPE,
+    TASK_SOURCE_CREATE_ACTION_ID,
+)
 from codex_web.services.threads import ThreadService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_items import WorkItemService
@@ -35,6 +44,8 @@ class AutomationExecutionService:
         teams: AgentTeamExecutionService,
         events: CanonicalEventStore,
         work_items: WorkItemService | None = None,
+        action_intents: ActionIntentService | None = None,
+        action_providers: ActionProviderRegistry | None = None,
     ) -> None:
         self.runs = runs
         self.identity = identity
@@ -43,6 +54,8 @@ class AutomationExecutionService:
         self.teams = teams
         self.events = events
         self.work_items = work_items
+        self.action_intents = action_intents
+        self.action_providers = action_providers
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -157,21 +170,116 @@ class AutomationExecutionService:
         explicit_ref: str | None,
         event_ref: str | None,
     ) -> str | None:
+        if policy == "always_create":
+            return None
         candidate = self._validated_work_item_ref(
             run,
             str(explicit_ref or "").strip() or event_ref,
         )
-        if policy == "always_create":
-            raise AutomationExecutionError(
-                "Automation work_item_policy=always_create requires a new "
-                "canonical Work Item through ActionIntent before launch"
-            )
         if policy == "reuse_only" and candidate is None:
             raise AutomationExecutionError(
                 "Automation work_item_policy=reuse_only requires an existing "
                 "canonical Work Item"
             )
         return candidate
+
+    def _task_source_binding(self, project_id: str, actor):
+        if self.action_providers is None:
+            raise AutomationExecutionError(
+                "Automation Work Item creation requires canonical ActionProvider registry"
+            )
+        candidates = [
+            item
+            for item in self.action_providers.list_bindings(actor)
+            if item.enabled
+            and item.provider_type == TASK_SOURCE_ACTION_PROVIDER_TYPE
+            and item.provider_instance == TASK_SOURCE_ACTION_PROVIDER_INSTANCE
+            and item.project_id in {None, project_id}
+        ]
+        exact = [item for item in candidates if item.project_id == project_id]
+        eligible = exact if exact else [
+            item for item in candidates if item.project_id is None
+        ]
+        if not eligible:
+            raise AutomationExecutionError(
+                "no enabled authoritative task-source ActionProvider binding "
+                f"permits project {project_id}"
+            )
+        if len(eligible) != 1:
+            raise AutomationExecutionError(
+                "multiple authoritative task-source ActionProvider bindings "
+                f"match project {project_id}"
+            )
+        return eligible[0]
+
+    @staticmethod
+    def _work_item_body(
+        run: AutomationRun,
+        automation,
+        context: dict[str, Any] | None,
+    ) -> str:
+        parts = [
+            automation.description or automation.instructions,
+            "",
+            f"Canonical Automation: {run.automation_id}",
+            f"Automation run: {run.id}",
+        ]
+        if context is not None:
+            parts.extend(
+                (
+                    "",
+                    "Canonical trigger provenance:",
+                    json.dumps(context, sort_keys=True, ensure_ascii=False),
+                )
+            )
+        return "\n".join(parts)[:12000]
+
+    def _wait_for_work_item_creation(
+        self,
+        run: AutomationRun,
+        automation,
+        *,
+        actor,
+        context: dict[str, Any] | None,
+    ) -> AutomationRun:
+        if self.action_intents is None:
+            raise AutomationExecutionError(
+                "Automation Work Item creation requires canonical ActionIntent service"
+            )
+        binding = self._task_source_binding(run.project_id, actor)
+        request = ActionRequest(
+            action_id=TASK_SOURCE_CREATE_ACTION_ID,
+            organization_id=run.organization_id,
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+            parameters={
+                "title": automation.name,
+                "body": self._work_item_body(run, automation, context),
+                "owners": (
+                    [automation.owner_identity_id]
+                    if automation.owner_identity_id
+                    else []
+                ),
+                "labels": ["automation"],
+            },
+            idempotency_key=f"automation:{run.id}:work-item-create",
+            correlation_id=run.trigger.correlation_id or run.id,
+            requested_by=actor.identity_id,
+        )
+        intent = self.action_intents.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=request,
+                verification_required=False,
+            ),
+            actor=actor,
+        )
+        return self.runs.wait_for_work_item(
+            run.id,
+            organization_id=run.organization_id,
+            workspace_id=run.workspace_id,
+            action_intent_id=intent.id,
+        )
 
     def _block(self, run: AutomationRun, code: str, reason: str) -> AutomationRun:
         return self.runs.block(
@@ -219,6 +327,16 @@ class AutomationExecutionService:
                 explicit_ref=work_item_ref,
                 event_ref=self._event_work_item_ref(context),
             )
+            if (
+                selected_work_item_ref is None
+                and automation.work_item_policy in {"reuse_or_create", "always_create"}
+            ):
+                return self._wait_for_work_item_creation(
+                    run,
+                    automation,
+                    actor=actor,
+                    context=context,
+                )
             message = self._message(automation.instructions, context)
 
             if automation.target.kind == AutomationTargetKind.AGENT_PROFILE:
