@@ -237,8 +237,23 @@ export function renderAdministrationAuthentication(container, {
           <small>This secret is returned once. Stored Administration state contains metadata only.</small>
         </div>
       `;
+      context.identity.service_tokens = [
+        {
+          id: result.token_id,
+          service_identity_id: service.value,
+          organization_id: context.organizationId,
+          workspace_id: context.workspaceId,
+          scopes: scopeValues,
+          created_at: Date.now() / 1000,
+          expires_at: result.expires_at ?? expiresAt,
+          last_used_at: null,
+          revoked_at: null,
+        },
+        ...(context.identity.service_tokens || []),
+      ];
+      tokens.innerHTML = tokenRows(context);
       setMessage("Service token created.");
-      await refresh();
+      createButton.disabled = false;
     } catch (error) {
       setMessage(error?.message || "Unable to create service token.", "error");
       createButton.disabled = false;
