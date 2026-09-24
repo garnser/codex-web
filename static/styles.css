@@ -730,6 +730,7 @@ select:focus,
 
 .main {
   min-width: 0;
+  overflow-x: clip;
   height: 100vh;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
