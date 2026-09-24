@@ -40,10 +40,11 @@ function assignmentRows(result) {
   const items = result?.assignments || [];
   if (!items.length) return '<div class="workspace-state">No matching operational Role binding or delegation in this scope.</div>';
   return items.map((item) => `
-    <article class="administration-access-assignment" data-access-source="${esc(item.source_type)}">
+    <article class="administration-access-assignment" data-access-source="${esc(item.source_type)}" data-access-source-id="${esc(item.source_id)}">
       <strong>${esc(item.role_id)}</strong>
       <span>${esc(item.source_type === "delegation" ? "Delegated" : "Direct")}</span>
       <small>${esc(item.source_id)}${item.project_ids?.length ? ` · projects ${esc(item.project_ids.join(", "))}` : " · all Projects in definition scope"}</small>
+      ${item.source_type === "binding" ? `<button type="button" data-access-remove-binding="${esc(item.source_id)}">Remove direct assignment</button>` : ""}
     </article>
   `).join("");
 }
@@ -139,9 +140,21 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
         </label>
       </div>
       <small>Repository registration/binding describes where a repository exists. Authorization to use it comes from canonical Role grants and is shown below.</small>
+      <div class="administration-user-create-fields">
+        <label><span>Direct operational Role</span>
+          <select data-access-role>
+            <option value="">Select a canonical Role…</option>
+          </select>
+        </label>
+        <label><span>Change reason</span>
+          <input data-access-reason type="text" placeholder="Why is this access change needed?" />
+        </label>
+      </div>
       <div class="administration-membership-actions">
+        <button type="button" data-access-add-binding>Stage direct assignment</button>
         <button type="button" data-access-target-load>Who can access this selected scope?</button>
       </div>
+      <small>Direct Role assignment is scoped to the selected Project, or to the current Workspace when no Project is selected. The repository selector filters repository-effective access; it does not silently narrow a direct Role binding. New authority can require independent approval before it becomes effective. Removing a direct assignment is confirmed and still goes through the canonical versioned authority catalog.</small>
       <small>Select a Project, repository, or both. The subject list is computed by the server from canonical Role bindings, delegations and grant constraints.</small>
     </section>
     <section>
@@ -164,9 +177,13 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   const repository = container.querySelector("[data-access-repository]");
   const assignments = container.querySelector("[data-access-assignments]");
   const grants = container.querySelector("[data-access-grants]");
+  const role = container.querySelector("[data-access-role]");
+  const reason = container.querySelector("[data-access-reason]");
+  const addButton = container.querySelector("[data-access-add-binding]");
   const targetButton = container.querySelector("[data-access-target-load]");
   const targetResults = container.querySelector("[data-access-target-results]");
   let current = null;
+  let targetLoaded = false;
 
   const setMessage = (value, kind = "info") => {
     message.hidden = !value;
@@ -198,6 +215,23 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
     }
   };
 
+  const loadRoles = async () => {
+    role.disabled = true;
+    try {
+      const result = await api(`/api/authority/roles${query({ project_id: project.value })}`);
+      const items = result?.items || [];
+      role.innerHTML = [
+        '<option value="">Select a canonical Role…</option>',
+        ...items.map((item) => `<option value="${esc(item.id)}" title="${esc(item.description || "")}">${esc(item.name || item.id)} · ${esc(item.id)}</option>`),
+      ].join("");
+    } catch (error) {
+      role.innerHTML = '<option value="">Canonical Roles unavailable</option>';
+      setMessage(error?.message || "Unable to load canonical operational Roles.", "error");
+    } finally {
+      role.disabled = false;
+    }
+  };
+
   Promise.all([
     api("/api/projects"),
     api("/api/resources?resource_type=repository&lifecycle=active"),
@@ -212,6 +246,7 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
       '<option value="">All resources</option>',
       ...resourceItems.map((item) => `<option value="${esc(item.id)}">${esc(item.name || item.id)}</option>`),
     ].join("");
+    return loadRoles();
   }).catch((error) => setMessage(error?.message || "Unable to load access scope.", "error"));
 
   const loadSubjects = async () => {
@@ -229,6 +264,7 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
       })}`);
       setMessage("");
       targetResults.innerHTML = subjectRows(result);
+      targetLoaded = true;
     } catch (error) {
       setMessage(error?.message || "Unable to load canonical access subjects.", "error");
       targetResults.innerHTML = '<div class="workspace-state">No access projection is available until the canonical request succeeds.</div>';
@@ -237,8 +273,91 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
     }
   };
 
+  const refreshAfterMutation = async () => {
+    await loadEffective();
+    if (targetLoaded && (project.value || repository.value)) await loadSubjects();
+  };
+
+  const mutationReason = () => String(reason.value || "").trim();
+
+  addButton.addEventListener("click", async () => {
+    if (!identity.value || !role.value) {
+      setMessage("Select a user and canonical Role before staging a direct assignment.", "error");
+      return;
+    }
+    const why = mutationReason();
+    if (!why) {
+      setMessage("A change reason is required for auditable access mutation.", "error");
+      reason.focus();
+      return;
+    }
+    addButton.disabled = true;
+    setMessage("Staging canonical direct assignment…");
+    try {
+      const result = await api("/api/authority/direct-bindings", {
+        method: "POST",
+        body: JSON.stringify({
+          identity_id: identity.value,
+          role_id: role.value,
+          project_id: project.value || null,
+          reason: why,
+        }),
+      });
+      const outcomeMessage = result?.status === "pending_approval"
+        ? "Direct assignment is staged and pending independent publication approval."
+        : result?.status === "already_effective"
+          ? "That direct assignment is already effective."
+          : "Direct assignment published.";
+      await refreshAfterMutation();
+      setMessage(outcomeMessage, "info");
+    } catch (error) {
+      setMessage(error?.message || "Unable to stage canonical direct assignment.", "error");
+    } finally {
+      addButton.disabled = false;
+    }
+  });
+
+  assignments.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-access-remove-binding]");
+    if (!button) return;
+    const why = mutationReason();
+    if (!why) {
+      setMessage("A change reason is required before removing direct access.", "error");
+      reason.focus();
+      return;
+    }
+    const bindingId = button.dataset.accessRemoveBinding;
+    if (!window.confirm(`Remove direct authority binding ${bindingId} from this scope?`)) return;
+    button.disabled = true;
+    setMessage("Removing canonical direct assignment…");
+    try {
+      const result = await api(`/api/authority/direct-bindings/${encodeURIComponent(bindingId)}`, {
+        method: "DELETE",
+        body: JSON.stringify({
+          project_id: project.value || null,
+          reason: why,
+        }),
+      });
+      const outcomeMessage = result?.status === "published"
+        ? "Direct assignment removed and authority reduction published."
+        : "Direct assignment removal staged.";
+      await refreshAfterMutation();
+      setMessage(outcomeMessage, "info");
+    } catch (error) {
+      setMessage(error?.message || "Unable to remove canonical direct assignment.", "error");
+      button.disabled = false;
+    }
+  });
+
   identity.addEventListener("change", () => void loadEffective());
-  project.addEventListener("change", () => void loadEffective());
-  repository.addEventListener("change", renderResult);
+  project.addEventListener("change", () => {
+    targetLoaded = false;
+    targetResults.innerHTML = '<div class="workspace-state">Load the canonical access-subject projection for this scope.</div>';
+    void Promise.all([loadRoles(), loadEffective()]);
+  });
+  repository.addEventListener("change", () => {
+    targetLoaded = false;
+    renderResult();
+  });
   targetButton.addEventListener("click", () => void loadSubjects());
 }

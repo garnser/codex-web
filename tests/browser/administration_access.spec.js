@@ -36,6 +36,7 @@ test("Administration Access renders canonical direct, delegated and inherited ef
     const api = async (path) => {
       calls.push(path);
       if (path === "/api/projects") return [{ id: "project-a", name: "Project A" }];
+      if (path.startsWith("/api/authority/roles")) return { items: [{ id: "developer", name: "Developer", description: "Repository development access" }] };
       if (path.startsWith("/api/resources")) {
         return { items: [{ id: "repo-a", name: "Repository A", resource_type: "repository" }] };
       }
@@ -182,6 +183,7 @@ test("Administration Access answers who can access a selected Project and reposi
     const api = async (path) => {
       calls.push(path);
       if (path === "/api/projects") return [{ id: "project-a", name: "Project A" }];
+      if (path.startsWith("/api/authority/roles")) return { items: [{ id: "developer", name: "Developer", description: "Repository development access" }] };
       if (path.startsWith("/api/resources")) {
         return { items: [{ id: "repo-a", name: "Repository A", resource_type: "repository" }] };
       }
@@ -254,6 +256,7 @@ test("object-centric Access requires an explicit Project or repository scope bef
     const api = async (path) => {
       calls.push(path);
       if (path === "/api/projects") return [];
+      if (path.startsWith("/api/authority/roles")) return { items: [] };
       if (path.startsWith("/api/resources")) return { items: [] };
       throw new Error("access projection must not be called without explicit scope");
     };
@@ -273,7 +276,169 @@ test("object-centric Access requires an explicit Project or repository scope bef
   expect(result.calls).toEqual([
     "/api/projects",
     "/api/resources?resource_type=repository&lifecycle=active",
+    "/api/authority/roles",
   ]);
   expect(result.message).toContain("Select a Project or repository");
   expect(result.results).toContain("scope is required");
+});
+
+
+test("Administration Access stages and removes canonical direct assignments with refresh", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAccess } = await import("/static/administration_access.js");
+    const calls = [];
+    let effectiveCalls = 0;
+    let directPresent = false;
+    window.confirm = () => true;
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      identity: {
+        humans: [{ id: "human-a", display_name: "Alice", disabled_at: null }],
+        memberships: [{
+          identity_id: "human-a",
+          principal_kind: "human",
+          organization_id: "org-a",
+          workspace_id: "workspace-a",
+          revoked_at: null,
+        }],
+      },
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null });
+      if (path === "/api/projects") return [{ id: "project-a", name: "Project A" }];
+      if (path.startsWith("/api/resources")) return { items: [{ id: "repo-a", name: "Repository A", resource_type: "repository" }] };
+      if (path.startsWith("/api/authority/roles")) {
+        return { items: [{ id: "developer", name: "Developer", description: "Repository development access" }] };
+      }
+      if (path.startsWith("/api/authority/effective")) {
+        effectiveCalls += 1;
+        return {
+          assignments: directPresent ? [{
+            source_type: "binding",
+            source_id: "binding-a",
+            role_id: "developer",
+            project_ids: ["project-a"],
+          }] : [],
+          permission_matrix: [],
+        };
+      }
+      if (path === "/api/authority/direct-bindings" && options.method === "POST") {
+        directPresent = true;
+        return { status: "pending_approval", binding: { id: "binding-a" } };
+      }
+      if (path === "/api/authority/direct-bindings/binding-a" && options.method === "DELETE") {
+        directPresent = false;
+        return { status: "published", binding: { id: "binding-a" } };
+      }
+      throw new Error(`unexpected API ${path}`);
+    };
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAccess(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    host.querySelector("[data-access-identity]").value = "human-a";
+    host.querySelector("[data-access-project]").value = "project-a";
+    host.querySelector("[data-access-project]").dispatchEvent(new Event("change"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.querySelector("[data-access-identity]").dispatchEvent(new Event("change"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    host.querySelector("[data-access-role]").value = "developer";
+    host.querySelector("[data-access-reason]").value = "Grant Project delivery access";
+    host.querySelector("[data-access-add-binding]").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const pendingMessage = host.querySelector("[data-access-message]").textContent;
+    const remove = host.querySelector("[data-access-remove-binding]");
+    const assignmentVisible = Boolean(remove);
+    remove?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    return {
+      calls,
+      effectiveCalls,
+      pendingMessage,
+      assignmentVisible,
+      finalMessage: host.querySelector("[data-access-message]").textContent,
+      removeStillPresent: Boolean(host.querySelector("[data-access-remove-binding]")),
+    };
+  });
+
+  const add = result.calls.find((item) => item.path === "/api/authority/direct-bindings");
+  expect(add).toEqual({
+    path: "/api/authority/direct-bindings",
+    method: "POST",
+    body: {
+      identity_id: "human-a",
+      role_id: "developer",
+      project_id: "project-a",
+      reason: "Grant Project delivery access",
+    },
+  });
+  expect(result.pendingMessage).toContain("pending independent publication approval");
+  expect(result.assignmentVisible).toBe(true);
+  expect(result.calls).toContainEqual({
+    path: "/api/authority/direct-bindings/binding-a",
+    method: "DELETE",
+    body: {
+      project_id: "project-a",
+      reason: "Grant Project delivery access",
+    },
+  });
+  expect(result.finalMessage).toContain("authority reduction published");
+  expect(result.removeStillPresent).toBe(false);
+  expect(result.effectiveCalls).toBeGreaterThanOrEqual(3);
+});
+
+test("Administration Access requires an audit reason before access mutation", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAccess } = await import("/static/administration_access.js");
+    const calls = [];
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      identity: {
+        humans: [{ id: "human-a", display_name: "Alice", disabled_at: null }],
+        memberships: [{
+          identity_id: "human-a",
+          principal_kind: "human",
+          organization_id: "org-a",
+          workspace_id: "workspace-a",
+          revoked_at: null,
+        }],
+      },
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, method: options.method || "GET" });
+      if (path === "/api/projects") return [];
+      if (path.startsWith("/api/resources")) return { items: [] };
+      if (path.startsWith("/api/authority/roles")) return { items: [{ id: "developer", name: "Developer" }] };
+      if (path.startsWith("/api/authority/effective")) return { assignments: [], permission_matrix: [] };
+      throw new Error("mutation should not be called without reason");
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAccess(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.querySelector("[data-access-identity]").value = "human-a";
+    host.querySelector("[data-access-role]").value = "developer";
+    host.querySelector("[data-access-add-binding]").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return {
+      calls,
+      message: host.querySelector("[data-access-message]").textContent,
+    };
+  });
+
+  expect(result.message).toContain("change reason is required");
+  expect(result.calls.some((item) => item.path === "/api/authority/direct-bindings")).toBe(false);
 });
