@@ -104,7 +104,12 @@ function tokenRows(context) {
         </header>
         <p>Scopes: ${esc((item.scopes || []).join(", ") || "No scopes")}</p>
         <small>Created ${esc(fmtTime(item.created_at))} · expires ${esc(fmtTime(item.expires_at))} · last used ${esc(fmtTime(item.last_used_at))}</small>
-        ${revoked ? `<small>Revoked ${esc(fmtTime(item.revoked_at))} · ${esc(item.revoke_reason || "no reason recorded")}</small>` : `<button type="button" data-auth-revoke-token="${esc(item.id)}">Revoke token</button>`}
+        ${Number(item.rotation || 0) > 0 ? `<small>Rotated ${Number(item.rotation)} time(s) · last rotation ${esc(fmtTime(item.rotated_at))}</small>` : ""}
+        ${revoked
+          ? `<small>Revoked ${esc(fmtTime(item.revoked_at))} · ${esc(item.revoke_reason || "no reason recorded")}</small>`
+          : expired
+            ? ""
+            : `<div class="administration-membership-actions"><button type="button" data-auth-rotate-token="${esc(item.id)}">Rotate token</button><button type="button" data-auth-revoke-token="${esc(item.id)}">Revoke token</button></div>`}
       </article>
     `;
   }).join("");
@@ -316,6 +321,44 @@ export function renderAdministrationAuthentication(container, {
   });
 
   tokens.addEventListener("click", async (event) => {
+    const rotateButton = event.target.closest("[data-auth-rotate-token]");
+    if (rotateButton) {
+      const tokenId = rotateButton.dataset.authRotateToken;
+      if (!window.confirm(`Rotate service token ${tokenId}? The previous secret will stop working immediately.`)) return;
+      rotateButton.disabled = true;
+      createdSecret.hidden = true;
+      createdSecret.textContent = "";
+      try {
+        const result = await api(`/api/identity/service-tokens/${encodeURIComponent(tokenId)}/rotate`, { method: "POST" });
+        const rotatedAt = Date.now() / 1000;
+        context.identity.service_tokens = (context.identity.service_tokens || []).map((item) => (
+          item.id === tokenId
+            ? {
+                ...item,
+                last_used_at: null,
+                rotation: Number(item.rotation || 0) + 1,
+                rotated_at: rotatedAt,
+                rotated_by: context.actor?.identity_id || null,
+              }
+            : item
+        ));
+        tokens.innerHTML = tokenRows(context);
+        createdSecret.hidden = false;
+        createdSecret.innerHTML = `
+          <div class="workspace-state workspace-state-warning" role="status">
+            <strong>Copy this rotated token now</strong>
+            <p data-auth-created-token>${esc(result.token || "")}</p>
+            <small>The previous secret is invalid. This replacement secret is returned once and is not stored in Administration state.</small>
+          </div>
+        `;
+        setMessage("Service token rotated.");
+      } catch (error) {
+        setMessage(error?.message || "Unable to rotate service token.", "error");
+        rotateButton.disabled = false;
+      }
+      return;
+    }
+
     const button = event.target.closest("[data-auth-revoke-token]");
     if (!button) return;
     const tokenId = button.dataset.authRevokeToken;

@@ -325,3 +325,71 @@ test("Administration Authentication fails closed when canonical status requires 
   expect(result).toContain("requires administrator step-up");
   expect(result).toContain("No authentication configuration is inferred");
 });
+
+
+test("Administration Authentication rotates a service token and shows the replacement secret once", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
+    const calls = [];
+    window.confirm = () => true;
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      actor: { identity_id: "human-admin", session_id: "session-current", assurance: "mfa" },
+      identity: {
+        humans: [{ id: "human-admin", display_name: "Admin" }],
+        services: [{ id: "service-a", name: "Automation Service", disabled_at: null }],
+        sessions: [],
+        service_tokens: [{
+          id: "token-a",
+          service_identity_id: "service-a",
+          organization_id: "org-a",
+          workspace_id: "workspace-a",
+          scopes: ["automation.run"],
+          created_at: 1,
+          expires_at: 2000000000,
+          last_used_at: 2,
+          rotation: 0,
+          rotated_at: null,
+          revoked_at: null,
+        }],
+      },
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, method: options.method || "GET" });
+      if (path === "/api/identity/authentication-status") return {};
+      if (path === "/api/identity/service-tokens/token-a/rotate") {
+        return { token_id: "token-a", token: "rotated-secret-once", expires_at: 2000000000 };
+      }
+      return {};
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAuthentication(host, { context, api });
+    host.querySelector("[data-auth-rotate-token='token-a']").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return {
+      calls,
+      secret: host.querySelector("[data-auth-created-token]")?.textContent,
+      message: host.querySelector("[data-auth-message]")?.textContent,
+      tokenText: host.querySelector("[data-auth-token='token-a']")?.textContent,
+      storedToken: context.identity.service_tokens[0],
+      html: host.innerHTML,
+    };
+  });
+
+  expect(result.calls).toContainEqual({
+    path: "/api/identity/service-tokens/token-a/rotate",
+    method: "POST",
+  });
+  expect(result.secret).toBe("rotated-secret-once");
+  expect(result.message).toContain("Service token rotated");
+  expect(result.tokenText).toContain("Rotated 1 time(s)");
+  expect(result.storedToken.rotation).toBe(1);
+  expect(result.storedToken.last_used_at).toBeNull();
+  expect(result.storedToken).not.toHaveProperty("token");
+  expect(result.html).toContain("previous secret is invalid");
+});
