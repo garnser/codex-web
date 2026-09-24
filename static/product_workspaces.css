@@ -124,3 +124,15 @@
   .automation-product-heading,
   .automation-detail-header { flex-direction: column; }
 }
+
+
+/* Routed product pages no longer use Chat as the universal background shell. */
+body.product-routed-project-page:not(.product-chat-page) > .main {
+  display: none;
+}
+body.product-routed-project-page.product-chat-page > .main {
+  display: grid;
+}
+body.product-routed-project-page #developer-panel {
+  display: none !important;
+}
