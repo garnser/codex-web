@@ -286,12 +286,48 @@ body.product-administration-page [data-project-nav-node="administration"] {
   gap: 4px;
   min-width: min(320px, 100%);
 }
+.administration-user-create {
+  gap: 12px;
+}
+.administration-user-create > header h3,
+.administration-user-create > header p {
+  margin: 0;
+}
+.administration-user-create > header p,
+.administration-user-create > form > small {
+  color: var(--muted);
+}
+.administration-user-create form {
+  display: grid;
+  gap: 10px;
+}
+.administration-user-create-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.administration-user-create-fields label {
+  display: grid;
+  gap: 4px;
+}
+.administration-user-create-fields label:last-child {
+  grid-column: 1 / -1;
+}
+.administration-user-create-fields select {
+  min-height: 112px;
+}
+.administration-user-create-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .administration-user-list {
   display: grid;
   gap: 12px;
 }
 .administration-user-card,
-.administration-human-groups {
+.administration-human-groups,
+.administration-user-create {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -364,5 +400,11 @@ body.product-administration-page [data-project-nav-node="administration"] {
   }
   .administration-users-toolbar label {
     width: 100%;
+  }
+  .administration-user-create-fields {
+    grid-template-columns: 1fr;
+  }
+  .administration-user-create-fields label:last-child {
+    grid-column: 1;
   }
 }
