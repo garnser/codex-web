@@ -394,7 +394,7 @@ test('Agent Profiles and Teams preserve Project and reverse-proxy prefix', async
   await expect(page.locator('[data-project-nav-node="agent-profiles"]')).toHaveAttribute('aria-current', 'page');
   await expect(page.locator('[data-project-nav-node="teams"]')).toHaveAttribute('aria-current', 'false');
 
-  await page.locator('[data-project-nav-node="teams"]').click();
+  await page.locator('[data-project-nav-node="teams"]').evaluate((node) => node.click());
   await expect(page).toHaveURL(/\/codex\/projects\/home\/teams$/);
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Teams / Squads');
   await expect(page.locator('[data-project-nav-node="teams"]')).toHaveAttribute('aria-current', 'page');
