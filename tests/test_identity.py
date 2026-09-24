@@ -465,12 +465,20 @@ class IdentityMiddlewareTests(unittest.TestCase):
         self.assertNotIn("admin@example.test", serialized)
 
     def test_authentication_status_normalizes_unknown_identity_mode_without_echoing_it(self) -> None:
+        credentials = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.MFA,
+        )
         with patch.dict(
             os.environ,
             {"CODEX_WEB_IDENTITY_MODE": "super-secret-custom-mode"},
         ):
             with TestClient(self._app()) as client:
-                response = client.get("/api/identity/authentication-status")
+                response = client.get(
+                    "/api/identity/authentication-status",
+                    headers={"Authorization": f"Bearer {credentials.session_token}"},
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["identity_mode"], "enforced")
