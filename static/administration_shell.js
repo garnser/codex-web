@@ -88,6 +88,48 @@ export function administrationPresentation(page = "overview") {
   return ADMINISTRATION_PAGES[page] || ADMINISTRATION_PAGES.overview;
 }
 
+function administrationPageContent(page, context, presentation) {
+  const identity = context?.identity || {};
+  if (page === "overview") {
+    const organization = (identity.organizations || []).find(
+      (item) => item.id === context?.organizationId,
+    );
+    const workspace = (identity.workspaces || []).find(
+      (item) => item.id === context?.workspaceId,
+    );
+    const activeHumans = (identity.humans || []).filter((item) => !item.disabled_at);
+    const activeMemberships = (identity.memberships || []).filter((item) => !item.revoked_at);
+    const activeSessions = (identity.sessions || []).filter((item) => !item.revoked_at);
+    const activeTokens = (identity.service_tokens || []).filter((item) => !item.revoked_at);
+    return `
+      <section class="product-administration-overview" data-administration-overview>
+        <h3>${escapeHtml(organization?.name || context?.organizationId || "Organization")}</h3>
+        <p>${escapeHtml(workspace?.name || context?.workspaceId || "Workspace")} · authenticated as ${escapeHtml(context?.actor?.identity_id || "unknown identity")}</p>
+        <div class="product-administration-summary">
+          <div><strong>${activeHumans.length}</strong><span>active users</span></div>
+          <div><strong>${activeMemberships.length}</strong><span>active memberships</span></div>
+          <div><strong>${activeSessions.length}</strong><span>active sessions</span></div>
+          <div><strong>${activeTokens.length}</strong><span>active service tokens</span></div>
+        </div>
+        <p class="product-field-help">Administration uses canonical Organization/Workspace identity and authorization state. Project selection does not change this administrative scope.</p>
+      </section>
+    `;
+  }
+  const guidance = {
+    users: "Human identities and membership status come from canonical identity state. Sensitive authentication material is never displayed.",
+    memberships: "Direct memberships and scoped roles remain canonical authorization state. High-impact mutations may require stronger authentication.",
+    access: "Project and repository authorization is distinct from repository registration. Direct, inherited and effective access will be shown separately.",
+    authentication: "Sessions and service-token metadata may be administered here. Stored token or credential values are never retrievable.",
+    "organization-settings": "Only settings backed by canonical Organization/Workspace APIs belong here; unsupported controls are not invented in the client.",
+  };
+  return `
+    <section class="product-administration-route-state" data-administration-page-state>
+      <h3>${escapeHtml(presentation.title)}</h3>
+      <p>${escapeHtml(guidance[page] || presentation.purpose)}</p>
+    </section>
+  `;
+}
+
 export function renderAdministrationNavigation(container, {
   page = "overview",
   context = null,
@@ -131,11 +173,7 @@ export function renderAdministrationNavigation(container, {
               <strong>Administration access denied</strong>
               <p>${escapeHtml(context?.reason || "The canonical identity service denied administrative access.")}</p>
             </div>
-          ` : `
-            <div class="workspace-state workspace-state-loading" role="status" data-administration-page-state>
-              Loading ${escapeHtml(presentation.title)}…
-            </div>
-          `}
+          ` : administrationPageContent(page, context, presentation)}
         </main>
       </div>
     </section>
