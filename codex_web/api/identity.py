@@ -240,7 +240,7 @@ def build_identity_router(service: IdentityService) -> APIRouter:
     @router.post("/api/identity/memberships")
     async def create_membership(payload: MembershipCreate, request: Request) -> dict[str, Any]:
         try:
-            require_sensitive_admin(request)
+            actor = require_sensitive_admin(request)
             membership = Membership(
                 identity_id=payload.identity_id,
                 principal_kind=payload.principal_kind,
@@ -249,7 +249,10 @@ def build_identity_router(service: IdentityService) -> APIRouter:
                 roles=payload.roles,
                 team_ids=payload.team_ids,
             )
-            return service.add_membership(membership).model_dump(mode="json")
+            return service.add_membership(
+                membership,
+                actor=actor,
+            ).model_dump(mode="json")
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 
