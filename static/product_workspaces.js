@@ -1,5 +1,12 @@
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
 import { renderHomeOverview } from "./home_overview.js";
+import { request as apiRequest } from "./api_client.js";
+import {
+  administrationPath,
+  currentAdministrationRoute,
+  loadAdministrationContext,
+  renderAdministrationNavigation,
+} from "./administration_shell.js";
 
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
@@ -70,7 +77,13 @@ const PROJECT_NAVIGATION_TREE = [
 ];
 
 const GLOBAL_NAVIGATION = [
-  { id: "administration", label: "Administration", workspace: "organization" },
+  {
+    id: "administration",
+    label: "Administration",
+    administration: true,
+    page: "overview",
+    description: "Organization-wide users, access, authentication and security administration.",
+  },
 ];
 
 const PROJECT_PAGE_PRESENTATION = Object.freeze({
@@ -215,6 +228,9 @@ const EXPLAIN_STAGES = [
 
 let activeWorkspace = "overview";
 let activePage = "overview";
+let administrationContext = null;
+let administrationContextPromise = null;
+let administrationRouteGeneration = 0;
 
 function esc(value) {
   return String(value ?? "")
@@ -282,6 +298,116 @@ function currentProjectRoute() {
     projectId,
     page: match[3],
   };
+}
+
+function administrationPrefix() {
+  const current = currentAdministrationRoute();
+  if (current) return current.prefix;
+  return window.location.pathname.startsWith("/codex") ? "/codex" : "";
+}
+
+function ensureAdministrationHost() {
+  let host = document.querySelector("[data-administration-page-host]");
+  if (host) return host;
+  host = document.createElement("section");
+  host.className = "product-administration-page-host";
+  host.dataset.administrationPageHost = "true";
+  host.hidden = true;
+  document.body.appendChild(host);
+  return host;
+}
+
+function syncAdministrationEntry(context = administrationContext) {
+  const button = document.querySelector("[data-global-administration-nav]");
+  if (!button) return;
+  button.hidden = !context?.allowed;
+}
+
+async function resolveAdministrationContext({ force = false } = {}) {
+  if (force) administrationContextPromise = null;
+  if (!administrationContextPromise) {
+    administrationContextPromise = loadAdministrationContext(apiRequest)
+      .then((context) => {
+        administrationContext = context;
+        syncAdministrationEntry(context);
+        return context;
+      })
+      .catch((error) => {
+        administrationContextPromise = null;
+        throw error;
+      });
+  }
+  return administrationContextPromise;
+}
+
+function leaveAdministrationMode() {
+  administrationRouteGeneration += 1;
+  document.body?.classList.remove("product-administration-page");
+  const host = document.querySelector("[data-administration-page-host]");
+  if (host) host.hidden = true;
+  const button = document.querySelector("[data-global-administration-nav]");
+  button?.setAttribute("aria-current", "false");
+}
+
+function setAdministrationLocation(page, { replace = false } = {}) {
+  if (legacyStaticRoutingContext()) return;
+  const url = new URL(window.location.href);
+  url.pathname = administrationPath(page, { prefix: administrationPrefix() });
+  url.search = "";
+  url.hash = "";
+  const nextState = { ...history.state, administrationPage: page };
+  if (replace) history.replaceState(nextState, "", url);
+  else history.pushState(nextState, "", url);
+}
+
+async function openAdministration(page = "overview", {
+  updateLocation = true,
+  replace = false,
+} = {}) {
+  const generation = ++administrationRouteGeneration;
+  closeSwitcher();
+  closeInternalWorkspace();
+  const host = ensureAdministrationHost();
+  const main = document.querySelector(":scope > .main") || document.querySelector(".main");
+  document.body?.classList.remove("product-routed-project-page", "product-chat-page");
+  document.body?.classList.add("product-administration-page");
+  if (document.body) delete document.body.dataset.projectPage;
+  if (main) main.setAttribute("aria-hidden", "true");
+  host.hidden = false;
+  syncNavigationState("__administration__");
+  const globalButton = document.querySelector("[data-global-administration-nav]");
+  globalButton?.setAttribute("aria-current", "page");
+  if (updateLocation) setAdministrationLocation(page, { replace });
+
+  renderAdministrationNavigation(host, { page });
+  let context;
+  try {
+    context = await resolveAdministrationContext();
+  } catch (error) {
+    if (generation !== administrationRouteGeneration) return false;
+    const content = host.querySelector("[data-administration-content]");
+    if (content) {
+      content.innerHTML = `
+        <div class="workspace-state workspace-state-error" role="alert">
+          <strong>Administration unavailable</strong>
+          <p>${esc(error?.message || "Unable to load canonical administration state.")}</p>
+        </div>
+      `;
+    }
+    return false;
+  }
+  if (
+    generation !== administrationRouteGeneration
+    || !document.body?.classList.contains("product-administration-page")
+  ) return false;
+  renderAdministrationNavigation(host, {
+    page,
+    context,
+    onNavigate: (nextPage) => {
+      void openAdministration(nextPage);
+    },
+  });
+  return true;
 }
 
 function legacyStaticRoutingContext() {
