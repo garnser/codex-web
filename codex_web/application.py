@@ -2908,11 +2908,28 @@ automation_execution_service = AutomationExecutionService(
     work_items=work_item_service,
     action_intents=action_intent_service,
     action_providers=action_provider_registry,
+    approvals=approval_request_service,
 )
 app.state.automation_execution_service = automation_execution_service
 app.include_router(
     build_automation_execution_router(automation_execution_service)
 )
+
+async def _resume_automation_approval(event):
+    request_id = str(event.payload.get("approval_request_id") or "").strip()
+    if not request_id:
+        return
+    try:
+        request = approval_request_store.get(request_id)
+    except Exception:
+        return
+    await automation_execution_service.resume_for_approval_request(request)
+
+automation_approval_unsubscribe = canonical_event_bus.subscribe(
+    _resume_automation_approval,
+    event_types=(CanonicalEventType.APPROVAL,),
+)
+app.state.automation_approval_unsubscribe = automation_approval_unsubscribe
 
 def _notify_automation_action_intent(intent):
     if intent.action_id != TASK_SOURCE_CREATE_ACTION_ID:

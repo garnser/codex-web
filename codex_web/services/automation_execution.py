@@ -11,6 +11,13 @@ from codex_web.action_intents import (
 )
 from codex_web.action_providers import ActionRequest
 from codex_web.agent_teams import TeamDelegationRequest, TeamExecutionRequest
+from codex_web.approval_requests import (
+    ApprovalConsumeRequest,
+    ApprovalRequest,
+    ApprovalRequestCreate,
+    ApprovalRequestStatus,
+    ApprovalTarget,
+)
 from codex_web.automation_definitions import AutomationTargetKind
 from codex_web.automation_runs import AutomationRun, AutomationRunStatus
 from codex_web.identity import TenantScope
@@ -18,6 +25,7 @@ from codex_web.models import TurnCreate
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionProviderRegistry
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
+from codex_web.services.approval_requests import ApprovalRequestService
 from codex_web.services.automation_runs import AutomationRunService
 from codex_web.services.identity import IdentityService
 from codex_web.services.task_source_action_provider import (
@@ -50,6 +58,7 @@ class AutomationExecutionService:
         work_items: WorkItemService | None = None,
         action_intents: ActionIntentService | None = None,
         action_providers: ActionProviderRegistry | None = None,
+        approvals: ApprovalRequestService | None = None,
     ) -> None:
         self.runs = runs
         self.identity = identity
@@ -60,6 +69,7 @@ class AutomationExecutionService:
         self.work_items = work_items
         self.action_intents = action_intents
         self.action_providers = action_providers
+        self.approvals = approvals
 
     def _run(self, run_id: str, *, organization_id: str, workspace_id: str) -> AutomationRun:
         return self.runs.store.get(
@@ -127,6 +137,143 @@ class AutomationExecutionService:
                 workspace_id=run.workspace_id,
             ),
         )
+
+    @staticmethod
+    def _approval_target(run: AutomationRun) -> ApprovalTarget:
+        return ApprovalTarget(
+            operation="automation.execute",
+            object_type="automation_run",
+            object_id=run.id,
+            target_version=run.definition_ref.record_id,
+            target_digest=run.definition_ref.checksum,
+        )
+
+    async def _wait_for_approval(
+        self,
+        run: AutomationRun,
+        automation,
+        *,
+        actor,
+        work_item_ref: str | None,
+    ) -> AutomationRun:
+        if self.approvals is None:
+            raise AutomationExecutionError(
+                "Automation requires canonical ApprovalRequest service"
+            )
+        target = self._approval_target(run)
+        request = await self.approvals.create_for_identity(
+            ApprovalRequestCreate(
+                target=target,
+                project_id=run.project_id,
+                reason=(
+                    f"Approve Automation {run.automation_id} attempt "
+                    f"{run.attempt} before execution."
+                ),
+                policy_source="automation:approval_required",
+                authority_source=(
+                    automation.authority_ref.record_id
+                    if automation.authority_ref is not None
+                    else "automation:definition"
+                ),
+                audit_refs=(f"automation-run:{run.id}",),
+            ),
+            requester_identity_id=actor.identity_id,
+            scope=actor.tenant,
+            request_id=f"approval-automation-{run.id}-attempt-{run.attempt}",
+        )
+        return self.runs.wait_for_approval(
+            run.id,
+            organization_id=run.organization_id,
+            workspace_id=run.workspace_id,
+            approval_request_id=request.id,
+            work_item_ref=work_item_ref,
+        )
+
+    async def resume_for_approval_request(
+        self,
+        request: ApprovalRequest,
+    ) -> tuple[AutomationRun, ...]:
+        if self.approvals is None:
+            return ()
+        matches = [
+            run
+            for run in self.runs.store.list(
+                organization_id=request.organization_id,
+                workspace_id=request.workspace_id,
+            )
+            if run.status == AutomationRunStatus.WAITING_FOR_APPROVAL
+            and run.approval_request_id == request.id
+        ]
+        results: list[AutomationRun] = []
+        for run in matches:
+            if request.status == ApprovalRequestStatus.APPROVED:
+                automation, _reference = self.runs.definitions.resolve_reference(
+                    run.definition_ref,
+                    organization_id=run.organization_id,
+                    workspace_id=run.workspace_id,
+                    project_id=run.project_id,
+                )
+                actor = self._actor(run, automation.owner_identity_id)
+                target = self._approval_target(run)
+                try:
+                    await self.approvals.consume(
+                        request.id,
+                        ApprovalConsumeRequest(
+                            target=target,
+                            idempotency_key=(
+                                f"automation:{run.id}:attempt:{run.attempt}:approval"
+                            ),
+                            resulting_operation_reference=(
+                                f"automation-run:{run.id}:attempt:{run.attempt}"
+                            ),
+                        ),
+                        actor=actor,
+                    )
+                except Exception as exc:
+                    results.append(
+                        self.runs.block(
+                            run.id,
+                            organization_id=run.organization_id,
+                            workspace_id=run.workspace_id,
+                            code="automation_approval_consumption_failed",
+                            reason=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                    continue
+                resumed = self.runs.resume_after_approval(
+                    run.id,
+                    organization_id=run.organization_id,
+                    workspace_id=run.workspace_id,
+                )
+                results.append(
+                    await self.launch(
+                        resumed.id,
+                        organization_id=resumed.organization_id,
+                        workspace_id=resumed.workspace_id,
+                    )
+                )
+                continue
+
+            if request.status in {
+                ApprovalRequestStatus.REJECTED,
+                ApprovalRequestStatus.EXPIRED,
+                ApprovalRequestStatus.CANCELLED,
+                ApprovalRequestStatus.SUPERSEDED,
+                ApprovalRequestStatus.INVALIDATED,
+            }:
+                results.append(
+                    self.runs.block(
+                        run.id,
+                        organization_id=run.organization_id,
+                        workspace_id=run.workspace_id,
+                        code=f"automation_approval_{request.status.value}",
+                        reason=(
+                            f"Automation approval ended as "
+                            f"{request.status.value}."
+                        ),
+                    )
+                )
+        return tuple(results)
 
     @staticmethod
     def _event_work_item_ref(context: dict[str, Any] | None) -> str | None:
@@ -436,6 +583,26 @@ class AutomationExecutionService:
                 explicit_ref=work_item_ref,
                 event_ref=self._event_work_item_ref(context),
             )
+            if automation.approval_required:
+                if run.approval_request_id is None:
+                    return await self._wait_for_approval(
+                        run,
+                        automation,
+                        actor=actor,
+                        work_item_ref=selected_work_item_ref,
+                    )
+                if self.approvals is None:
+                    raise AutomationExecutionError(
+                        "Automation requires canonical ApprovalRequest service"
+                    )
+                approval = self.approvals.get(
+                    run.approval_request_id,
+                    actor=actor,
+                )
+                if approval.status != ApprovalRequestStatus.CONSUMED:
+                    raise AutomationExecutionError(
+                        "Automation approval has not been canonically consumed"
+                    )
             if (
                 selected_work_item_ref is None
                 and automation.work_item_policy in {"reuse_or_create", "always_create"}

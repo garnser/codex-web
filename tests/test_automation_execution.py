@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.action_intents import ActionIntentStatus
+from codex_web.approval_requests import ApprovalRequestStatus
 from codex_web.automation_definitions import (
     AUTOMATION_KIND,
     AUTOMATION_SCHEMA_VERSION,
@@ -119,6 +120,48 @@ class _ActionIntents:
         return self.histories.get(intent_id, {"receipts": []})
 
 
+class _Approvals:
+    def __init__(self):
+        self.requests = {}
+        self.create_calls = []
+        self.consume_calls = []
+
+    async def create_for_identity(
+        self,
+        payload,
+        *,
+        requester_identity_id,
+        scope,
+        request_id=None,
+    ):
+        self.create_calls.append(
+            (payload, requester_identity_id, scope, request_id)
+        )
+        request = SimpleNamespace(
+            id=request_id,
+            organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id,
+            project_id=payload.project_id,
+            target=payload.target,
+            status=ApprovalRequestStatus.PENDING,
+        )
+        self.requests[request.id] = request
+        return request
+
+    def get(self, request_id, *, actor):
+        return self.requests[request_id]
+
+    async def consume(self, request_id, payload, *, actor):
+        request = self.requests[request_id]
+        if request.status != ApprovalRequestStatus.APPROVED:
+            raise RuntimeError("approval is not approved")
+        if payload.target != request.target:
+            raise RuntimeError("approval target mismatch")
+        self.consume_calls.append((request_id, payload, actor))
+        request.status = ApprovalRequestStatus.CONSUMED
+        return request
+
+
 class _WorkItems:
     def __init__(self):
         self.state_machine = self
@@ -168,6 +211,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.work_items = _WorkItems()
         self.action_providers = _ActionProviders()
         self.action_intents = _ActionIntents()
+        self.approvals = _Approvals()
         self.service = AutomationExecutionService(
             self.runs,
             identity=self.identity,
@@ -178,6 +222,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             work_items=self.work_items,
             action_intents=self.action_intents,
             action_providers=self.action_providers,
+            approvals=self.approvals,
         )
 
     def tearDown(self) -> None:
@@ -189,6 +234,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         target_kind="agent_profile",
         owner=True,
         work_item_policy="reuse_or_create",
+        approval_required=False,
     ):
         return {
             "name": "Execute canonical work",
@@ -206,6 +252,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             },
             "retry": {"max_attempts": 3, "backoff_seconds": 60},
             "work_item_policy": work_item_policy,
+            "approval_required": approval_required,
             "failure_attention": True,
         }
 
@@ -215,6 +262,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         target_kind="agent_profile",
         owner=True,
         work_item_policy="reuse_or_create",
+        approval_required=False,
     ):
         draft = self.registry.create_draft(
             DefinitionDraftCreate(
@@ -225,6 +273,7 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
                     target_kind=target_kind,
                     owner=owner,
                     work_item_policy=work_item_policy,
+                    approval_required=approval_required,
                 ),
                 actor="operator",
             )
@@ -273,6 +322,94 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.turns.calls[0][2]["actor"].identity_id,
             "automation-owner",
         )
+
+    async def test_approval_required_waits_before_any_side_effect(self) -> None:
+        run = self._publish_and_admit(
+            work_item_policy="reuse_only",
+            approval_required=True,
+        )
+
+        waiting = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_APPROVAL,
+        )
+        self.assertEqual(waiting.work_item_ref, "group/app#42")
+        self.assertIsNotNone(waiting.approval_request_id)
+        self.assertEqual(len(self.approvals.create_calls), 1)
+        payload, requester, _scope, request_id = self.approvals.create_calls[0]
+        self.assertEqual(requester, "automation-owner")
+        self.assertEqual(request_id, waiting.approval_request_id)
+        self.assertEqual(payload.target.operation, "automation.execute")
+        self.assertEqual(payload.target.object_type, "automation_run")
+        self.assertEqual(payload.target.object_id, run.id)
+        self.assertEqual(
+            payload.target.target_digest,
+            run.definition_ref.checksum,
+        )
+        self.assertEqual(self.threads.calls, [])
+        self.assertEqual(self.turns.calls, [])
+        self.assertEqual(self.action_intents.calls, [])
+
+    async def test_approved_request_is_consumed_before_execution_resumes(self) -> None:
+        run = self._publish_and_admit(
+            work_item_policy="reuse_only",
+            approval_required=True,
+        )
+        waiting = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+        request = self.approvals.requests[waiting.approval_request_id]
+        request.status = ApprovalRequestStatus.APPROVED
+
+        results = await self.service.resume_for_approval_request(request)
+
+        self.assertEqual(len(results), 1)
+        resumed = results[0]
+        self.assertEqual(resumed.status, AutomationRunStatus.RUNNING)
+        self.assertEqual(resumed.work_item_ref, "group/app#42")
+        self.assertEqual(len(self.approvals.consume_calls), 1)
+        consume_id, consume_payload, consumer = self.approvals.consume_calls[0]
+        self.assertEqual(consume_id, waiting.approval_request_id)
+        self.assertEqual(consume_payload.target, request.target)
+        self.assertEqual(consumer.identity_id, "automation-owner")
+        self.assertEqual(request.status, ApprovalRequestStatus.CONSUMED)
+        self.assertEqual(len(self.turns.calls), 1)
+
+    async def test_rejected_approval_blocks_without_execution(self) -> None:
+        run = self._publish_and_admit(
+            work_item_policy="reuse_only",
+            approval_required=True,
+        )
+        waiting = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+        request = self.approvals.requests[waiting.approval_request_id]
+        request.status = ApprovalRequestStatus.REJECTED
+
+        results = await self.service.resume_for_approval_request(request)
+
+        self.assertEqual(len(results), 1)
+        blocked = results[0]
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertEqual(
+            blocked.block_code,
+            "automation_approval_rejected",
+        )
+        self.assertEqual(self.turns.calls, [])
+        self.assertEqual(self.action_intents.calls, [])
 
     async def test_missing_owner_blocks_before_target_execution(self) -> None:
         run = self._publish_and_admit(owner=False)
