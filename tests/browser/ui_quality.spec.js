@@ -98,13 +98,13 @@ test('workspace shell remains usable at 200% text scaling and exposes non-color 
   await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleName('Overview');
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface).toBeVisible();
+  await expect(pageSurface).toHaveAccessibleName('Overview');
   await expectNoPageOverflow(page, 'workspace at 200% text scaling');
 
-  await dialog.locator('.product-overview-reference > summary').click();
-  const negative = dialog.locator('.product-status-badge.status-negative');
+  await pageSurface.locator('.product-overview-reference > summary').click();
+  const negative = pageSurface.locator('.product-status-badge.status-negative');
   await expect(negative).toContainText('blocked');
   const marker = await negative.evaluate((node) => getComputedStyle(node, '::before').content);
   expect(marker).not.toBe('none');
@@ -137,21 +137,21 @@ test('Work Item operator has named dialog/status semantics and remains usable on
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleName('Work-item operator');
-  await expect(dialog.locator('.work-items-status')).toHaveAttribute('role', 'status');
-  await expect(dialog.locator('.work-items-status')).toHaveAttribute('aria-live', 'polite');
+  await expect(pageSurface).toBeVisible();
+  await expect(pageSurface).toHaveAccessibleName('Work-item operator');
+  await expect(pageSurface.locator('.work-items-status')).toHaveAttribute('role', 'status');
+  await expect(pageSurface.locator('.work-items-status')).toHaveAttribute('aria-live', 'polite');
   await expectNoPageOverflow(page, 'Work Item operator on phone');
 
   await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
-  await expect(dialog.locator('.work-items-close')).toBeVisible();
-  await expect(dialog.locator('.work-items-refresh')).toBeVisible();
+  await expect(pageSurface.locator('.work-items-close')).toBeVisible();
+  await expect(pageSurface.locator('.work-items-refresh')).toBeVisible();
   await expectNoPageOverflow(page, 'Work Item operator at 200% text scaling');
 
-  await dialog.locator('.work-items-project').focus();
+  await pageSurface.locator('.work-items-project').focus();
   await page.keyboard.press('Tab');
-  await expect(dialog.locator('.work-items-refresh')).toBeFocused();
-  const focusStyle = await dialog.locator('.work-items-refresh').evaluate((node) => {
+  await expect(pageSurface.locator('.work-items-refresh')).toBeFocused();
+  const focusStyle = await pageSurface.locator('.work-items-refresh').evaluate((node) => {
     const style = getComputedStyle(node);
     return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
   });
