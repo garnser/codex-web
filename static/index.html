@@ -1152,6 +1152,10 @@
             </select>
           </label>
           <span id="repository-target-status" class="repository-target-status" role="status" aria-live="polite"></span>
+          <label class="repository-target-control" title="Explicit writable repository set for a coordinated multi-repository turn">
+            <span>Writable set</span>
+            <select id="repository-write-targets" multiple aria-describedby="repository-target-status"></select>
+          </label>
           <label class="repository-target-control" title="Optional read-only repository context for the next thread">
             <span>Read context</span>
             <select id="repository-read-context" multiple></select>
