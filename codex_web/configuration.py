@@ -104,6 +104,12 @@ class ConfigurationSpec(BaseModel):
         default_factory=lambda: list(ConfigurationScope)
     )
     description: str | None = None
+    category: str = Field(default="Advanced", min_length=1, max_length=80)
+    editable: bool = True
+    sensitive: bool = False
+    allowed_values: tuple[str, ...] = ()
+    minimum: float | None = None
+    maximum: float | None = None
     hot_reloadable: bool = True
     startup_only: bool = False
     feature_flag: bool = False
@@ -123,6 +129,24 @@ class ConfigurationSpec(BaseModel):
             raise ValueError("kill switches are only valid for boolean feature flags")
         if self.grants_authority:
             raise ValueError("configuration cannot grant authority")
+        self.category = self.category.strip()
+        if self.value_kind == ConfigurationValueKind.SECRET_REF:
+            self.sensitive = True
+        if self.allowed_values and self.value_kind != ConfigurationValueKind.STRING:
+            raise ValueError("allowed_values are supported only for string configuration")
+        self.allowed_values = tuple(dict.fromkeys(self.allowed_values))
+        if (
+            (self.minimum is not None or self.maximum is not None)
+            and self.value_kind
+            not in {ConfigurationValueKind.INTEGER, ConfigurationValueKind.NUMBER}
+        ):
+            raise ValueError("minimum/maximum are supported only for numeric configuration")
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError("configuration minimum cannot exceed maximum")
         if self.default is None:
             if self.feature_flag:
                 raise ValueError("feature flags require an explicit boolean default")
@@ -139,14 +163,27 @@ class ConfigurationSpec(BaseModel):
         if kind == ConfigurationValueKind.INTEGER:
             if type(value) is not int:
                 raise ValueError(f"{self.key} requires an integer")
+            if self.minimum is not None and value < self.minimum:
+                raise ValueError(f"{self.key} must be at least {self.minimum:g}")
+            if self.maximum is not None and value > self.maximum:
+                raise ValueError(f"{self.key} must be at most {self.maximum:g}")
             return value
         if kind == ConfigurationValueKind.NUMBER:
             if type(value) not in {int, float}:
                 raise ValueError(f"{self.key} requires a number")
-            return float(value)
+            normalized = float(value)
+            if self.minimum is not None and normalized < self.minimum:
+                raise ValueError(f"{self.key} must be at least {self.minimum:g}")
+            if self.maximum is not None and normalized > self.maximum:
+                raise ValueError(f"{self.key} must be at most {self.maximum:g}")
+            return normalized
         if kind == ConfigurationValueKind.STRING:
             if not isinstance(value, str):
                 raise ValueError(f"{self.key} requires a string")
+            if self.allowed_values and value not in self.allowed_values:
+                raise ValueError(
+                    f"{self.key} must be one of: {', '.join(self.allowed_values)}"
+                )
             return value
         if kind == ConfigurationValueKind.STRING_LIST:
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
