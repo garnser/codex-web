@@ -278,3 +278,53 @@ test("search stays server-side and composes with cursor pagination", async ({ pa
   expect(requests.at(-1)?.q).toBe("platform");
   expect(requests.at(-1)?.limit).toBe("50");
 });
+
+
+test("inline Work Items mode mounts in the supplied main-content host", async ({ page }) => {
+  await installCommonRoutes(page);
+  await page.route("**/api/work-items?**", async (route) => {
+    await route.fulfill({ json: { items: [], nextCursor: null, hasMore: false } });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    const host = document.createElement("main");
+    host.id = "inline-work-items-host";
+    document.body.appendChild(host);
+    window.dispatchEvent(new CustomEvent("codex:open-work-items", {
+      detail: { mode: "inline", host },
+    }));
+  });
+
+  const host = page.locator("#inline-work-items-host");
+  await expect(host.locator(".work-items-shell")).toBeVisible();
+  await expect(host.locator(".work-items-shell")).toHaveAttribute("data-work-items-inline", "true");
+  await expect(host.locator(".work-items-close")).toBeHidden();
+  await expect(page.locator("#work-items-dialog")).not.toBeVisible();
+});
+
+test("inline Work Items remains live for run and Project context updates", async ({ page }) => {
+  await installCommonRoutes(page);
+  let listRequests = 0;
+  await page.route("**/api/work-items?**", async (route) => {
+    listRequests += 1;
+    await route.fulfill({ json: { items: [], nextCursor: null, hasMore: false } });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    const host = document.createElement("main");
+    document.body.appendChild(host);
+    window.dispatchEvent(new CustomEvent("codex:open-work-items", {
+      detail: { mode: "inline", host },
+    }));
+  });
+  await expect.poll(() => listRequests).toBeGreaterThan(0);
+  const before = listRequests;
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent("codex:project-changed", {
+      detail: { projectId: "project-b" },
+    }));
+  });
+  await expect.poll(() => listRequests).toBeGreaterThan(before);
+});
