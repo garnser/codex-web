@@ -25,6 +25,7 @@
       <button id="decisions-button" type="button">Decisions legacy launcher</button>
       <button id="company-operations-button" type="button">Company legacy launcher</button>
       <button id="memory-button" type="button">Memory legacy launcher</button>
+      <button id="project-setup-launch" type="button">Project setup legacy launcher</button>
       <button id="executive-management-button" type="button">Executive legacy launcher</button>
       <button id="swagger-browser-launch" type="button">API legacy launcher</button>
       <button data-attention-launch type="button">Inbox legacy launcher</button>
@@ -59,15 +60,35 @@
       </details>
     </div></header>
   </main>
+  <dialog id="goals-dialog"><div class="goals-shell"><header><h2>Goal workspace</h2><button class="goals-close">Close</button></header><div>Goals fixture content</div></div></dialog>
+  <dialog id="decisions-dialog"><div class="decisions-shell"><header><h2>Decision workspace</h2><button class="decisions-close">Close</button></header><div>Decisions fixture content</div></div></dialog>
+  <dialog id="metrics-dialog"><div class="metrics-shell"><header><h2>Metric / KPI explorer</h2><button class="metrics-close">Close</button></header><div>Metrics fixture content</div></div></dialog>
+  <dialog id="company-operations-dialog"><div class="company-ops-shell"><header><h2>Company Operations</h2><button class="company-ops-close">Close</button></header><div>Company fixture content</div></div></dialog>
+  <dialog id="memory-dialog"><div class="memory-shell"><header><h2>Organizational Memory</h2><button class="memory-close">Close</button></header><div>Memory fixture content</div></div></dialog>
+  <dialog id="project-setup-dialog"><div class="project-setup-shell"><header><h2>Setup, migration &amp; readiness</h2><button data-project-setup-close>Close</button></header><div>Project setup fixture content</div></div></dialog>
+  <dialog class="attention-dialog"><div class="attention-shell"><header><h2>Inbox / Attention</h2><button data-attention-close>Close</button></header><div>Attention fixture content</div></div></dialog>
+
   <script>
+    const sectionDialogs = new Map([
+      ['#goals-button', '#goals-dialog'],
+      ['#metrics-button', '#metrics-dialog'],
+      ['#decisions-button', '#decisions-dialog'],
+      ['#company-operations-button', '#company-operations-dialog'],
+      ['#memory-button', '#memory-dialog'],
+      ['#project-setup-launch', '#project-setup-dialog'],
+      ['[data-attention-launch]', '.attention-dialog'],
+    ]);
     for (const selector of [
       '#goals-button', '#metrics-button', '#decisions-button',
-      '#company-operations-button', '#memory-button',
+      '#company-operations-button', '#memory-button', '#project-setup-launch',
       '#executive-management-button', '#swagger-browser-launch',
       '[data-attention-launch]'
     ]) {
       document.querySelector(selector).addEventListener('click', (event) => {
         event.currentTarget.dataset.clicked = String(Number(event.currentTarget.dataset.clicked || '0') + 1);
+        const dialogSelector = sectionDialogs.get(selector);
+        const dialog = dialogSelector ? document.querySelector(dialogSelector) : null;
+        if (dialog && !dialog.open) dialog.showModal();
       });
     }
     document.querySelector('[data-acc-explain]').addEventListener('click', (event) => {

@@ -55,6 +55,49 @@
 .product-workspace-host>#autonomy-control-center-card,.product-workspace-host>#orchestration-inspector-card,.product-workspace-host>#agent-provider-card{grid-column:1/-1}
 .product-workspace-empty{grid-column:1/-1;padding:24px;border:1px dashed var(--line);border-radius:var(--radius);color:var(--muted);text-align:center}
 
+/* Navigable application sections reuse their canonical legacy dialog DOM but
+   render it non-modally inside the routed main-content surface. */
+.product-workspace-host>.product-section-dialog{
+  grid-column:1/-1;
+  position:static!important;
+  inset:auto!important;
+  width:100%!important;
+  max-width:none!important;
+  height:auto!important;
+  max-height:none!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  color:inherit;
+  box-shadow:none!important;
+  overflow:visible!important;
+}
+.product-workspace-host>.product-section-dialog[open]{display:block}
+.product-workspace-host>.product-section-dialog::backdrop{display:none}
+.product-section-dialog>.goals-shell,
+.product-section-dialog>.decisions-shell,
+.product-section-dialog>.metrics-shell,
+.product-section-dialog>.company-ops-shell,
+.product-section-dialog>.memory-shell,
+.product-section-dialog>.attention-shell,
+.product-section-dialog>.project-setup-shell{
+  width:100%;
+  max-width:none;
+  max-height:none!important;
+  min-height:0;
+}
+.product-section-dialog .goals-close,
+.product-section-dialog .decisions-close,
+.product-section-dialog .metrics-close,
+.product-section-dialog .company-ops-close,
+.product-section-dialog .memory-close,
+.product-section-dialog [data-attention-close],
+.product-section-dialog [data-project-setup-close]{
+  display:none!important;
+}
+
 .product-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .product-overview-card{padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface-soft)}
 .product-overview-card h3{margin:0 0 6px}.product-overview-card p{margin:0 0 12px;color:var(--muted);font-size:12px;line-height:1.45}.product-overview-wide{grid-column:1/-1}
