@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from codex_web.action_intents import ActionIntentStatus
 from codex_web.automation_definitions import (
     AUTOMATION_KIND,
     AUTOMATION_SCHEMA_VERSION,
@@ -86,6 +87,34 @@ class _Events:
         return None
 
 
+class _ActionProviders:
+    def __init__(self):
+        self.bindings = [
+            SimpleNamespace(
+                id="task-source-binding",
+                enabled=True,
+                provider_type="task-source",
+                provider_instance="authoritative",
+                project_id="home",
+            )
+        ]
+
+    def list_bindings(self, actor):
+        return list(self.bindings)
+
+
+class _ActionIntents:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, payload, *, actor):
+        self.calls.append((payload, actor))
+        return SimpleNamespace(
+            id="action-intent-work-item-1",
+            status=ActionIntentStatus.PENDING,
+        )
+
+
 class _WorkItems:
     def __init__(self):
         self.state_machine = self
@@ -133,6 +162,8 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.turns = _Turns()
         self.teams = _Teams()
         self.work_items = _WorkItems()
+        self.action_providers = _ActionProviders()
+        self.action_intents = _ActionIntents()
         self.service = AutomationExecutionService(
             self.runs,
             identity=self.identity,
@@ -141,6 +172,8 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             teams=self.teams,
             events=_Events(),
             work_items=self.work_items,
+            action_intents=self.action_intents,
+            action_providers=self.action_providers,
         )
 
     def tearDown(self) -> None:
@@ -280,33 +313,70 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("project does not match", blocked.block_reason)
         self.assertEqual(self.threads.calls, [])
 
-    async def test_always_create_does_not_silently_reuse_existing_work_item(self) -> None:
+    async def test_always_create_queues_governed_work_item_action_intent(self) -> None:
         run = self._publish_and_admit(work_item_policy="always_create")
 
-        blocked = await self.service.launch(
+        waiting = await self.service.launch(
             run.id,
             organization_id="local",
             workspace_id="default",
             work_item_ref="group/app#42",
         )
 
-        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
-        self.assertIn("always_create", blocked.block_reason)
-        self.assertIn("ActionIntent", blocked.block_reason)
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+        self.assertEqual(
+            waiting.work_item_action_intent_id,
+            "action-intent-work-item-1",
+        )
         self.assertEqual(self.threads.calls, [])
+        self.assertEqual(len(self.action_intents.calls), 1)
+        payload, actor = self.action_intents.calls[0]
+        self.assertEqual(payload.request.action_id, "task-source.create")
+        self.assertEqual(payload.request.project_id, "home")
+        self.assertEqual(
+            payload.request.idempotency_key,
+            f"automation:{run.id}:work-item-create",
+        )
+        self.assertEqual(actor.identity_id, "automation-owner")
 
-    async def test_team_target_requires_canonical_work_item(self) -> None:
-        run = self._publish_and_admit(target_kind="team")
+    async def test_reuse_or_create_without_existing_work_item_queues_creation(self) -> None:
+        run = self._publish_and_admit(work_item_policy="reuse_or_create")
 
-        blocked = await self.service.launch(
+        waiting = await self.service.launch(
             run.id,
             organization_id="local",
             workspace_id="default",
         )
 
-        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
-        self.assertIn("canonical Work Item", blocked.block_reason)
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+        self.assertEqual(len(self.action_intents.calls), 1)
+        self.assertEqual(self.turns.calls, [])
+
+    async def test_team_target_without_work_item_queues_governed_creation(self) -> None:
+        run = self._publish_and_admit(target_kind="team")
+
+        waiting = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+        self.assertEqual(
+            waiting.work_item_action_intent_id,
+            "action-intent-work-item-1",
+        )
         self.assertEqual(self.teams.calls, [])
+        self.assertEqual(len(self.action_intents.calls), 1)
 
 
 if __name__ == "__main__":
