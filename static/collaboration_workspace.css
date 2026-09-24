@@ -19,6 +19,7 @@
   display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
 }
 .collab-description { margin: 0; opacity: .8; }
+.collab-skill-management { display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; }
 .collab-manage-link { width: fit-content; color: var(--accent, currentColor); font-size: .82rem; font-weight: 700; text-decoration: none; }
 .collab-manage-link:hover, .collab-manage-link:focus-visible { text-decoration: underline; }
 .collab-roster { display: grid; gap: 6px; }
