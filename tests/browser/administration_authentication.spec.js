@@ -236,3 +236,92 @@ test("Administration Authentication preserves canonical revocation feedback with
   expect(result.tokenMessage).toContain("Service token revoked");
   expect(result.tokenButtonGone).toBe(true);
 });
+
+
+test("Administration Authentication renders canonical authentication status without inventing authorization", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
+    const calls = [];
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      actor: { identity_id: "human-admin", session_id: "session-current", assurance: "mfa" },
+      identity: { humans: [], services: [], sessions: [], service_tokens: [] },
+    };
+    const api = async (path) => {
+      calls.push(path);
+      if (path === "/api/identity/authentication-status") {
+        return {
+          identity_mode: "enforced",
+          current_assurance: "mfa",
+          step_up_active: true,
+          session_authentication_supported: true,
+          service_token_authentication_supported: true,
+          external_identity: {
+            configured: true,
+            providers: [{ provider: "oidc", linked_identity_count: 3 }],
+            linked_identity_count: 3,
+            claims_grant_authority: false,
+          },
+          recovery: {
+            configured: true,
+            active_factor_count: 2,
+            providers: [{ provider: "webauthn", active_factor_count: 2 }],
+          },
+          active_session_count: 4,
+          active_service_token_count: 2,
+        };
+      }
+      return {};
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAuthentication(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return {
+      calls,
+      text: host.querySelector("[data-auth-status]").textContent,
+    };
+  });
+
+  expect(result.calls).toContain("/api/identity/authentication-status");
+  expect(result.text).toContain("enforced identity mode");
+  expect(result.text).toContain("oidc (3 linked)");
+  expect(result.text).toContain("External claims grant authority: no");
+  expect(result.text).toContain("webauthn (2 active)");
+  expect(result.text).toContain("Active Workspace sessions: 4");
+});
+
+test("Administration Authentication fails closed when canonical status requires step-up", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      actor: { identity_id: "human-admin", session_id: "session-current", assurance: "primary" },
+      identity: { humans: [], services: [], sessions: [], service_tokens: [] },
+    };
+    const api = async (path) => {
+      if (path === "/api/identity/authentication-status") {
+        const error = new Error("authentication assurance 'mfa' required");
+        error.status = 403;
+        throw error;
+      }
+      return {};
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationAuthentication(host, { context, api });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return host.querySelector("[data-auth-status]").textContent;
+  });
+
+  expect(result).toContain("requires administrator step-up");
+  expect(result).toContain("No authentication configuration is inferred");
+});
