@@ -339,6 +339,88 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "prior_resume_without_canonical_owner",
         )
 
+    async def test_ownerless_turn_is_blocked_during_hard_expiry_grace(self) -> None:
+        active = _active(
+            "thread-ownerless-grace",
+            age=10 * 60,
+            source="web",
+        )
+        self._put_active(active)
+
+        report = await self.service.reconcile(
+            reason="runtime",
+            actor_id="system:test",
+        )
+
+        self.assertEqual(report.blocked, 1)
+        self.assertIsNotNone(
+            self.active.get("thread-ownerless-grace")
+        )
+        record = self.recovery_store.get(
+            "thread-ownerless-grace"
+        )
+        assert record is not None
+        self.assertEqual(
+            record.reason_code,
+            "no_canonical_liveness_evidence",
+        )
+
+    async def test_ownerless_turn_is_interrupted_after_hard_expiry(self) -> None:
+        active = _active(
+            "thread-ownerless-expired",
+            age=16 * 60,
+            source="web",
+        )
+        self._put_active(active)
+
+        report = await self.service.reconcile(
+            reason="runtime",
+            actor_id="system:test",
+        )
+
+        self.assertEqual(report.interrupted, 1)
+        self.assertIsNone(
+            self.active.get("thread-ownerless-expired")
+        )
+        record = self.recovery_store.get(
+            "thread-ownerless-expired"
+        )
+        assert record is not None
+        self.assertEqual(
+            record.reason_code,
+            "ownerless_turn_hard_expired",
+        )
+        self.assertEqual(
+            record.evidence["orphan_release_after_seconds"],
+            900.0,
+        )
+        self.assertEqual(record.action_state, "applied")
+
+    async def test_ownerless_hard_expiry_is_configurable(self) -> None:
+        active = _active(
+            "thread-ownerless-configured",
+            age=6 * 60,
+            source="web",
+        )
+        self._put_active(active)
+
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_WEB_ACTIVE_TURN_ORPHAN_RELEASE_AFTER_SECONDS": "300",
+            },
+            clear=False,
+        ):
+            report = await self.service.reconcile(
+                reason="runtime",
+                actor_id="system:test",
+            )
+
+        self.assertEqual(report.interrupted, 1)
+        self.assertIsNone(
+            self.active.get("thread-ownerless-configured")
+        )
+
     async def test_multiple_assignments_for_execution_are_blocked(self) -> None:
         active = _active(
             "thread-multiple",

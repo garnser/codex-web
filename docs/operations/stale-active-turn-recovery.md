@@ -1,6 +1,6 @@
 # Stale active-turn recovery
 
-Active-turn records are runtime recovery markers, not disposable locks. Codex Web therefore does not clear them merely because they are old.
+Active-turn records are runtime recovery markers, not disposable locks. Codex Web therefore uses a short evidence-reconciliation window and a longer hard-expiry window instead of clearing them immediately based on age alone.
 
 The stale-turn reconciler combines age with canonical queue, execution-assignment, worker, lease/fence and prior-resume evidence before choosing an outcome.
 
@@ -12,6 +12,7 @@ The default stale/liveness window and scan budget are:
 
 ```text
 CODEX_WEB_ACTIVE_TURN_RECONCILE_AFTER_SECONDS=120
+CODEX_WEB_ACTIVE_TURN_ORPHAN_RELEASE_AFTER_SECONDS=900
 CODEX_WEB_ACTIVE_TURN_RECONCILE_MAX_RECORDS=100
 ```
 
@@ -23,7 +24,10 @@ The age threshold only determines when an ownerless marker needs stale analysis.
 - expired leases or untrusted/lost workers classify the interrupted execution explicitly;
 - a stale marker with queued work but no live owner releases the marker to the existing queue without duplicating the queued turn;
 - an old `queued:*` marker with no queue, assignment or owner is classified interrupted rather than left active indefinitely;
+- an ownerless marker with no queue, assignment, lease/fence, or prior resume attempt is classified interrupted after the hard-expiry window, allowing unattended work recovery after a restart or abruptly terminated provider turn;
 - multiple possible assignments, prior unresolved resume attempts, fence mismatches, and otherwise insufficient evidence are blocked for operator review.
+
+Between the short reconciliation threshold and the hard-expiry threshold, an ownerless marker remains blocked for evidence or operator review. The hard expiry never overrides a live/pending assignment, queued work, a fence conflict, or prior unresolved resume evidence.
 
 Fresh ownerless turns discovered at process startup are the only automatic legacy-resume candidates. The existing restart-resume implementation is called with exact thread IDs and no longer scans/saves the complete active-turn registry for that bounded path.
 
@@ -86,6 +90,7 @@ The status endpoint exposes:
 - total applied recoveries;
 - audit-record count;
 - configured age and scan limits;
+- configured ownerless hard-expiry limit;
 - keyed coordinator running/coalesced/timeout metrics.
 
 No unbounded recovery history is loaded to generate status.

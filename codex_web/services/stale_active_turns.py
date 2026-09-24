@@ -342,6 +342,29 @@ class StaleActiveTurnRecoveryService:
             value = 120.0
         return max(30.0, min(value, 7 * 24 * 3600.0))
 
+    @classmethod
+    def orphan_release_after_seconds(cls) -> float:
+        """Return the hard expiry for ownerless active-turn markers.
+
+        The shorter stale window starts evidence-based reconciliation.  This
+        longer window prevents a marker with no queue, assignment, worker
+        lease, fence, or prior resume attempt from blocking unattended work
+        forever after a restart or an abruptly terminated provider turn.
+        """
+        try:
+            value = float(
+                os.environ.get(
+                    "CODEX_WEB_ACTIVE_TURN_ORPHAN_RELEASE_AFTER_SECONDS"
+                )
+                or "900"
+            )
+        except ValueError:
+            value = 900.0
+        return max(
+            cls.stale_after_seconds(),
+            min(value, 7 * 24 * 3600.0),
+        )
+
     @staticmethod
     def max_scan_records() -> int:
         try:
@@ -651,6 +674,21 @@ class StaleActiveTurnRecoveryService:
                 outcome="interrupted",
                 reason_code="orphaned_queued_turn",
                 evidence=base_evidence,
+            )
+
+        if age > self.orphan_release_after_seconds():
+            return ActiveTurnInspection(
+                thread_id=active.thread_id,
+                stale=True,
+                age_seconds=age,
+                outcome="interrupted",
+                reason_code="ownerless_turn_hard_expired",
+                evidence={
+                    **base_evidence,
+                    "orphan_release_after_seconds": (
+                        self.orphan_release_after_seconds()
+                    ),
+                },
             )
 
         return ActiveTurnInspection(
@@ -1178,6 +1216,9 @@ class StaleActiveTurnRecoveryService:
             **meta.model_dump(mode="json"),
             "audit_count": self.store.count(),
             "stale_after_seconds": self.stale_after_seconds(),
+            "orphan_release_after_seconds": (
+                self.orphan_release_after_seconds()
+            ),
             "max_scan_records": self.max_scan_records(),
             "coordinator": self.coordinator.status(),
         }
