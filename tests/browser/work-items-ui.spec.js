@@ -203,3 +203,49 @@ test("row window remains bounded for a representative 1,300 item session", async
   expect(await page.locator(".work-item-row").count()).toBeLessThanOrEqual(60);
   await expect(page.locator(".work-items-window-controls")).toContainText("400 loaded");
 });
+
+
+test("inherits the shared shell active Project without asking again", async ({ page }) => {
+  await installCommonRoutes(page);
+  const projects = [];
+  await page.route("**/api/work-items?**", async (route) => {
+    const url = new URL(route.request().url());
+    projects.push(url.searchParams.get("project_id"));
+    await route.fulfill({ json: { items: [], nextCursor: null, hasMore: false } });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    delete document.body.dataset.projectId;
+    document.body.dataset.activeProject = "project-b";
+    sessionStorage.removeItem("codex-web-work-item-project");
+    window.dispatchEvent(new CustomEvent("codex:open-work-items"));
+  });
+
+  await expect(page.locator(".work-items-project")).toHaveValue("project-b");
+  await expect.poll(() => projects.at(-1)).toBe("project-b");
+  expect(new URL(page.url()).searchParams.get("work_item_project")).toBeNull();
+});
+
+test("without active Project context Work Items waits for an explicit selection", async ({ page }) => {
+  await installCommonRoutes(page);
+  let listRequests = 0;
+  await page.route("**/api/work-items?**", async (route) => {
+    listRequests += 1;
+    await route.fulfill({ json: { items: [], nextCursor: null, hasMore: false } });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    delete document.body.dataset.projectId;
+    delete document.body.dataset.activeProject;
+    sessionStorage.removeItem("codex-web-work-item-project");
+    history.replaceState({}, "", window.location.pathname);
+    window.dispatchEvent(new CustomEvent("codex:open-work-items"));
+  });
+
+  await expect(page.locator(".work-items-project")).toHaveValue("");
+  await expect(page.locator(".work-items-project option").first()).toHaveText("Select Project…");
+  await expect(page.locator(".work-items-list")).toContainText("Select a Project");
+  expect(listRequests).toBe(0);
+});

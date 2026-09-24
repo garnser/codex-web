@@ -43,10 +43,22 @@ function fmtTime(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+function routedProjectContext() {
+  const match = window.location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 function currentProjectContext() {
   const query = new URLSearchParams(window.location.search);
   return (
-    document.body?.dataset.projectId
+    document.body?.dataset.activeProject
+    || document.body?.dataset.projectId
+    || routedProjectContext()
     || query.get('project')
     || query.get('work_item_project')
     || sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)
@@ -57,6 +69,7 @@ function currentProjectContext() {
 function persistWorkItemProject(projectId) {
   if (!projectId) return;
   sessionStorage.setItem(WORK_ITEM_PROJECT_KEY, projectId);
+  if (document.body?.dataset.activeProject || routedProjectContext()) return;
   const url = new URL(window.location.href);
   url.searchParams.set('work_item_project', projectId);
   history.replaceState({ ...history.state, workItemProjectId: projectId }, '', url);
@@ -201,7 +214,7 @@ async function refreshAll() {
     if (contextProject && state.projects.some((project) => project.id === contextProject)) {
       state.projectId = contextProject;
     } else if (!state.projectId || !state.projects.some((project) => project.id === state.projectId)) {
-      state.projectId = state.projects[0]?.id || '';
+      state.projectId = state.projects.length === 1 ? state.projects[0].id : '';
     }
     if (state.projectId) persistWorkItemProject(state.projectId);
     renderProjectSelect();
@@ -216,9 +229,12 @@ async function refreshAll() {
 function renderProjectSelect() {
   const select = document.querySelector('.work-items-project');
   if (!select) return;
-  select.innerHTML = state.projects.map((project) => (
-    `<option value="${esc(project.id)}" ${project.id === state.projectId ? 'selected' : ''}>${esc(project.name)}</option>`
-  )).join('');
+  select.innerHTML = [
+    '<option value="">Select Project…</option>',
+    ...state.projects.map((project) => (
+      `<option value="${esc(project.id)}" ${project.id === state.projectId ? 'selected' : ''}>${esc(project.name)}</option>`
+    )),
+  ].join('');
 }
 
 function selectedProject() {
@@ -464,7 +480,9 @@ async function loadItems({ reset = false } = {}) {
   const detail = document.querySelector('.work-item-detail');
   if (!state.projectId) {
     resetPaging();
-    if (list) list.innerHTML = '<p class="work-item-empty">No project available.</p>';
+    if (list) list.innerHTML = '<p class="work-item-empty">Select a Project to view Work Items.</p>';
+    if (detail) detail.innerHTML = '<div class="work-item-empty">Select a Project to inspect its Work Items.</div>';
+    setStatus('Select a Project');
     return;
   }
   if (reset) resetPaging();
