@@ -150,6 +150,8 @@ test('Work Item operator has named dialog/status semantics and remains usable on
 
   await dialog.locator('.work-items-project').focus();
   await page.keyboard.press('Tab');
+  await expect(dialog.locator('.work-items-search')).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(dialog.locator('.work-items-refresh')).toBeFocused();
   const focusStyle = await dialog.locator('.work-items-refresh').evaluate((node) => {
     const style = getComputedStyle(node);
