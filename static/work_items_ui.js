@@ -3,9 +3,9 @@ import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
-const PAGE_SIZE=50;
-const ROW_WINDOW=60;
-const RUN_PAGE_SIZE=20;
+const PAGE_SIZE = 50;
+const ROW_WINDOW = 60;
+const RUN_PAGE_SIZE = 20;
 const WORK_ITEM_PROJECT_KEY='codex-web-work-item-project';
 const state={
   projects: [],
@@ -33,14 +33,13 @@ const esc=(value)=> String(value ?? '')
   .replaceAll("'", '&#039;');
 
 function pathRef(ref){return String(ref||'').split('/').map(encodeURIComponent).join('/')}
-function fmtTime(value){if(!value)return'—';const date=new Date(Number(value)*1000);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()}
+function fmtTime(value){if(!value)return'—';const d=new Date(Number(value)*1000);return Number.isNaN(d.getTime())?String(value):d.toLocaleString()}
 
-function routedProjectContext(){const match=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!match)return'';try{return decodeURIComponent(match[1])}catch{return match[1]}}
+function routedProjectContext(){const m=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!m)return'';try{return decodeURIComponent(m[1])}catch{return m[1]}}
 function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
 function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
 
 function resetPaging(){state.listController?.abort();state.listController=null;state.listGeneration+=1;state.items=[];state.nextCursor=null;state.hasMore=false;state.windowStart=0;state.pageError=''}
-
 
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
@@ -505,7 +504,6 @@ async function loadItems({ reset = false } = {}) {
     if (state.listController === controller) state.listController = null;
   }
 }
-
 
 function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
 
