@@ -96,3 +96,56 @@ export async function loadProjectUiState({
     threads: workspace.threads || { data: [] },
   };
 }
+
+
+export async function loadProjectUiStateForRefresh({
+  api,
+  projectId,
+  search,
+  state,
+  reloadProjects,
+  controller,
+  generation,
+  renderProjects,
+  renderThreads,
+  clearMessages,
+  logEvent,
+}) {
+  try {
+    return await loadProjectUiState({
+      api,
+      projectId,
+      search,
+      projects: state.projects,
+      reloadProjects,
+      models: state.models,
+      cachedStatic: state.projectUiStatic[projectId] || null,
+      signal: controller.signal,
+      onModelError: (error) => {
+        logEvent("models.error", { message: error.message });
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof ProjectContextUnavailableError)) throw error;
+    if (
+      controller.signal.aborted
+      || generation !== state.refreshGeneration
+      || projectId !== state.projectId
+    ) return null;
+    state.projects = error.projects || [];
+    state.projectResources = [];
+    state.botBindings = [];
+    state.threadSettings = {};
+    state.botChannels = [];
+    state.threads = { data: [] };
+    state.threadId = null;
+    renderProjects();
+    renderThreads();
+    clearMessages();
+    window.dispatchEvent(new CustomEvent("codex:project-context-unavailable", {
+      detail: { projectId, projects: state.projects },
+    }));
+    logEvent("project.context_unavailable", { projectId });
+    return null;
+  }
+}
