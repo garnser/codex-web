@@ -44,6 +44,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Ordered preferred execution-agent provider IDs.",
         ),
         ConfigurationSpec(
@@ -51,6 +52,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Ordered preferred execution-agent runtime IDs.",
         ),
         ConfigurationSpec(
@@ -58,6 +60,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Optional execution-agent provider allowlist.",
         ),
         ConfigurationSpec(
@@ -65,6 +68,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Optional execution-agent runtime allowlist.",
         ),
         ConfigurationSpec(
@@ -72,6 +76,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Required residency tags for execution-agent routing.",
         ),
         ConfigurationSpec(
@@ -79,6 +84,7 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.STRING_LIST,
             default=[],
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Required compliance tags for execution-agent routing.",
         ),
         ConfigurationSpec(
@@ -86,13 +92,16 @@ def install_agent_routing_configuration(
             value_kind=ConfigurationValueKind.BOOLEAN,
             default=True,
             allowed_scopes=scopes,
+            category="Model & Provider",
             description="Whether execution-agent routing may use an eligible fallback.",
         ),
         ConfigurationSpec(
             key=AGENT_ROUTING_MAX_RUNTIME_COST_USD,
             value_kind=ConfigurationValueKind.NUMBER,
             default=None,
+            minimum=0,
             allowed_scopes=scopes,
+            category="Model & Provider",
             description=(
                 "Optional maximum declared execution-agent session cost. "
                 "Runtimes without pricing metadata fail closed when set."
