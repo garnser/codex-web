@@ -30,13 +30,13 @@ test('direct Project page URL restores Project and workspace context on reload',
   await expect(page.locator('body')).toHaveAttribute('data-project-page', 'agents');
   await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
   await expect(page.locator('#product-workspace-dialog')).toBeVisible();
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Team / Agents');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agents');
 
   await page.reload();
 
   await expect(page).toHaveURL(/\/projects\/alpha\/agents$/);
   await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Team / Agents');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agents');
 });
 
 test('navigation uses stable Project paths and browser Back restores prior page', async ({ page }) => {
@@ -70,7 +70,7 @@ test('navigation uses stable Project paths and browser Back restores prior page'
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/home\/automations$/);
   await expect(page.locator('#product-workspace-dialog')).toBeVisible();
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Automation / Autonomy');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Automations');
 });
 
 test('Project switch preserves routed page instead of falling back to Chat', async ({ page }) => {
