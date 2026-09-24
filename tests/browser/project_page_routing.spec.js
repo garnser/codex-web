@@ -256,9 +256,25 @@ test('primary Project navigation tree exposes every migration destination', asyn
     'providers',
     'incidents',
     'project-settings',
+    'configuration',
   ];
   for (const id of expected) {
     await expect(page.locator(`[data-project-nav-node="${id}"]`)).toHaveCount(1);
   }
   await expect(page.locator('[data-project-nav-node="administration"]')).toHaveCount(1);
+});
+
+
+test('Configuration is a first-class routed Project page backed by canonical settings cards', async ({ page }) => {
+  await serveProjectShell(page);
+
+  await page.goto('http://127.0.0.1:18766/projects/home/configuration');
+
+  await expect(page).toHaveURL(/\/projects\/home\/configuration$/);
+  await expect(page.locator('body')).toHaveAttribute('data-project-page', 'configuration');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Configuration');
+  await expect(page.locator('[data-project-nav-node="configuration"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Configuration & Features');
+  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Secrets & Credentials');
+  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Entitlements & Usage');
 });
