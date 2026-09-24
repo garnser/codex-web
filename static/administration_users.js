@@ -144,6 +144,47 @@ function groupSection(context) {
   `;
 }
 
+function createUserSection(context) {
+  return `
+    <section class="administration-user-create">
+      <header>
+        <div>
+          <h3>Add user</h3>
+          <p>Create a canonical human identity with its initial membership in the active administrative scope.</p>
+        </div>
+      </header>
+      <form data-create-user>
+        <div class="administration-user-create-fields">
+          <label>
+            <span>Display name</span>
+            <input name="display_name" required autocomplete="off" />
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="off" />
+          </label>
+          <label>
+            <span>Initial roles</span>
+            <select name="roles" multiple required>
+              ${roleOptions({ roles: ["member"] })}
+            </select>
+          </label>
+        </div>
+        <label class="administration-user-create-scope">
+          <input name="organization_wide" type="checkbox" />
+          <span>Organization-wide membership instead of Workspace · ${esc(context.workspaceId)}</span>
+        </label>
+        <div class="administration-membership-actions">
+          <button type="submit" data-create-user-submit>Create user</button>
+        </div>
+        <small>
+          This creates identity and authorization state only. Authentication enrollment, SSO linking and credentials are managed separately.
+        </small>
+      </form>
+    </section>
+  `;
+}
+
 export function administrationUserView(context, query = "") {
   const humans = humanById(context);
   const memberships = scopedMemberships(context);
@@ -193,6 +234,7 @@ export function renderAdministrationUsers(container, {
       </label>
     </section>
     <div class="administration-users-message" data-administration-users-message hidden></div>
+    ${page === "users" ? createUserSection(context) : ""}
     <section class="administration-user-list" data-administration-user-list>
       ${entries.length
         ? entries.map(({ human, memberships }) => userCard(human, memberships, context)).join("")
@@ -219,6 +261,50 @@ export function renderAdministrationUsers(container, {
       onChanged,
     });
     container.querySelector("[data-administration-user-search]")?.focus();
+  });
+
+  container.querySelector("[data-create-user]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const displayName = String(form.elements.display_name?.value || "").trim();
+    const email = String(form.elements.email?.value || "").trim();
+    const roles = [...(form.elements.roles?.selectedOptions || [])].map((option) => option.value);
+    const organizationWide = Boolean(form.elements.organization_wide?.checked);
+    const submit = form.querySelector("[data-create-user-submit]");
+    if (!displayName) {
+      setMessage("Display name is required.", "error");
+      form.elements.display_name?.focus();
+      return;
+    }
+    if (!roles.length) {
+      setMessage("Select at least one canonical role.", "error");
+      form.elements.roles?.focus();
+      return;
+    }
+    submit.disabled = true;
+    setMessage("Creating canonical user and membership…");
+    try {
+      await api("/api/identity/users", {
+        method: "POST",
+        body: JSON.stringify({
+          display_name: displayName,
+          email: email || null,
+          roles,
+          team_ids: [],
+          organization_wide: organizationWide,
+        }),
+      });
+      setMessage("User created with its initial membership.", "success");
+      form.reset();
+      for (const option of form.elements.roles?.options || []) {
+        option.selected = option.value === "member";
+      }
+      await onChanged?.();
+    } catch (error) {
+      setMessage(errorMessage(error), "error");
+    } finally {
+      submit.disabled = false;
+    }
   });
 
   container.querySelectorAll("[data-save-membership]").forEach((button) => {
