@@ -148,6 +148,10 @@ class ConfigurationService:
 
     def create_draft(self, payload: ConfigurationDraftCreate) -> ConfigurationRecord:
         spec = self.specs.get(payload.key)
+        if not spec.editable:
+            raise ConfigurationError(
+                f"{payload.key} is read-only and cannot be changed through configuration"
+            )
         if payload.scope_type not in spec.allowed_scopes:
             raise ConfigurationError(
                 f"{payload.key} is not allowed at {payload.scope_type.value} scope"
@@ -234,6 +238,10 @@ class ConfigurationService:
                 )
             if selected.state != ConfigurationLifecycle.DRAFT:
                 raise ConfigurationConflictError("only draft configuration can be published")
+            if not self.specs.get(selected.key).editable:
+                raise ConfigurationError(
+                    f"{selected.key} is read-only and cannot be published through configuration"
+                )
             selected = self._validate_record_against_spec(selected)
             active = self._active_for_scope(records, selected)
             active_revision = active.revision if active is not None else None
@@ -329,7 +337,11 @@ class ConfigurationService:
     def reset_override(self, request: ConfigurationResetRequest) -> ConfigurationRecord:
         """Supersede the explicit value at one scope so resolution can inherit."""
 
-        self.specs.get(request.key)
+        spec = self.specs.get(request.key)
+        if not spec.editable:
+            raise ConfigurationError(
+                f"{request.key} is read-only and cannot be reset through configuration"
+            )
         reset_records: list[ConfigurationRecord] = []
         slot = self._scope_key(request.key, request.scope_type, request.scope_id)
 
