@@ -52,11 +52,17 @@ test('navigation uses stable Project paths and browser Back restores prior page'
     await page.keyboard.press('Enter');
     await expect(automationGroup).toHaveAttribute('open', '');
   }
-  await navigation.locator('[data-project-nav-node="automations"]').click();
+  const automations = navigation.locator('[data-project-nav-node="automations"]');
+  await automations.focus();
+  await expect(automations).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/projects\/home\/automations$/);
   await expect(page.locator('body')).toHaveAttribute('data-project-page', 'automations');
 
-  await navigation.locator('[data-project-nav-node="chat"]').click();
+  const chat = navigation.locator('[data-project-nav-node="chat"]');
+  await chat.focus();
+  await expect(chat).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/projects\/home\/chat$/);
   await expect(page.locator('#product-workspace-dialog')).toBeHidden();
   await expect(navigation.locator('[data-project-nav-node="chat"]')).toHaveAttribute('aria-current', 'page');
