@@ -838,8 +838,10 @@ function buildPanels() {
 function updateEmptyStates() {
   document.querySelectorAll(".product-workspace-host").forEach((host) => {
     const empty = host.querySelector(":scope > .product-workspace-empty");
-    const hasCard = Boolean(host.querySelector(":scope > .developer-card"));
-    if (empty) empty.hidden = hasCard;
+    const hasContent = Boolean(
+      host.querySelector(":scope > .developer-card, :scope > .product-section-dialog")
+    );
+    if (empty) empty.hidden = hasContent;
   });
 }
 
