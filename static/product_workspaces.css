@@ -220,13 +220,12 @@ body.product-routed-project-page #developer-panel {
 body.product-administration-page > .main {
   display: none !important;
 }
-body.product-administration-page .product-project-context,
-body.product-administration-page .product-project-nav-tree,
-body.product-administration-page .product-all-workspaces {
-  display: none !important;
+body.product-administration-page .product-project-nav-tree {
+  opacity: .78;
 }
 body.product-administration-page .product-global-nav {
   margin-top: 0;
+  border-top-color: var(--line-strong);
 }
 body.product-administration-page [data-project-nav-node="administration"] {
   border-color: var(--line-strong);
