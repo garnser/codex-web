@@ -239,3 +239,94 @@ test("membership mutation authorization failures are explicit instead of optimis
   expect(result.message).toContain("MFA/step-up");
   expect(result.roles).toEqual(["member"]);
 });
+
+
+test("Users administration creates a canonical human and initial scoped membership", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const result = await page.evaluate(async () => {
+    const { renderAdministrationUsers } = await import("/static/administration_users.js");
+    const calls = [];
+    let changed = 0;
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      identity: {
+        humans: [],
+        memberships: [],
+        teams: [],
+      },
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationUsers(host, {
+      context,
+      page: "users",
+      api: async (requestPath, options) => {
+        calls.push({
+          path: requestPath,
+          method: options?.method,
+          payload: JSON.parse(options?.body || "{}"),
+        });
+        return {};
+      },
+      onChanged: async () => { changed += 1; },
+    });
+    const form = host.querySelector("[data-create-user]");
+    form.elements.display_name.value = "Casey User";
+    form.elements.email.value = "casey@example.test";
+    for (const option of form.elements.roles.options) {
+      option.selected = ["admin", "member"].includes(option.value);
+    }
+    form.elements.organization_wide.checked = true;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return {
+      calls,
+      changed,
+      message: host.querySelector("[data-administration-users-message]")?.textContent,
+      resetName: form.elements.display_name.value,
+      selectedRoles: [...form.elements.roles.selectedOptions].map((option) => option.value),
+    };
+  });
+
+  expect(result.calls).toEqual([{
+    path: "/api/identity/users",
+    method: "POST",
+    payload: {
+      display_name: "Casey User",
+      email: "casey@example.test",
+      roles: ["admin", "member"],
+      team_ids: [],
+      organization_wide: true,
+    },
+  }]);
+  expect(result.changed).toBe(1);
+  expect(result.message).toContain("User created");
+  expect(result.resetName).toBe("");
+  expect(result.selectedRoles).toEqual(["member"]);
+});
+
+test("Memberships page does not invent a user-creation control", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+
+  const count = await page.evaluate(async () => {
+    const { renderAdministrationUsers } = await import("/static/administration_users.js");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    renderAdministrationUsers(host, {
+      context: {
+        allowed: true,
+        organizationId: "org-a",
+        workspaceId: "workspace-a",
+        identity: { humans: [], memberships: [], teams: [] },
+      },
+      page: "memberships",
+      api: async () => ({}),
+    });
+    return host.querySelectorAll("[data-create-user]").length;
+  });
+
+  expect(count).toBe(0);
+});
