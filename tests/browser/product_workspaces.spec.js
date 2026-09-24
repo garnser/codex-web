@@ -185,7 +185,7 @@ test('project navigation is hierarchical, keeps active state, and separates Admi
 
   const global = page.locator('.product-global-nav');
   await expect(global).toHaveAttribute('aria-label', 'Global navigation');
-  await expect(global.locator('[data-project-nav-node="administration"]')).toHaveText('Administration');
+  await expect(global.locator('[data-project-nav-node="administration"] strong')).toHaveText('Administration');
   await expect(tree.locator('[data-project-nav-node="administration"]')).toHaveCount(0);
 });
 
@@ -292,7 +292,7 @@ test('Administration global navigation opens the dedicated routed shell with can
   await page.locator('[data-administration-page="authentication"]').click();
   await expect(page).toHaveURL(/\/administration\/authentication$/);
   await expect(page.locator('[data-administration-title]')).toHaveText('Authentication');
-  await expect(page.locator('[data-administration-page="authentication"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('button[data-administration-page="authentication"]')).toHaveAttribute('aria-current', 'page');
 
   await page.goBack();
   await expect(page).toHaveURL(/\/administration\/access$/);
