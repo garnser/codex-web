@@ -30,13 +30,13 @@ test('direct Project page URL restores Project and workspace context on reload',
   await expect(page.locator('body')).toHaveAttribute('data-project-page', 'agents');
   await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
   await expect(page.locator('#product-workspace-dialog')).toBeVisible();
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agents');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Team / Agents');
 
   await page.reload();
 
   await expect(page).toHaveURL(/\/projects\/alpha\/agents$/);
   await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agents');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Team / Agents');
 });
 
 test('navigation uses stable Project paths and browser Back restores prior page', async ({ page }) => {
@@ -70,7 +70,7 @@ test('navigation uses stable Project paths and browser Back restores prior page'
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/home\/automations$/);
   await expect(page.locator('#product-workspace-dialog')).toBeVisible();
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Automations');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Automation / Autonomy');
 });
 
 test('Project switch preserves routed page instead of falling back to Chat', async ({ page }) => {
@@ -81,4 +81,63 @@ test('Project switch preserves routed page instead of falling back to Chat', asy
 
   await expect(page).toHaveURL(/\/projects\/alpha\/operations$/);
   await expect(page.locator('body')).toHaveAttribute('data-active-project', 'alpha');
+});
+
+
+test('stale Project deep link is rejected before page-specific state is fetched', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const result = await page.evaluate(async () => {
+    const { loadProjectUiState } = await import('/static/project_ui_state.js');
+    const calls = [];
+    const api = async (requestPath) => {
+      calls.push(requestPath);
+      if (requestPath === '/api/projects') {
+        return [{ id: 'home', name: 'Home', path: '/workspace/home' }];
+      }
+      throw new Error(`unexpected page-data request: ${requestPath}`);
+    };
+    try {
+      await loadProjectUiState({
+        api,
+        projectId: 'deleted-project',
+        projects: [],
+        reloadProjects: true,
+      });
+      return { name: 'no-error', calls };
+    } catch (error) {
+      return { name: error.name, projectId: error.projectId, calls };
+    }
+  });
+
+  expect(result.name).toBe('ProjectContextUnavailableError');
+  expect(result.projectId).toBe('deleted-project');
+  expect(result.calls).toEqual(['/api/projects']);
+});
+
+test('stale Project state disables scoped actions and recovers through explicit Project selection', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('codex:project-context-unavailable', {
+      detail: {
+        projectId: 'deleted-project',
+        projects: [{ id: 'home', name: 'Home', path: '/workspace/home' }],
+      },
+    }));
+  });
+
+  const status = page.locator('[data-project-context-state]');
+  await expect(status).toBeVisible();
+  await expect(status).toContainText('unavailable');
+  await expect(page.locator('body')).toHaveClass(/project-context-unavailable/);
+  await expect(page.locator('[data-project-nav-node="overview"]')).toBeDisabled();
+  await expect(page.locator('#product-project-switcher')).toHaveValue('');
+
+  await page.locator('#product-project-switcher').selectOption('home');
+
+  await expect(status).toBeHidden();
+  await expect(page.locator('body')).not.toHaveClass(/project-context-unavailable/);
+  await expect(page.locator('body')).toHaveAttribute('data-active-project', 'home');
+  await expect(page.locator('[data-project-nav-node="overview"]')).toBeEnabled();
 });
