@@ -80,6 +80,7 @@ def build_work_items_router(
         owner: str | None = None,
         stage: str | None = None,
         release_gate: bool | None = None,
+        q: str | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> dict[str, Any]:
@@ -88,6 +89,7 @@ def build_work_items_router(
             owner=owner,
             stage=stage,
             release_gate=release_gate,
+            q=q,
             scope=request.state.tenant_scope,
             limit=limit,
             cursor=cursor,
