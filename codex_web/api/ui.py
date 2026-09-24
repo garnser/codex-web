@@ -21,6 +21,17 @@ PROJECT_UI_PAGES = frozenset(
     }
 )
 
+ADMIN_UI_PAGES = frozenset(
+    {
+        "overview",
+        "users",
+        "memberships",
+        "access",
+        "authentication",
+        "organization-settings",
+    }
+)
+
 
 def _root_path(request: Request) -> str:
     return str(request.scope.get("root_path") or "").rstrip("/")
@@ -50,6 +61,24 @@ def build_ui_router(service: OperatorUiService) -> APIRouter:
     ) -> HTMLResponse:
         if page not in PROJECT_UI_PAGES:
             raise HTTPException(status_code=404, detail="unknown Project UI page")
+        return HTMLResponse(service.index_html(base_href=_root_path(request)))
+
+
+    @router.get("/administration", name="administration_landing")
+    async def administration_landing(request: Request) -> RedirectResponse:
+        url = request.url_for(
+            "administration_page",
+            page="overview",
+        )
+        return RedirectResponse(url=str(url), status_code=307)
+
+    @router.get("/administration/{page}", name="administration_page")
+    async def administration_page(
+        page: str,
+        request: Request,
+    ) -> HTMLResponse:
+        if page not in ADMIN_UI_PAGES:
+            raise HTTPException(status_code=404, detail="unknown Administration UI page")
         return HTMLResponse(service.index_html(base_href=_root_path(request)))
 
     @router.get("/devstatus")
