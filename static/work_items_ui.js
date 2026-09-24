@@ -44,37 +44,9 @@ function fmtTime(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
-function routedProjectContext() {
-  const match = window.location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
-  if (!match) return '';
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return match[1];
-  }
-}
-
-function currentProjectContext() {
-  const query = new URLSearchParams(window.location.search);
-  return (
-    document.body?.dataset.activeProject
-    || document.body?.dataset.projectId
-    || routedProjectContext()
-    || query.get('project')
-    || query.get('work_item_project')
-    || sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)
-    || ''
-  );
-}
-
-function persistWorkItemProject(projectId) {
-  if (!projectId) return;
-  sessionStorage.setItem(WORK_ITEM_PROJECT_KEY, projectId);
-  if (document.body?.dataset.activeProject || routedProjectContext()) return;
-  const url = new URL(window.location.href);
-  url.searchParams.set('work_item_project', projectId);
-  history.replaceState({ ...history.state, workItemProjectId: projectId }, '', url);
-}
+function routedProjectContext(){const match=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!match)return'';try{return decodeURIComponent(match[1])}catch{return match[1]}}
+function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
+function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
 
 function resetPaging() {
   state.listController?.abort();
