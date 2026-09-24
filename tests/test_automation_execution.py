@@ -106,6 +106,7 @@ class _ActionProviders:
 class _ActionIntents:
     def __init__(self):
         self.calls = []
+        self.histories = {}
 
     def create(self, payload, *, actor):
         self.calls.append((payload, actor))
@@ -113,6 +114,9 @@ class _ActionIntents:
             id="action-intent-work-item-1",
             status=ActionIntentStatus.PENDING,
         )
+
+    def history(self, intent_id, actor):
+        return self.histories.get(intent_id, {"receipts": []})
 
 
 class _WorkItems:
@@ -356,6 +360,71 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             AutomationRunStatus.WAITING_FOR_WORK_ITEM,
         )
         self.assertEqual(len(self.action_intents.calls), 1)
+        self.assertEqual(self.turns.calls, [])
+
+    async def test_successful_work_item_action_intent_resumes_and_launches(self) -> None:
+        run = self._publish_and_admit(work_item_policy="always_create")
+        await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+        )
+        self.action_intents.histories["action-intent-work-item-1"] = {
+            "receipts": [
+                {
+                    "result": {
+                        "status": "succeeded",
+                        "output": {"work_item_ref": "group/app#42"},
+                    }
+                }
+            ]
+        }
+
+        results = await self.service.resume_for_action_intent(
+            SimpleNamespace(
+                id="action-intent-work-item-1",
+                organization_id="local",
+                workspace_id="default",
+                status=ActionIntentStatus.SUCCEEDED,
+                last_error=None,
+            )
+        )
+
+        self.assertEqual(len(results), 1)
+        resumed = results[0]
+        self.assertEqual(resumed.status, AutomationRunStatus.RUNNING)
+        self.assertEqual(resumed.work_item_ref, "group/app#42")
+        self.assertEqual(len(self.turns.calls), 1)
+        self.assertEqual(
+            self.turns.calls[0][2]["work_item_ref"],
+            "group/app#42",
+        )
+
+    async def test_failed_work_item_action_intent_blocks_waiting_run(self) -> None:
+        run = self._publish_and_admit(work_item_policy="always_create")
+        await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+        )
+
+        results = await self.service.resume_for_action_intent(
+            SimpleNamespace(
+                id="action-intent-work-item-1",
+                organization_id="local",
+                workspace_id="default",
+                status=ActionIntentStatus.FAILED,
+                last_error="authoritative task creation failed",
+            )
+        )
+
+        self.assertEqual(len(results), 1)
+        blocked = results[0]
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertEqual(
+            blocked.block_code,
+            "automation_work_item_creation_failed",
+        )
         self.assertEqual(self.turns.calls, [])
 
     async def test_team_target_requires_canonical_work_item(self) -> None:
