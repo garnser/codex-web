@@ -276,6 +276,7 @@ test("object-centric Access requires an explicit Project or repository scope bef
   expect(result.calls).toEqual([
     "/api/projects",
     "/api/resources?resource_type=repository&lifecycle=active",
+    "/api/authority/roles",
   ]);
   expect(result.message).toContain("Select a Project or repository");
   expect(result.results).toContain("scope is required");
