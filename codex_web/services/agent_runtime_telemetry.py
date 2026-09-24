@@ -43,6 +43,7 @@ class AgentRuntimeTelemetryService:
         *,
         artifact_evidence: ArtifactEvidenceService | None = None,
         attribution_resolver: AttributionResolver | None = None,
+        observation_notifier: Callable[[AgentRuntimeUsage], None] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
@@ -50,6 +51,7 @@ class AgentRuntimeTelemetryService:
         self.runtimes = runtimes
         self.artifact_evidence = artifact_evidence
         self.attribution_resolver = attribution_resolver
+        self.observation_notifier = observation_notifier
         self.clock = clock
         self._unsubscribers: list[Callable[[], None]] = []
 
@@ -597,4 +599,12 @@ class AgentRuntimeTelemetryService:
                 }
             )
         record = self._emit_terminal_evidence(record)
-        return self.store.upsert(record)
+        persisted = self.store.upsert(record)
+        if self.observation_notifier is not None:
+            try:
+                self.observation_notifier(persisted)
+            except Exception:
+                # Usage projections are observational and must not break
+                # canonical runtime telemetry persistence.
+                pass
+        return persisted
