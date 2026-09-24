@@ -34,15 +34,8 @@ const esc = (value) => String(value ?? '')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;');
 
-function pathRef(ref) {
-  return String(ref || '').split('/').map((part) => encodeURIComponent(part)).join('/');
-}
-
-function fmtTime(value) {
-  if (!value) return '—';
-  const date = new Date(Number(value) * 1000);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
-}
+function pathRef(ref){return String(ref||'').split('/').map(encodeURIComponent).join('/')}
+function fmtTime(value){if(!value)return'—';const date=new Date(Number(value)*1000);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()}
 
 function routedProjectContext(){const match=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!match)return'';try{return decodeURIComponent(match[1])}catch{return match[1]}}
 function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
