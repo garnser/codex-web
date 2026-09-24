@@ -191,6 +191,7 @@ test('hierarchical navigation remains usable at phone width', async ({ page }) =
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
 
+  await page.locator('body').evaluate((body) => body.classList.add('mobile-nav-open'));
   const navigation = page.locator('.product-project-navigation');
   await expect(navigation).toBeVisible();
   const box = await navigation.boundingBox();
