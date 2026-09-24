@@ -158,6 +158,8 @@ test('legacy Chat hash migrates to routed Chat and retires the Developer control
   await expect(page.locator('body')).toHaveClass(/product-chat-page/);
   await expect(page.locator('.main')).toBeVisible();
   await expect(page.locator('#developer-panel')).toBeHidden();
+  await expect(page.locator('#developer-panel')).toHaveAttribute('data-product-compatibility-source', 'true');
+  await expect(page.locator('#developer-panel').locator('xpath=..')).toHaveJSProperty('tagName', 'BODY');
   await expect(page.locator('#repository-target')).toBeVisible();
   await expect(page.locator('#sandbox')).toBeVisible();
   await expect(page.locator('#approval-policy')).toBeVisible();
