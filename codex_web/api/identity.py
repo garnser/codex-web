@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from codex_web.identity import (
     AuthenticationAssurance,
     HumanIdentityCreate,
+    HumanUserCreate,
     Membership,
     MembershipCreate,
     MembershipRole,
