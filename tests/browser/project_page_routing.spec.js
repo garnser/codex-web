@@ -29,7 +29,8 @@ test('direct Project page URL restores Project and workspace context on reload',
   await expect(page).toHaveURL(/\/projects\/alpha\/agents$/);
   await expect(page.locator('body')).toHaveAttribute('data-project-page', 'agents');
   await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
-  await expect(page.locator('#product-workspace-dialog')).toBeVisible();
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
+  await expect(page.locator('dialog#product-workspace-dialog')).toHaveCount(0);
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agents');
 
   await page.reload();
@@ -64,13 +65,66 @@ test('navigation uses stable Project paths and browser Back restores prior page'
   await expect(chat).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/projects\/home\/chat$/);
-  await expect(page.locator('#product-workspace-dialog')).toBeHidden();
+  await expect(page.locator('#product-workspace-page')).toBeHidden();
+  await expect(page.locator('.main')).toBeVisible();
   await expect(navigation.locator('[data-project-nav-node="chat"]')).toHaveAttribute('aria-current', 'page');
 
   await page.goBack();
   await expect(page).toHaveURL(/\/projects\/home\/automations$/);
-  await expect(page.locator('#product-workspace-dialog')).toBeVisible();
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Automations');
+});
+
+
+test('routed Project pages use an integrated page surface at desktop width', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await serveProjectShell(page);
+
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+
+  const surface = page.locator('#product-workspace-page');
+  await expect(surface).toBeVisible();
+  await expect(page.locator('dialog#product-workspace-dialog')).toHaveCount(0);
+  await expect(page.locator('.main')).toBeHidden();
+  await expect(surface).toHaveAccessibleName('Overview');
+  const bounds = await surface.boundingBox();
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(1280);
+  const overflow = await page.evaluate(() => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+    body: document.body.scrollWidth,
+  }));
+  expect(overflow.document).toBeLessThanOrEqual(overflow.viewport + 1);
+  expect(overflow.body).toBeLessThanOrEqual(overflow.viewport + 1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('routed Project page remains bounded and non-modal at phone width', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await serveProjectShell(page);
+
+  await page.goto('http://127.0.0.1:18766/projects/home/runs');
+
+  const surface = page.locator('#product-workspace-page');
+  await expect(surface).toBeVisible();
+  await expect(page.locator('dialog#product-workspace-dialog')).toHaveCount(0);
+  const bounds = await surface.boundingBox();
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  expect(bounds.height).toBeLessThanOrEqual(844);
+  const overflow = await page.evaluate(() => ({
+    viewport: window.innerWidth,
+    document: document.documentElement.scrollWidth,
+    body: document.body.scrollWidth,
+  }));
+  expect(overflow.document).toBeLessThanOrEqual(overflow.viewport + 1);
+  expect(overflow.body).toBeLessThanOrEqual(overflow.viewport + 1);
+  expect(pageErrors).toEqual([]);
 });
 
 test('Project switch preserves routed page instead of falling back to Chat', async ({ page }) => {
@@ -159,7 +213,8 @@ test('legacy Project entry migrates to Overview and does not mount Chat as the p
   await expect(page.locator('body')).toHaveClass(/product-routed-project-page/);
   await expect(page.locator('body')).not.toHaveClass(/product-chat-page/);
   await expect(page.locator('.main')).toBeHidden();
-  await expect(page.locator('#product-workspace-dialog')).toBeVisible();
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
+  await expect(page.locator('dialog#product-workspace-dialog')).toHaveCount(0);
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Overview');
 });
 

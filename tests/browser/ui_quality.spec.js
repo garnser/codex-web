@@ -98,13 +98,13 @@ test('workspace shell remains usable at 200% text scaling and exposes non-color 
   await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleName('Overview');
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface).toBeVisible();
+  await expect(pageSurface).toHaveAccessibleName('Overview');
   await expectNoPageOverflow(page, 'workspace at 200% text scaling');
 
-  await dialog.locator('.product-overview-reference > summary').click();
-  const negative = dialog.locator('.product-status-badge.status-negative');
+  await pageSurface.locator('.product-overview-reference > summary').click();
+  const negative = pageSurface.locator('.product-status-badge.status-negative');
   await expect(negative).toContainText('blocked');
   const marker = await negative.evaluate((node) => getComputedStyle(node, '::before').content);
   expect(marker).not.toBe('none');

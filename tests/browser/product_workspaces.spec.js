@@ -40,16 +40,16 @@ test('workspace navigation delegates to existing domain launchers instead of dup
   await expect(page.locator('[data-attention-launch]')).toHaveAttribute('data-clicked', '1');
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('work'));
-  const workDialog = page.locator('#product-workspace-dialog');
-  await expect(workDialog.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(1);
-  await workDialog.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' }).click();
+  const workPage = page.locator('#product-workspace-page');
+  await expect(workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(1);
+  await workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' }).click();
   await expect.poll(() => page.evaluate(() => window.__workItemsOpenEvents)).toBe(1);
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Resources');
-  await expect(dialog.locator('#resource-card')).toBeVisible();
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface).toBeVisible();
+  await expect(pageSurface.locator('[data-product-workspace-title]')).toHaveText('Resources');
+  await expect(pageSurface.locator('#resource-card')).toBeVisible();
   await expect(page.locator('#refresh-resources')).toHaveAttribute('data-clicked', '1');
 });
 
@@ -84,12 +84,12 @@ test('dynamic cards are adopted and shared UI primitives expose distinct canonic
 test('overview Explain Action routes to canonical Autonomy explain UI without model work', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
-  const dialog = page.locator('#product-workspace-dialog');
-  await dialog.locator('.product-overview-reference > summary').click();
-  await dialog.locator('[data-product-explain-id]').fill('action-intent-123');
-  await dialog.locator('[data-product-explain]').click();
+  const pageSurface = page.locator('#product-workspace-page');
+  await pageSurface.locator('.product-overview-reference > summary').click();
+  await pageSurface.locator('[data-product-explain-id]').fill('action-intent-123');
+  await pageSurface.locator('[data-product-explain]').click();
 
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Automations');
+  await expect(pageSurface.locator('[data-product-workspace-title]')).toHaveText('Automations');
   await expect(page.locator('[data-acc-intent]')).toHaveValue('action-intent-123');
   await expect(page.locator('[data-acc-explain]')).toHaveAttribute('data-clicked', '1');
 });
@@ -98,11 +98,10 @@ test('keyboard and hash routing work and phone layout does not exceed viewport',
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html#workspace/resources');
 
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Resources');
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface).toBeVisible();
+  await expect(pageSurface.locator('[data-product-workspace-title]')).toHaveText('Resources');
 
-  await dialog.locator('[data-product-workspace-close]').click();
   await page.keyboard.press('Control+K');
   const switcher = page.locator('#product-workspace-switcher');
   await expect(switcher).toBeVisible();
@@ -219,10 +218,10 @@ test('major Project destinations explain purpose and scope without hover', async
   await expect(runtime.locator('.product-project-nav-help')).toContainText('executions run');
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Overview');
-  await expect(dialog.locator('[data-product-workspace-description]')).toContainText('current work');
-  await expect(dialog.locator('[data-project-page-scope]')).toHaveText('Scope: Project');
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface.locator('[data-product-workspace-title]')).toHaveText('Overview');
+  await expect(pageSurface.locator('[data-product-workspace-description]')).toContainText('current work');
+  await expect(pageSurface.locator('[data-project-page-scope]')).toHaveText('Scope: Project');
 });
 
 test('routed pages use page-specific purpose text for shared workspace surfaces', async ({ page }) => {
@@ -236,10 +235,10 @@ test('routed pages use page-specific purpose text for shared workspace surfaces'
 
   await page.goto('http://127.0.0.1:18766/projects/home/runs');
 
-  const dialog = page.locator('#product-workspace-dialog');
-  await expect(dialog.locator('[data-product-workspace-title]')).toHaveText('Runs / Execution');
-  await expect(dialog.locator('[data-product-workspace-description]')).toContainText('what agents and workers actually executed');
-  await expect(dialog.locator('[data-project-page-scope]')).toHaveText('Scope: Project execution');
+  const pageSurface = page.locator('#product-workspace-page');
+  await expect(pageSurface.locator('[data-product-workspace-title]')).toHaveText('Runs / Execution');
+  await expect(pageSurface.locator('[data-product-workspace-description]')).toContainText('what agents and workers actually executed');
+  await expect(pageSurface.locator('[data-project-page-scope]')).toHaveText('Scope: Project execution');
   await expect(page.locator('[data-project-nav-node="runs"]')).toHaveAttribute('aria-current', 'page');
   await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveAttribute('aria-current', 'false');
 });

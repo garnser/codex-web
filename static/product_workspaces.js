@@ -349,8 +349,8 @@ async function renderAdministrationRoute(page = "overview") {
   root.hidden = false;
   const main = document.querySelector(":scope > .main") || document.querySelector(".main");
   if (main) main.setAttribute("aria-hidden", "true");
-  const dialog = document.getElementById("product-workspace-dialog");
-  if (dialog?.open) dialog.close();
+  const pageSurface = document.getElementById("product-workspace-page");
+  if (pageSurface) pageSurface.hidden = true;
 
   document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
     button.setAttribute(
@@ -623,20 +623,17 @@ function renderWorkspaceActions(id) {
 }
 
 function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) {
-  const dialog = document.getElementById("product-workspace-dialog");
-  if (!dialog) return false;
+  const pageSurface = document.getElementById("product-workspace-page");
+  if (!pageSurface) return false;
   closeSwitcher();
   setActiveInternal(id, { page, updateLocation });
-  if (!dialog.open) {
-    if (currentProjectRoute()) dialog.show();
-    else dialog.showModal();
-  }
+  pageSurface.hidden = false;
   return true;
 }
 
 function closeInternalWorkspace() {
-  const dialog = document.getElementById("product-workspace-dialog");
-  if (dialog?.open) dialog.close();
+  const pageSurface = document.getElementById("product-workspace-page");
+  if (pageSurface) pageSurface.hidden = true;
 }
 
 function openWorkspace(id, { page = null, updateLocation = true } = {}) {
@@ -846,7 +843,7 @@ function buildSwitcherNav(container) {
 }
 
 function buildShell() {
-  if (document.getElementById("product-workspace-dialog")) return;
+  if (document.getElementById("product-workspace-page")) return;
 
   const administration = document.createElement("main");
   administration.id = "product-administration-root";
@@ -913,30 +910,29 @@ function buildShell() {
     });
   });
 
-  const dialog = document.createElement("dialog");
-  dialog.id = "product-workspace-dialog";
-  dialog.className = "product-workspace-dialog";
-  dialog.setAttribute("aria-labelledby", "product-workspace-dialog-title");
-  dialog.innerHTML = `
+  const pageSurface = document.createElement("main");
+  pageSurface.id = "product-workspace-page";
+  pageSurface.className = "product-workspace-page";
+  pageSurface.hidden = true;
+  pageSurface.setAttribute("aria-labelledby", "product-workspace-page-title");
+  pageSurface.innerHTML = `
     <div class="product-workspace-shell">
       <header class="product-workspace-header">
         <div>
           <small data-project-page-scope>Scope: Project</small>
-          <h2 id="product-workspace-dialog-title" data-product-workspace-title>Overview</h2>
+          <h2 id="product-workspace-page-title" data-product-workspace-title>Overview</h2>
           <p data-product-workspace-description></p>
         </div>
         <div class="product-workspace-header-actions">
           <div data-product-workspace-actions></div>
           <button type="button" class="ghost-button" data-open-workspace-switcher>Switch workspace</button>
-          <button type="button" class="icon-button" data-product-workspace-close aria-label="Close workspace">×</button>
         </div>
       </header>
       <div class="product-workspace-panels" data-product-workspace-panels></div>
     </div>`;
-  document.body.appendChild(dialog);
+  document.body.appendChild(pageSurface);
   buildPanels();
-  dialog.querySelector("[data-product-workspace-close]").addEventListener("click", () => dialog.close());
-  dialog.querySelector("[data-open-workspace-switcher]").addEventListener("click", () => {
+  pageSurface.querySelector("[data-open-workspace-switcher]").addEventListener("click", () => {
     if (!switcher.open) switcher.showModal();
   });
 
@@ -1166,7 +1162,14 @@ function installRouting() {
       if (!workspaceId) return;
       if (document.body) document.body.dataset.projectPage = projectRoute.page;
       applyRoutedShellMode(projectRoute.page);
-      if (workspaceId !== activeWorkspace || projectRoute.page !== activePage) {
+      const workspace = workspaceById(workspaceId);
+      const pageSurface = document.getElementById("product-workspace-page");
+      const needsInitialSurface = workspace.kind === "embedded" && pageSurface?.hidden;
+      if (
+        workspaceId !== activeWorkspace
+        || projectRoute.page !== activePage
+        || needsInitialSurface
+      ) {
         openWorkspace(workspaceId, {
           page: projectRoute.page,
           updateLocation: false,
