@@ -203,3 +203,27 @@ test("row window remains bounded for a representative 1,300 item session", async
   expect(await page.locator(".work-item-row").count()).toBeLessThanOrEqual(60);
   await expect(page.locator(".work-items-window-controls")).toContainText("400 loaded");
 });
+
+
+test("inline Work Items mode mounts in the supplied main-content host", async ({ page }) => {
+  await installCommonRoutes(page);
+  await page.route("**/api/work-items?**", async (route) => {
+    await route.fulfill({ json: { items: [], nextCursor: null, hasMore: false } });
+  });
+
+  await page.goto(fixture);
+  await page.evaluate(() => {
+    const host = document.createElement("main");
+    host.id = "inline-work-items-host";
+    document.body.appendChild(host);
+    window.dispatchEvent(new CustomEvent("codex:open-work-items", {
+      detail: { mode: "inline", host },
+    }));
+  });
+
+  const host = page.locator("#inline-work-items-host");
+  await expect(host.locator(".work-items-shell")).toBeVisible();
+  await expect(host.locator(".work-items-shell")).toHaveAttribute("data-work-items-inline", "true");
+  await expect(host.locator(".work-items-close")).toBeHidden();
+  await expect(page.locator("#work-items-dialog")).not.toBeVisible();
+});
