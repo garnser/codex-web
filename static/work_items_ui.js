@@ -3,7 +3,6 @@ import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
-
 const PAGE_SIZE=50;
 const ROW_WINDOW=60;
 const RUN_PAGE_SIZE=20;
