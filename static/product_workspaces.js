@@ -77,6 +77,7 @@ const PROJECT_NAVIGATION_TREE = [
     ],
   },
   { id: "project-settings", label: "Project Settings", workspace: "setup", page: "project-settings", description: "Topology, readiness and execution defaults." },
+  { id: "configuration", label: "Configuration", workspace: "settings", page: "configuration", description: "Typed configuration, feature rollout, entitlements and secret/key references." },
 ];
 
 const GLOBAL_NAVIGATION = [
@@ -144,6 +145,11 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     purpose: "Configure Project topology, readiness and execution defaults; changes here can affect every future run in this Project.",
     scope: "Project",
   },
+  configuration: {
+    title: "Configuration",
+    purpose: "Inspect and manage canonical typed configuration, effective scopes, rollout policy, entitlements and credential references without falling back to Developer tools.",
+    scope: "Project / workspace configuration",
+  },
   goals: {
     title: "Goals",
     purpose: "Inspect canonical outcomes, decomposition, progress and completion evidence in the selected Project.",
@@ -183,6 +189,7 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   attention: "inbox",
   operations: "operations",
   "project-settings": "setup",
+  configuration: "settings",
   goals: "goals",
   decisions: "decisions",
   metrics: "metrics",
@@ -200,6 +207,7 @@ const WORKSPACE_DEFAULT_PAGE = Object.freeze({
   operations: "operations",
   workers: "operations",
   setup: "project-settings",
+  settings: "configuration",
   goals: "goals",
   decisions: "decisions",
   metrics: "metrics",
