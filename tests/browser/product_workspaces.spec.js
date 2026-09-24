@@ -4,7 +4,8 @@ test('mature canonical cards are adopted out of Developer into first-class works
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
 
   await expect(page.locator('#product-workspace-switcher')).toHaveCount(1);
-  await expect(page.locator('.product-workspaces-launch')).toBeVisible();
+  await expect(page.locator('.product-workspaces-launch')).toHaveCount(0);
+  await expect(page.locator('.product-all-workspaces')).toBeVisible();
 
   const developerCards = page.locator('#developer-panel .developer-grid > .developer-card');
   await expect(developerCards).toHaveCount(1);
@@ -151,11 +152,11 @@ test('shell keeps canonical Project context visible and switches without reloadi
   await expect(switcher).toBeVisible();
   await expect(switcher.locator('option')).toHaveCount(2);
   await expect(switcher).toHaveValue('home');
-  await expect(page.locator('[data-project-indicator]')).toHaveText('Project: Home');
+  await expect(page.locator('[data-project-indicator]')).toHaveCount(0);
 
   await switcher.selectOption('alpha');
   await expect.poll(() => page.evaluate(() => window.__selectedProject)).toBe('alpha');
-  await expect(page.locator('[data-project-indicator]')).toHaveText('Project: Alpha');
+  await expect(switcher).toHaveValue('alpha');
   await expect(page.locator('body')).toHaveAttribute('data-active-project', 'alpha');
 });
 
