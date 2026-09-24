@@ -423,6 +423,67 @@ class IdentityMiddlewareTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200)
 
+    def test_authentication_status_is_sanitized_and_separates_claims_from_authority(self) -> None:
+        self.service.link_external_identity(
+            "local-admin",
+            ExternalAuthenticationResult(
+                provider="oidc",
+                issuer="https://issuer.example.test/private-tenant",
+                subject="sensitive-subject",
+                email="admin@example.test",
+                groups=("platform-admins",),
+                assurance=AuthenticationAssurance.OIDC,
+            ),
+        )
+        credentials = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.MFA,
+        )
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "enforced"}):
+            with TestClient(self._app()) as client:
+                response = client.get(
+                    "/api/identity/authentication-status",
+                    headers={"Authorization": f"Bearer {credentials.session_token}"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["identity_mode"], "enforced")
+        self.assertEqual(payload["current_assurance"], "mfa")
+        self.assertTrue(payload["step_up_active"])
+        self.assertTrue(payload["external_identity"]["configured"])
+        self.assertEqual(
+            payload["external_identity"]["providers"],
+            [{"provider": "oidc", "linked_identity_count": 1}],
+        )
+        self.assertFalse(payload["external_identity"]["claims_grant_authority"])
+        serialized = response.text
+        self.assertNotIn("issuer.example.test", serialized)
+        self.assertNotIn("sensitive-subject", serialized)
+        self.assertNotIn("platform-admins", serialized)
+        self.assertNotIn("admin@example.test", serialized)
+
+    def test_authentication_status_normalizes_unknown_identity_mode_without_echoing_it(self) -> None:
+        credentials = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.MFA,
+        )
+        with patch.dict(
+            os.environ,
+            {"CODEX_WEB_IDENTITY_MODE": "super-secret-custom-mode"},
+        ):
+            with TestClient(self._app()) as client:
+                response = client.get(
+                    "/api/identity/authentication-status",
+                    headers={"Authorization": f"Bearer {credentials.session_token}"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["identity_mode"], "enforced")
+        self.assertNotIn("super-secret-custom-mode", response.text)
+
     def test_admin_can_update_and_revoke_membership_through_canonical_api(self) -> None:
         human = self.service.create_human_identity(
             display_name="API User",

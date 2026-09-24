@@ -192,6 +192,98 @@ def build_identity_router(service: IdentityService) -> APIRouter:
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    @router.get("/api/identity/authentication-status")
+    async def authentication_status(request: Request) -> dict[str, Any]:
+        try:
+            actor = require_sensitive_admin(request)
+            state = service.state()
+            configured_mode = (
+                os.environ.get("CODEX_WEB_IDENTITY_MODE") or "local-trusted"
+            ).strip().lower()
+            effective_mode = (
+                "local-trusted"
+                if configured_mode == "local-trusted"
+                else "enforced"
+            )
+
+            provider_counts: dict[str, int] = {}
+            linked_identity_ids: set[str] = set()
+            for human in state.humans:
+                if human.disabled_at is not None:
+                    continue
+                for link in human.external_links:
+                    provider = str(link.provider or "").strip()
+                    if not provider:
+                        continue
+                    provider_counts[provider] = provider_counts.get(provider, 0) + 1
+                    linked_identity_ids.add(human.id)
+
+            recovery_counts: dict[str, int] = {}
+            active_recovery_factors = 0
+            for factor in state.recovery_factors:
+                if factor.disabled_at is not None:
+                    continue
+                active_recovery_factors += 1
+                provider = str(factor.provider or "").strip()
+                if provider:
+                    recovery_counts[provider] = recovery_counts.get(provider, 0) + 1
+
+            active_sessions = sum(
+                1
+                for item in state.sessions
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.revoked_at is None
+            )
+            active_service_tokens = sum(
+                1
+                for item in state.service_tokens
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+                and item.revoked_at is None
+            )
+
+            return {
+                "organization_id": actor.organization_id,
+                "workspace_id": actor.workspace_id,
+                "identity_mode": effective_mode,
+                "current_assurance": actor.assurance.value,
+                "step_up_active": actor.assurance
+                in {
+                    AuthenticationAssurance.MFA,
+                    AuthenticationAssurance.LOCAL_TRUSTED,
+                },
+                "session_authentication_supported": True,
+                "service_token_authentication_supported": True,
+                "external_identity": {
+                    "configured": bool(provider_counts),
+                    "providers": [
+                        {
+                            "provider": provider,
+                            "linked_identity_count": provider_counts[provider],
+                        }
+                        for provider in sorted(provider_counts)
+                    ],
+                    "linked_identity_count": len(linked_identity_ids),
+                    "claims_grant_authority": False,
+                },
+                "recovery": {
+                    "configured": active_recovery_factors > 0,
+                    "active_factor_count": active_recovery_factors,
+                    "providers": [
+                        {
+                            "provider": provider,
+                            "active_factor_count": recovery_counts[provider],
+                        }
+                        for provider in sorted(recovery_counts)
+                    ],
+                },
+                "active_session_count": active_sessions,
+                "active_service_token_count": active_service_tokens,
+            }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
     @router.post("/api/identity/organizations")
     async def create_organization(payload: OrganizationCreate, request: Request) -> dict[str, Any]:
         try:
