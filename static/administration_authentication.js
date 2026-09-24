@@ -174,7 +174,7 @@ export function renderAdministrationAuthentication(container, {
 
     <section>
       <h3>Authentication mechanisms</h3>
-      <p>Configuration and status below come from the canonical identity boundary. External SSO/OIDC claims establish identity only; they never become codex-web authorization implicitly.</p>
+      <p>Configuration and status below come from the canonical identity boundary. External identity claims do not grant codex-web authorization by themselves; SSO/OIDC claims establish identity only and authorization remains separately canonical and scoped.</p>
       <div class="workspace-state workspace-state-loading" data-auth-status role="status">
         Loading canonical authentication status…
       </div>
@@ -207,7 +207,7 @@ export function renderAdministrationAuthentication(container, {
     }
   };
 
-  void loadAuthenticationStatus();
+  queueMicrotask(() => { void loadAuthenticationStatus(); });
 
   const setMessage = (value, kind = "info") => {
     message.hidden = !value;
