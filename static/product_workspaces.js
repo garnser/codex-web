@@ -27,14 +27,14 @@ const WORKSPACES = [
 
 
 const PROJECT_NAVIGATION_TREE = [
-  { id: "overview", label: "Overview", workspace: "overview", page: "overview" },
+  { id: "overview", label: "Overview", workspace: "overview", page: "overview", description: "Status and next actions for this Project." },
   {
     id: "work-group",
     label: "Work",
     children: [
-      { id: "work-items", label: "Work Items", workspace: "work", page: "work-items" },
-      { id: "runs", label: "Runs / Execution", workspace: "work", page: "runs" },
-      { id: "chat", label: "Chat / Threads", workspace: "threads", page: "chat" },
+      { id: "work-items", label: "Work Items", workspace: "work", page: "work-items", description: "Canonical tasks, blockers and ownership." },
+      { id: "runs", label: "Runs / Execution", workspace: "work", page: "runs", description: "What executed, where, and with what result." },
+      { id: "chat", label: "Chat / Threads", workspace: "threads", page: "chat", description: "Interactive agent work in this Project." },
       { id: "goals", label: "Goals", workspace: "goals" },
       { id: "decisions", label: "Decisions", workspace: "decisions" },
     ],
@@ -43,35 +43,83 @@ const PROJECT_NAVIGATION_TREE = [
     id: "agents-group",
     label: "Agents",
     children: [
-      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agents" },
-      { id: "teams", label: "Teams / Squads", workspace: "agents", page: "agents" },
-      { id: "skills", label: "Skills", workspace: "skills" },
+      { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agents", description: "Stable agent identity and execution preferences." },
+      { id: "teams", label: "Teams / Squads", workspace: "agents", page: "agents", description: "Bounded delegation between agent profiles." },
+      { id: "skills", label: "Skills", workspace: "skills", description: "Versioned reusable procedures pinned to runs." },
     ],
   },
   {
     id: "automation-group",
     label: "Automation",
     children: [
-      { id: "automations", label: "Automations", workspace: "autonomy", page: "automations" },
-      { id: "integrations", label: "Integrations / Extensions", workspace: "integrations" },
+      { id: "automations", label: "Automations", workspace: "autonomy", page: "automations", description: "Scheduled and event-driven governed work." },
+      { id: "integrations", label: "Integrations / Extensions", workspace: "integrations", description: "External inputs, actions and extension capabilities." },
     ],
   },
-  { id: "attention", label: "Attention", workspace: "inbox", page: "attention" },
+  { id: "attention", label: "Attention", workspace: "inbox", page: "attention", description: "Human decisions and remediation only." },
   {
     id: "operations-group",
     label: "Operations",
     children: [
-      { id: "runtime", label: "Runtimes / Workers", workspace: "workers" },
-      { id: "providers", label: "Providers", workspace: "operations", page: "operations" },
-      { id: "incidents", label: "Incidents / Failures", workspace: "operations", page: "operations" },
+      { id: "runtime", label: "Runtimes / Workers", workspace: "workers", description: "Where executions run and their capabilities." },
+      { id: "providers", label: "Providers", workspace: "operations", page: "operations", description: "Model/action provider availability and health." },
+      { id: "incidents", label: "Incidents / Failures", workspace: "operations", page: "operations", description: "Operational failures and canonical remediation." },
     ],
   },
-  { id: "project-settings", label: "Project Settings", workspace: "setup", page: "project-settings" },
+  { id: "project-settings", label: "Project Settings", workspace: "setup", page: "project-settings", description: "Topology, readiness and execution defaults." },
 ];
 
 const GLOBAL_NAVIGATION = [
   { id: "administration", label: "Administration", workspace: "organization" },
 ];
+
+const PROJECT_PAGE_PRESENTATION = Object.freeze({
+  overview: {
+    title: "Overview",
+    purpose: "See the selected Project's current work, attention needs and execution health before choosing where to act.",
+    scope: "Project",
+  },
+  "work-items": {
+    title: "Work Items",
+    purpose: "Plan, inspect and advance canonical units of work; execution history and blockers remain attached to each item.",
+    scope: "Project",
+  },
+  runs: {
+    title: "Runs / Execution",
+    purpose: "Inspect what agents and workers actually executed, including routing, repository scope, evidence and outcomes.",
+    scope: "Project execution",
+  },
+  chat: {
+    title: "Chat / Threads",
+    purpose: "Work interactively with an agent inside the selected Project; repository and execution policy still apply to every turn.",
+    scope: "Project",
+  },
+  agents: {
+    title: "Agents",
+    purpose: "Manage reusable agent identities, teams and skills independently from the provider or runtime that executes them.",
+    scope: "Project",
+  },
+  automations: {
+    title: "Automations",
+    purpose: "Define governed scheduled or event-driven work with explicit authority, budgets, retries and execution targets.",
+    scope: "Project",
+  },
+  attention: {
+    title: "Attention",
+    purpose: "Handle the small set of approvals, decisions and remediations that genuinely require a person.",
+    scope: "Project and assigned work",
+  },
+  operations: {
+    title: "Operations",
+    purpose: "Understand runtime, worker and provider health, failures and remediation without reading raw operational state.",
+    scope: "Organization / workspace runtime",
+  },
+  "project-settings": {
+    title: "Project Settings",
+    purpose: "Configure Project topology, readiness and execution defaults; changes here can affect every future run in this Project.",
+    scope: "Project",
+  },
+});
 
 const PROJECT_PAGE_WORKSPACES = Object.freeze({
   overview: "overview",
@@ -365,10 +413,13 @@ function setActiveInternal(id, { updateLocation = true, page = null } = {}) {
   });
   syncNavigationState(id, activePage);
   const item = workspaceById(id);
+  const presentation = PROJECT_PAGE_PRESENTATION[activePage];
   const title = document.querySelector("[data-product-workspace-title]");
   const description = document.querySelector("[data-product-workspace-description]");
-  if (title) title.textContent = item.label;
-  if (description) description.textContent = item.description;
+  const scope = document.querySelector("[data-project-page-scope]");
+  if (title) title.textContent = presentation?.title || item.label;
+  if (description) description.textContent = presentation?.purpose || item.description;
+  if (scope) scope.textContent = presentation?.scope ? `Scope: ${presentation.scope}` : "";
   renderWorkspaceActions(id);
   refreshWorkspaceCards(id);
   if (id === "overview") {
@@ -541,7 +592,16 @@ function navigationLeaf(item) {
   button.dataset.projectNavNode = item.id;
   button.dataset.productWorkspaceNav = item.workspace;
   if (item.page) button.dataset.projectPage = item.page;
-  button.textContent = item.label;
+  const label = document.createElement("strong");
+  label.textContent = item.label;
+  button.appendChild(label);
+  if (item.description) {
+    const help = document.createElement("small");
+    help.className = "product-project-nav-help";
+    help.textContent = item.description;
+    button.appendChild(help);
+  }
+  button.title = item.description || item.label;
   button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
   return button;
 }
@@ -626,6 +686,7 @@ function buildShell() {
       <select id="product-project-switcher" aria-label="Current Project">
         <option value="">Loading projects…</option>
       </select>
+      <small class="product-field-help">Sets the Project scope for navigation, work, repository targets and new executions.</small>
     `;
     brand.insertAdjacentElement("afterend", projectContext);
 
@@ -680,7 +741,7 @@ function buildShell() {
     <div class="product-workspace-shell">
       <header class="product-workspace-header">
         <div>
-          <small>Workspace</small>
+          <small data-project-page-scope>Scope: Project</small>
           <h2 id="product-workspace-dialog-title" data-product-workspace-title>Overview</h2>
           <p data-product-workspace-description></p>
         </div>
