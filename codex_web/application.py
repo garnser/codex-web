@@ -1152,6 +1152,7 @@ automation_outcome_reconciliation_service = AutomationOutcomeReconciliationServi
     automation_run_service,
     execution_worker_service,
     attention=attention_service,
+    scheduler=scheduler_service,
 )
 app.state.automation_outcome_reconciliation_service = (
     automation_outcome_reconciliation_service
