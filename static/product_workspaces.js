@@ -1011,7 +1011,7 @@ function buildShell() {
     all.className = "ghost-button product-all-workspaces";
     all.dataset.workspaceSwitcherLaunch = "true";
     all.textContent = "All workspaces";
-    navigation.appendChild(all);
+    navigation.prepend(all);
     projectContext.insertAdjacentElement("afterend", navigation);
   }
 
