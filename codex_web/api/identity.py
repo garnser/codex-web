@@ -11,6 +11,7 @@ from codex_web.identity import (
     Membership,
     MembershipCreate,
     MembershipRole,
+    MembershipUpdate,
     OrganizationCreate,
     PrincipalKind,
     ServiceIdentityCreate,
@@ -249,6 +250,36 @@ def build_identity_router(service: IdentityService) -> APIRouter:
                 team_ids=payload.team_ids,
             )
             return service.add_membership(membership).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.patch("/api/identity/memberships/{membership_id}")
+    async def update_membership(
+        membership_id: str,
+        payload: MembershipUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = require_sensitive_admin(request)
+            return service.update_membership(
+                membership_id,
+                payload,
+                actor=actor,
+            ).model_dump(mode="json")
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.delete("/api/identity/memberships/{membership_id}")
+    async def revoke_membership(
+        membership_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = require_sensitive_admin(request)
+            return service.revoke_membership(
+                membership_id,
+                actor=actor,
+            ).model_dump(mode="json")
         except IdentityError as exc:
             raise identity_http_error(exc) from exc
 

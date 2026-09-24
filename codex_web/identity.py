@@ -129,7 +129,10 @@ class Membership(BaseModel):
     roles: list[MembershipRole] = Field(default_factory=lambda: [MembershipRole.MEMBER])
     team_ids: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
+    updated_at: float | None = None
+    updated_by: str | None = None
     revoked_at: float | None = None
+    revoked_by: str | None = None
 
     @model_validator(mode="after")
     def normalize_roles(self) -> "Membership":
@@ -319,6 +322,20 @@ class MembershipCreate(BaseModel):
     workspace_id: str | None = None
     roles: list[MembershipRole] = Field(default_factory=lambda: [MembershipRole.MEMBER])
     team_ids: list[str] = Field(default_factory=list)
+
+
+class MembershipUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    roles: list[MembershipRole] | None = None
+    team_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "MembershipUpdate":
+        if self.roles is None and self.team_ids is None:
+            raise ValueError("membership update requires roles or team_ids")
+        if self.roles is not None and not self.roles:
+            raise ValueError("membership requires at least one role")
+        return self
 
 
 class SessionCreate(BaseModel):
