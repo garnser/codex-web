@@ -2,6 +2,7 @@ import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
+import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
 
 const PAGE_SIZE = 50;
 const ROW_WINDOW = 60;
@@ -19,8 +20,6 @@ const state = {
   hasMore: false,
   windowStart: 0,
   pageError: '',
-  search: '',
-  searchTimer: null,
   listGeneration: 0,
   listController: null,
   detailPayload: null,
@@ -165,17 +164,10 @@ function ensureShell() {
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
-  dialog.querySelector('.work-items-search').addEventListener('input', (event) => {
-    state.search = event.target.value || '';
-    if (state.searchTimer) clearTimeout(state.searchTimer);
-    state.searchTimer = setTimeout(() => {
-      state.searchTimer = null;
-      state.selectedRef = '';
-      resetPaging();
-      loadItems({ reset: true }).catch((error) => {
-        setStatus(error.message || 'Failed to search Work Items', true);
-      });
-    }, 200);
+  installWorkItemSearch(dialog, () => {
+    state.selectedRef = '';
+    resetPaging();
+    void loadItems({ reset: true });
   });
   dialog.querySelector('.work-items-project').addEventListener('change', async (event) => {
     state.projectId = event.target.value;
@@ -517,7 +509,7 @@ async function loadItems({ reset = false } = {}) {
     project_id: state.projectId,
     limit: String(PAGE_SIZE),
   });
-  if (state.search.trim()) query.set('q', state.search.trim());
+  applyWorkItemSearch(query);
   if (!reset && state.nextCursor) query.set('cursor', state.nextCursor);
 
   try {
