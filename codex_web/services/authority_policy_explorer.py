@@ -231,6 +231,91 @@ class AuthorityPolicyExplorerService:
         }
 
     @staticmethod
+    def _resource_value(value: Any) -> str:
+        return str(getattr(value, "value", value))
+
+    @classmethod
+    def _permission_applies_to_resource(
+        cls,
+        row: dict[str, Any],
+        resource: Any,
+    ) -> bool:
+        grant_resource_ids = set(row.get("resource_ids") or ())
+        if grant_resource_ids and resource.id not in grant_resource_ids:
+            return False
+
+        grant_resource_types = {
+            cls._resource_value(value)
+            for value in (row.get("resource_types") or ())
+        }
+        if grant_resource_types and cls._resource_value(resource.resource_type) not in grant_resource_types:
+            return False
+
+        grant_resource_risks = {
+            cls._resource_value(value)
+            for value in (row.get("resource_risks") or ())
+        }
+        if grant_resource_risks and cls._resource_value(resource.risk) not in grant_resource_risks:
+            return False
+
+        grant_resource_sensitivities = {
+            cls._resource_value(value)
+            for value in (row.get("resource_sensitivities") or ())
+        }
+        if (
+            grant_resource_sensitivities
+            and cls._resource_value(resource.sensitivity)
+            not in grant_resource_sensitivities
+        ):
+            return False
+        return True
+
+    def effective_for_resource(
+        self,
+        *,
+        actor: AuthenticationActor,
+        resource: Any,
+        project_id: str | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Project the canonical effective authority relevant to one Resource.
+
+        This is an explanatory read model, not an authorization decision for a
+        specific action. Capability/level, environment, budget and approval
+        requirements remain visible on the returned grants and are still
+        evaluated by AuthorityRoleService when an action is attempted.
+        """
+        result = self.effective(
+            actor=actor,
+            project_id=project_id,
+            now=now,
+        )
+        rows = [
+            row
+            for row in result["permission_matrix"]
+            if self._permission_applies_to_resource(row, resource)
+        ]
+        source_ids = {
+            str(row["source_id"])
+            for row in rows
+            if row.get("source_id")
+        }
+        return {
+            **result,
+            "resource": {
+                "id": resource.id,
+                "name": resource.name,
+                "resource_type": self._resource_value(resource.resource_type),
+            },
+            "assignments": [
+                item
+                for item in result["assignments"]
+                if str(item.get("source_id") or "") in source_ids
+            ],
+            "permission_matrix": rows,
+        }
+
+    @staticmethod
     def _changed_ids(old_items, new_items) -> set[str]:
         old = {item.id: item.model_dump(mode="json") for item in old_items}
         new = {item.id: item.model_dump(mode="json") for item in new_items}
