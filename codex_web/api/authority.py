@@ -145,6 +145,118 @@ def build_authority_router(
                 raise _error(exc) from exc
             raise
 
+    @router.get("/api/authority/access-subjects")
+    async def access_subjects(
+        request: Request,
+        project_id: str | None = None,
+        resource_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            if limit < 1 or limit > 200:
+                raise ValueError("limit must be between 1 and 200")
+            if offset < 0:
+                raise ValueError("offset must be non-negative")
+            effective_project = work_item_project(actor, None, project_id)
+
+            resource = None
+            if resource_id is not None:
+                if authority.resources is None:
+                    raise ValueError("canonical Resource Catalog is unavailable")
+                resource = authority.resources.get(resource_id, actor)
+
+            state = identity.state()
+            active_memberships = {
+                item.identity_id
+                for item in state.memberships
+                if item.principal_kind.value == "human"
+                and item.organization_id == actor.organization_id
+                and item.workspace_id in {None, actor.workspace_id}
+                and item.revoked_at is None
+            }
+            humans = sorted(
+                (
+                    item
+                    for item in state.humans
+                    if item.id in active_memberships
+                    and item.disabled_at is None
+                ),
+                key=lambda item: (item.display_name.lower(), item.id),
+            )
+
+            rows: list[dict[str, Any]] = []
+            for human in humans:
+                target = identity.actor_for_identity(
+                    human.id,
+                    scope=actor.tenant,
+                )
+                effective = (
+                    explorer.effective_for_resource(
+                        actor=target,
+                        project_id=effective_project,
+                        resource=resource,
+                    )
+                    if resource is not None
+                    else explorer.effective(
+                        actor=target,
+                        project_id=effective_project,
+                    )
+                )
+                if not effective["permission_matrix"]:
+                    continue
+                rows.append(
+                    {
+                        "identity": {
+                            "id": human.id,
+                            "display_name": human.display_name,
+                            "email": human.email,
+                        },
+                        "assignments": effective["assignments"],
+                        "permission_matrix": effective["permission_matrix"],
+                    }
+                )
+
+            page = rows[offset : offset + limit]
+            return {
+                "organization_id": actor.organization_id,
+                "workspace_id": actor.workspace_id,
+                "project_id": effective_project,
+                "resource": (
+                    {
+                        "id": resource.id,
+                        "name": resource.name,
+                        "resource_type": getattr(
+                            resource.resource_type,
+                            "value",
+                            resource.resource_type,
+                        ),
+                    }
+                    if resource is not None
+                    else None
+                ),
+                "items": page,
+                "count": len(page),
+                "total": len(rows),
+                "offset": offset,
+                "limit": limit,
+            }
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    DefinitionError,
+                    IdentityError,
+                    AuthorizationError,
+                    ProjectNotFoundError,
+                    LookupError,
+                    ValueError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
     @router.get("/api/authority/impact/{record_id}")
     async def impact(record_id: str, request: Request) -> dict[str, Any]:
         try:
