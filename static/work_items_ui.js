@@ -149,23 +149,19 @@ function ensureShell() {
     if (contextProject) state.projectId = contextProject;
 
     const inlineHost = event.detail?.mode === 'inline' && event.detail?.host instanceof HTMLElement
-      ? event.detail.host
-      : null;
-    if (inlineHost && shell) {
+      ? event.detail.host : null;
+    if (inlineHost) {
       if (dialog.open) dialog.close();
-      if (shell.parentElement !== inlineHost) inlineHost.appendChild(shell);
-      shell.hidden = false;
+      if (shell.parentElement !== inlineHost) inlineHost.append(shell);
       shell.dataset.workItemsInline = 'true';
-      if (closeButton) closeButton.hidden = true;
+      closeButton.hidden = true;
     } else {
-      if (shell && shell.parentElement !== dialog) dialog.appendChild(shell);
-      if (shell) {
-        shell.hidden = false;
-        delete shell.dataset.workItemsInline;
-      }
-      if (closeButton) closeButton.hidden = false;
+      if (shell.parentElement !== dialog) dialog.append(shell);
+      delete shell.dataset.workItemsInline;
+      closeButton.hidden = false;
       if (!dialog.open) dialog.showModal();
     }
+    shell.hidden = false;
     await refreshAll();
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
