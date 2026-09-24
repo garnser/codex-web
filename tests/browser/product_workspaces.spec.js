@@ -376,3 +376,34 @@ test('global Administration entry is hidden when canonical identity denies admin
   await page.goto('http://127.0.0.1:18766/projects/home/overview');
   await expect(page.locator('[data-project-nav-node="administration"]')).toBeHidden();
 });
+
+
+test('Agent Profiles and Teams preserve Project and reverse-proxy prefix', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.route('**/codex/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+
+  await page.goto('http://127.0.0.1:18766/codex/projects/home/agent-profiles');
+  await expect(page).toHaveURL(/\/codex\/projects\/home\/agent-profiles$/);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agent Profiles');
+  await expect(page.locator('[data-project-nav-node="agent-profiles"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-project-nav-node="teams"]')).toHaveAttribute('aria-current', 'false');
+
+  await page.locator('[data-project-nav-node="teams"]').click();
+  await expect(page).toHaveURL(/\/codex\/projects\/home\/teams$/);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Teams / Squads');
+  await expect(page.locator('[data-project-nav-node="teams"]')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-project-nav-node="agent-profiles"]')).toHaveAttribute('aria-current', 'false');
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/codex\/projects\/home\/teams$/);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Teams / Squads');
+
+  await page.goto('http://127.0.0.1:18766/codex/projects/home/agent-profiles');
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agent Profiles');
+});
