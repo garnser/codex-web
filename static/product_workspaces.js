@@ -404,6 +404,15 @@ function adoptCard(card) {
   return true;
 }
 
+function relocateLegacyControlSource() {
+  const developer = document.getElementById("developer-panel");
+  if (!developer || developer.dataset.productCompatibilitySource === "true") return;
+  developer.dataset.productCompatibilitySource = "true";
+  developer.hidden = true;
+  developer.setAttribute("aria-hidden", "true");
+  document.body.appendChild(developer);
+}
+
 function adoptAll(root = document) {
   root.querySelectorAll?.(".developer-card").forEach(adoptCard);
 }
@@ -1007,6 +1016,7 @@ function installRouting() {
 
 function install() {
   buildShell();
+  relocateLegacyControlSource();
   adoptAll(document);
   updateEmptyStates();
   installObservers();
