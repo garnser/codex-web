@@ -141,10 +141,31 @@ function ensureShell() {
     </div>`;
   document.body.appendChild(dialog);
 
-  window.addEventListener('codex:open-work-items', async () => {
+  const shell = dialog.querySelector('.work-items-shell');
+  const closeButton = dialog.querySelector('.work-items-close');
+
+  window.addEventListener('codex:open-work-items', async (event) => {
     const contextProject = currentProjectContext();
     if (contextProject) state.projectId = contextProject;
-    if (!dialog.open) dialog.showModal();
+
+    const inlineHost = event.detail?.mode === 'inline' && event.detail?.host instanceof HTMLElement
+      ? event.detail.host
+      : null;
+    if (inlineHost && shell) {
+      if (dialog.open) dialog.close();
+      if (shell.parentElement !== inlineHost) inlineHost.appendChild(shell);
+      shell.hidden = false;
+      shell.dataset.workItemsInline = 'true';
+      if (closeButton) closeButton.hidden = true;
+    } else {
+      if (shell && shell.parentElement !== dialog) dialog.appendChild(shell);
+      if (shell) {
+        shell.hidden = false;
+        delete shell.dataset.workItemsInline;
+      }
+      if (closeButton) closeButton.hidden = false;
+      if (!dialog.open) dialog.showModal();
+    }
     await refreshAll();
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
