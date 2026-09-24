@@ -412,7 +412,10 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("refreshGeneration", app)
         self.assertIn("generation!==state.refreshGeneration", app)
         self.assertIn("projectId!==state.projectId", app)
-        self.assertIn("signal:controller.signal", app)
+        self.assertIn("loadProjectUiStateForRefresh", app)
+        self.assertIn("signal: controller.signal", loader)
+        self.assertIn("generation !== state.refreshGeneration", loader)
+        self.assertIn("projectId !== state.projectId", loader)
         self.assertIn("signal = null", loader)
         self.assertIn("{ signal }", loader)
 
