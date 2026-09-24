@@ -427,18 +427,25 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.turns.calls, [])
 
-    async def test_team_target_requires_canonical_work_item(self) -> None:
+    async def test_team_target_without_work_item_queues_governed_creation(self) -> None:
         run = self._publish_and_admit(target_kind="team")
 
-        blocked = await self.service.launch(
+        waiting = await self.service.launch(
             run.id,
             organization_id="local",
             workspace_id="default",
         )
 
-        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
-        self.assertIn("canonical Work Item", blocked.block_reason)
+        self.assertEqual(
+            waiting.status,
+            AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+        )
+        self.assertEqual(
+            waiting.work_item_action_intent_id,
+            "action-intent-work-item-1",
+        )
         self.assertEqual(self.teams.calls, [])
+        self.assertEqual(len(self.action_intents.calls), 1)
 
 
 if __name__ == "__main__":
