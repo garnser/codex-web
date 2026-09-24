@@ -1,5 +1,12 @@
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
 import { renderHomeOverview } from "./home_overview.js";
+import {
+  administrationPath,
+  administrationPresentation,
+  currentAdministrationRoute,
+  loadAdministrationContext,
+  renderAdministrationNavigation,
+} from "./administration_shell.js";
 
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
@@ -70,7 +77,12 @@ const PROJECT_NAVIGATION_TREE = [
 ];
 
 const GLOBAL_NAVIGATION = [
-  { id: "administration", label: "Administration", workspace: "organization" },
+  {
+    id: "administration",
+    label: "Administration",
+    administrationPage: "overview",
+    description: "Organization-wide users, authentication, access and security administration.",
+  },
 ];
 
 const PROJECT_PAGE_PRESENTATION = Object.freeze({
@@ -284,6 +296,115 @@ function currentProjectRoute() {
   };
 }
 
+async function administrationApi(path) {
+  const route = currentAdministrationRoute();
+  const prefix = route?.prefix
+    ?? currentProjectRoute()?.prefix
+    ?? (window.location.pathname.startsWith("/codex") ? "/codex" : "");
+  const response = await fetch(`${prefix}${path}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    let detail = null;
+    try {
+      const payload = await response.json();
+      detail = payload?.detail || payload?.message || null;
+    } catch {
+      detail = null;
+    }
+    const error = new Error(detail || `Request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function administrationRoot() {
+  return document.getElementById("product-administration-root");
+}
+
+function setAdministrationLocation(page = "overview", { replace = false } = {}) {
+  const current = currentAdministrationRoute();
+  const prefix = current?.prefix
+    ?? currentProjectRoute()?.prefix
+    ?? (window.location.pathname.startsWith("/codex") ? "/codex" : "");
+  const url = new URL(window.location.href);
+  url.pathname = administrationPath(page, { prefix });
+  url.search = "";
+  url.hash = "";
+  const state = { ...history.state, administrationPage: page };
+  if (replace) history.replaceState(state, "", url);
+  else history.pushState(state, "", url);
+  void renderAdministrationRoute(page);
+}
+
+async function renderAdministrationRoute(page = "overview") {
+  const root = administrationRoot();
+  if (!root) return;
+  document.body.classList.add("product-administration-page");
+  document.body.classList.remove("product-routed-project-page", "product-chat-page");
+  document.body.dataset.administrationPage = page;
+  delete document.body.dataset.projectPage;
+  root.hidden = false;
+  const main = document.querySelector(":scope > .main") || document.querySelector(".main");
+  if (main) main.setAttribute("aria-hidden", "true");
+  const dialog = document.getElementById("product-workspace-dialog");
+  if (dialog?.open) dialog.close();
+
+  document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
+    button.setAttribute(
+      "aria-current",
+      button.dataset.projectNavNode === "administration" ? "page" : "false",
+    );
+  });
+
+  root.innerHTML = `
+    <div class="workspace-state workspace-state-loading" role="status">
+      Loading Administration…
+    </div>
+  `;
+  try {
+    const context = await loadAdministrationContext(administrationApi);
+    renderAdministrationNavigation(root, {
+      page,
+      context,
+      onNavigate: (nextPage) => setAdministrationLocation(nextPage),
+    });
+    if (context.allowed) {
+      const presentation = administrationPresentation(page);
+      const stateHost = root.querySelector("[data-administration-page-state]");
+      if (stateHost) {
+        stateHost.className = "workspace-state product-administration-page-placeholder";
+        stateHost.innerHTML = `
+          <strong>${esc(presentation.title)}</strong>
+          <p>${esc(presentation.purpose)}</p>
+          <small>Administration navigation and canonical scope are active. Domain-specific management is provided by the corresponding Administration child surface.</small>
+        `;
+      }
+    }
+  } catch (error) {
+    root.innerHTML = `
+      <section class="product-administration-shell">
+        <div class="workspace-state workspace-state-error" role="alert">
+          <strong>Administration unavailable</strong>
+          <p>${esc(error?.message || "Unable to load canonical Administration context.")}</p>
+        </div>
+      </section>
+    `;
+  }
+}
+
+function leaveAdministrationMode() {
+  document.body.classList.remove("product-administration-page");
+  delete document.body.dataset.administrationPage;
+  const root = administrationRoot();
+  if (root) {
+    root.hidden = true;
+    root.innerHTML = "";
+  }
+}
+
 function legacyStaticRoutingContext() {
   return (
     window.location.pathname.includes("/tests/")
@@ -323,6 +444,7 @@ function setWorkspaceLocation(id, page = null, { replace = false } = {}) {
 
 function applyRoutedShellMode(page) {
   if (!document.body || !page) return;
+  leaveAdministrationMode();
   document.body.dataset.projectPage = page;
   document.body.classList.add("product-routed-project-page");
   document.body.classList.toggle("product-chat-page", page === "chat");
@@ -635,8 +757,9 @@ function navigationLeaf(item) {
   button.type = "button";
   button.className = "product-project-nav-leaf";
   button.dataset.projectNavNode = item.id;
-  button.dataset.productWorkspaceNav = item.workspace;
+  if (item.workspace) button.dataset.productWorkspaceNav = item.workspace;
   if (item.page) button.dataset.projectPage = item.page;
+  if (item.administrationPage) button.dataset.administrationPage = item.administrationPage;
   const label = document.createElement("strong");
   label.textContent = item.label;
   button.appendChild(label);
@@ -647,7 +770,11 @@ function navigationLeaf(item) {
     button.appendChild(help);
   }
   button.title = item.description || item.label;
-  button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
+  if (item.administrationPage) {
+    button.addEventListener("click", () => setAdministrationLocation(item.administrationPage));
+  } else {
+    button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
+  }
   return button;
 }
 
@@ -720,6 +847,13 @@ function buildSwitcherNav(container) {
 
 function buildShell() {
   if (document.getElementById("product-workspace-dialog")) return;
+
+  const administration = document.createElement("main");
+  administration.id = "product-administration-root";
+  administration.className = "product-administration-root";
+  administration.hidden = true;
+  administration.setAttribute("aria-label", "Administration");
+  document.body.appendChild(administration);
 
   const sidebar = document.querySelector(".sidebar");
   const brand = sidebar?.querySelector(".brand");
@@ -898,7 +1032,7 @@ function setProjectContextUnavailable({ projectId = "", projects = [] } = {}) {
   }
   document.body.classList.add("project-context-unavailable");
   document.body.dataset.activeProject = "";
-  document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
+  document.querySelectorAll(".product-project-nav-tree [data-project-nav-node]").forEach((button) => {
     button.disabled = true;
   });
 }
@@ -910,7 +1044,7 @@ function clearProjectContextUnavailable() {
     status.hidden = true;
     status.textContent = "";
   }
-  document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
+  document.querySelectorAll(".product-project-nav-tree [data-project-nav-node]").forEach((button) => {
     button.disabled = false;
   });
 }
@@ -1004,8 +1138,28 @@ function installKeyboard() {
   });
 }
 
+async function syncAdministrationEntryVisibility() {
+  if (legacyStaticRoutingContext()) return;
+  const entry = document.querySelector('[data-project-nav-node="administration"]');
+  if (!entry) return;
+  try {
+    const context = await loadAdministrationContext(administrationApi);
+    entry.hidden = !context.allowed;
+    entry.disabled = !context.allowed;
+  } catch {
+    entry.hidden = true;
+    entry.disabled = true;
+  }
+}
+
 function installRouting() {
   const route = () => {
+    const administrationRoute = currentAdministrationRoute();
+    if (administrationRoute) {
+      void renderAdministrationRoute(administrationRoute.page);
+      return;
+    }
+
     const projectRoute = currentProjectRoute();
     if (projectRoute) {
       const workspaceId = PROJECT_PAGE_WORKSPACES[projectRoute.page];
@@ -1043,6 +1197,7 @@ function install() {
   installObservers();
   installKeyboard();
   installRouting();
+  void syncAdministrationEntryVisibility();
 
   window.CodexProductUI = Object.freeze({
     openWorkspace,

@@ -185,7 +185,7 @@ test('project navigation is hierarchical, keeps active state, and separates Admi
 
   const global = page.locator('.product-global-nav');
   await expect(global).toHaveAttribute('aria-label', 'Global navigation');
-  await expect(global.locator('[data-project-nav-node="administration"]')).toHaveText('Administration');
+  await expect(global.locator('[data-project-nav-node="administration"] strong')).toHaveText('Administration');
   await expect(tree.locator('[data-project-nav-node="administration"]')).toHaveCount(0);
 });
 
@@ -242,4 +242,137 @@ test('routed pages use page-specific purpose text for shared workspace surfaces'
   await expect(dialog.locator('[data-project-page-scope]')).toHaveText('Scope: Project execution');
   await expect(page.locator('[data-project-nav-node="runs"]')).toHaveAttribute('aria-current', 'page');
   await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveAttribute('aria-current', 'false');
+});
+
+
+test('Administration global navigation opens the dedicated routed shell with canonical scope', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.route('**/administration/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-admin',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        organizations: [{ id: 'org-a', name: 'Organization A' }],
+        workspaces: [{ id: 'workspace-a', organization_id: 'org-a', name: 'Workspace A' }],
+        humans: [],
+        memberships: [],
+      }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/administration/access');
+
+  await expect(page.locator('body')).toHaveClass(/product-administration-page/);
+  await expect(page.locator('#product-administration-root')).toBeVisible();
+  await expect(page.locator('[data-administration-title]')).toHaveText('Access');
+  await expect(page.locator('.product-administration-scope')).toContainText('org-a');
+  await expect(page.locator('.product-administration-scope')).toContainText('workspace-a');
+  await expect(page.locator('.product-project-nav-tree')).toBeVisible();
+  await expect(page.locator('[data-project-nav-node="overview"]')).toHaveAttribute('aria-current', 'false');
+  await expect(page.locator('[data-project-nav-node="administration"]')).toHaveAttribute('aria-current', 'page');
+
+  await page.locator('[data-administration-page="authentication"]').click();
+  await expect(page).toHaveURL(/\/administration\/authentication$/);
+  await expect(page.locator('[data-administration-title]')).toHaveText('Authentication');
+  await expect(page.locator('button[data-administration-page="authentication"]')).toHaveAttribute('aria-current', 'page');
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/administration\/access$/);
+  await expect(page.locator('[data-administration-title]')).toHaveText('Access');
+});
+
+test('Administration shell remains within the viewport at phone width', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.route('**/administration/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-admin',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        organizations: [{ id: 'org-a', name: 'Organization A' }],
+        workspaces: [{ id: 'workspace-a', organization_id: 'org-a', name: 'Workspace A' }],
+        humans: [],
+        memberships: [],
+      }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/administration/overview');
+  const root = page.locator('#product-administration-root');
+  await expect(root).toBeVisible();
+  const box = await root.boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await expect(page.locator('.product-administration-layout')).toHaveCSS('grid-template-columns', /390px|370px|[0-9.]+px/);
+  await page.locator('[data-administration-page="users"]').focus();
+  await expect(page.locator('[data-administration-page="users"]')).toBeFocused();
+});
+
+
+test('global Administration entry is hidden when canonical identity denies admin access', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-user',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'administrator required' }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+  await expect(page.locator('[data-project-nav-node="administration"]')).toBeHidden();
 });
