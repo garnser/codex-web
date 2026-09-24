@@ -200,6 +200,8 @@ button:active {
 .sidebar {
   position: relative;
   z-index: 30;
+  width: 100%;
+  max-width: var(--sidebar-width);
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--line);
