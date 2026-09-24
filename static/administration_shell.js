@@ -65,3 +65,83 @@ export async function loadAdministrationContext(api) {
     };
   }
 }
+
+
+export const ADMINISTRATION_NAVIGATION = Object.freeze([
+  { page: "overview", label: "Overview", description: "Administrative scope, identity and security status." },
+  { page: "users", label: "Users", description: "Human identities in the active organization/workspace." },
+  { page: "memberships", label: "Memberships & Roles", description: "Direct memberships and scoped canonical roles." },
+  { page: "access", label: "Access", description: "Project and repository access, including inheritance and effective scope." },
+  { page: "authentication", label: "Authentication", description: "Sessions, service tokens and supported authentication policy." },
+  { page: "organization-settings", label: "Organization Settings", description: "Supported organization/workspace settings." },
+]);
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+export function administrationPresentation(page = "overview") {
+  return ADMINISTRATION_PAGES[page] || ADMINISTRATION_PAGES.overview;
+}
+
+export function renderAdministrationNavigation(container, {
+  page = "overview",
+  context = null,
+  onNavigate = null,
+} = {}) {
+  if (!container) return;
+  const presentation = administrationPresentation(page);
+  const organizationId = context?.organizationId || "";
+  const workspaceId = context?.workspaceId || "";
+  const denied = Boolean(context?.denied);
+  container.innerHTML = `
+    <section class="product-administration-shell" data-administration-shell>
+      <header class="product-administration-header">
+        <div>
+          <small data-administration-scope>Organization / Workspace</small>
+          <h2 data-administration-title>${escapeHtml(presentation.title)}</h2>
+          <p data-administration-purpose>${escapeHtml(presentation.purpose)}</p>
+        </div>
+        <div class="product-administration-scope" aria-label="Administrative scope">
+          <strong>${escapeHtml(organizationId || "Unknown organization")}</strong>
+          <span>${escapeHtml(workspaceId || "Unknown workspace")}</span>
+        </div>
+      </header>
+      <div class="product-administration-layout">
+        <nav class="product-administration-nav" aria-label="Administration navigation">
+          ${ADMINISTRATION_NAVIGATION.map((item) => `
+            <button
+              type="button"
+              data-administration-page="${escapeHtml(item.page)}"
+              aria-current="${item.page === page ? "page" : "false"}"
+              ${denied ? "disabled" : ""}
+            >
+              <strong>${escapeHtml(item.label)}</strong>
+              <small>${escapeHtml(item.description)}</small>
+            </button>
+          `).join("")}
+        </nav>
+        <main class="product-administration-content" data-administration-content>
+          ${denied ? `
+            <div class="workspace-state workspace-state-denied" role="alert" data-administration-denied>
+              <strong>Administration access denied</strong>
+              <p>${escapeHtml(context?.reason || "The canonical identity service denied administrative access.")}</p>
+            </div>
+          ` : `
+            <div class="workspace-state workspace-state-loading" role="status" data-administration-page-state>
+              Loading ${escapeHtml(presentation.title)}…
+            </div>
+          `}
+        </main>
+      </div>
+    </section>
+  `;
+  if (denied || typeof onNavigate !== "function") return;
+  container.querySelectorAll("[data-administration-page]").forEach((button) => {
+    button.addEventListener("click", () => onNavigate(button.dataset.administrationPage));
+  });
+}
