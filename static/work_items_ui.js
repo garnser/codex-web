@@ -214,7 +214,7 @@ async function refreshAll() {
     if (contextProject && state.projects.some((project) => project.id === contextProject)) {
       state.projectId = contextProject;
     } else if (!state.projectId || !state.projects.some((project) => project.id === state.projectId)) {
-      state.projectId = '';
+      state.projectId = state.projects.length === 1 ? state.projects[0].id : '';
     }
     if (state.projectId) persistWorkItemProject(state.projectId);
     renderProjectSelect();
