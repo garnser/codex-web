@@ -13,15 +13,15 @@ import {
 
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
-  { id: "inbox", label: "Attention", group: "Home", kind: "launcher", selector: "[data-attention-launch]", description: "Canonical human-intervention queue." },
+  { id: "inbox", label: "Attention", group: "Home", kind: "launcher", selector: "[data-attention-launch]", dialogSelector: ".attention-dialog", description: "Canonical human-intervention queue." },
   { id: "projects", label: "Projects", group: "Home", kind: "focus", selector: "#projects", description: "Project selection and creation." },
-  { id: "setup", label: "Project Setup / Readiness", group: "Home", kind: "launcher", selector: "#project-setup-launch", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
+  { id: "setup", label: "Project Setup / Readiness", group: "Home", kind: "launcher", selector: "#project-setup-launch", dialogSelector: "#project-setup-dialog", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
   { id: "threads", label: "Threads", group: "Work", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
   { id: "work", label: "Work", group: "Work", kind: "embedded", description: "Canonical work graph and execution continuity." },
-  { id: "goals", label: "Goals", group: "Work", kind: "launcher", selector: "#goals-button", description: "Outcome definitions and progress." },
-  { id: "decisions", label: "Decisions", group: "Work", kind: "launcher", selector: "#decisions-button", description: "Canonical decisions and provenance." },
-  { id: "metrics", label: "Metrics / KPIs", group: "Work", kind: "launcher", selector: "#metrics-button", description: "Versioned measurements, observations and snapshots." },
-  { id: "company", label: "Company Operations", group: "Work", kind: "launcher", selector: "#company-operations-button", description: "Governed business entities, facts and operating KPIs." },
+  { id: "goals", label: "Goals", group: "Work", kind: "launcher", selector: "#goals-button", dialogSelector: "#goals-dialog", description: "Outcome definitions and progress." },
+  { id: "decisions", label: "Decisions", group: "Work", kind: "launcher", selector: "#decisions-button", dialogSelector: "#decisions-dialog", description: "Canonical decisions and provenance." },
+  { id: "metrics", label: "Metrics / KPIs", group: "Work", kind: "launcher", selector: "#metrics-button", dialogSelector: "#metrics-dialog", description: "Versioned measurements, observations and snapshots." },
+  { id: "company", label: "Company Operations", group: "Work", kind: "launcher", selector: "#company-operations-button", dialogSelector: "#company-operations-dialog", description: "Governed business entities, facts and operating KPIs." },
   { id: "agents", label: "Team / Agents", group: "Team", kind: "embedded", description: "Agent identities, provider/runtime/session state and team execution context." },
   { id: "skills", label: "Skills", group: "Team", kind: "embedded", description: "Reusable versioned procedures, exact Agent Profile pins and execution provenance." },
   { id: "autonomy", label: "Automation / Autonomy", group: "Automation", kind: "embedded", description: "Autonomy controls, orchestration, ActionIntents and explainability." },
@@ -32,7 +32,7 @@ const WORKSPACES = [
   { id: "resources", label: "Resources", group: "Organization", kind: "embedded", description: "Canonical resources and relationships." },
   { id: "definitions", label: "Definitions / Contracts", group: "Organization", kind: "embedded", description: "Definition lifecycle, exact revisions, compatibility and usage." },
   { id: "settings", label: "Settings / Security", group: "Organization", kind: "embedded", description: "Configuration, entitlements, secret references, keys and trust diagnostics." },
-  { id: "memory", label: "Memory", group: "Organization", kind: "launcher", selector: "#memory-button", description: "Governed organizational memory and retrieval." },
+  { id: "memory", label: "Memory", group: "Organization", kind: "launcher", selector: "#memory-button", dialogSelector: "#memory-dialog", description: "Governed organizational memory and retrieval." },
 ];
 
 
@@ -134,6 +134,31 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     purpose: "Configure Project topology, readiness and execution defaults; changes here can affect every future run in this Project.",
     scope: "Project",
   },
+  goals: {
+    title: "Goals",
+    purpose: "Inspect canonical outcomes, decomposition, progress and completion evidence in the selected Project.",
+    scope: "Project",
+  },
+  decisions: {
+    title: "Decisions",
+    purpose: "Inspect durable decisions, supporting evidence, provenance and approval state without leaving the Project workspace.",
+    scope: "Project",
+  },
+  metrics: {
+    title: "Metrics / KPIs",
+    purpose: "Explore canonical metric definitions and observations with freshness, aggregation and provenance.",
+    scope: "Project",
+  },
+  company: {
+    title: "Company Operations",
+    purpose: "Inspect governed business entities, synchronized facts, operating KPIs and explainable actions.",
+    scope: "Project and organization",
+  },
+  memory: {
+    title: "Memory",
+    purpose: "Browse governed organizational knowledge and bounded retrieval runs that can influence agent reasoning.",
+    scope: "Organization / workspace",
+  },
 });
 
 const PROJECT_PAGE_WORKSPACES = Object.freeze({
@@ -146,6 +171,11 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   attention: "inbox",
   operations: "operations",
   "project-settings": "setup",
+  goals: "goals",
+  decisions: "decisions",
+  metrics: "metrics",
+  company: "company",
+  memory: "memory",
 });
 
 const WORKSPACE_DEFAULT_PAGE = Object.freeze({
@@ -158,6 +188,11 @@ const WORKSPACE_DEFAULT_PAGE = Object.freeze({
   operations: "operations",
   workers: "operations",
   setup: "project-settings",
+  goals: "goals",
+  decisions: "decisions",
+  metrics: "metrics",
+  company: "company",
+  memory: "memory",
 });
 
 const CARD_RULES = [
@@ -661,6 +696,33 @@ function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) 
   return true;
 }
 
+function mountLauncherWorkspace(item, { page = null, updateLocation = true } = {}) {
+  const pageSurface = document.getElementById("product-workspace-page");
+  const host = workspaceHost(item.id);
+  const launcher = document.querySelector(item.selector);
+  const dialog = item.dialogSelector ? document.querySelector(item.dialogSelector) : null;
+  if (!pageSurface || !host || !launcher || !(dialog instanceof HTMLDialogElement)) {
+    return false;
+  }
+
+  closeSwitcher();
+  setActiveInternal(item.id, { page, updateLocation });
+  pageSurface.hidden = false;
+
+  // Reuse each domain's canonical loader/event wiring. The legacy launcher may
+  // open a modal; immediately convert that same dialog into a non-modal,
+  // routed page surface so no duplicate UI-owned state is introduced.
+  if (dialog.open) dialog.close();
+  launcher.click();
+  if (dialog.open) dialog.close();
+  if (dialog.parentElement !== host) host.appendChild(dialog);
+  dialog.classList.add("product-section-dialog");
+  dialog.dataset.productSection = item.id;
+  dialog.show();
+  updateEmptyStates();
+  return true;
+}
+
 function closeInternalWorkspace() {
   const pageSurface = document.getElementById("product-workspace-page");
   if (pageSurface) pageSurface.hidden = true;
@@ -675,6 +737,9 @@ function openWorkspace(id, { page = null, updateLocation = true } = {}) {
     applyRoutedShellMode(resolvedPage);
   }
   if (item.kind === "launcher") {
+    if (item.dialogSelector) {
+      return mountLauncherWorkspace(item, { page: resolvedPage, updateLocation });
+    }
     closeInternalWorkspace();
     activeWorkspace = item.id;
     syncNavigationState(item.id, resolvedPage);
@@ -738,7 +803,7 @@ function overviewMarkup() {
 function buildPanels() {
   const root = document.querySelector("[data-product-workspace-panels]");
   if (!root) return;
-  for (const workspace of WORKSPACES.filter((item) => item.kind === "embedded")) {
+  for (const workspace of WORKSPACES.filter((item) => item.kind !== "focus")) {
     const panel = document.createElement("section");
     panel.className = "product-workspace-panel";
     panel.dataset.productWorkspacePanel = workspace.id;
@@ -1194,7 +1259,7 @@ function installRouting() {
       applyRoutedShellMode(projectRoute.page);
       const workspace = workspaceById(workspaceId);
       const pageSurface = document.getElementById("product-workspace-page");
-      const needsInitialSurface = workspace.kind === "embedded" && pageSurface?.hidden;
+      const needsInitialSurface = workspace.kind !== "focus" && pageSurface?.hidden;
       if (
         workspaceId !== activeWorkspace
         || projectRoute.page !== activePage
