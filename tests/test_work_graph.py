@@ -216,6 +216,34 @@ class WorkGraphServiceTests(unittest.TestCase):
         ):
             self.add("A", "E")
 
+    def test_large_snapshot_loads_items_and_edges_once(self) -> None:
+        self.items = {
+            f"N{index:04d}": item(f"N{index:04d}")
+            for index in range(500)
+        }
+        item_loads = 0
+        edge_loads = 0
+        original_load = self.store.load
+
+        def load_items():
+            nonlocal item_loads
+            item_loads += 1
+            return self.items
+
+        def load_edges():
+            nonlocal edge_loads
+            edge_loads += 1
+            return original_load()
+
+        service = WorkGraphService(self.store, load_items)
+        self.store.load = load_edges
+
+        graph = service.snapshot("project-a", scope=self.scope)
+
+        self.assertEqual(graph.progress.total, 500)
+        self.assertEqual(item_loads, 1)
+        self.assertEqual(edge_loads, 1)
+
     def test_deep_dependency_chain_uses_iterative_critical_path(self) -> None:
         refs = tuple(f"N{index:04d}" for index in range(1200))
         edges = tuple(
