@@ -259,3 +259,110 @@ body.product-administration-page [data-project-nav-node="administration"] {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Administration: canonical human users and direct membership authority */
+.administration-users-surface {
+  display: grid;
+  gap: 14px;
+}
+.administration-users-toolbar,
+.administration-user-card > header,
+.administration-membership-row > header,
+.administration-human-groups > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.administration-users-toolbar p,
+.administration-user-card p,
+.administration-human-groups p {
+  margin: 3px 0 0;
+  color: var(--muted);
+}
+.administration-users-toolbar label {
+  display: grid;
+  gap: 4px;
+  min-width: min(320px, 100%);
+}
+.administration-user-list {
+  display: grid;
+  gap: 12px;
+}
+.administration-user-card,
+.administration-human-groups {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.administration-user-card h3,
+.administration-human-groups h3,
+.administration-user-memberships h4 {
+  margin: 0;
+}
+.administration-user-memberships {
+  display: grid;
+  gap: 8px;
+}
+.administration-membership-row {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.administration-membership-row label {
+  display: grid;
+  gap: 4px;
+}
+.administration-membership-row select {
+  min-height: 112px;
+}
+.administration-membership-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.administration-role-help {
+  display: grid;
+  gap: 3px;
+}
+.administration-role-help p {
+  margin: 0;
+  font-size: 11px;
+}
+.administration-users-message {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.administration-users-message[data-kind="error"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.administration-users-message[data-kind="success"] {
+  border-color: var(--accent-line);
+}
+.administration-human-groups > article {
+  display: grid;
+  gap: 3px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 760px) {
+  .administration-users-toolbar,
+  .administration-user-card > header,
+  .administration-membership-row > header,
+  .administration-human-groups > header {
+    flex-direction: column;
+  }
+  .administration-users-toolbar label {
+    width: 100%;
+  }
+}
