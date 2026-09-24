@@ -718,7 +718,8 @@ class WorkItemService:
         owner: str | None,
         stage: str | None,
         release_gate: bool | None,
-        revision: float | None,
+        query: str | None = None,
+        revision: float | None = None,
     ) -> str:
         payload = {
             "after": after,
@@ -726,6 +727,7 @@ class WorkItemService:
             "owner": str(owner or "").strip(),
             "stage": str(stage or "").strip(),
             "releaseGate": release_gate,
+            "query": str(query or "").strip().casefold(),
             "revision": revision,
         }
         raw = json.dumps(
@@ -743,6 +745,7 @@ class WorkItemService:
         owner: str | None,
         stage: str | None,
         release_gate: bool | None,
+        query: str | None = None,
     ) -> dict[str, Any]:
         from fastapi import HTTPException
 
@@ -763,12 +766,14 @@ class WorkItemService:
             "owner": str(owner or "").strip(),
             "stage": str(stage or "").strip(),
             "releaseGate": release_gate,
+            "query": str(query or "").strip().casefold(),
         }
         actual = {
             "projectId": str(payload.get("projectId") or ""),
             "owner": str(payload.get("owner") or "").strip(),
             "stage": str(payload.get("stage") or "").strip(),
             "releaseGate": payload.get("releaseGate"),
+            "query": str(payload.get("query") or "").strip().casefold(),
         }
         if not payload.get("after") or actual != expected:
             raise HTTPException(
@@ -811,6 +816,7 @@ class WorkItemService:
         owner: str | None,
         stage: str | None,
         release_gate: bool | None,
+        q: str | None = None,
         scope: TenantScope | None = None,
         limit: int | None = None,
         cursor: str | None = None,
@@ -840,6 +846,7 @@ class WorkItemService:
             if stage
             else None
         )
+        normalized_query = str(q or "").strip().casefold()
         cursor_payload = (
             self._decode_list_cursor(
                 cursor,
@@ -847,6 +854,7 @@ class WorkItemService:
                 owner=normalized_owner,
                 stage=normalized_stage,
                 release_gate=release_gate,
+                query=normalized_query,
             )
             if cursor
             else None
@@ -898,6 +906,20 @@ class WorkItemService:
             )
 
         def predicate(state: Any) -> bool:
+            if normalized_query:
+                searchable = " ".join(
+                    str(value or "")
+                    for value in (
+                        state.ref,
+                        state.title,
+                        state.current_owner,
+                        state.next_owner,
+                        state.next_action,
+                        state.status_label,
+                    )
+                ).casefold()
+                if normalized_query not in searchable:
+                    return False
             if normalized_owner:
                 candidate = self.state_machine._coerce_owner(
                     state.current_owner or state.next_owner
@@ -940,6 +962,7 @@ class WorkItemService:
                 owner=normalized_owner,
                 stage=normalized_stage,
                 release_gate=release_gate,
+                query=normalized_query,
                 revision=current_revision,
             )
             if next_after
@@ -955,6 +978,8 @@ class WorkItemService:
             "hasMore": bool(next_cursor),
             "scanTruncated": bool(scan_truncated),
             "revision": current_revision,
+            "query": normalized_query,
+            "sort": "updated_desc",
         }
 
     async def _sync_from_gitlab_async(

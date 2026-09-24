@@ -2,13 +2,12 @@ import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
 import { observeRender } from './frontend_perf.js';
-
+import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
 const PAGE_SIZE = 50;
 const ROW_WINDOW = 60;
 const RUN_PAGE_SIZE = 20;
-const WORK_ITEM_PROJECT_KEY = 'codex-web-work-item-project';
-
-const state = {
+const WORK_ITEM_PROJECT_KEY='codex-web-work-item-project';
+const state={
   projects: [],
   catalog: { items: [], sync: {} },
   projectId: '',
@@ -25,76 +24,24 @@ const state = {
   runs: { active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false },
   runRefreshTimer: null,
 };
-
-const esc = (value) => String(value ?? '')
+const esc=(value)=> String(value ?? '')
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;');
-
-function pathRef(ref) {
-  return String(ref || '').split('/').map((part) => encodeURIComponent(part)).join('/');
-}
-
-function fmtTime(value) {
-  if (!value) return '—';
-  const date = new Date(Number(value) * 1000);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
-}
-
-function routedProjectContext() {
-  const match = window.location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
-  if (!match) return '';
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return match[1];
-  }
-}
-
-function currentProjectContext() {
-  const query = new URLSearchParams(window.location.search);
-  return (
-    document.body?.dataset.activeProject
-    || document.body?.dataset.projectId
-    || routedProjectContext()
-    || query.get('project')
-    || query.get('work_item_project')
-    || sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)
-    || ''
-  );
-}
-
-function persistWorkItemProject(projectId) {
-  if (!projectId) return;
-  sessionStorage.setItem(WORK_ITEM_PROJECT_KEY, projectId);
-  if (document.body?.dataset.activeProject || routedProjectContext()) return;
-  const url = new URL(window.location.href);
-  url.searchParams.set('work_item_project', projectId);
-  history.replaceState({ ...history.state, workItemProjectId: projectId }, '', url);
-}
-
-function resetPaging() {
-  state.listController?.abort();
-  state.listController = null;
-  state.listGeneration += 1;
-  state.items = [];
-  state.nextCursor = null;
-  state.hasMore = false;
-  state.windowStart = 0;
-  state.pageError = '';
-}
-
-
+function pathRef(ref){return String(ref||'').split('/').map(encodeURIComponent).join('/')}
+function fmtTime(value){if(!value)return'—';const d=new Date(Number(value)*1000);return Number.isNaN(d.getTime())?String(value):d.toLocaleString()}
+function routedProjectContext(){const m=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!m)return'';try{return decodeURIComponent(m[1])}catch{return m[1]}}
+function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
+function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
+function resetPaging(){state.listController?.abort();state.listController=null;state.listGeneration+=1;state.items=[];state.nextCursor=null;state.hasMore=false;state.windowStart=0;state.pageError=''}
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
-
   const link = document.createElement('link');
   link.rel = 'stylesheet';
   link.href = 'static/work_items_ui.css';
   document.head.appendChild(link);
-
   const dialog = document.createElement('dialog');
   dialog.id = 'work-items-dialog';
   dialog.className = 'work-items-dialog';
@@ -110,6 +57,7 @@ function ensureShell() {
       </header>
       <div class="work-items-toolbar">
         <label>Project <select class="work-items-project"></select></label>
+        <label>Search <input class="work-items-search" type="search" placeholder="Search Work Items" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
         <span class="work-items-status" role="status" aria-live="polite"></span>
@@ -153,7 +101,6 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
-
   window.addEventListener('codex:open-work-items', async () => {
     const contextProject = currentProjectContext();
     if (contextProject) state.projectId = contextProject;
@@ -162,6 +109,11 @@ function ensureShell() {
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
+  installWorkItemSearch(dialog, () => {
+    state.selectedRef = '';
+    resetPaging();
+    void loadItems({ reset: true });
+  });
   dialog.querySelector('.work-items-project').addEventListener('change', async (event) => {
     state.projectId = event.target.value;
     state.selectedRef = '';
@@ -177,14 +129,12 @@ function ensureShell() {
   dialog.querySelector('.work-source-clear').addEventListener('click', clearSource);
   dialog.querySelector('.work-items-sync').addEventListener('click', syncSource);
 }
-
 function setStatus(message, isError = false) {
   const target = document.querySelector('.work-items-status');
   if (!target) return;
   target.textContent = message || '';
   target.classList.toggle('error', Boolean(isError));
 }
-
 function workItemLoadError(error) {
   const code = String(error?.detail?.code || '').toLowerCase();
   const message = error?.message || 'Failed to load Work Items';
@@ -198,7 +148,6 @@ function workItemLoadError(error) {
   }
   return message;
 }
-
 async function refreshAll() {
   setStatus('Loading…');
   try {
@@ -225,7 +174,6 @@ async function refreshAll() {
     setStatus(error.message || 'Failed to load operator state', true);
   }
 }
-
 function renderProjectSelect() {
   const select = document.querySelector('.work-items-project');
   if (!select) return;
@@ -236,11 +184,9 @@ function renderProjectSelect() {
     )),
   ].join('');
 }
-
 function selectedProject() {
   return state.projects.find((project) => project.id === state.projectId) || null;
 }
-
 function catalogEntry(sourceType) {
   const entries = Array.isArray(state.catalog?.items) ? state.catalog.items : [];
   return entries.find((entry) => entry.project_id === state.projectId && entry.source_type === sourceType)
@@ -248,7 +194,6 @@ function catalogEntry(sourceType) {
     || entries.find((entry) => entry.source_type === sourceType)
     || null;
 }
-
 function renderSecretOptions(selectedId = '') {
   const select = document.querySelector('.work-source-secret');
   if (!select) return;
@@ -265,7 +210,6 @@ function renderSecretOptions(selectedId = '') {
     ...options.map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? 'selected' : ''}>${esc(item.label)}${item.status ? ` (${esc(item.status)})` : ''}</option>`),
   ].join('');
 }
-
 function renderProviderFields(sourceType, config = null) {
   const normalized = String(sourceType || '').toLowerCase();
   const wrapper = document.querySelector('.work-source-provider-fields');
@@ -283,7 +227,6 @@ function renderProviderFields(sourceType, config = null) {
   if (tableRow) tableRow.hidden = !isServiceNow;
   if (activeRow) activeRow.hidden = !isServiceNow;
   if (closedRow) closedRow.hidden = !isServiceNow;
-
   renderSecretOptions(config?.credential_secret_id || '');
   if (isJira) {
     document.querySelector('.work-source-jira-username').value = config?.provider_settings?.username || '';
@@ -296,7 +239,6 @@ function renderProviderFields(sourceType, config = null) {
     document.querySelector('.work-source-servicenow-closed').value = mapping.closed || '';
   }
 }
-
 function renderSourceConfig() {
   const project = selectedProject();
   const config = project?.authoritative_task_source || null;
@@ -329,7 +271,6 @@ function renderSourceConfig() {
     sync.last_error ? `Last error: ${sync.last_error}` : '',
   ].filter(Boolean).join(' · ');
 }
-
 async function saveSource() {
   if (!state.projectId) return;
   const source_type = document.querySelector('.work-source-type').value.trim();
@@ -373,7 +314,6 @@ async function saveSource() {
     setStatus(error.message || 'Failed to save source', true);
   }
 }
-
 async function clearSource() {
   if (!state.projectId) return;
   setStatus('Clearing source…');
@@ -385,7 +325,6 @@ async function clearSource() {
     setStatus(error.message || 'Failed to clear source', true);
   }
 }
-
 async function syncSource() {
   if (!state.projectId) return;
   setStatus('Reconciling authoritative source…');
@@ -400,7 +339,6 @@ async function syncSource() {
     setStatus(error.message || 'Source sync failed', true);
   }
 }
-
 function renderItemList() {
   const startedAt = performance.now();
   const list = document.querySelector('.work-items-list');
@@ -422,7 +360,6 @@ function renderItemList() {
     list.innerHTML = '<p class="work-item-empty">No canonical work items for this project.</p>';
     return;
   }
-
   const maxStart = Math.max(0, state.items.length - ROW_WINDOW);
   state.windowStart = Math.min(Math.max(0, state.windowStart), maxStart);
   const visible = state.items.slice(
@@ -438,14 +375,12 @@ function renderItemList() {
       <button type="button" class="ghost-button work-items-window-next" ${last >= state.items.length ? 'disabled' : ''}>Next rows</button>
       <button type="button" class="ghost-button work-items-load-more" ${state.hasMore ? '' : 'disabled'}>${state.pageError ? 'Retry next page' : (state.hasMore ? 'Load more' : 'All loaded')}</button>
     </div>`;
-
   list.innerHTML = visible.map((item) => `
     <button type="button" class="work-item-row ${item.ref === state.selectedRef ? 'selected' : ''}" data-ref="${esc(item.ref)}">
       <strong>${esc(item.title || item.ref)}</strong>
       <span>${esc(item.current_stage)} · ${esc(item.current_owner || item.next_owner || 'unowned')}</span>
       ${item.routingError ? `<small class="work-item-warning">${esc(item.routingError)}</small>` : ''}
     </button>`).join('') + controls;
-
   list.querySelectorAll('.work-item-row').forEach((row) => row.addEventListener('click', async () => {
     state.selectedRef = row.dataset.ref;
     renderItemList();
@@ -474,7 +409,6 @@ function renderItemList() {
     nodes: list.querySelectorAll('.work-item-row').length,
   });
 }
-
 async function loadItems({ reset = false } = {}) {
   const list = document.querySelector('.work-items-list');
   const detail = document.querySelector('.work-item-detail');
@@ -490,20 +424,18 @@ async function loadItems({ reset = false } = {}) {
     renderItemList();
     return;
   }
-
   const generation = state.listGeneration;
   const controller = new AbortController();
   state.listController?.abort();
   state.listController = controller;
   state.pageError = '';
   setStatus(state.items.length ? 'Loading more Work Items…' : 'Loading Work Items…');
-
   const query = new URLSearchParams({
     project_id: state.projectId,
     limit: String(PAGE_SIZE),
   });
+  applyWorkItemSearch(query);
   if (!reset && state.nextCursor) query.set('cursor', state.nextCursor);
-
   try {
     const payload = await request(`/api/work-items?${query}`, {
       signal: controller.signal,
@@ -518,7 +450,6 @@ async function loadItems({ reset = false } = {}) {
     state.nextCursor = payload?.nextCursor || null;
     state.hasMore = Boolean(payload?.hasMore && state.nextCursor);
     state.pageError = '';
-
     if (!state.items.some((item) => item.ref === state.selectedRef)) {
       state.selectedRef = state.items[0]?.ref || '';
     }
@@ -543,12 +474,8 @@ async function loadItems({ reset = false } = {}) {
     if (state.listController === controller) state.listController = null;
   }
 }
-
-
 function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
-
 const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize: RUN_PAGE_SIZE });
-
 async function loadDetail(ref) {
   const detail = document.querySelector('.work-item-detail');
   if (!detail) return;
@@ -573,7 +500,6 @@ async function loadDetail(ref) {
     detail.innerHTML = `<div class="work-item-error">${esc(error.message || 'Failed to load work item')}</div>`;
   }
 }
-
 function renderDetail(payload) {
   const detail = document.querySelector('.work-item-detail');
   const item = payload.item || {};
@@ -591,7 +517,6 @@ function renderDetail(payload) {
   const identity = external.identity || {};
   const config = external.configuration || {};
   const policy = payload.execution_policy || {};
-
   detail.innerHTML = `
     <section class="work-item-title">
       <div><small>${esc(item.ref)}</small><h3>${esc(item.title || item.ref)}</h3></div>
@@ -692,12 +617,10 @@ function renderDetail(payload) {
           <small>${esc(event.reason || '')} ${esc(fmtTime(event.created_at))}</small>
         </div>`).join('') : '<small>No work-item events recorded.</small>'}</div>
     </section>`;
-
   detail.querySelector('.work-item-retry')?.addEventListener('click', () => runItemAction('retry'));
   detail.querySelector('.work-item-reconcile')?.addEventListener('click', () => runItemAction('reconcile'));
   runUi.wireRunTimeline();
 }
-
 async function runItemAction(action) {
   if (!state.selectedRef) return;
   setStatus(`${action === 'retry' ? 'Retrying' : 'Reconciling'} work item…`);
@@ -713,7 +636,6 @@ async function runItemAction(action) {
     setStatus(error.message || `${action} failed`, true);
   }
 }
-
 window.addEventListener('codex:work-item-run-updated', (event) => {
   const ref = String(event.detail?.workItemRef || '');
   const dialog = document.querySelector('#work-items-dialog');
@@ -726,7 +648,6 @@ window.addEventListener('codex:work-item-run-updated', (event) => {
     });
   }, 80);
 });
-
 window.addEventListener('codex:project-changed', async (event) => {
   const projectId = String(event.detail?.projectId || '').trim();
   if (!projectId || projectId === state.projectId) return;
@@ -740,5 +661,4 @@ window.addEventListener('codex:project-changed', async (event) => {
     await loadItems({ reset: true });
   }
 });
-
 ensureShell();
