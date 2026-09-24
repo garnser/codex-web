@@ -1,3 +1,6 @@
+body.product-administration-page > .main{display:none}
+.product-administration-page-host{grid-column:2;grid-row:1;min-width:0;height:100vh;overflow:auto;padding:16px}
+.product-administration-page-host>.product-administration-shell{min-height:calc(100vh - 32px);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .product-administration-shell{display:grid;min-height:min(72vh,720px);background:var(--surface);color:var(--text)}
 .product-administration-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px;border-bottom:1px solid var(--line)}
 .product-administration-header h2{margin:3px 0 0}
