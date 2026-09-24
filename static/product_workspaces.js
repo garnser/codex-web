@@ -191,9 +191,6 @@ const CARD_RULES = [
 ];
 
 const DIRECT_ACTIONS = {
-  work: [
-    { label: "Work Items", event: "codex:open-work-items" },
-  ],
   organization: [
     { label: "Executive roles", selector: "#executive-management-button" },
   ],
