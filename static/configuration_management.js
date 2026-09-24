@@ -106,22 +106,31 @@
       )).join("");
     }
     const button = document.getElementById("create-configuration-draft");
-    if (button) button.disabled = !scope || !canManage(scope);
+    if (button) button.disabled = !scope || !canManage(scope) || selectedSpec()?.editable === false;
   }
 
   function valueEditor(spec) {
     if (!spec) return "<small>No registered configuration spec selected.</small>";
+    if (!spec.editable) {
+      return '<small>This setting is intentionally read-only in the product UI. Its schema metadata identifies it, but values must be changed through the owning external/canonical workflow.</small>';
+    }
     const kind = spec.value_kind;
+    const min = spec.minimum ?? "";
+    const max = spec.maximum ?? "";
+    const bounds = `${min !== "" ? ` min="${escapeHtml(min)}"` : ""}${max !== "" ? ` max="${escapeHtml(max)}"` : ""}`;
     if (kind === "boolean") {
       return '<label>Value <input id="configuration-draft-value" type="checkbox" /></label>';
     }
     if (kind === "integer") {
-      return '<label>Value <input id="configuration-draft-value" type="number" step="1" /></label>';
+      return `<label>Value <input id="configuration-draft-value" type="number" step="1"${bounds} /></label>`;
     }
     if (kind === "number") {
-      return '<label>Value <input id="configuration-draft-value" type="number" step="any" /></label>';
+      return `<label>Value <input id="configuration-draft-value" type="number" step="any"${bounds} /></label>`;
     }
     if (kind === "string") {
+      if (spec.allowed_values?.length) {
+        return `<label>Value <select id="configuration-draft-value">${spec.allowed_values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></label>`;
+      }
       return '<label>Value <input id="configuration-draft-value" /></label>';
     }
     if (kind === "string_list") {
@@ -218,6 +227,7 @@
   async function createDraft() {
     const spec = selectedSpec();
     if (!spec) return setStatus("Choose a registered configuration key.");
+    if (!spec.editable) return setStatus("The selected setting is read-only in the product UI.");
     const scope = document.getElementById("configuration-draft-scope")?.value || "";
     const target = scopeId(scope);
     if (!["deployment", "global"].includes(scope) && !target) {
