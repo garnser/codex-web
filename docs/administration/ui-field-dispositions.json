@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "dispositions": {
+    "code_owned_read_only": "Schema/invariant metadata is code-owned and exposed read-only.",
+    "immutable_identity": "Immutable/version identity is displayed but changed only by creating a new canonical revision.",
+    "managed_revision": "Field is managed through the resource's canonical create/update/version workflow.",
+    "managed_attachment": "Reference/membership field is managed through canonical attach/detach or update workflow.",
+    "lifecycle": "Lifecycle state is managed only by canonical publish/disable/archive/restore/rollback operations.",
+    "provenance_read_only": "Actor/time/reason or revision-link provenance is read-only in product UI."
+  },
+  "models": {
+    "ConfigurationSpec": {
+      "module": "codex_web.configuration",
+      "groups": {
+        "code_owned_read_only": [
+          "key",
+          "value_kind",
+          "default",
+          "required",
+          "allowed_scopes",
+          "description",
+          "hot_reloadable",
+          "startup_only",
+          "feature_flag",
+          "kill_switch_capable",
+          "grants_authority"
+        ]
+      }
+    },
+    "ConfigurationRecord": {
+      "module": "codex_web.configuration",
+      "groups": {
+        "immutable_identity": [
+          "schema_version",
+          "id",
+          "key",
+          "scope_type",
+          "scope_id",
+          "revision"
+        ],
+        "lifecycle": [
+          "state",
+          "supersedes_id",
+          "superseded_by_id",
+          "rollback_of_id"
+        ],
+        "managed_revision": [
+          "value",
+          "feature_targeting",
+          "force_disabled"
+        ],
+        "provenance_read_only": [
+          "created_by",
+          "create_reason",
+          "created_at",
+          "published_by",
+          "publish_reason",
+          "published_at"
+        ]
+      }
+    },
+    "AgentProfileRevision": {
+      "module": "codex_web.agent_profiles",
+      "groups": {
+        "immutable_identity": [
+          "record_id",
+          "profile_id",
+          "revision",
+          "organization_id",
+          "workspace_id"
+        ],
+        "managed_revision": [
+          "name",
+          "avatar_ref",
+          "description",
+          "owner_identity_id",
+          "role_id",
+          "role_definition_ref",
+          "instructions_ref",
+          "access",
+          "authority_role_id",
+          "authority_definition_ref",
+          "runtime_policy",
+          "model_policy",
+          "execution_profile_id",
+          "sandbox_requirement",
+          "budgets"
+        ],
+        "managed_attachment": [
+          "skill_refs"
+        ],
+        "lifecycle": [
+          "lifecycle"
+        ],
+        "provenance_read_only": [
+          "created_by",
+          "updated_by",
+          "change_reason",
+          "created_at",
+          "updated_at"
+        ]
+      }
+    },
+    "AgentTeamRevision": {
+      "module": "codex_web.agent_teams",
+      "groups": {
+        "immutable_identity": [
+          "record_id",
+          "team_id",
+          "revision",
+          "organization_id",
+          "workspace_id"
+        ],
+        "managed_revision": [
+          "name",
+          "description",
+          "owner_identity_id",
+          "leader_profile_id",
+          "instructions_ref",
+          "budgets",
+          "allowed_identity_ids",
+          "allowed_role_ids",
+          "escalation_target"
+        ],
+        "managed_attachment": [
+          "members"
+        ],
+        "lifecycle": [
+          "lifecycle"
+        ],
+        "provenance_read_only": [
+          "created_by",
+          "updated_by",
+          "change_reason",
+          "created_at",
+          "updated_at"
+        ]
+      }
+    },
+    "SkillDefinition": {
+      "module": "codex_web.skills",
+      "groups": {
+        "managed_revision": [
+          "name",
+          "description",
+          "instructions",
+          "applicability_tags",
+          "capability_tags",
+          "assets",
+          "required_provider_capabilities",
+          "required_worker_capabilities",
+          "input_expectations",
+          "output_expectations",
+          "owner_identity_id",
+          "provenance"
+        ],
+        "lifecycle": [
+          "lifecycle"
+        ]
+      }
+    }
+  }
+}
