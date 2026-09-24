@@ -1138,6 +1138,20 @@ function installKeyboard() {
   });
 }
 
+async function syncAdministrationEntryVisibility() {
+  if (legacyStaticRoutingContext()) return;
+  const entry = document.querySelector('[data-project-nav-node="administration"]');
+  if (!entry) return;
+  try {
+    const context = await loadAdministrationContext(administrationApi);
+    entry.hidden = !context.allowed;
+    entry.disabled = !context.allowed;
+  } catch {
+    entry.hidden = true;
+    entry.disabled = true;
+  }
+}
+
 function installRouting() {
   const route = () => {
     const administrationRoute = currentAdministrationRoute();
@@ -1183,6 +1197,7 @@ function install() {
   installObservers();
   installKeyboard();
   installRouting();
+  void syncAdministrationEntryVisibility();
 
   window.CodexProductUI = Object.freeze({
     openWorkspace,
