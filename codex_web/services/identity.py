@@ -24,6 +24,7 @@ from codex_web.identity import (
     IdentityState,
     Membership,
     MembershipRole,
+    MembershipUpdate,
     Organization,
     PrincipalKind,
     ServiceIdentity,
@@ -844,6 +845,84 @@ class IdentityService:
 
         self.store.update(apply)
         return human
+
+    @staticmethod
+    def _membership_in_actor_scope(
+        membership: Membership,
+        actor: AuthenticationActor,
+    ) -> bool:
+        return (
+            membership.organization_id == actor.organization_id
+            and membership.workspace_id in {None, actor.workspace_id}
+        )
+
+    def update_membership(
+        self,
+        membership_id: str,
+        payload: MembershipUpdate,
+        *,
+        actor: AuthenticationActor,
+    ) -> Membership:
+        self.require_admin(actor)
+        now = time.time()
+        updated: list[Membership] = []
+
+        def apply(state: IdentityState) -> IdentityState:
+            for index, item in enumerate(state.memberships):
+                if item.id != membership_id:
+                    continue
+                if not self._membership_in_actor_scope(item, actor):
+                    raise TenantIsolationError("membership is outside active organization/workspace")
+                if item.revoked_at is not None:
+                    raise IdentityError("revoked membership cannot be updated")
+                replacement = item.model_copy(
+                    update={
+                        "roles": payload.roles if payload.roles is not None else item.roles,
+                        "team_ids": payload.team_ids if payload.team_ids is not None else item.team_ids,
+                        "updated_at": now,
+                        "updated_by": actor.identity_id,
+                    }
+                )
+                replacement = Membership.model_validate(replacement.model_dump(mode="json"))
+                state.memberships[index] = replacement
+                updated.append(replacement)
+                return state
+            raise IdentityError("membership not found")
+
+        self.store.update(apply)
+        return updated[0]
+
+    def revoke_membership(
+        self,
+        membership_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> Membership:
+        self.require_admin(actor)
+        now = time.time()
+        revoked: list[Membership] = []
+
+        def apply(state: IdentityState) -> IdentityState:
+            for index, item in enumerate(state.memberships):
+                if item.id != membership_id:
+                    continue
+                if not self._membership_in_actor_scope(item, actor):
+                    raise TenantIsolationError("membership is outside active organization/workspace")
+                replacement = item.model_copy(
+                    update={
+                        "updated_at": item.updated_at or now,
+                        "updated_by": item.updated_by or actor.identity_id,
+                        "revoked_at": item.revoked_at or now,
+                        "revoked_by": item.revoked_by or actor.identity_id,
+                    }
+                )
+                state.memberships[index] = replacement
+                revoked.append(replacement)
+                return state
+            raise IdentityError("membership not found")
+
+        self.store.update(apply)
+        return revoked[0]
 
     def add_membership(self, membership: Membership) -> Membership:
         state = self.store.load()
