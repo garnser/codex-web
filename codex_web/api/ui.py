@@ -20,6 +20,7 @@ PROJECT_UI_PAGES = frozenset(
         "attention",
         "operations",
         "project-settings",
+        "configuration",
     }
 )
 

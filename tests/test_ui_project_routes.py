@@ -50,6 +50,16 @@ def test_supported_project_page_serves_operator_shell() -> None:
     assert service.base_hrefs[-1] == ""
 
 
+def test_configuration_project_page_serves_operator_shell() -> None:
+    client, service = _client()
+
+    response = client.get("/projects/veridataops/configuration")
+
+    assert response.status_code == 200
+    assert "shell" in response.text
+    assert service.base_hrefs[-1] == ""
+
+
 def test_unknown_project_page_is_not_a_shell_fallback() -> None:
     client, _ = _client()
 
