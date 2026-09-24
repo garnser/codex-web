@@ -1,5 +1,5 @@
 import*as ep from"./execution_profile_controls.js";
-import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
+import{loadProjectUiState}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
@@ -198,6 +198,9 @@ function currentRunSettings() {
     approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
     profileId:saved.profileId||ep.defaultId(),
     repositoryResourceId: saved.repositoryResourceId || "",
+    writableRepositoryResourceIds: Array.isArray(saved.writableRepositoryResourceIds)
+      ? saved.writableRepositoryResourceIds
+      : [],
     readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
       ? saved.readOnlyRepositoryResourceIds
       : [],
@@ -205,6 +208,11 @@ function currentRunSettings() {
 }
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
+function primaryWritableRepositoryId(settings=currentRunSettings()){
+  return settings.repositoryResourceId
+    || rtui.selectedWritableRepositoryIds({project:activeProject(),settings})[0]
+    || "";
+}
 function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
 function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
@@ -256,6 +264,10 @@ function persistRunSettings() {
     approvalPolicy: $("approval-policy").value,
     profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
+    writableRepositoryResourceIds: Array.from(
+      $("repository-write-targets")?.selectedOptions || [],
+      (option) => option.value,
+    ),
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
       (option) => option.value,
@@ -1063,11 +1075,19 @@ async function refresh({ reloadProjects = false } = {}) {
   const startedAt=performance.now();
 
   const task=(async()=>{
-    const snapshot=await loadProjectUiStateForRefresh({
-      api,projectId,search,state,reloadProjects,controller,generation,
-      renderProjects,renderThreads,clearMessages,logEvent,
+    const snapshot=await loadProjectUiState({
+      api,
+      projectId,
+      search,
+      projects:state.projects,
+      reloadProjects,
+      models:state.models,
+      cachedStatic:state.projectUiStatic[projectId]||null,
+      signal:controller.signal,
+      onModelError:(error)=>{
+        logEvent("models.error",{message:error.message});
+      },
     });
-    if(!snapshot)return;
     if(
       controller.signal.aborted
       || generation!==state.refreshGeneration
@@ -1338,7 +1358,8 @@ async function newThread() {
     approval_policy: settings.approvalPolicy,
   });
   ep.applyThreadQuery(qs,settings);
-  if(settings.repositoryResourceId)qs.set("repository_resource_id",settings.repositoryResourceId);
+  const primaryRepositoryId=primaryWritableRepositoryId(settings);
+  if(primaryRepositoryId)qs.set("repository_resource_id",primaryRepositoryId);
   settings.readOnlyRepositoryResourceIds.forEach((id) => {
     qs.append("read_only_repository_resource_id", id);
   });
@@ -1388,7 +1409,7 @@ async function sendPrompt() {
     approval_policy: runSettings.approvalPolicy,
     model: threadOptions.model,
     reasoning_effort: threadOptions.reasoningEffort,
-    repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
+    repository_resource_id: selectedThreadSettings.repository_resource_id || primaryWritableRepositoryId(runSettings) || null,
     ...rtui.scope(),
     read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
     execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
@@ -2314,6 +2335,7 @@ $("repository-target").addEventListener("change", () => {
   persistRunSettings();
   renderRepositoryTargets();
 });
+$("repository-write-targets").addEventListener("change", persistRunSettings);
 $("repository-read-context").addEventListener("change", persistRunSettings);
 $("sandbox").addEventListener("change", () => {
   persistRunSettings();
