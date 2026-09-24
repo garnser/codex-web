@@ -252,6 +252,7 @@ def build_authority_router(
                     IdentityError,
                     AuthorizationError,
                     ProjectNotFoundError,
+                    ResourceCatalogError,
                     LookupError,
                     ValueError,
                 ),
