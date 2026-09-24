@@ -100,7 +100,7 @@ test('workspace shell remains usable at 200% text scaling and exposes non-color 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
   const dialog = page.locator('#product-workspace-dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleName('Home');
+  await expect(dialog).toHaveAccessibleName('Overview');
   await expectNoPageOverflow(page, 'workspace at 200% text scaling');
 
   await dialog.locator('.product-overview-reference > summary').click();
