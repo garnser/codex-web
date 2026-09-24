@@ -2,6 +2,7 @@ import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } 
 import { renderHomeOverview } from "./home_overview.js";
 import { renderAdministrationUsers } from "./administration_users.js";
 import { renderAdministrationAccess } from "./administration_access.js";
+import { renderAdministrationAuthentication } from "./administration_authentication.js";
 import {
   administrationPath,
   administrationPresentation,
@@ -394,6 +395,14 @@ async function renderAdministrationRoute(page = "overview") {
         renderAdministrationAccess(stateHost, {
           context,
           api: administrationApi,
+        });
+      } else if (stateHost && page === "authentication") {
+        renderAdministrationAuthentication(stateHost, {
+          context,
+          api: administrationApi,
+          onChanged: async () => {
+            await renderAdministrationRoute(page);
+          },
         });
       } else if (stateHost) {
         stateHost.className = "workspace-state product-administration-page-placeholder";
