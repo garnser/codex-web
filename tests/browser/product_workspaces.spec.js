@@ -6,6 +6,9 @@ test('mature canonical cards are adopted out of Developer into first-class works
   await expect(page.locator('#product-workspace-switcher')).toHaveCount(1);
   await expect(page.locator('.product-workspaces-launch')).toHaveCount(0);
   await expect(page.locator('.product-all-workspaces')).toBeVisible();
+  await page.locator('.product-all-workspaces').click();
+  await expect(page.locator('#product-workspace-switcher')).toBeVisible();
+  await page.locator('[data-workspace-switcher-close]').click();
 
   const developerCards = page.locator('#developer-panel .developer-grid > .developer-card');
   await expect(developerCards).toHaveCount(1);
