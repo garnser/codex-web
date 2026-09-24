@@ -318,6 +318,37 @@ function setWorkspaceLocation(id, page = null, { replace = false } = {}) {
   if (replace) history.replaceState(state, "", url);
   else history.pushState(state, "", url);
   if (document.body) document.body.dataset.projectPage = routePage;
+  applyRoutedShellMode(routePage);
+}
+
+
+function applyRoutedShellMode(page) {
+  if (!document.body || !page) return;
+  document.body.dataset.projectPage = page;
+  document.body.classList.add("product-routed-project-page");
+  document.body.classList.toggle("product-chat-page", page === "chat");
+  const main = document.querySelector(":scope > .main") || document.querySelector(".main");
+  if (main) main.setAttribute("aria-hidden", page === "chat" ? "false" : "true");
+  const developer = document.getElementById("developer-panel");
+  if (developer) developer.hidden = true;
+}
+
+function migrateLegacyEntry() {
+  if (legacyStaticRoutingContext() || currentProjectRoute()) return false;
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  const root = path === "/" || path === "/codex";
+  if (!root) return false;
+
+  const legacy = window.location.hash.match(/^#workspace\/([a-z0-9-]+)$/);
+  const workspaceId = legacy?.[1] || "overview";
+  const page = WORKSPACE_DEFAULT_PAGE[workspaceId] || "overview";
+  const projectId = navigationProjectId();
+  if (!projectId) return false;
+
+  setWorkspaceLocation(workspaceId, page, { replace: true });
+  openWorkspace(workspaceId, { page, updateLocation: false });
+  applyRoutedShellMode(page);
+  return true;
 }
 
 function closeSwitcher() {
@@ -480,6 +511,9 @@ function openWorkspace(id, { page = null, updateLocation = true } = {}) {
   const resolvedPage = page || WORKSPACE_DEFAULT_PAGE[item.id] || item.id;
   activePage = resolvedPage;
   if (document.body) document.body.dataset.projectPage = resolvedPage;
+  if (currentProjectRoute() || !legacyStaticRoutingContext()) {
+    applyRoutedShellMode(resolvedPage);
+  }
   if (item.kind === "launcher") {
     closeInternalWorkspace();
     activeWorkspace = item.id;
@@ -881,6 +915,7 @@ function installProjectContext() {
   });
   window.addEventListener("codex:projects-rendered", (event) => {
     renderProjectContext(event.detail || {});
+    migrateLegacyEntry();
   });
   window.addEventListener("codex:project-context-unavailable", (event) => {
     setProjectContextUnavailable(event.detail || {});
@@ -946,6 +981,7 @@ function installRouting() {
       const workspaceId = PROJECT_PAGE_WORKSPACES[projectRoute.page];
       if (!workspaceId) return;
       if (document.body) document.body.dataset.projectPage = projectRoute.page;
+      applyRoutedShellMode(projectRoute.page);
       if (workspaceId !== activeWorkspace || projectRoute.page !== activePage) {
         openWorkspace(workspaceId, {
           page: projectRoute.page,
