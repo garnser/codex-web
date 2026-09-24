@@ -273,6 +273,53 @@ class AutomationRunTests(unittest.TestCase):
         self.assertTrue(third.launch_allowed)
 
 
+    def test_trigger_burst_is_bounded_by_concurrency_admission(self) -> None:
+        self._publish("burst", max_concurrency=2)
+        results = [
+            self.service.admit(
+                "burst",
+                self._manual(f"manual-burst-{index}"),
+                organization_id="local",
+                workspace_id="default",
+                idempotency_key=f"burst-{index}",
+            )
+            for index in range(100)
+        ]
+
+        admitted = [item for item in results if item.launch_allowed]
+        blocked = [
+            item
+            for item in results
+            if item.run.block_code == "automation_concurrency_exhausted"
+        ]
+        self.assertEqual(len(admitted), 2)
+        self.assertEqual(len(blocked), 98)
+        self.assertTrue(
+            all(
+                item.run.status == AutomationRunStatus.BLOCKED
+                for item in blocked
+            )
+        )
+        self.assertEqual(
+            len(
+                [
+                    run
+                    for run in self.store.list(
+                        organization_id="local",
+                        workspace_id="default",
+                        automation_id="burst",
+                    )
+                    if run.status in {
+                        AutomationRunStatus.ADMITTED,
+                        AutomationRunStatus.RUNNING,
+                        AutomationRunStatus.WAITING_FOR_WORK_ITEM,
+                        AutomationRunStatus.WAITING_FOR_APPROVAL,
+                    }
+                ]
+            ),
+            2,
+        )
+
     def test_work_item_creation_wait_state_is_durable_and_resumable(self) -> None:
         self._publish("work-item-wait", max_concurrency=2)
         admitted = self.service.admit(

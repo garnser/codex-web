@@ -14,6 +14,7 @@ Operational state should be read from canonical APIs and the operator UI, not re
 - Multi-repository security/E2E evidence: [Security qualification](multi-repository-security-qualification.md)
 - Legacy multi-repository Project/thread conversion: [Legacy Project migration](legacy-project-migration.md)
 - Controlled autonomy/audit: [Bounded autonomy](../architecture/bounded-autonomy.md) and [Autonomy audit](../architecture/autonomy-audit.md)
+- First-class Automations: [Automation qualification](automation-qualification.md)
 
 For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 
