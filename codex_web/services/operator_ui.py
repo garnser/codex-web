@@ -52,6 +52,10 @@ class OperatorUiService:
             f'href="static/styles.css?v={version}"',
         )
         html = html.replace(
+            'href="static/administration_shell.css"',
+            f'href="static/administration_shell.css?v={version}"',
+        )
+        html = html.replace(
             'src="static/app.js"',
             f'src="static/app.js?v={version}"',
         )
