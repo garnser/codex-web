@@ -14,6 +14,7 @@ from codex_web.identity import (
     AuthenticationAssurance,
     ExternalAuthenticationResult,
     HumanIdentity,
+    HumanUserCreate,
     Membership,
     MembershipRole,
     MembershipUpdate,
@@ -257,6 +258,66 @@ class IdentityServiceTests(unittest.TestCase):
         with self.assertRaises(TenantIsolationError):
             self.service.revoke_membership("membership-other", actor=admin)
 
+    def test_admin_can_atomically_create_human_with_active_scope_membership(self) -> None:
+        admin = self.service.local_trusted_actor()
+        human, membership = self.service.create_human_user(
+            HumanUserCreate(
+                id="human-new",
+                display_name="New User",
+                email="new@example.test",
+                roles=[MembershipRole.APPROVER, MembershipRole.MEMBER],
+            ),
+            actor=admin,
+        )
+
+        self.assertEqual(human.id, "human-new")
+        self.assertEqual(membership.identity_id, human.id)
+        self.assertEqual(membership.organization_id, admin.organization_id)
+        self.assertEqual(membership.workspace_id, admin.workspace_id)
+        actor = self.service.actor_for_identity(human.id, scope=TenantScope())
+        self.assertIn(MembershipRole.APPROVER, actor.roles)
+
+    def test_atomic_human_creation_leaves_no_partial_identity_on_invalid_workspace(self) -> None:
+        admin = self.service.local_trusted_actor().model_copy(
+            update={"workspace_id": "missing-workspace"}
+        )
+        with self.assertRaises(TenantIsolationError):
+            self.service.create_human_user(
+                HumanUserCreate(
+                    id="human-should-not-exist",
+                    display_name="Should Not Exist",
+                ),
+                actor=admin,
+            )
+        self.assertFalse(
+            any(
+                item.id == "human-should-not-exist"
+                for item in self.service.state().humans
+            )
+        )
+
+    def test_admin_scoped_membership_creation_rejects_other_workspace(self) -> None:
+        def seed(state):
+            state.workspaces.append(
+                Workspace(id="other-workspace", organization_id="local", name="Other")
+            )
+            state.humans.append(HumanIdentity(id="human-create", display_name="Create Target"))
+            return state
+
+        self.state_store.update(seed)
+        admin = self.service.local_trusted_actor()
+        with self.assertRaises(TenantIsolationError):
+            self.service.add_membership(
+                Membership(
+                    identity_id="human-create",
+                    principal_kind=PrincipalKind.HUMAN,
+                    organization_id="local",
+                    workspace_id="other-workspace",
+                    roles=[MembershipRole.MEMBER],
+                ),
+                actor=admin,
+            )
+
     def test_rate_limiter_blocks_after_bounded_failures_and_resets(self) -> None:
         limiter = AuthenticationRateLimiter(max_failures=2, window_seconds=60)
         limiter.failure("ip:1")
@@ -376,6 +437,34 @@ class IdentityMiddlewareTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(persisted["revoked_at"])
                 self.assertEqual(persisted["revoked_by"], "local-admin")
+
+    def test_admin_can_atomically_create_scoped_user_through_api(self) -> None:
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "local-trusted"}):
+            with TestClient(self._app()) as client:
+                response = client.post(
+                    "/api/identity/users",
+                    json={
+                        "id": "human-api-created",
+                        "display_name": "API Created",
+                        "email": "created@example.test",
+                        "roles": ["member"],
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["human"]["id"], "human-api-created")
+                self.assertEqual(
+                    payload["membership"]["workspace_id"],
+                    "default",
+                )
+                snapshot = client.get("/api/identity").json()
+                self.assertTrue(
+                    any(
+                        item["identity_id"] == "human-api-created"
+                        and item["revoked_at"] is None
+                        for item in snapshot["memberships"]
+                    )
+                )
 
     def test_admin_identity_snapshot_never_returns_credential_hashes(self) -> None:
         credentials = self.service.create_session(
