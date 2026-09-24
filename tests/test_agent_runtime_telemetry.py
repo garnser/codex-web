@@ -160,6 +160,36 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
         self.assertNotIn("provider transcript", repr(record.model_dump()))
         self.assertNotIn("provider transcript", repr(evidence[0].model_dump()))
 
+    def test_observation_notifier_runs_after_usage_persistence(self) -> None:
+        observed = []
+        self.service.observation_notifier = lambda record: observed.append(
+            (
+                record.id,
+                next(item.id for item in self.usage.list() if item.id == record.id),
+            )
+        )
+
+        record = self.service.observe_event(
+            "anthropic",
+            "claude-code",
+            AgentRuntimeEvent(
+                event_type="result/success",
+                provider_native_session_id="native-session-1",
+                provider_native_turn_id="turn-notify",
+                payload={
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                    },
+                    "total_cost_usd": 0.01,
+                },
+            ),
+        )
+
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(observed, [(record.id, record.id)])
+
     def test_duplicate_tool_event_is_idempotent_and_does_not_double_count(self) -> None:
         event = AgentRuntimeEvent(
             event_type="tool/requested",
