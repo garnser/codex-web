@@ -26,6 +26,7 @@ from codex_web.identity import (
 from codex_web.services.automation_definitions import install_automation_definitions
 from codex_web.services.automation_execution import AutomationExecutionService
 from codex_web.services.automation_runs import AutomationRunService
+from codex_web.services.agent_profiles import AgentProfileAccessDenied
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.storage.automation_runs import AutomationRunStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
@@ -45,9 +46,12 @@ class _Identity:
 class _Profiles:
     def __init__(self):
         self.calls = []
+        self.deny = False
 
     def resolve_for_execution(self, profile_id, *, actor, project_id, revision=None):
         self.calls.append((profile_id, actor.identity_id, project_id, revision))
+        if self.deny:
+            raise AgentProfileAccessDenied("agent profile cannot be invoked")
         return SimpleNamespace(profile_id=profile_id, revision=3), SimpleNamespace(allowed=True)
 
 
@@ -322,6 +326,25 @@ class AutomationExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.turns.calls[0][2]["actor"].identity_id,
             "automation-owner",
         )
+
+    async def test_agent_profile_authority_denial_blocks_before_execution(self) -> None:
+        run = self._publish_and_admit(
+            work_item_policy="reuse_only",
+        )
+        self.profiles.deny = True
+
+        blocked = await self.service.launch(
+            run.id,
+            organization_id="local",
+            workspace_id="default",
+            work_item_ref="group/app#42",
+        )
+
+        self.assertEqual(blocked.status, AutomationRunStatus.BLOCKED)
+        self.assertEqual(blocked.block_code, "automation_launch_blocked")
+        self.assertIn("agent profile cannot be invoked", blocked.block_reason)
+        self.assertEqual(self.threads.calls, [])
+        self.assertEqual(self.turns.calls, [])
 
     async def test_approval_required_waits_before_any_side_effect(self) -> None:
         run = self._publish_and_admit(
