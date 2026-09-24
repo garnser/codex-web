@@ -1,3 +1,13 @@
+export class ProjectContextUnavailableError extends Error {
+  constructor(projectId, projects = [], cause = null) {
+    super(`Project ${projectId} is unavailable or inaccessible`);
+    this.name = "ProjectContextUnavailableError";
+    this.projectId = projectId;
+    this.projects = projects;
+    this.cause = cause;
+  }
+}
+
 export async function loadProjectUiState({
   api,
   projectId,
@@ -15,26 +25,41 @@ export async function loadProjectUiState({
   });
   if (search) query.set("search", search);
 
-  const [projectList, workspace, modelList] = await Promise.all([
-    (!reloadProjects && projects.length)
-      ? Promise.resolve(projects)
-      : api("/api/projects", { signal }),
-    api(
-      `/api/projects/${encodeURIComponent(projectId)}/ui-state?${query}`,
-      { signal },
-    ),
-    models.length
-      ? Promise.resolve(models)
-      : api("/api/models", { signal })
-        .then((response) => (
-          Array.isArray(response.data) ? response.data : []
-        ))
-        .catch((error) => {
-          if (error?.name === "AbortError") throw error;
-          onModelError(error);
-          return [];
-        }),
-  ]);
+  const projectList = (!reloadProjects && projects.length)
+    ? projects
+    : await api("/api/projects", { signal });
+
+  if (!projectList.some((project) => project.id === projectId)) {
+    throw new ProjectContextUnavailableError(projectId, projectList);
+  }
+
+  let workspace;
+  let modelList;
+  try {
+    [workspace, modelList] = await Promise.all([
+      api(
+        `/api/projects/${encodeURIComponent(projectId)}/ui-state?${query}`,
+        { signal },
+      ),
+      models.length
+        ? Promise.resolve(models)
+        : api("/api/models", { signal })
+          .then((response) => (
+            Array.isArray(response.data) ? response.data : []
+          ))
+          .catch((error) => {
+            if (error?.name === "AbortError") throw error;
+            onModelError(error);
+            return [];
+          }),
+    ]);
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    if (error?.status === 403 || error?.status === 404) {
+      throw new ProjectContextUnavailableError(projectId, projectList, error);
+    }
+    throw error;
+  }
 
   let nextProjects = projectList;
   if (workspace.project) {
