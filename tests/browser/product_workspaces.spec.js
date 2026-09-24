@@ -55,8 +55,7 @@ test('workspace navigation docks full application sections in main content while
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('work'));
   const workPage = page.locator('#product-workspace-page');
-  await expect(workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(1);
-  await workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' }).click();
+  await expect(workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__workItemsOpenEvents)).toBe(1);
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
@@ -461,4 +460,28 @@ test('Agent Profiles and Teams preserve Project and reverse-proxy prefix', async
 
   await page.goto('http://127.0.0.1:18766/codex/projects/home/agent-profiles');
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Agent Profiles');
+});
+
+
+test('Work Items navigation opens the canonical operator in the main workspace host', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => {
+    window.__workItemsOpen = null;
+    window.addEventListener('codex:open-work-items', (event) => {
+      window.__workItemsOpen = {
+        mode: event.detail?.mode || null,
+        hostWorkspace: event.detail?.host?.dataset?.productWorkspaceHost || null,
+      };
+    }, { once: true });
+  });
+
+  await page.locator('[data-project-nav-node="work-items"]').evaluate((node) => node.click());
+
+  await expect(page).toHaveURL(/#workspace\/work$/);
+  await expect.poll(() => page.evaluate(() => window.__workItemsOpen)).toEqual({
+    mode: 'inline',
+    hostWorkspace: 'work',
+  });
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Work Items');
 });
