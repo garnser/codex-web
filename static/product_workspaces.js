@@ -1162,7 +1162,14 @@ function installRouting() {
       if (!workspaceId) return;
       if (document.body) document.body.dataset.projectPage = projectRoute.page;
       applyRoutedShellMode(projectRoute.page);
-      if (workspaceId !== activeWorkspace || projectRoute.page !== activePage) {
+      const workspace = workspaceById(workspaceId);
+      const pageSurface = document.getElementById("product-workspace-page");
+      const needsInitialSurface = workspace.kind === "embedded" && pageSurface?.hidden;
+      if (
+        workspaceId !== activeWorkspace
+        || projectRoute.page !== activePage
+        || needsInitialSurface
+      ) {
         openWorkspace(workspaceId, {
           page: projectRoute.page,
           updateLocation: false,
