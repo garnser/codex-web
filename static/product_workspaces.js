@@ -1079,35 +1079,6 @@ function buildShell() {
     });
   });
 
-  const topbar = document.querySelector(".topbar .controls");
-  if (topbar) {
-    const projectIndicator = document.createElement("button");
-    projectIndicator.type = "button";
-    projectIndicator.className = "ghost-button product-project-indicator";
-    projectIndicator.dataset.projectIndicator = "true";
-    projectIndicator.textContent = "Project: loading…";
-    projectIndicator.setAttribute("aria-label", "Current Project");
-    projectIndicator.addEventListener("click", () => {
-      const select = document.getElementById("product-project-switcher");
-      if (document.body.classList.contains("sidebar-collapsed")) {
-        document.getElementById("sidebar-toggle")?.click();
-      }
-      select?.focus();
-    });
-    topbar.prepend(projectIndicator);
-
-    const launch = document.createElement("button");
-    launch.type = "button";
-    launch.className = "ghost-button product-workspaces-launch";
-    launch.dataset.workspaceSwitcherLaunch = "topbar";
-    launch.textContent = "Workspaces";
-    launch.title = "Open product workspaces (Ctrl/⌘ K)";
-    launch.addEventListener("click", () => {
-      if (!switcher.open) switcher.showModal();
-    });
-    topbar.prepend(launch);
-  }
-
   installProjectContext();
   setActiveInternal("overview", { updateLocation: false, page: "overview" });
 }
