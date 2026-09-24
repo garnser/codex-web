@@ -9,7 +9,7 @@ const ROW_WINDOW=60;
 const RUN_PAGE_SIZE=20;
 const WORK_ITEM_PROJECT_KEY='codex-web-work-item-project';
 
-const state = {
+const state={
   projects: [],
   catalog: { items: [], sync: {} },
   projectId: '',
@@ -27,7 +27,7 @@ const state = {
   runRefreshTimer: null,
 };
 
-const esc = (value) => String(value ?? '')
+const esc=(value)=> String(value ?? '')
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;')
