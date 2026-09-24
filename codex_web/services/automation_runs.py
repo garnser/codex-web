@@ -227,6 +227,7 @@ class AutomationRunService:
         organization_id: str,
         workspace_id: str,
         approval_request_id: str,
+        work_item_ref: str | None = None,
     ) -> AutomationRun:
         current = self.store.get(
             run_id,
@@ -246,6 +247,7 @@ class AutomationRunService:
                 update={
                     "status": AutomationRunStatus.WAITING_FOR_APPROVAL,
                     "approval_request_id": request_id,
+                    "work_item_ref": work_item_ref or current.work_item_ref,
                     "updated_at": now,
                     "completed_at": None,
                 }
