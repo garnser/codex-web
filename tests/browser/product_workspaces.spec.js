@@ -67,6 +67,23 @@ test('workspace navigation docks full application sections in main content while
   await expect(page.locator('#refresh-resources')).toHaveAttribute('data-clicked', '1');
 });
 
+test('legacy full-section buttons route into the same main-content page instead of staying modal', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  await page.locator('#goals-button').click();
+  await expect(page.locator('#product-workspace-page')).toBeVisible();
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Goals');
+  await expect(page.locator('#goals-dialog')).toHaveAttribute('data-product-section', 'goals');
+  expect(await page.locator('#goals-dialog').evaluate((node) => node.matches(':modal'))).toBe(false);
+  await expect(page).toHaveURL(/#workspace\/goals$/);
+
+  await page.locator('[data-attention-launch]').click();
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Attention');
+  await expect(page.locator('.attention-dialog')).toHaveAttribute('data-product-section', 'inbox');
+  expect(await page.locator('.attention-dialog').evaluate((node) => node.matches(':modal'))).toBe(false);
+  await expect(page).toHaveURL(/#workspace\/inbox$/);
+});
+
 test('dynamic cards are adopted and shared UI primitives expose distinct canonical concepts', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
 
