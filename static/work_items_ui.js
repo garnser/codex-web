@@ -19,6 +19,8 @@ const state = {
   hasMore: false,
   windowStart: 0,
   pageError: '',
+  search: '',
+  searchTimer: null,
   listGeneration: 0,
   listController: null,
   detailPayload: null,
@@ -110,6 +112,7 @@ function ensureShell() {
       </header>
       <div class="work-items-toolbar">
         <label>Project <select class="work-items-project"></select></label>
+        <label>Search <input class="work-items-search" type="search" placeholder="Search Work Items" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
         <span class="work-items-status" role="status" aria-live="polite"></span>
@@ -162,6 +165,18 @@ function ensureShell() {
   });
   dialog.querySelector('.work-items-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
+  dialog.querySelector('.work-items-search').addEventListener('input', (event) => {
+    state.search = event.target.value || '';
+    if (state.searchTimer) clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => {
+      state.searchTimer = null;
+      state.selectedRef = '';
+      resetPaging();
+      loadItems({ reset: true }).catch((error) => {
+        setStatus(error.message || 'Failed to search Work Items', true);
+      });
+    }, 200);
+  });
   dialog.querySelector('.work-items-project').addEventListener('change', async (event) => {
     state.projectId = event.target.value;
     state.selectedRef = '';
@@ -502,6 +517,7 @@ async function loadItems({ reset = false } = {}) {
     project_id: state.projectId,
     limit: String(PAGE_SIZE),
   });
+  if (state.search.trim()) query.set('q', state.search.trim());
   if (!reset && state.nextCursor) query.set('cursor', state.nextCursor);
 
   try {
