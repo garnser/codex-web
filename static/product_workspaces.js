@@ -687,6 +687,7 @@ function buildShell() {
         <option value="">Loading projects…</option>
       </select>
       <small class="product-field-help">Sets the Project scope for navigation, work, repository targets and new executions.</small>
+      <div class="product-project-context-state" data-project-context-state hidden role="status"></div>
     `;
     brand.insertAdjacentElement("afterend", projectContext);
 
@@ -829,6 +830,46 @@ function renderProjectContext({ projects = [], projectId = "" } = {}) {
   document.body.dataset.activeProject = select.value || "";
 }
 
+function setProjectContextUnavailable({ projectId = "", projects = [] } = {}) {
+  const select = document.getElementById("product-project-switcher");
+  const indicator = document.querySelector("[data-project-indicator]");
+  const status = document.querySelector("[data-project-context-state]");
+  if (select) {
+    select.innerHTML = "";
+    for (const project of projects) {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = projectLabel(project);
+      select.appendChild(option);
+    }
+    select.selectedIndex = -1;
+  }
+  if (indicator) indicator.textContent = `Project unavailable: ${projectId || "unknown"}`;
+  if (status) {
+    status.hidden = false;
+    status.textContent = projects.length
+      ? "This Project is unavailable or you no longer have access. Choose an available Project above to recover."
+      : "This Project is unavailable or you no longer have access. No alternative Project is currently available.";
+  }
+  document.body.classList.add("project-context-unavailable");
+  document.body.dataset.activeProject = "";
+  document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
+    button.disabled = true;
+  });
+}
+
+function clearProjectContextUnavailable() {
+  document.body.classList.remove("project-context-unavailable");
+  const status = document.querySelector("[data-project-context-state]");
+  if (status) {
+    status.hidden = true;
+    status.textContent = "";
+  }
+  document.querySelectorAll("[data-project-nav-node]").forEach((button) => {
+    button.disabled = false;
+  });
+}
+
 function installProjectContext() {
   const select = document.getElementById("product-project-switcher");
   if (!select) return;
@@ -841,9 +882,13 @@ function installProjectContext() {
   window.addEventListener("codex:projects-rendered", (event) => {
     renderProjectContext(event.detail || {});
   });
+  window.addEventListener("codex:project-context-unavailable", (event) => {
+    setProjectContextUnavailable(event.detail || {});
+  });
   window.addEventListener("codex:project-changed", (event) => {
     const projectId = event.detail?.projectId || "";
     if (projectId) {
+      clearProjectContextUnavailable();
       select.value = projectId;
       document.body.dataset.activeProject = projectId;
       const option = select.selectedOptions[0];
