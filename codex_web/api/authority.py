@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
-from codex_web.authority import AuthorityEvaluationRequest
+from codex_web.authority import AuthorityEvaluationRequest, AuthorityRoleCatalogDefinition
 from codex_web.definitions import DefinitionScope
 from codex_web.identity import AuthenticationAssurance
 from codex_web.services.authority_access_management import (
@@ -226,6 +226,59 @@ def build_authority_router(
                 exc,
                 (
                     AuthorityAccessManagementError,
+                    DefinitionError,
+                    IdentityError,
+                    AuthorizationError,
+                    ProjectNotFoundError,
+                    LookupError,
+                    ValueError,
+                ),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/api/authority/roles")
+    async def roles(
+        request: Request,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            effective_project = work_item_project(actor, None, project_id)
+            record = authority.catalog_record(
+                actor=actor,
+                project_id=effective_project,
+            )
+            catalog = AuthorityRoleCatalogDefinition.model_validate(record.payload)
+            items = [
+                {
+                    "id": role.id,
+                    "name": role.name,
+                    "description": role.description,
+                    "inherits": list(role.inherits),
+                    "grants": [
+                        {
+                            "capability": grant.capability,
+                            "level": grant.level.value,
+                        }
+                        for grant in role.grants
+                    ],
+                }
+                for role in sorted(catalog.roles, key=lambda item: (item.name.lower(), item.id))
+                if role.lifecycle == "active"
+            ]
+            return {
+                "organization_id": actor.organization_id,
+                "workspace_id": actor.workspace_id,
+                "project_id": effective_project,
+                "record_id": record.record_id,
+                "revision": record.revision,
+                "items": items,
+            }
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (
                     DefinitionError,
                     IdentityError,
                     AuthorizationError,
