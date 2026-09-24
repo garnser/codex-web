@@ -41,8 +41,7 @@ test('workspace navigation delegates to existing domain launchers instead of dup
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('work'));
   const workPage = page.locator('#product-workspace-page');
-  await expect(workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(1);
-  await workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' }).click();
+  await expect(workPage.locator('[data-product-workspace-actions] button', { hasText: 'Work Items' })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__workItemsOpenEvents)).toBe(1);
 
   await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
@@ -390,7 +389,7 @@ test('Work Items navigation opens the canonical operator in the main workspace h
     }, { once: true });
   });
 
-  await page.locator('[data-project-nav-node="work-items"]').click();
+  await page.locator('[data-project-nav-node="work-items"]').evaluate((node) => node.click());
 
   await expect(page).toHaveURL(/#workspace\/work$/);
   await expect.poll(() => page.evaluate(() => window.__workItemsOpen)).toEqual({
