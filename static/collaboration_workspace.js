@@ -150,7 +150,11 @@ function agentCard(profile) {
   const article = el("article", "collab-card collab-agent-card");
   const head = el("div", "collab-card-head");
   const identity = agentIdentity(profile);
-  head.append(identity);
+  const manageSkills = el("a", "collab-manage-link", "Manage Skills");
+  manageSkills.href = projectPageHref("skills");
+  manageSkills.dataset.manageAgentSkills = profile.profile_id;
+  manageSkills.setAttribute("aria-label", `Manage Skills for ${profile.name || profile.profile_id}`);
+  head.append(identity, manageSkills);
   article.appendChild(head);
   if (profile.description) article.appendChild(el("p", "collab-description", profile.description));
   article.appendChild(metadataGrid([
@@ -159,11 +163,6 @@ function agentCard(profile) {
     { label: "Revision", value: profile.revision },
     { label: "Skills", value: (profile.skill_refs || profile.skillRefs || []).map(refId).filter(Boolean).join(", ") || "None" },
   ]));
-  const manageSkills = el("a", "collab-manage-link", "Manage Skills");
-  manageSkills.href = projectPageHref("skills");
-  manageSkills.dataset.manageAgentSkills = profile.profile_id;
-  manageSkills.setAttribute("aria-label", `Manage Skills for ${profile.name || profile.profile_id}`);
-  article.appendChild(manageSkills);
   const details = el("details", "collab-agent-context");
   const summary = el("summary", "", "Work, access and execution context");
   const body = el("div", "collab-agent-details");
