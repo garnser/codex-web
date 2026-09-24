@@ -644,6 +644,7 @@ function closeInternalWorkspace() {
 }
 
 function openWorkspace(id, { page = null, updateLocation = true } = {}) {
+  leaveAdministrationMode();
   const item = workspaceById(id);
   const resolvedPage = page || WORKSPACE_DEFAULT_PAGE[item.id] || item.id;
   activePage = resolvedPage;
@@ -760,9 +761,14 @@ function navigationLeaf(item) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "product-project-nav-leaf";
-  button.dataset.projectNavNode = item.id;
-  button.dataset.productWorkspaceNav = item.workspace;
-  if (item.page) button.dataset.projectPage = item.page;
+  if (item.administration) {
+    button.dataset.globalAdministrationNav = "true";
+    button.hidden = true;
+  } else {
+    button.dataset.projectNavNode = item.id;
+    button.dataset.productWorkspaceNav = item.workspace;
+    if (item.page) button.dataset.projectPage = item.page;
+  }
   const label = document.createElement("strong");
   label.textContent = item.label;
   button.appendChild(label);
@@ -773,7 +779,13 @@ function navigationLeaf(item) {
     button.appendChild(help);
   }
   button.title = item.description || item.label;
-  button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
+  button.addEventListener("click", () => {
+    if (item.administration) {
+      void openAdministration(item.page || "overview");
+      return;
+    }
+    openWorkspace(item.workspace, { page: item.page || null });
+  });
   return button;
 }
 
@@ -1132,6 +1144,12 @@ function installKeyboard() {
 
 function installRouting() {
   const route = () => {
+    const administrationRoute = currentAdministrationRoute();
+    if (administrationRoute) {
+      void openAdministration(administrationRoute.page, { updateLocation: false });
+      return;
+    }
+    leaveAdministrationMode();
     const projectRoute = currentProjectRoute();
     if (projectRoute) {
       const workspaceId = PROJECT_PAGE_WORKSPACES[projectRoute.page];
@@ -1163,6 +1181,9 @@ function installRouting() {
 
 function install() {
   buildShell();
+  void resolveAdministrationContext().catch(() => {
+    syncAdministrationEntry(null);
+  });
   relocateLegacyControlSource();
   adoptAll(document);
   updateEmptyStates();
@@ -1172,6 +1193,7 @@ function install() {
 
   window.CodexProductUI = Object.freeze({
     openWorkspace,
+    openAdministration,
     conceptBadge,
     statusBadge,
     provenanceTrail,
