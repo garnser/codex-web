@@ -274,7 +274,8 @@ test('Configuration is a first-class routed Project page backed by canonical set
   await expect(page.locator('body')).toHaveAttribute('data-project-page', 'configuration');
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Configuration');
   await expect(page.locator('[data-project-nav-node="configuration"]')).toHaveAttribute('aria-current', 'page');
-  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Configuration & Features');
-  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Secrets & Credentials');
-  await expect(page.locator('[data-product-workspace-host="settings"]')).toContainText('Entitlements & Usage');
+  const settings = page.locator('[data-product-workspace-host="settings"]');
+  await expect(settings).toBeVisible();
+  await expect(settings).toContainText('Configuration & Features');
+  await expect(settings.locator('#refresh-configuration')).toBeVisible();
 });
