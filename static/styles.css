@@ -737,6 +737,10 @@ select:focus,
 }
 
 .topbar {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   min-height: 76px;
   border-bottom: 1px solid var(--line);
   background: var(--topbar-bg);
@@ -768,6 +772,8 @@ h1 {
 
 .controls {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   gap: 8px;
   align-items: center;
