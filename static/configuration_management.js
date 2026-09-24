@@ -268,6 +268,7 @@
       actions.push(["publish", "Publish"]);
     }
     const active = activeFor(record);
+    if (active && active.id === record.id) actions.push(["reset", "Revert to inherited/default"]);
     if (active && active.id !== record.id) actions.push(["rollback", `Rollback to r${record.revision}`]);
     return actions.length
       ? `<div class="developer-toolbar">${actions.map(([action, label]) => `<button type="button" class="ghost-button" data-configuration-action="${action}" data-record-id="${escapeHtml(record.id)}">${escapeHtml(label)}</button>`).join("")}</div>`
@@ -346,6 +347,32 @@
     }
   }
 
+  async function resetRecord(record) {
+    const active = activeFor(record);
+    if (!active || active.id !== record.id) return;
+    const reason = window.prompt(`Reason for reverting ${record.key} r${record.revision} to inherited/default resolution:`, "");
+    if (reason === null) return;
+    if (!window.confirm(
+      `Revert the explicit ${record.key} override at ${record.scope_type}${record.scope_id ? `:${record.scope_id}` : ""}? The active revision is preserved in history and superseded by a disabled tombstone. Resolution will fall through to the next applicable published scope or code-owned default.`,
+    )) return;
+    try {
+      const response = await apiRequest("/api/configuration/reset", {
+        method: "POST",
+        body: JSON.stringify({
+          key: record.key,
+          scope_type: record.scope_type,
+          scope_id: record.scope_id,
+          reason: reason.trim() || null,
+          expected_active_revision: active.revision,
+        }),
+      });
+      setStatus(`Reverted ${record.key} override with tombstone r${response.record.revision}; effective resolution now inherits from the next applicable scope/default.`);
+      document.getElementById("refresh-configuration")?.click();
+    } catch (error) {
+      setStatus(`Configuration reset failed: ${error.message}`);
+    }
+  }
+
   async function mutate(button) {
     const record = records.find((item) => item.id === button.dataset.recordId);
     if (!record) return;
@@ -354,6 +381,7 @@
       if (button.dataset.configurationAction === "validate") await validateRecord(record);
       else if (button.dataset.configurationAction === "publish") await publishRecord(record);
       else if (button.dataset.configurationAction === "rollback") await rollbackRecord(record);
+      else if (button.dataset.configurationAction === "reset") await resetRecord(record);
     } finally {
       if (document.contains(button)) button.disabled = false;
     }
