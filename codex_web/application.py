@@ -2860,6 +2860,8 @@ automation_execution_service = AutomationExecutionService(
     teams=agent_team_execution_service,
     events=canonical_event_store,
     work_items=work_item_service,
+    action_intents=action_intent_service,
+    action_providers=action_provider_registry,
 )
 app.state.automation_execution_service = automation_execution_service
 app.include_router(
