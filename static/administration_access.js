@@ -303,14 +303,13 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
           reason: why,
         }),
       });
-      if (result?.status === "pending_approval") {
-        setMessage("Direct assignment is staged and pending independent publication approval.", "info");
-      } else if (result?.status === "already_effective") {
-        setMessage("That direct assignment is already effective.", "info");
-      } else {
-        setMessage("Direct assignment published.", "info");
-      }
+      const outcomeMessage = result?.status === "pending_approval"
+        ? "Direct assignment is staged and pending independent publication approval."
+        : result?.status === "already_effective"
+          ? "That direct assignment is already effective."
+          : "Direct assignment published.";
       await refreshAfterMutation();
+      setMessage(outcomeMessage, "info");
     } catch (error) {
       setMessage(error?.message || "Unable to stage canonical direct assignment.", "error");
     } finally {
@@ -339,13 +338,11 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
           reason: why,
         }),
       });
-      setMessage(
-        result?.status === "published"
-          ? "Direct assignment removed and authority reduction published."
-          : "Direct assignment removal staged.",
-        "info",
-      );
+      const outcomeMessage = result?.status === "published"
+        ? "Direct assignment removed and authority reduction published."
+        : "Direct assignment removal staged.";
       await refreshAfterMutation();
+      setMessage(outcomeMessage, "info");
     } catch (error) {
       setMessage(error?.message || "Unable to remove canonical direct assignment.", "error");
       button.disabled = false;
