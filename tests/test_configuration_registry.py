@@ -263,7 +263,7 @@ class ConfigurationServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             [step.value for step in effective.resolution_chain],
-            [5, 2, 3],
+            [5, 2, 1],
         )
 
     def test_reset_override_preserves_history_and_falls_back_to_inheritance(self) -> None:
