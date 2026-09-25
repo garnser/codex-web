@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codex_web.agent_runtime import AgentRuntimeEvent
+from codex_web.agent_runtime import AgentRuntimeEvent, AgentSessionStatus
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
 from codex_web.identity import (
     AuthenticationActor,
@@ -114,6 +114,26 @@ class GoalContinuationEventService:
                 outcome="ignored",
                 reason="binding_not_found_or_ambiguous",
             )
+        terminal_session_status = (
+            AgentSessionStatus.READY
+            if event_type in self._COMPLETED
+            else (
+                AgentSessionStatus.INTERRUPTED
+                if event_type in self._INTERRUPTED
+                else AgentSessionStatus.FAILED
+            )
+        )
+        self.agent_sessions.mark_status(
+            binding.agent_session_id,
+            terminal_session_status,
+            actor=self._actor(scope),
+            failure_reason=(
+                "provider turn failed"
+                if terminal_session_status == AgentSessionStatus.FAILED
+                else None
+            ),
+        )
+
         if binding.lease_owner_id != self.continuation.owner_id:
             return GoalContinuationEventResult(
                 outcome="ignored",
