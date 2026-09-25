@@ -2262,7 +2262,12 @@ app.state.goal_decomposition_commit_service = (
     goal_decomposition_commit_service
 )
 app.include_router(build_goals_router(goal_service))
-app.include_router(build_goal_execution_bindings_router(goal_execution_binding_service))
+app.include_router(
+    build_goal_execution_bindings_router(
+        goal_execution_binding_service,
+        autonomy_controller,
+    )
+)
 app.include_router(
     build_goal_decompositions_router(
         goal_decomposition_service,
