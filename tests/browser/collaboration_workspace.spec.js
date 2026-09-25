@@ -149,6 +149,136 @@ test('Agent, Team and Skill surfaces use stable canonical identities and lifecyc
   await expect(skill.locator('[data-identity-id="maya"]')).toBeVisible();
 });
 
+test('Agent Profile edit creates a bounded revision without editable identity or provenance', async ({ page }) => {
+  await mockApis(page);
+  let saved = null;
+  await page.route('**/api/agent-profiles/maya', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      saved = route.request().postDataJSON();
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: { ...profiles[0], ...saved, revision: 5 } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await maya.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Edit Agent Profile' });
+  await expect(dialog).toBeVisible();
+  const area = dialog.locator('[data-payload]');
+  const payload = JSON.parse(await area.inputValue());
+  expect(payload).not.toHaveProperty('profile_id');
+  expect(payload).not.toHaveProperty('record_id');
+  expect(payload).not.toHaveProperty('lifecycle');
+  payload.name = 'Maya Revised';
+  payload.reason = 'Update execution defaults';
+  await area.fill(JSON.stringify(payload, null, 2));
+  await dialog.getByRole('button', { name: 'Validate & create revision' }).click();
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.name).toBe('Maya Revised');
+  expect(saved.reason).toBe('Update execution defaults');
+  expect(saved).not.toHaveProperty('profile_id');
+  expect(saved).not.toHaveProperty('updated_by');
+});
+
+test('Team lifecycle archive requires impact confirmation and a reason', async ({ page }) => {
+  await mockApis(page);
+  let archived = null;
+  await page.route('**/api/agent-teams/delivery/archive', async (route) => {
+    archived = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ item: { ...teams[0], lifecycle: 'archived', revision: 4 } }),
+    });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
+  await team.getByRole('button', { name: 'Archive', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Archive Team' });
+  await expect(dialog).toContainText('Impact: 1 member(s); leader maya');
+  await dialog.locator('[data-reason]').fill('Retire superseded team');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click();
+  await expect.poll(() => archived).not.toBeNull();
+  expect(archived).toEqual({ reason: 'Retire superseded team' });
+});
+
+test('Team create and archived-team restore use canonical lifecycle endpoints', async ({ page }) => {
+  await mockApis(page);
+  let created = null;
+  let restored = null;
+  await page.route('**/api/agent-teams', async (route) => {
+    if (route.request().method() === 'POST') {
+      created = route.request().postDataJSON();
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: { ...created, revision: 1, lifecycle: 'active' } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route('**/api/agent-teams/legacy-team/restore', async (route) => {
+    restored = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ item: { ...teams[1], lifecycle: 'active', revision: 2 } }),
+    });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  await page.getByRole('button', { name: 'Create Team' }).click();
+  const createDialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Create Team' });
+  await createDialog.locator('[data-payload]').fill(JSON.stringify({
+    team_id: 'review',
+    name: 'Review Team',
+    description: 'Review workflow',
+    leader_profile_id: 'maya',
+    reason: 'Create review team',
+  }, null, 2));
+  await createDialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect.poll(() => created).not.toBeNull();
+  expect(created.team_id).toBe('review');
+  expect(created.leader_profile_id).toBe('maya');
+
+  const legacy = page.locator('.collab-team-card').filter({ hasText: 'Legacy Team' });
+  await legacy.getByRole('button', { name: 'Restore', exact: true }).click();
+  const restoreDialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Restore Team' });
+  await restoreDialog.locator('[data-reason]').fill('Restore for new work');
+  await restoreDialog.locator('[data-confirm]').check();
+  await restoreDialog.getByRole('button', { name: 'Confirm restore' }).click();
+  await expect.poll(() => restored).not.toBeNull();
+  expect(restored).toEqual({ reason: 'Restore for new work' });
+});
+
+test('Agent Profile history exposes immutable revision provenance', async ({ page }) => {
+  await mockApis(page);
+  await page.route('**/api/agent-profiles/maya/revisions', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      count: 2,
+      items: [
+        { ...profiles[0], revision: 3, record_id: 'profile-rev-3', updated_by: 'human-2', updated_at: 1780000000, change_reason: 'Prior policy' },
+        { ...profiles[0], revision: 4, record_id: 'profile-rev-4', updated_by: 'human-1', updated_at: 1790000000, change_reason: 'Current policy' },
+      ],
+    }),
+  }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await maya.getByRole('button', { name: 'History', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Agent Profile revision history' });
+  await expect(dialog).toContainText('Revision 4');
+  await expect(dialog).toContainText('profile-rev-4');
+  await expect(dialog).toContainText('human-1');
+  await expect(dialog).toContainText('Current policy');
+});
+
 test('Agent execution/provider details load lazily and remain secondary to stable identity', async ({ page }) => {
   await mockApis(page);
   let executionRequests = 0;
