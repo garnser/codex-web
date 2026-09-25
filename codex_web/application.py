@@ -308,6 +308,7 @@ from codex_web.services.goal_decomposition_generation import (
     GoalDecompositionGenerationService,
 )
 from codex_web.services.goal_decompositions import GoalDecompositionService
+from codex_web.services.goal_continuation import GoalContinuationService
 from codex_web.services.goal_execution_bindings import GoalExecutionBindingService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
@@ -2142,6 +2143,32 @@ goal_execution_binding_service = GoalExecutionBindingService(
     goal_execution_binding_store,
     goal_service,
 )
+goal_continuation_service = GoalContinuationService(
+    goal_execution_binding_service,
+    goal_service,
+    agent_session_service,
+    owner_id=f"goal-continuation-{os.getpid()}",
+    autonomy=autonomy_controller,
+)
+
+_previous_runtime_usage_notifier = (
+    agent_runtime_telemetry_service.observation_notifier
+)
+
+def _notify_goal_continuation_runtime_usage(record):
+    if _previous_runtime_usage_notifier is not None:
+        _previous_runtime_usage_notifier(record)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(
+        goal_continuation_service.observe_runtime_usage(record)
+    )
+
+agent_runtime_telemetry_service.observation_notifier = (
+    _notify_goal_continuation_runtime_usage
+)
 decision_service.goals = goal_service
 
 business_kpi_store = BusinessKPIStore(state_store)
@@ -2253,6 +2280,7 @@ app.state.goal_store = goal_store
 app.state.goal_service = goal_service
 app.state.goal_execution_binding_store = goal_execution_binding_store
 app.state.goal_execution_binding_service = goal_execution_binding_service
+app.state.goal_continuation_service = goal_continuation_service
 app.state.goal_decomposition_store = goal_decomposition_store
 app.state.goal_decomposition_service = goal_decomposition_service
 app.state.goal_decomposition_generation_service = (
