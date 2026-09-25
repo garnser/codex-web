@@ -1,5 +1,6 @@
 import { request as apiRequest } from "./api_client.js";
 
+let activeProjectId = "";
 let catalog = {
   items: [],
   default_profile_id: "repository-write",
@@ -18,6 +19,7 @@ export function setCatalog(value) {
 }
 
 export async function load(projectId) {
+  activeProjectId = String(projectId || "").trim();
   try {
     setCatalog(await apiRequest(
       `/api/execution-profiles?project_id=${encodeURIComponent(projectId)}`,
@@ -64,7 +66,13 @@ export function render(profileId, escapeHtml) {
   const scratch = profile?.workspaceMode === "scratch";
   if (profile) {
     const capabilities = (profile.requiredWorkerCapabilities || []).join(", ") || "none";
-    summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(capabilities)}.${scratch ? " No mutable Git worktree is created." : ""}`;
+    const prefix = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+    const definitionsPath = `${prefix}/projects/${encodeURIComponent(activeProjectId || "home")}/definitions`;
+    const definition = catalog.definition;
+    const provenance = definition
+      ? ` Canonical definition: ${escapeHtml(definition.definition_id)}@r${escapeHtml(definition.revision)}.`
+      : "";
+    summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(capabilities)}.${scratch ? " No mutable Git worktree is created." : ""}${provenance} <a id="manage-execution-profiles" class="ghost-button" href="${escapeHtml(definitionsPath)}">Manage profiles in Definitions</a>`;
   } else {
     summary.textContent = "Execution profile metadata unavailable.";
   }
