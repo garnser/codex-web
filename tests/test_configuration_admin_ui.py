@@ -13,6 +13,9 @@ class ConfigurationAdminUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "configuration_admin.js").read_text(
             encoding="utf-8"
         )
+        resolution = (ROOT / "static" / "configuration_resolution.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="configuration-spec-list"', html)
         self.assertIn('id="configuration-category-filter"', html)
@@ -44,6 +47,11 @@ class ConfigurationAdminUiTests(unittest.TestCase):
         self.assertIn("Definition reference", javascript)
         self.assertIn("more_specific_overrides", javascript)
         self.assertIn("published_by", javascript)
+        self.assertIn("renderEffectiveConfiguration", javascript)
+        self.assertIn("resolution_chain", resolution)
+        self.assertIn("Resolution chain", resolution)
+        self.assertIn("Selected", resolution)
+        self.assertIn("Fallback", resolution)
         self.assertIn("codex:configuration-state-rendered", javascript)
         self.assertIn("does not grant RBAC", javascript)
         self.assertNotIn("/api/configuration/drafts", javascript)
