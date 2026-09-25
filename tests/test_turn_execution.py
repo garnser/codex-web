@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -12,7 +13,11 @@ from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import Project, ThreadRunSettings, TurnCreate, WorkItemState
 from codex_web.resources import RepositoryTargetSource
-from codex_web.runtime.execution import TurnExecutionService, install_turn_execution_service
+from codex_web.runtime.execution import (
+    TurnExecutionService,
+    _turn_failure_text,
+    install_turn_execution_service,
+)
 from codex_web.services.agent_routing import AgentRoutingError
 from codex_web.services.turns import TurnService
 from codex_web.services.thread_bootstrap_bindings import (
@@ -1370,6 +1375,47 @@ class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TurnExecutionInstallationTests(unittest.TestCase):
+    def test_turn_failure_text_reads_top_level_and_structured_turn_errors(self) -> None:
+        self.assertEqual(
+            _turn_failure_text({"params": {"error": " capacity unavailable "}}),
+            "capacity unavailable",
+        )
+        self.assertEqual(
+            _turn_failure_text(
+                {
+                    "params": {
+                        "turn": {
+                            "error": {
+                                "message": "usage limit reached",
+                                "codexErrorInfo": "usageLimitExceeded",
+                            }
+                        }
+                    }
+                }
+            ),
+            "usage limit reached",
+        )
+
+    def test_successful_terminal_turn_does_not_require_compatibility_helper(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        service.terminal_failures["thread-1"] = deque([(1.0, "old failure")])
+        service.last_inputs["thread-1"] = {"message": "retry"}
+
+        recovery_scheduled = service.record_terminal_turn_result(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {"id": "turn-1", "status": "completed"},
+                },
+            }
+        )
+
+        self.assertFalse(recovery_scheduled)
+        self.assertNotIn("thread-1", service.terminal_failures)
+        self.assertNotIn("thread-1", service.last_inputs)
+
     def test_installer_rebinds_execution_entrypoints_and_registries(self) -> None:
         app = FastAPI()
         host = _Host()
