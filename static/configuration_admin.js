@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { renderEffectiveConfiguration } = await import(`${BASE}/static/configuration_resolution.js`);
   const SCOPE_PRECEDENCE = ["deployment", "global", "organization", "workspace", "project", "resource"];
   let specs = [];
   let records = [];
@@ -168,16 +169,11 @@
   }
   function renderEffective(effective) {
     const host = document.getElementById("configuration-resolve-result");
-    if (!host) return;
-    const spec = specFor(effective.key);
-    host.innerHTML = `<div class="comm-entry">
-      <strong>${escapeHtml(effective.key)} · source ${escapeHtml(effective.source)} · reason ${escapeHtml(effective.reason)}</strong>
-      <small>Effective value: ${escapeHtml(valueText(effective.value, spec))}</small>
-      <small>Record: ${escapeHtml(effective.record_id || "default/unset")} · revision: ${escapeHtml(effective.revision ?? "none")} · scope: ${escapeHtml(effective.scope_type || "default")}${effective.scope_id ? `:${escapeHtml(effective.scope_id)}` : ""}</small>
-      <small>Published by: ${escapeHtml(effective.published_by || "none")} · ${timeText(effective.published_at)}${effective.publish_reason ? ` · reason: ${escapeHtml(effective.publish_reason)}` : ""}</small>
-      <small>Hot reloadable: ${effective.hot_reloadable ? "yes" : "no"} · Startup only: ${effective.startup_only ? "yes" : "no"} · Feature flag: ${effective.feature_flag ? "yes" : "no"}</small>
-    </div>`;
+    if (host) host.innerHTML = renderEffectiveConfiguration(effective, {
+      escapeHtml, timeText, valueText, spec: specFor(effective.key),
+    });
   }
+
   async function resolveEffective() {
     const key = document.getElementById("configuration-resolve-key")?.value || "";
     if (!key) return setStatus("Choose a registered configuration key.");
