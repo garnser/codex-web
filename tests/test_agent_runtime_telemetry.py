@@ -10,6 +10,7 @@ from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
     AgentRuntimeSessionRequest,
+    AgentSessionStatus,
 )
 from codex_web.agent_runtime_usage import (
     RuntimeTelemetryCompleteness,
@@ -149,6 +150,8 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
         self.assertEqual(record.runtime_duration_seconds, 2.5)
         self.assertEqual(record.telemetry_completeness, RuntimeTelemetryCompleteness.PARTIAL)
         self.assertEqual(record.terminal_outcome, RuntimeTerminalOutcome.SUCCEEDED)
+        persisted_session = self.sessions.get(self.session.id)
+        self.assertEqual(persisted_session.status, AgentSessionStatus.READY)
         self.assertEqual(record.observed_model_ids, ("claude-test",))
         self.assertEqual(record.runtime_version, "2.1.276")
         self.assertEqual(record.provider_request_ids, ("req-1",))
