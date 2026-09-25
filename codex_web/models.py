@@ -212,6 +212,7 @@ class ThreadRunSettings(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     developer_instructions: str | None = None
     repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
 

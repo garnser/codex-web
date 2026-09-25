@@ -776,6 +776,103 @@ h1 {
   justify-content: flex-end;
 }
 
+.thread-control-menu {
+  position: relative;
+}
+
+.thread-control-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.thread-control-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thread-control-menu[open] > summary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.thread-control-popover {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(72vh, 620px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  padding: 14px;
+}
+
+.thread-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.thread-settings-grid label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.thread-settings-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.thread-settings-grid select[multiple] {
+  min-height: 86px;
+}
+
+.thread-settings-popover .repository-target-status,
+.thread-settings-popover .sandbox-danger-warning {
+  display: block;
+  max-width: none;
+  margin-top: 10px;
+}
+
+.thread-settings-popover .sandbox-danger-warning {
+  display: none;
+}
+
+.thread-profile-details {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.thread-profile-details > summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.thread-profile-details .execution-profile-summary {
+  display: block;
+  max-width: none;
+  margin-top: 8px;
+}
+
+.thread-actions-popover {
+  width: 190px;
+  display: grid;
+  gap: 8px;
+}
+
+.thread-actions-popover button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
 .execution-profile-summary {
   max-width: 360px;
   color: var(--muted);
@@ -823,7 +920,8 @@ h1 {
   border-color: var(--danger);
 }
 
-#repository-read-context {
+#repository-read-context,
+#repository-write-targets {
   height: 36px;
   min-width: 110px;
 }
@@ -837,7 +935,7 @@ h1 {
   line-height: 1.25;
 }
 
-#sandbox:has(option[value="danger-full-access"]:checked) + .sandbox-danger-warning {
+.thread-settings-popover:has(#sandbox option[value="danger-full-access"]:checked) .sandbox-danger-warning {
   display: inline;
 }
 

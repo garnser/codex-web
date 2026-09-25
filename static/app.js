@@ -7,6 +7,7 @@ import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
 import*as rtui from"./repository_target_ui.js";
+import*as tsui from"./thread_settings_ui.js";
 
 const state={
   projects: [],
@@ -193,15 +194,7 @@ function savedProjectSettings(projectId=state.projectId){return loadProjectSetti
 function currentRunSettings() {
   const project = activeProject();
   const saved = savedProjectSettings(project?.id || state.projectId);
-  return {
-    sandbox: saved.sandbox || project?.sandbox || "workspace-write",
-    approvalPolicy: saved.approvalPolicy || project?.approval_policy || "on-request",
-    profileId:saved.profileId||ep.defaultId(),
-    repositoryResourceId: saved.repositoryResourceId || "",
-    readOnlyRepositoryResourceIds: Array.isArray(saved.readOnlyRepositoryResourceIds)
-      ? saved.readOnlyRepositoryResourceIds
-      : [],
-  };
+  return tsui.effectiveSettings({project,saved,thread:threadRunSettings(),defaultProfileId:ep.defaultId()});
 }
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
@@ -243,6 +236,13 @@ function applyRunSettings() {
   const settings = currentRunSettings();
   $("sandbox").value = settings.sandbox;
   $("approval-policy").value = settings.approvalPolicy;
+  const thread = threadRunSettings();
+  if ($("thread-model-setting")) {
+    $("thread-model-setting").innerHTML = renderModelOptions(thread.model || "");
+  }
+  if ($("thread-reasoning-setting")) {
+    $("thread-reasoning-setting").innerHTML = renderReasoningOptions(thread.reasoning_effort || "");
+  }
   if ($("repository-target")) $("repository-target").value = settings.repositoryResourceId;
   ep.render(settings.profileId, escapeHtml);
 }
@@ -256,6 +256,10 @@ function persistRunSettings() {
     approvalPolicy: $("approval-policy").value,
     profileId:$("execution-profile")?.value||ep.defaultId(),
     repositoryResourceId: $("repository-target")?.value || "",
+    writableRepositoryResourceIds: Array.from(
+      $("repository-write-targets")?.selectedOptions || [],
+      (option) => option.value,
+    ),
     readOnlyRepositoryResourceIds: Array.from(
       $("repository-read-context")?.selectedOptions || [],
       (option) => option.value,
@@ -264,46 +268,18 @@ function persistRunSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(allSettings));
 }
 
-async function syncThreadRunSettings() {
-  if (!state.threadId) return;
-  const settings = currentRunSettings();
-  const response = await api(`/api/threads/${state.threadId}/settings`, {
-    method: "POST",
-    body: JSON.stringify({
-      sandbox: settings.sandbox,
-      approval_policy: settings.approvalPolicy,
-    }),
-  });
-  state.threadSettings[state.threadId] = {
-    ...threadRunSettings(state.threadId),
-    sandbox: response.sandbox || null,
-    approval_policy: response.approval_policy || null,
-    model: response.model || null,
-    reasoning_effort: response.reasoning_effort || null,
-  };
-  renderThreads();
-}
-
 async function updateThreadRunSettings(threadId, updates) {
   if (!threadId) return;
   const current = threadRunSettings(threadId);
   const response = await api(`/api/threads/${threadId}/settings`, {
     method: "POST",
-    body: JSON.stringify({
-      sandbox: current.sandbox || null,
-      approval_policy: current.approval_policy || null,
-      model: current.model || "",
-      reasoning_effort: current.reasoning_effort || "",
-      ...updates,
-    }),
+    body: JSON.stringify(tsui.updatePayload(current,updates)),
   });
-  state.threadSettings[threadId] = {
-    ...current,
-    sandbox: response.sandbox || current.sandbox || null,
-    approval_policy: response.approval_policy || current.approval_policy || null,
-    model: response.model || null,
-    reasoning_effort: response.reasoning_effort || null,
-  };
+  state.threadSettings[threadId] = tsui.responseSettings(current,response);
+  if (threadId === state.threadId) {
+    applyRunSettings();
+    renderRepositoryTargets();
+  }
   renderThreads();
 }
 
@@ -1307,6 +1283,8 @@ async function saveBotIntegration(event) {
 
 async function loadThread(threadId) {
   state.threadId = threadId;
+  applyRunSettings();
+  renderRepositoryTargets();
   updateWaitingFromState();
   renderTokenUsage();
   const history = threadHistoryController();
@@ -2282,6 +2260,7 @@ $("send").addEventListener("click", sendPrompt);
 $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });
+tsui.install({byId:$,activeThreadId:()=>state.threadId,updateThread:updateThreadRunSettings,persistDefaults:persistRunSettings,defaultProfileId:ep.defaultId,renderProfile:(id)=>ep.render(id,escapeHtml),renderRepositories:renderRepositoryTargets});
 $("developer-panel").addEventListener("toggle", () => {
   if (!developerPanelOpen()) return;
   renderCommunicationLog();
@@ -2309,21 +2288,8 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
-$("execution-profile").addEventListener("change",()=>{persistRunSettings();ep.render(currentRunSettings().profileId,escapeHtml);renderRepositoryTargets();});
-$("repository-target").addEventListener("change", () => {
-  persistRunSettings();
-  renderRepositoryTargets();
-});
-$("repository-read-context").addEventListener("change", persistRunSettings);
-$("sandbox").addEventListener("change", () => {
-  persistRunSettings();
-  syncThreadRunSettings().catch(console.error);
-});
-$("approval-policy").addEventListener("change", () => {
-  persistRunSettings();
-  syncThreadRunSettings().catch(console.error);
-});
 $("rename-thread").addEventListener("click", renameThread);
+$("rename-thread").addEventListener("click",()=>{$("thread-actions-menu").open=false;});
 $("prompt").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   if (event.altKey) return;
@@ -2339,6 +2305,7 @@ $("thread-search").addEventListener("input", () => {
   }, 180);
 });
 $("archive-thread").addEventListener("click", async () => {
+  $("thread-actions-menu").open=false;
   if (!state.threadId) return;
   await api(`/api/threads/${state.threadId}/archive`, { method: "POST" });
   state.threadId = null;
