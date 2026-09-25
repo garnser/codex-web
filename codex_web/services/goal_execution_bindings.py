@@ -7,6 +7,7 @@ from codex_web.goal_execution_bindings import (
     GoalExecutionBindingCreate,
     GoalExecutionBindingEvent,
     GoalExecutionBindingState,
+    GoalExecutionBindingStatus,
     GoalExecutionBindingUpdate,
 )
 from codex_web.identity import TenantScope
@@ -223,6 +224,178 @@ class GoalExecutionBindingService:
                     event_type=f"binding_{result.status.value}",
                     actor_id=actor_id,
                     reason=payload.reason,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        assert result is not None
+        return result
+
+    def claim_continuation(
+        self,
+        binding_id: str,
+        *,
+        scope: TenantScope,
+        owner_id: str,
+        lease_seconds: float = 60.0,
+        now: float | None = None,
+    ) -> GoalExecutionBinding | None:
+        current_time = time.time() if now is None else float(now)
+        duration = max(1.0, float(lease_seconds))
+        result: GoalExecutionBinding | None = None
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if current.status.value in {"completed", "cancelled", "blocked"}:
+                return state
+            if (
+                current.retry_not_before_at is not None
+                and current.retry_not_before_at > current_time
+            ):
+                return state
+            lease_active = (
+                current.lease_owner_id is not None
+                and current.lease_expires_at is not None
+                and current.lease_expires_at > current_time
+            )
+            if lease_active and current.lease_owner_id != owner_id:
+                return state
+            result = current.model_copy(
+                update={
+                    "status": GoalExecutionBindingStatus.ACTIVE,
+                    "lease_owner_id": owner_id,
+                    "lease_expires_at": current_time + duration,
+                    "heartbeat_at": current_time,
+                    "retry_not_before_at": None,
+                    "updated_by": owner_id,
+                    "change_reason": "continuation lease claimed",
+                    "updated_at": current_time,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            state.events.append(
+                GoalExecutionBindingEvent(
+                    binding_id=binding_id,
+                    goal_id=current.goal_id,
+                    event_type="binding_continuation_claimed",
+                    actor_id=owner_id,
+                    reason="continuation lease claimed",
+                    occurred_at=current_time,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        return result
+
+    def heartbeat_continuation(
+        self,
+        binding_id: str,
+        *,
+        scope: TenantScope,
+        owner_id: str,
+        lease_seconds: float = 60.0,
+        now: float | None = None,
+    ) -> GoalExecutionBinding:
+        current_time = time.time() if now is None else float(now)
+        duration = max(1.0, float(lease_seconds))
+        result: GoalExecutionBinding | None = None
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if current.lease_owner_id != owner_id:
+                raise GoalExecutionBindingConflictError(
+                    "continuation lease is owned by another worker"
+                )
+            if (
+                current.lease_expires_at is not None
+                and current.lease_expires_at <= current_time
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "continuation lease has expired"
+                )
+            result = current.model_copy(
+                update={
+                    "lease_expires_at": current_time + duration,
+                    "heartbeat_at": current_time,
+                    "updated_by": owner_id,
+                    "change_reason": "continuation lease heartbeat",
+                    "updated_at": current_time,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            return state
+
+        self.store.update(apply)
+        assert result is not None
+        return result
+
+    def release_continuation(
+        self,
+        binding_id: str,
+        *,
+        scope: TenantScope,
+        owner_id: str,
+        status: GoalExecutionBindingStatus,
+        reason: str,
+        retry_after_seconds: float | None = None,
+        increment_recovery: bool = False,
+        now: float | None = None,
+    ) -> GoalExecutionBinding:
+        current_time = time.time() if now is None else float(now)
+        result: GoalExecutionBinding | None = None
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if current.lease_owner_id != owner_id:
+                raise GoalExecutionBindingConflictError(
+                    "continuation lease is owned by another worker"
+                )
+            retry_at = (
+                current_time + max(0.0, float(retry_after_seconds))
+                if retry_after_seconds is not None
+                else None
+            )
+            result = current.model_copy(
+                update={
+                    "status": status,
+                    "lease_owner_id": None,
+                    "lease_expires_at": None,
+                    "heartbeat_at": current_time,
+                    "retry_not_before_at": retry_at,
+                    "stop_reason": reason,
+                    "recovery_attempts": (
+                        current.recovery_attempts + 1
+                        if increment_recovery
+                        else current.recovery_attempts
+                    ),
+                    "updated_by": owner_id,
+                    "change_reason": reason,
+                    "updated_at": current_time,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            state.events.append(
+                GoalExecutionBindingEvent(
+                    binding_id=binding_id,
+                    goal_id=current.goal_id,
+                    event_type=f"binding_{result.status.value}",
+                    actor_id=owner_id,
+                    reason=reason,
+                    occurred_at=current_time,
                 )
             )
             return state

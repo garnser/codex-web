@@ -188,6 +188,162 @@ class GoalExecutionBindingTests(unittest.TestCase):
             (),
         )
 
+    def test_continuation_lease_prevents_concurrent_owners_and_allows_expired_takeover(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+
+        first = self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            lease_seconds=30,
+            now=100.0,
+        )
+        self.assertIsNotNone(first)
+        self.assertEqual(first.lease_owner_id, "worker-a")
+        self.assertEqual(first.lease_expires_at, 130.0)
+
+        denied = self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-b",
+            lease_seconds=30,
+            now=120.0,
+        )
+        self.assertIsNone(denied)
+
+        takeover = self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-b",
+            lease_seconds=30,
+            now=131.0,
+        )
+        self.assertIsNotNone(takeover)
+        self.assertEqual(takeover.lease_owner_id, "worker-b")
+        self.assertEqual(takeover.lease_expires_at, 161.0)
+
+    def test_continuation_heartbeat_requires_current_unexpired_owner(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            lease_seconds=30,
+            now=100.0,
+        )
+
+        heartbeat = self.service.heartbeat_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            lease_seconds=30,
+            now=110.0,
+        )
+        self.assertEqual(heartbeat.heartbeat_at, 110.0)
+        self.assertEqual(heartbeat.lease_expires_at, 140.0)
+
+        with self.assertRaises(GoalExecutionBindingConflictError):
+            self.service.heartbeat_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-b",
+                now=111.0,
+            )
+
+        with self.assertRaises(GoalExecutionBindingConflictError):
+            self.service.heartbeat_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-a",
+                now=141.0,
+            )
+
+    def test_failed_attempt_releases_lease_and_enforces_retry_backoff(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            now=100.0,
+        )
+
+        failed = self.service.release_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            status=GoalExecutionBindingStatus.FAILED,
+            reason="runtime turn failed",
+            retry_after_seconds=20,
+            increment_recovery=True,
+            now=105.0,
+        )
+        self.assertIsNone(failed.lease_owner_id)
+        self.assertIsNone(failed.lease_expires_at)
+        self.assertEqual(failed.retry_not_before_at, 125.0)
+        self.assertEqual(failed.recovery_attempts, 1)
+
+        self.assertIsNone(
+            self.service.claim_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-b",
+                now=124.0,
+            )
+        )
+        retry = self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-b",
+            now=125.0,
+        )
+        self.assertIsNotNone(retry)
+        self.assertEqual(retry.lease_owner_id, "worker-b")
+
+    def test_terminal_and_blocked_bindings_cannot_be_claimed(self) -> None:
+        for status in (
+            GoalExecutionBindingStatus.COMPLETED,
+            GoalExecutionBindingStatus.CANCELLED,
+            GoalExecutionBindingStatus.BLOCKED,
+        ):
+            item = self.service.create(
+                "goal-a",
+                self.payload(agent_session_id=f"session-{status.value}"),
+                scope=self.scope,
+                actor_id="admin",
+            )
+            item = self.service.update(
+                item.id,
+                GoalExecutionBindingUpdate(
+                    status=status,
+                    reason=f"set {status.value}",
+                ),
+                scope=self.scope,
+                actor_id="admin",
+            )
+            self.assertIsNone(
+                self.service.claim_continuation(
+                    item.id,
+                    scope=self.scope,
+                    owner_id="worker-a",
+                    now=100.0,
+                )
+            )
+
     def test_tenant_isolation_and_duplicate_active_session_binding(self) -> None:
         item = self.service.create(
             "goal-a",

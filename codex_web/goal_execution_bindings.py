@@ -84,8 +84,10 @@ class GoalExecutionBinding(BaseModel):
     last_turn_id: str | None = None
     last_execution_id: str | None = None
     stop_reason: str | None = None
+    lease_owner_id: str | None = None
     lease_expires_at: float | None = None
     heartbeat_at: float | None = None
+    retry_not_before_at: float | None = None
     recovery_attempts: int = Field(default=0, ge=0)
     created_by: str = Field(min_length=1)
     updated_by: str = Field(min_length=1)
