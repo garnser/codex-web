@@ -114,6 +114,10 @@ class GoalExecutionBinding(BaseModel):
     created_by: str = Field(min_length=1)
     updated_by: str = Field(min_length=1)
     change_reason: str = Field(min_length=1)
+    created_correlation_id: str | None = None
+    created_causation_id: str | None = None
+    updated_correlation_id: str | None = None
+    updated_causation_id: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -127,6 +131,8 @@ class GoalExecutionBindingEvent(BaseModel):
     event_type: str
     actor_id: str
     reason: str
+    correlation_id: str | None = None
+    causation_id: str | None = None
     occurred_at: float = Field(default_factory=time.time)
 
 
