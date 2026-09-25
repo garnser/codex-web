@@ -20,6 +20,7 @@ The v1 code-owned taxonomy includes:
 - model inference
 - agent execution
 - persistent/resumable sessions
+- native execution objectives/goals
 - streaming
 - interrupt/cancel
 - filesystem editing
@@ -80,3 +81,23 @@ Unavailable/incompatible/disabled providers fail closed. Missing requested capab
 AgentRuntimeAdapter and AgentSession own execution-session behavior, while the routing policy owns model/runtime selection. Those layers must consume effective AgentProvider capabilities and must not route from raw declarations.
 
 The provider layer intentionally does not execute actions, start sessions, reveal credentials, or authorize resource access. Those remain behind canonical runtime/worker, identity, policy, ApprovalRequest, ActionIntent, resource, secret and data-governance boundaries.
+
+
+## Native execution objectives
+
+`NATIVE_EXECUTION_OBJECTIVES` is capability-gated runtime functionality, not
+canonical Goal authority. When effective, the AgentSession boundary may create,
+inspect, update, or clear the provider-native objective through the supported
+runtime protocol. codex-web never reads provider-private persistence such as local
+SQLite files to infer this state.
+
+Native objective discovery is read-only until an authorized operator explicitly
+attaches the session to a canonical Goal or promotes its objective text into a draft
+Goal. A runtime that lacks the capability returns explicit unsupported behavior and
+continues to participate through canonical GoalExecutionBinding checkpoints and
+persistent AgentSession continuation.
+
+Provider-native completion/failure events are runtime observations. They may update
+the execution projection and trigger bounded continuation/recovery, but they cannot
+mutate canonical Goal completion, budgets, approvals, authority, Work Graph state,
+Evidence, ActionIntent, sandbox, or resource policy.
