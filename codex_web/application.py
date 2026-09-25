@@ -309,6 +309,9 @@ from codex_web.services.goal_decomposition_generation import (
 )
 from codex_web.services.goal_decompositions import GoalDecompositionService
 from codex_web.services.goal_execution_bindings import GoalExecutionBindingService
+from codex_web.services.goal_continuation import GoalContinuationService
+from codex_web.services.goal_continuation_events import GoalContinuationEventService
+from codex_web.services.goal_continuation_recovery import GoalContinuationRecoveryService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.orchestration_inspector import OrchestrationInspectorService
@@ -2142,6 +2145,84 @@ goal_execution_binding_service = GoalExecutionBindingService(
     goal_execution_binding_store,
     goal_service,
 )
+goal_continuation_service = GoalContinuationService(
+    goal_execution_binding_service,
+    goal_service,
+    agent_session_service,
+    owner_id=f"{instance_id}:goal-continuation",
+)
+goal_continuation_recovery_service = GoalContinuationRecoveryService(
+    goal_execution_binding_service,
+    goal_continuation_service,
+)
+goal_continuation_event_service = GoalContinuationEventService(
+    goal_execution_binding_service,
+    agent_session_service,
+    goal_continuation_service,
+)
+app.state.goal_continuation_service = goal_continuation_service
+app.state.goal_continuation_recovery_service = goal_continuation_recovery_service
+app.state.goal_continuation_event_service = goal_continuation_event_service
+
+
+async def _recover_goal_continuations_on_startup() -> None:
+    scopes = {
+        (item.organization_id, item.workspace_id)
+        for item in goal_execution_binding_store.load().bindings
+    }
+    for organization_id, workspace_id in sorted(scopes):
+        await goal_continuation_recovery_service.recover_scope(
+            scope=TenantScope(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        )
+
+
+app.add_event_handler("startup", _recover_goal_continuations_on_startup)
+
+
+def _subscribe_goal_continuation_events(
+    adapter,
+    *,
+    provider_id: str,
+    runtime_id: str,
+):
+    def listener(event) -> None:
+        native_session_id = event.provider_native_session_id
+        if not native_session_id:
+            return
+        matches = [
+            session
+            for session in agent_session_store.list()
+            if session.provider_native_session_id == native_session_id
+            and session.provider_id == provider_id
+            and session.runtime_id == runtime_id
+        ]
+        if len(matches) != 1:
+            return
+        session = matches[0]
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            goal_continuation_event_service.handle_event(
+                event,
+                scope=TenantScope(
+                    organization_id=session.organization_id,
+                    workspace_id=session.workspace_id,
+                ),
+            )
+        )
+
+    return adapter.subscribe_events(listener)
+
+
+goal_continuation_event_unsubscribers = []
+app.state.goal_continuation_event_unsubscribers = (
+    goal_continuation_event_unsubscribers
+)
 decision_service.goals = goal_service
 
 business_kpi_store = BusinessKPIStore(state_store)
@@ -2383,6 +2464,13 @@ provider_capacity_service.register_probe(
     app.state.codex_agent_runtime_adapter.capacity_snapshot,
 )
 agent_runtime_telemetry_service.subscribe(app.state.codex_agent_runtime_adapter)
+goal_continuation_event_unsubscribers.append(
+    _subscribe_goal_continuation_events(
+        app.state.codex_agent_runtime_adapter,
+        provider_id="openai",
+        runtime_id="codex",
+    )
+)
 
 codex_cli_agent_adapter = CodexCliAgentRuntimeAdapter()
 agent_runtime_registry.register(
@@ -2397,6 +2485,13 @@ app.state.codex_cli_agent_runtime_adapter = agent_runtime_registry.get(
 )
 agent_runtime_telemetry_service.subscribe(
     app.state.codex_cli_agent_runtime_adapter
+)
+goal_continuation_event_unsubscribers.append(
+    _subscribe_goal_continuation_events(
+        app.state.codex_cli_agent_runtime_adapter,
+        provider_id="openai",
+        runtime_id="codex-cli",
+    )
 )
 
 if not any(
@@ -2472,6 +2567,13 @@ app.state.claude_agent_runtime_adapter = agent_runtime_registry.get(
     "claude-code",
 )
 agent_runtime_telemetry_service.subscribe(app.state.claude_agent_runtime_adapter)
+goal_continuation_event_unsubscribers.append(
+    _subscribe_goal_continuation_events(
+        app.state.claude_agent_runtime_adapter,
+        provider_id="anthropic",
+        runtime_id="claude-code",
+    )
+)
 # Bot connection/binding lookup is needed by thread settings and collaboration.
 bot_connection_service = install_bot_connection_service(
     app,
