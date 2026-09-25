@@ -320,6 +320,7 @@ class GoalExecutionBindingTests(unittest.TestCase):
             GoalExecutionBindingStatus.COMPLETED,
             GoalExecutionBindingStatus.CANCELLED,
             GoalExecutionBindingStatus.BLOCKED,
+            GoalExecutionBindingStatus.UNKNOWN,
         ):
             item = self.service.create(
                 "goal-a",
