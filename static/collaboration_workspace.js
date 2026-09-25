@@ -6,6 +6,7 @@ import {
   statusBadge,
   timeline,
 } from "./workspace_components.js";
+import { managementActions, openEditor } from "./collaboration_management.js";
 
 const state = { profiles: [], teams: [], skills: [], loaded: false };
 
@@ -146,7 +147,7 @@ async function loadAgentDetails(profile, details) {
   }
 }
 
-function agentCard(profile) {
+function agentCard(profile, onChanged) {
   const article = el("article", "collab-card collab-agent-card");
   const head = el("div", "collab-card-head");
   const identity = agentIdentity(profile);
@@ -168,6 +169,14 @@ function agentCard(profile) {
     { label: "Revision", value: profile.revision },
     { label: "Skills", node: skillManagement },
   ]));
+  const teamRefs = state.teams.filter((team) => (
+    team.leader_profile_id === profile.profile_id
+    || (team.members || []).some((member) => member.profile_id === profile.profile_id)
+  ));
+  article.appendChild(managementActions("profile", profile, {
+    usage: teamRefs.length ? `Referenced by ${teamRefs.length} Team(s): ${teamRefs.map((team) => team.name || team.team_id).join(", ")}.` : "No Team references found.",
+    onChanged,
+  }));
   const details = el("details", "collab-agent-context");
   const summary = el("summary", "", "Work, access and execution context");
   const body = el("div", "collab-agent-details");
@@ -180,7 +189,7 @@ function agentCard(profile) {
   return article;
 }
 
-function teamCard(team, profilesById) {
+function teamCard(team, profilesById, onChanged) {
   const article = el("article", "collab-card collab-team-card");
   article.appendChild(teamIdentity(team));
   if (team.description) article.appendChild(el("p", "collab-description", team.description));
@@ -204,6 +213,10 @@ function teamCard(team, profilesById) {
     roster.appendChild(row);
   }
   article.appendChild(roster);
+  article.appendChild(managementActions("team", team, {
+    usage: `${members.length} member(s); leader ${team.leader_profile_id || "unset"}.`,
+    onChanged,
+  }));
   article.appendChild(metadataGrid([
     { label: "Revision", value: team.revision },
     { label: "Max participants", value: team.budgets?.max_participants },
@@ -254,14 +267,14 @@ function render(card) {
   if (!state.profiles.length) {
     agents.appendChild(statePanel({ kind: "empty", title: "No Agent Profiles", detail: "No visible canonical Agent Profiles exist in this workspace." }));
   } else {
-    state.profiles.forEach((profile) => agents.appendChild(agentCard(profile)));
+    state.profiles.forEach((profile) => agents.appendChild(agentCard(profile, () => refresh(card))));
   }
 
   const profilesById = new Map(state.profiles.map((profile) => [profile.profile_id, profile]));
   if (!state.teams.length) {
     teams.appendChild(statePanel({ kind: "empty", title: "No Teams", detail: "No visible canonical Agent Teams exist in this workspace." }));
   } else {
-    state.teams.forEach((team) => teams.appendChild(teamCard(team, profilesById)));
+    state.teams.forEach((team) => teams.appendChild(teamCard(team, profilesById, () => refresh(card))));
   }
 
   const consumers = skillConsumers();
@@ -315,12 +328,14 @@ function install() {
       <button type="button" class="ghost-button" data-collab-refresh>Refresh</button>
     </div>
     <div class="collab-status" data-collab-status role="status" aria-live="polite">Not loaded.</div>
-    <section class="collab-section"><h3>Agents</h3><div class="collab-grid" data-collab-agents></div></section>
-    <section class="collab-section"><h3>Teams</h3><div class="collab-grid" data-collab-teams></div></section>
+    <section class="collab-section"><div class="section-title"><h3>Agents</h3><button type="button" class="ghost-button" data-create-agent>Create Agent Profile</button></div><div class="collab-grid" data-collab-agents></div></section>
+    <section class="collab-section"><div class="section-title"><h3>Teams</h3><button type="button" class="ghost-button" data-create-team>Create Team</button></div><div class="collab-grid" data-collab-teams></div></section>
     <section class="collab-section"><h3>Skill consumers</h3><div class="collab-skill-grid" data-collab-skills></div></section>
   `;
   grid.appendChild(card);
   card.querySelector("[data-collab-refresh]").addEventListener("click", () => void refresh(card));
+  card.querySelector("[data-create-agent]").addEventListener("click", () => openEditor("profile", null, { onChanged: () => refresh(card) }));
+  card.querySelector("[data-create-team]").addEventListener("click", () => openEditor("team", null, { onChanged: () => refresh(card) }));
   void refresh(card);
 }
 
