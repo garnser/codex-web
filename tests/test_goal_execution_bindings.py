@@ -12,6 +12,7 @@ from codex_web.goal_execution_bindings import (
 )
 from codex_web.goals import GoalRecord, GoalWorkGraphBinding
 from codex_web.identity import TenantScope
+from codex_web.observability import correlated
 from codex_web.services.goal_execution_bindings import (
     GoalExecutionBindingConflictError,
     GoalExecutionBindingNotFoundError,
@@ -85,6 +86,64 @@ class GoalExecutionBindingTests(unittest.TestCase):
         }
         values.update(changes)
         return GoalExecutionBindingCreate(**values)
+
+    def test_binding_and_events_preserve_correlation_and_causation(self) -> None:
+        with correlated(
+            correlation_id="corr-create",
+            causation_id="cause-create",
+        ):
+            item = self.service.create(
+                "goal-a",
+                self.payload(),
+                scope=self.scope,
+                actor_id="admin",
+            )
+
+        self.assertEqual(item.created_correlation_id, "corr-create")
+        self.assertEqual(item.created_causation_id, "cause-create")
+        self.assertEqual(item.updated_correlation_id, "corr-create")
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(events[-1].correlation_id, "corr-create")
+        self.assertEqual(events[-1].causation_id, "cause-create")
+
+        with correlated(
+            correlation_id="corr-update",
+            causation_id="cause-update",
+        ):
+            changed = self.service.update(
+                item.id,
+                GoalExecutionBindingUpdate(
+                    status=GoalExecutionBindingStatus.IDLE,
+                    reason="operator reviewed runtime state",
+                ),
+                scope=self.scope,
+                actor_id="admin",
+            )
+
+        self.assertEqual(changed.updated_correlation_id, "corr-update")
+        self.assertEqual(changed.updated_causation_id, "cause-update")
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(events[-1].correlation_id, "corr-update")
+        self.assertEqual(events[-1].causation_id, "cause-update")
+
+        with correlated(
+            correlation_id="corr-claim",
+            causation_id="cause-claim",
+        ):
+            claimed = self.service.claim_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-a",
+                now=100.0,
+            )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.updated_correlation_id, "corr-claim")
+        self.assertEqual(claimed.updated_causation_id, "cause-claim")
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(events[-1].event_type, "binding_continuation_claimed")
+        self.assertEqual(events[-1].correlation_id, "corr-claim")
+        self.assertEqual(events[-1].causation_id, "cause-claim")
 
     def test_binding_pins_canonical_revision_and_runtime_provenance(self) -> None:
         item = self.service.create(
