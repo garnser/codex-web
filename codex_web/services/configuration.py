@@ -9,6 +9,7 @@ from codex_web.configuration import (
     ConfigurationLifecycle,
     ConfigurationPublishRequest,
     ConfigurationRecord,
+    ConfigurationResolutionStep,
     ConfigurationResetRequest,
     ConfigurationRollbackRequest,
     ConfigurationScope,
@@ -423,6 +424,49 @@ class ConfigurationService:
             return True
         return bool(expected and expected == record.scope_id)
 
+    @staticmethod
+    def _resolution_chain(
+        spec: ConfigurationSpec,
+        candidates: list[ConfigurationRecord],
+        selected: ConfigurationRecord | None,
+    ) -> tuple[ConfigurationResolutionStep, ...]:
+        ordered = sorted(
+            candidates,
+            key=lambda record: (
+                record.id == getattr(selected, "id", None),
+                SCOPE_PRECEDENCE[record.scope_type],
+                record.revision,
+            ),
+            reverse=True,
+        )
+        steps = [
+            ConfigurationResolutionStep(
+                source="published",
+                value=record.value,
+                selected=record.id == getattr(selected, "id", None),
+                record_id=record.id,
+                revision=record.revision,
+                scope_type=record.scope_type,
+                scope_id=record.scope_id,
+                force_disabled=record.force_disabled,
+                published_by=record.published_by,
+                published_at=record.published_at,
+                publish_reason=record.publish_reason,
+            )
+            for record in ordered
+        ]
+        default_value = (
+            spec.validate_value(spec.default) if spec.default is not None else None
+        )
+        steps.append(
+            ConfigurationResolutionStep(
+                source="default",
+                value=default_value,
+                selected=selected is None,
+            )
+        )
+        return tuple(steps)
+
     def resolve(
         self,
         key: str,
@@ -440,13 +484,14 @@ class ConfigurationService:
             and self._record_matches_context(record, context)
         ]
 
+        candidates = [
+            record
+            for record in published
+            if feature_target_matches(record, context, now=now)
+        ]
+
         if spec.kill_switch_capable:
-            kills = [
-                record
-                for record in published
-                if record.force_disabled
-                and feature_target_matches(record, context, now=now)
-            ]
+            kills = [record for record in candidates if record.force_disabled]
             if kills:
                 selected = max(
                     kills,
@@ -471,13 +516,9 @@ class ConfigurationService:
                     published_by=selected.published_by,
                     published_at=selected.published_at,
                     publish_reason=selected.publish_reason,
+                    resolution_chain=self._resolution_chain(spec, candidates, selected),
                 )
 
-        candidates = [
-            record
-            for record in published
-            if feature_target_matches(record, context, now=now)
-        ]
         if candidates:
             selected = max(
                 candidates,
@@ -502,6 +543,7 @@ class ConfigurationService:
                 published_by=selected.published_by,
                 published_at=selected.published_at,
                 publish_reason=selected.publish_reason,
+                resolution_chain=self._resolution_chain(spec, candidates, selected),
             )
 
         if spec.default is None and spec.required:
@@ -514,6 +556,7 @@ class ConfigurationService:
             hot_reloadable=spec.hot_reloadable,
             startup_only=spec.startup_only,
             feature_flag=spec.feature_flag,
+            resolution_chain=self._resolution_chain(spec, candidates, None),
         )
 
     def impact(self, record_id: str) -> dict[str, Any]:
