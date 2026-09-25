@@ -9,6 +9,7 @@ const state = {
   proposals: [],
   decompositionEvents: [],
   completion: null,
+  executionBindings: [],
 };
 
 const esc = (value) => String(value ?? '')
@@ -145,6 +146,7 @@ async function loadGoal(goalId) {
       proposals,
       decompositionEvents,
       completion,
+      executionBindings,
     ] = await Promise.all([
       request(`/api/goals/${encoded}`),
       request(`/api/goals/${encoded}/revisions`),
@@ -152,6 +154,7 @@ async function loadGoal(goalId) {
       request(`/api/goals/${encoded}/decompositions`),
       request(`/api/goals/${encoded}/decompositions/events`),
       request(`/api/goals/${encoded}/completion-evaluation`),
+      request(`/api/goals/${encoded}/execution-bindings`),
     ]);
     state.detail = detailPayload?.snapshot || null;
     state.revisions = revisions?.items || [];
@@ -159,6 +162,7 @@ async function loadGoal(goalId) {
     state.proposals = proposals?.items || [];
     state.decompositionEvents = decompositionEvents?.items || [];
     state.completion = completion?.item || null;
+    state.executionBindings = executionBindings?.items || [];
     renderGoalDetail();
   } catch (error) {
     detail.innerHTML = `<div class="goal-error">${esc(error.message || 'Failed to load Goal')}</div>`;
@@ -349,6 +353,23 @@ function renderTimeline() {
   `).join('');
 }
 
+function renderExecutionBindings() {
+  if (!state.executionBindings.length) {
+    return '<p class="goal-muted">No runtime execution is bound to this canonical Goal.</p>';
+  }
+  return state.executionBindings.map((item) => `
+    <div class="goal-subcard goal-execution-binding" data-binding-id="${esc(item.id)}">
+      <strong>Runtime: ${esc(item.status || 'unknown')}</strong>
+      <span>Canonical Goal remains authoritative · revision ${esc(item.goal_revision)}</span>
+      <small>${esc(item.provider_id)}/${esc(item.runtime_id)} · session ${esc(item.agent_session_id)} · owner ${esc(item.execution_owner_id)}</small>
+      <small>native objective: ${esc(item.provider_native_objective_id || (item.native_objective_supported ? 'not assigned' : 'unsupported'))}</small>
+      <small>cursor: ${esc(item.cursor_ref || '—')} · checkpoint: ${esc(item.checkpoint_ref || '—')}</small>
+      <small>last turn: ${esc(item.last_turn_id || '—')} · last execution: ${esc(item.last_execution_id || '—')} · activity: ${esc(fmtTime(item.heartbeat_at || item.updated_at))}</small>
+      <small>stop/block reason: ${esc(item.stop_reason || '—')}</small>
+    </div>`
+  ).join('');
+}
+
 function renderGoalDetail() {
   const target = document.querySelector('.goal-detail');
   const snapshot = state.detail || {};
@@ -413,6 +434,13 @@ function renderGoalDetail() {
       <section class="goal-card"><h3>Success criteria</h3>${renderCriteria(goal)}</section>
       <section class="goal-card"><h3>Work Graph traceability</h3>${renderBindings(goal)}</section>
     </div>
+
+    <section class="goal-card">
+      <div class="goal-section-heading">
+        <div><h3>Runtime execution</h3><small>Provider-neutral execution projection; canonical Goal lifecycle and completion remain authoritative.</small></div>
+      </div>
+      ${renderExecutionBindings()}
+    </section>
 
     <div class="goal-summary-grid">
       <section class="goal-card"><h3>Constraints</h3>${constraints}</section>
