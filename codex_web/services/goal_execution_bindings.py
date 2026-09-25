@@ -148,6 +148,19 @@ class GoalExecutionBindingService:
         self.store.update(apply)
         return binding
 
+    def list_all(
+        self,
+        *,
+        scope: TenantScope,
+    ) -> tuple[GoalExecutionBinding, ...]:
+        rows = [
+            item
+            for item in self.store.load().bindings
+            if self._visible(item, scope)
+        ]
+        rows.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
+        return tuple(rows)
+
     def list(
         self,
         goal_id: str,
@@ -155,13 +168,11 @@ class GoalExecutionBindingService:
         scope: TenantScope,
     ) -> tuple[GoalExecutionBinding, ...]:
         self.goals.get(goal_id, scope=scope)
-        rows = [
+        return tuple(
             item
-            for item in self.store.load().bindings
-            if self._visible(item, scope) and item.goal_id == goal_id
-        ]
-        rows.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
-        return tuple(rows)
+            for item in self.list_all(scope=scope)
+            if item.goal_id == goal_id
+        )
 
     def get(
         self,

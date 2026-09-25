@@ -167,6 +167,27 @@ class GoalExecutionBindingTests(unittest.TestCase):
         self.assertEqual(self.service.goals.goal.status.value, "draft")
         self.assertEqual(self.service.goals.goal.revision, 4)
 
+    def test_list_all_is_tenant_scoped(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        self.assertEqual(
+            [row.id for row in self.service.list_all(scope=self.scope)],
+            [item.id],
+        )
+        self.assertEqual(
+            self.service.list_all(
+                scope=TenantScope(
+                    organization_id="org-b",
+                    workspace_id="ws-b",
+                )
+            ),
+            (),
+        )
+
     def test_tenant_isolation_and_duplicate_active_session_binding(self) -> None:
         item = self.service.create(
             "goal-a",
