@@ -45,7 +45,12 @@
   .collab-roster-row small { grid-column: 1; }
 }
 
-.collab-context-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.collab-context-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:nowrap;position:relative}
 .collab-context-actions .ghost-button{white-space:nowrap}
+.collab-context-more{position:relative}
+.collab-context-more>summary{list-style:none;cursor:pointer}
+.collab-context-more>summary::-webkit-details-marker{display:none}
+.collab-context-menu{position:absolute;z-index:20;right:0;top:calc(100% + 4px);display:grid;gap:4px;min-width:9rem;padding:6px;border:1px solid var(--border,var(--cw-color-border,#ddd));border-radius:8px;background:var(--panel,var(--cw-color-surface,#fff));box-shadow:0 8px 24px rgba(0,0,0,.14)}
+.collab-context-menu .ghost-button{text-align:left;width:100%}
 .collab-destructive-action{border-color:var(--danger,var(--cw-color-danger,#b42318));color:var(--danger,var(--cw-color-danger,#b42318))}
-@media(max-width:520px){.collab-context-actions{justify-content:flex-start;width:100%}.collab-context-actions .ghost-button{flex:1 1 auto}}
+@media(max-width:520px){.collab-context-actions{justify-content:flex-start}.collab-context-menu{left:0;right:auto}}
