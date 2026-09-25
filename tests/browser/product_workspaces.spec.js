@@ -522,6 +522,13 @@ test('Work Items navigation opens the canonical operator in the main workspace h
 
 
 test('required section destinations are discoverable in project navigation and route into the main pane', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+  await page.route('**/codex/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
   await page.goto('http://127.0.0.1:18766/codex/projects/home/overview');
 
   const destinations = [
