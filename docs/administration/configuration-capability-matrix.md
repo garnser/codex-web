@@ -65,3 +65,17 @@ A newly introduced mutable backend configuration field is not product-complete u
 4. deliberately API-only, with a documented rationale and follow-up owner.
 
 Tests should fail when a new user-manageable capability is added without a declared UI disposition. The matrix is the human-readable companion to that parity check.
+
+
+## Declared API-only exceptions
+
+An `API` disposition is allowed only where a first-class product mutation flow is deliberately deferred. These exceptions are not permission bypasses: the canonical API remains authoritative for validation, authorization, tenant/workspace scope, concurrency and audit.
+
+| Resource / operation | Why product mutation is deferred | Owning subsystem / follow-up surface |
+| --- | --- | --- |
+| Authentication policy and session-policy create/update | Identity-provider topology, assurance policy and session invalidation can affect the whole tenant and may be deployment/IdP-owned. The product currently presents effective policy and diagnostics rather than implying every upstream IdP control is locally editable. | Identity / Authentication administration. Promote individual operations to UI only when their provider ownership, impact preview and assurance requirements are explicit. |
+| Provider/runtime versioned lifecycle and archive/restore | Runtime/provider registrations mix codex-web binding state with provider-owned remote state. Generic version/archive controls would imply authority over external provider state that codex-web may not possess. | Providers / Runtime administration. Add lifecycle controls capability-by-capability when the adapter contract exposes a safe canonical operation. |
+| Entitlement/quota create, update and retirement | Hosted billing/entitlement authority can live outside the application. Local UI mutation would be misleading where codex-web is only a consumer of effective capability and usage. | Entitlements service / hosted control plane. UI remains explanatory unless the deployment exposes codex-web as the entitlement authority. |
+| Recovery/operational policy create, update, archive and retirement | Recovery settings can change restart, fencing and disaster-recovery behavior and require deployment-specific qualification. Live recovery state is also distinct from editable policy. | Operations / Recovery. Promote only typed, versioned policy with impact/rollback semantics; runtime evidence and health stay read-only. |
+
+Any new `API` cell added to the matrix must be accompanied by an entry here (or an equivalent linked rationale) that names both the reason and the owning follow-up surface.
