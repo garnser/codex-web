@@ -26,6 +26,14 @@ class GoalWorkspaceUiTests(unittest.TestCase):
         self.assertIn("goal_revision", javascript)
         self.assertIn("goal-observation-source", javascript)
         self.assertIn("goal-observation-reference", javascript)
+        self.assertIn("goal-runtime-pause", javascript)
+        self.assertIn("goal-runtime-resume", javascript)
+        self.assertIn("goal-runtime-cancel", javascript)
+        self.assertIn("goal-runtime-reconcile", javascript)
+        self.assertIn("Attach / rebind to this Goal", javascript)
+        self.assertIn("/runtime-objectives/unbound", javascript)
+        self.assertIn("/reconcile", javascript)
+        self.assertIn("Cancel Goal", javascript)
         self.assertIn("@media (max-width: 850px)", styles)
 
         # Refresh is deterministic GET-only; model planning is bound to the
