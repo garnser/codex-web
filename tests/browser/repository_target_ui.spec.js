@@ -254,7 +254,7 @@ test("thread-bound repository stays visible and can be changed from thread setti
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
   await page.evaluate(() => window.CodexProductUI.openWorkspace("chat"));
-  await expect(page.locator("body")).toHaveClass(/product-chat-page/);
+  await expect(page.locator("body")).toHaveAttribute("data-project-page", "chat");
   const threadItem = page.locator("#threads .item-main").first();
   await expect(threadItem).toBeVisible();
   await Promise.all([
