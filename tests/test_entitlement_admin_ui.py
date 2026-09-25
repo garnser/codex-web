@@ -35,6 +35,34 @@ class EntitlementAdminUiTests(unittest.TestCase):
         self.assertNotIn('method: "PUT"', javascript)
         self.assertNotIn('method: "POST"', javascript)
 
+    def test_entitlement_management_uses_canonical_mutation_contracts(self) -> None:
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (
+            ROOT / "static" / "entitlement_management.js"
+        ).read_text(encoding="utf-8")
+        matrix = (
+            ROOT / "docs" / "administration" / "configuration-capability-matrix.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="entitlement-management-panel"', html)
+        self.assertIn('id="set-entitlement-mode"', html)
+        self.assertIn('id="set-entitlement-capability"', html)
+        self.assertIn('id="set-entitlement-quota"', html)
+        self.assertIn('src="static/entitlement_management.js"', html)
+        self.assertIn('method: "PUT"', javascript)
+        self.assertIn("/api/entitlements/mode", javascript)
+        self.assertIn("/api/entitlements/capabilities/", javascript)
+        self.assertIn("/api/entitlements/quotas/", javascript)
+        self.assertIn("Review and confirm the impact", javascript)
+        self.assertIn("Expiration must be later than the start time", javascript)
+        self.assertIn("Warning fraction must be between 0 and 1", javascript)
+        self.assertIn("codex:entitlement-state-rendered", javascript)
+        self.assertIn(
+            "| Entitlements / quotas / usage | Y | Y via canonical upsert | Y |",
+            matrix,
+        )
+        self.assertIn("no hard delete/quota removal API", matrix)
+
 
 if __name__ == "__main__":
     unittest.main()
