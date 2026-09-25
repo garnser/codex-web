@@ -117,10 +117,10 @@ class _BindingServiceStub:
         reason,
     ):
         self.resumes.append((binding_id, reason, scope, actor_id))
-        self.current = SimpleNamespace(
+        self.current = _Dumpable(
             id=binding_id,
             goal_id="goal-a",
-            status=GoalExecutionBindingStatus.IDLE,
+            status=GoalExecutionBindingStatus.IDLE.value,
             stop_reason=None,
             agent_session_id="session-a",
         )
