@@ -683,6 +683,9 @@ function setActiveInternal(id, { updateLocation = true, page = null } = {}) {
     const host = document.querySelector("[data-home-overview]");
     if (host) void renderHomeOverview(host);
   }
+  window.dispatchEvent(new CustomEvent("codex:project-workspace-page", {
+    detail: { workspace: id, page: activePage },
+  }));
   if (updateLocation) setWorkspaceLocation(id, activePage);
 }
 
