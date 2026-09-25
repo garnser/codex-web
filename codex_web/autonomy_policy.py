@@ -210,6 +210,27 @@ class AutonomyScopeOverride(BaseModel):
         return sum(value is not None for value in (self.project_id, self.role_id, self.action_id))
 
 
+class AutonomyExclusiveGoalScope(BaseModel):
+    """Fail-closed allowlist for autonomous continuation of one canonical Goal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    goal_id: str = Field(min_length=1, max_length=500)
+    goal_revision: int = Field(ge=1)
+    project_ids: tuple[str, ...] = Field(min_length=1)
+    work_item_refs: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def normalize(self) -> "AutonomyExclusiveGoalScope":
+        projects = tuple(dict.fromkeys(item for item in self.project_ids if item))
+        work_items = tuple(dict.fromkeys(item for item in self.work_item_refs if item))
+        if not projects:
+            raise ValueError("exclusive Goal scope requires at least one project")
+        object.__setattr__(self, "project_ids", projects)
+        object.__setattr__(self, "work_item_refs", work_items)
+        return self
+
+
 class AutonomyPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -238,6 +259,7 @@ class AutonomyPolicy(BaseModel):
     qualifications: tuple[AutonomyQualificationEvidence, ...] = ()
     multi_instance: bool = False
     break_glass: AutonomyBreakGlassPolicy = Field(default_factory=AutonomyBreakGlassPolicy)
+    exclusive_goal_scope: AutonomyExclusiveGoalScope | None = None
     overrides: tuple[AutonomyScopeOverride, ...] = ()
 
     @model_validator(mode="after")
@@ -289,6 +311,7 @@ class EffectiveAutonomyPolicy(BaseModel):
     required_qualification_gates: tuple[AutonomyQualificationGate, ...]
     qualifications: tuple[AutonomyQualificationEvidence, ...]
     multi_instance: bool
+    exclusive_goal_scope: AutonomyExclusiveGoalScope | None = None
     matched_override_ids: tuple[str, ...] = ()
 
 
