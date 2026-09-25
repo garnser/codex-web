@@ -335,3 +335,27 @@ test('collaboration cards collapse intentionally at phone width', async ({ page 
   }));
   expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.width + 1);
 });
+
+
+test('Agent Profiles and Teams routed pages expose distinct functional surfaces', async ({ page }) => {
+  await mockApis(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-workspace-page', {
+    detail: { workspace: 'agents', page: 'agent-profiles' },
+  })));
+  await expect(page.locator('[data-collab-heading-title]')).toHaveText('Agent Profiles');
+  await expect(page.locator('[data-collab-section="agents"]')).toBeVisible();
+  await expect(page.locator('[data-collab-section="teams"]')).toBeHidden();
+  await expect(page.locator('[data-collab-section="skills"]')).toBeHidden();
+
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-workspace-page', {
+    detail: { workspace: 'agents', page: 'teams' },
+  })));
+  await expect(page.locator('[data-collab-heading-title]')).toHaveText('Teams / Squads');
+  await expect(page.locator('[data-collab-section="agents"]')).toBeHidden();
+  await expect(page.locator('[data-collab-section="teams"]')).toBeVisible();
+  await expect(page.locator('[data-collab-section="skills"]')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Create Team' })).toBeVisible();
+  await expect(page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' })).toBeVisible();
+});
