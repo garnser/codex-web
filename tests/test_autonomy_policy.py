@@ -29,6 +29,7 @@ from codex_web.autonomy_policy import (
     AutonomyBreakGlassPolicy,
     AutonomyBreakGlassRequest,
     AutonomyBudgetLimits,
+    AutonomyExclusiveGoalScope,
     AutonomyLevel,
     AutonomyMaintenanceWindow,
     AutonomyPolicy,
@@ -199,12 +200,21 @@ class AutonomyPolicyTests(unittest.TestCase):
             clock=self.clock,
         )
 
-    def request(self, *, resource_ids=(), project_id="project-a") -> ActionRequest:
+    def request(
+        self,
+        *,
+        resource_ids=(),
+        project_id="project-a",
+        goal_id=None,
+        work_item_ref=None,
+    ) -> ActionRequest:
         return ActionRequest(
             action_id="deploy.release",
             organization_id="local",
             workspace_id="default",
             project_id=project_id,
+            goal_id=goal_id,
+            work_item_ref=work_item_ref,
             resource_ids=tuple(resource_ids),
         )
 
@@ -313,6 +323,74 @@ class AutonomyPolicyTests(unittest.TestCase):
             "qualification:recovery:qualification_evidence_missing",
             decision.reasons,
         )
+
+    def test_exclusive_goal_scope_allows_only_exact_canonical_scope(self):
+        service = self.service(
+            AutonomyPolicy(
+                level=AutonomyLevel.EXECUTE_BOUNDED,
+                required_qualification_gates=(),
+                approval_required_risks=(),
+                exclusive_goal_scope=AutonomyExclusiveGoalScope(
+                    goal_id="goal-a",
+                    goal_revision=7,
+                    project_ids=("project-a",),
+                    work_item_refs=("work-a", "work-b"),
+                ),
+            )
+        )
+
+        matched = service.evaluate_action(
+            self.definition(),
+            self.request(goal_id="goal-a", work_item_ref="work-a"),
+            actor=self.actor,
+        )
+        self.assertTrue(matched.allowed)
+        self.assertIn("exclusive_goal_scope:matched:goal-a", matched.reasons)
+
+        cases = (
+            (self.request(goal_id=None, work_item_ref="work-a"), "exclusive_goal_scope:goal_mismatch"),
+            (self.request(goal_id="goal-b", work_item_ref="work-a"), "exclusive_goal_scope:goal_mismatch"),
+            (
+                self.request(project_id="project-b", goal_id="goal-a", work_item_ref="work-a"),
+                "exclusive_goal_scope:project_mismatch",
+            ),
+            (
+                self.request(goal_id="goal-a", work_item_ref="work-c"),
+                "exclusive_goal_scope:work_item_mismatch",
+            ),
+        )
+        for request, reason in cases:
+            decision = service.evaluate_action(
+                self.definition(),
+                request,
+                actor=self.actor,
+            )
+            self.assertFalse(decision.allowed)
+            self.assertIn(reason, decision.reasons)
+
+    def test_break_glass_cannot_widen_exclusive_goal_scope(self):
+        service = self.service(
+            AutonomyPolicy(
+                level=AutonomyLevel.OBSERVE,
+                required_qualification_gates=(),
+                exclusive_goal_scope=AutonomyExclusiveGoalScope(
+                    goal_id="goal-a",
+                    goal_revision=7,
+                    project_ids=("project-a",),
+                ),
+            )
+        )
+        service._active_break_glass = lambda **_kwargs: SimpleNamespace(id="break-glass-test")
+
+        decision = service.evaluate_action(
+            self.definition(),
+            self.request(goal_id="goal-other"),
+            actor=self.actor,
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("break_glass:autonomy_level_override", decision.reasons)
+        self.assertIn("exclusive_goal_scope:goal_mismatch", decision.reasons)
 
     def test_budget_uses_policy_owned_action_charges(self):
         policy = AutonomyPolicy(
