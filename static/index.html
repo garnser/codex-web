@@ -753,6 +753,44 @@
                     <button id="refresh-entitlements" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="entitlement-status" class="form-result" aria-live="polite">Open to load canonical entitlement state.</div>
+                  <details id="entitlement-management-panel">
+                    <summary>Entitlement & quota management</summary>
+                    <div class="form-result">Mutations require canonical admin authority and MFA. Changes affect service capability/quota decisions only; they do not grant RBAC, agent authority or provider permission.</div>
+                    <div class="route-test">
+                      <label>Tenant mode
+                        <select id="entitlement-manage-mode">
+                          <option value="self_hosted_unlimited">self_hosted_unlimited</option>
+                          <option value="enforced">enforced</option>
+                        </select>
+                      </label>
+                      <label class="checkbox-line"><input id="entitlement-mode-confirm" type="checkbox"> I reviewed the tenant-wide impact.</label>
+                      <button id="set-entitlement-mode" type="button" class="ghost-button">Apply mode</button>
+                    </div>
+                    <div class="route-test">
+                      <label>Capability <input id="entitlement-manage-capability" placeholder="capability.name"></label>
+                      <label><input id="entitlement-manage-enabled" type="checkbox" checked> Enabled</label>
+                      <label>Source <input id="entitlement-manage-capability-source" value="manual"></label>
+                      <label>Starts at (epoch, optional) <input id="entitlement-manage-starts" type="number" step="0.001"></label>
+                      <label>Expires at (epoch, optional) <input id="entitlement-manage-expires" type="number" step="0.001"></label>
+                      <label class="checkbox-line"><input id="entitlement-capability-confirm" type="checkbox"> I reviewed the capability impact.</label>
+                      <button id="set-entitlement-capability" type="button" class="ghost-button">Set capability</button>
+                    </div>
+                    <div class="route-test">
+                      <label>Quota metric <input id="entitlement-manage-metric" placeholder="executions"></label>
+                      <label>Limit <input id="entitlement-manage-limit" type="number" min="0" step="0.01"></label>
+                      <label>Window
+                        <select id="entitlement-manage-window"><option>lifetime</option><option>hour</option><option>day</option><option selected>month</option></select>
+                      </label>
+                      <label>Behavior
+                        <select id="entitlement-manage-behavior"><option selected>hard_stop</option><option>degraded</option><option>grace</option><option>notify</option></select>
+                      </label>
+                      <label>Warning fraction <input id="entitlement-manage-warning" type="number" min="0" max="1" step="0.05" value="0.8"></label>
+                      <label>Source <input id="entitlement-manage-quota-source" value="manual"></label>
+                      <label class="checkbox-line"><input id="entitlement-quota-confirm" type="checkbox"> I reviewed the quota impact.</label>
+                      <button id="set-entitlement-quota" type="button" class="ghost-button">Set quota</button>
+                    </div>
+                    <div id="entitlement-management-result" class="form-result" hidden aria-live="polite"></div>
+                  </details>
                   <div class="section-title"><span>Tenant mode</span></div>
                   <div id="entitlement-mode" class="comm-log"></div>
                   <div class="section-title"><span>Capabilities</span></div>
@@ -1283,6 +1321,7 @@
     <script src="static/input_plugin_admin.js" type="module"></script>
     <script src="static/action_provider_admin.js" type="module"></script>
     <script src="static/entitlement_admin.js" type="module"></script>
+    <script src="static/entitlement_management.js" type="module"></script>
     <script src="static/configuration_admin.js" type="module"></script>
     <script src="static/configuration_management.js" type="module"></script>
     <script src="static/execution_worker_admin.js" type="module"></script>
