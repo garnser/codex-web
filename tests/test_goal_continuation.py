@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
-from codex_web.goals import GoalStatus
+from codex_web.autonomy import AutonomyControl, AutonomyExclusiveGoalScope, AutonomyMode
+from codex_web.goals import GoalHealth, GoalStatus
 from codex_web.identity import TenantScope
 from codex_web.services.goal_continuation import GoalContinuationService
 
@@ -69,11 +70,67 @@ class _Bindings:
 
 
 class _Goals:
-    def __init__(self, *, status=GoalStatus.ACTIVE, revision=4) -> None:
-        self.goal = SimpleNamespace(status=status, revision=revision)
+    def __init__(
+        self,
+        *,
+        status=GoalStatus.ACTIVE,
+        revision=4,
+        work_item_count=1,
+        active=1,
+        failed=0,
+        cancelled=0,
+        health=GoalHealth.ON_TRACK,
+        completion=None,
+        max_retries=None,
+    ) -> None:
+        self.goal = SimpleNamespace(
+            status=status,
+            revision=revision,
+            budget=SimpleNamespace(max_retries=max_retries),
+        )
+        self._snapshot = SimpleNamespace(
+            progress=SimpleNamespace(
+                work_item_count=work_item_count,
+                active=active,
+                failed=failed,
+                cancelled=cancelled,
+            ),
+            health=SimpleNamespace(health=health),
+        )
+        self._completion = completion
 
     def get(self, goal_id, *, scope):
         return self.goal
+
+    def snapshot(self, goal_id, *, scope):
+        return self._snapshot
+
+    def completion_evaluation(self, goal_id, *, scope):
+        return self._completion
+
+
+class _Autonomy:
+    def __init__(
+        self,
+        *,
+        mode=AutonomyMode.ACTIVE,
+        goal_id="goal-a",
+        project_id="project-a",
+        roots=("root-a",),
+    ) -> None:
+        self.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                control=AutonomyControl(
+                    mode=mode,
+                    exclusive_goal_scope=AutonomyExclusiveGoalScope(
+                        goal_id=goal_id,
+                        project_id=project_id,
+                        root_work_item_refs=roots,
+                        reason="test scope",
+                    ),
+                )
+            )
+        )
 
 
 class _AgentSessions:
@@ -225,6 +282,133 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
         release = bindings.released[-1][1]
         self.assertEqual(release["status"], GoalExecutionBindingStatus.BLOCKED)
         self.assertIsNone(release["retry_after_seconds"])
+
+    async def test_global_kill_blocks_before_claim(self) -> None:
+        bindings = _Bindings()
+        sessions = _AgentSessions()
+        service = GoalContinuationService(
+            bindings,
+            _Goals(),
+            sessions,
+            owner_id="worker-a",
+            autonomy=_Autonomy(mode=AutonomyMode.KILLED),
+        )
+
+        result = await service.dispatch_once("binding-a", scope=self.scope)
+
+        self.assertEqual(result.outcome, "blocked")
+        self.assertEqual(result.reason, "global_autonomy_killed")
+        self.assertFalse(bindings.claimed)
+        self.assertEqual(sessions.calls, [])
+
+    async def test_wrong_exclusive_goal_scope_blocks_before_claim(self) -> None:
+        bindings = _Bindings()
+        sessions = _AgentSessions()
+        service = GoalContinuationService(
+            bindings,
+            _Goals(),
+            sessions,
+            owner_id="worker-a",
+            autonomy=_Autonomy(goal_id="goal-other"),
+        )
+
+        result = await service.dispatch_once("binding-a", scope=self.scope)
+
+        self.assertEqual(result.outcome, "blocked")
+        self.assertEqual(
+            result.reason,
+            "exclusive_goal_scope_goal:goal-other",
+        )
+        self.assertFalse(bindings.claimed)
+
+    async def test_passing_completion_evaluation_stops_as_completed(self) -> None:
+        bindings = _Bindings()
+        sessions = _AgentSessions()
+        goals = _Goals(
+            work_item_count=1,
+            active=0,
+            completion=SimpleNamespace(id="eval-a", eligible=True),
+        )
+        service = GoalContinuationService(
+            bindings,
+            goals,
+            sessions,
+            owner_id="worker-a",
+        )
+
+        result = await service.dispatch_once("binding-a", scope=self.scope)
+
+        self.assertEqual(result.outcome, "completed")
+        self.assertEqual(result.reason, "deterministic_completion:eval-a")
+        self.assertEqual(
+            bindings.updated[-1][1].status,
+            GoalExecutionBindingStatus.COMPLETED,
+        )
+        self.assertFalse(bindings.claimed)
+
+    async def test_all_terminal_work_requires_deterministic_verification(self) -> None:
+        bindings = _Bindings()
+        sessions = _AgentSessions()
+        service = GoalContinuationService(
+            bindings,
+            _Goals(work_item_count=2, active=0),
+            sessions,
+            owner_id="worker-a",
+        )
+
+        result = await service.dispatch_once("binding-a", scope=self.scope)
+
+        self.assertEqual(result.outcome, "blocked")
+        self.assertEqual(
+            result.reason,
+            "deterministic_completion_verification_required",
+        )
+        self.assertFalse(bindings.claimed)
+
+    async def test_blocked_work_graph_stops_continuation(self) -> None:
+        bindings = _Bindings()
+        sessions = _AgentSessions()
+        service = GoalContinuationService(
+            bindings,
+            _Goals(health=GoalHealth.BLOCKED),
+            sessions,
+            owner_id="worker-a",
+        )
+
+        result = await service.dispatch_once("binding-a", scope=self.scope)
+
+        self.assertEqual(result.outcome, "blocked")
+        self.assertEqual(result.reason, "canonical_goal_work_graph_blocked")
+        self.assertFalse(bindings.claimed)
+
+    async def test_goal_retry_budget_is_stricter_than_service_default(self) -> None:
+        bindings = _Bindings()
+        bindings.binding = SimpleNamespace(
+            **{
+                **bindings.binding.__dict__,
+                "recovery_attempts": 1,
+            }
+        )
+        sessions = _AgentSessions(error=RuntimeError("still unavailable"))
+        service = GoalContinuationService(
+            bindings,
+            _Goals(max_retries=1),
+            sessions,
+            owner_id="worker-a",
+            max_recovery_attempts=8,
+        )
+
+        result = await service.dispatch_once(
+            "binding-a",
+            scope=self.scope,
+            now=100.0,
+        )
+
+        self.assertEqual(result.outcome, "blocked")
+        self.assertEqual(
+            bindings.released[-1][1]["status"],
+            GoalExecutionBindingStatus.BLOCKED,
+        )
 
     async def test_existing_lease_or_backoff_prevents_duplicate_dispatch(self) -> None:
         bindings = _Bindings()
