@@ -14,12 +14,14 @@ from codex_web.secrets import SecretStatus
 from codex_web.services.identity import IdentityService
 from codex_web.integrations.jira_client import JiraClient
 from codex_web.integrations.servicenow_client import ServiceNowClient
+from codex_web.integrations.github_client import GitHubClient
 from codex_web.services.jira_task_source import JiraTaskSource
 from codex_web.services.secrets import SecretBroker
 from codex_web.services.servicenow_task_source import (
     ServiceNowFieldMapping,
     ServiceNowTaskSource,
 )
+from codex_web.services.github_task_source import GitHubTaskSource
 from codex_web.services.task_source_runtime import (
     TaskSourceRegistry,
     TaskSourceResolutionError,
@@ -234,6 +236,7 @@ class BuiltInTaskSourceRuntime:
         load_projects: Callable[[], list[Any]] | None = None,
         jira_client: JiraClient | None = None,
         servicenow_client: ServiceNowClient | None = None,
+        github_client: GitHubClient | None = None,
     ) -> None:
         if load_projects is None:
             if host is None:
@@ -247,6 +250,7 @@ class BuiltInTaskSourceRuntime:
         self.secrets = secrets
         self.jira_client = jira_client
         self.servicenow_client = servicenow_client
+        self.github_client = github_client
 
     def _actor(self, scope: TenantScope) -> AuthenticationActor:
         return self.identity.bootstrap_service_actor(
@@ -356,6 +360,15 @@ class BuiltInTaskSourceRuntime:
             projection_source=projection,
         )
 
+    def _github(self, configuration: TaskSourceConfiguration, *, actor: AuthenticationActor) -> SecretBoundTaskSource:
+        self._validate_secret(configuration, actor)
+        def builder(secret: str) -> TaskSource:
+            return GitHubTaskSource(configuration.source_instance, secret, client=self.github_client)
+        projection = GitHubTaskSource(configuration.source_instance, "__credential_not_loaded__", client=self.github_client)
+        return SecretBoundTaskSource(source_type="github", source_instance=configuration.source_instance,
+            credential_secret_id=configuration.credential_secret_id or "", actor=actor,
+            secret_broker=self.secrets, builder=builder, projection_source=projection)
+
     def source_for_configuration(
         self,
         configuration: TaskSourceConfiguration,
@@ -368,6 +381,8 @@ class BuiltInTaskSourceRuntime:
             return self._jira(configuration, actor=actor)
         if source_type == "servicenow":
             return self._servicenow(configuration, actor=actor)
+        if source_type == "github":
+            return self._github(configuration, actor=actor)
         return None
 
     def _project(self, project_id: str, scope: TenantScope) -> Any:
@@ -424,7 +439,7 @@ class BuiltInTaskSourceRuntime:
         return self.source_for_configuration(configuration, scope=scope)
 
     def install(self) -> "BuiltInTaskSourceRuntime":
-        for source_type in ("jira", "servicenow"):
+        for source_type in ("jira", "servicenow", "github"):
             self.registry.register(source_type, self.source_for_state)
             self.registry.register_project(source_type, self.source_for_project)
         return self
@@ -439,6 +454,7 @@ def install_builtin_task_source_runtime(
     load_projects: Callable[[], list[Any]] | None = None,
     jira_client: JiraClient | None = None,
     servicenow_client: ServiceNowClient | None = None,
+    github_client: GitHubClient | None = None,
 ) -> BuiltInTaskSourceRuntime:
     return BuiltInTaskSourceRuntime(
         registry,
@@ -448,4 +464,5 @@ def install_builtin_task_source_runtime(
         load_projects=load_projects,
         jira_client=jira_client,
         servicenow_client=servicenow_client,
+        github_client=github_client,
     ).install()
