@@ -154,7 +154,10 @@ class GoalContinuationEventService:
             )
 
         attempt = binding.recovery_attempts + 1
-        terminal = attempt >= self.continuation.max_recovery_attempts
+        terminal = attempt >= self.continuation.recovery_attempt_limit_for(
+            binding,
+            scope=scope,
+        )
         retry_after = (
             None
             if terminal
