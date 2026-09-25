@@ -88,6 +88,8 @@ class ActionRequest(BaseModel):
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
     project_id: str | None = None
+    goal_id: str | None = None
+    work_item_ref: str | None = None
     resource_ids: tuple[str, ...] = ()
     parameters: dict[str, Any] = Field(default_factory=dict)
     credential_ref: str | None = None
