@@ -199,35 +199,29 @@ export async function openHistory(kind, item) {
 }
 
 export function managementActions(kind, item, { usage = "", onChanged } = {}) {
-  const label = kind === "profile" ? "Manage profile" : "Manage team";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost-button";
-  button.textContent = label;
-  button.addEventListener("click", () => {
-    const dialog = dialogShell(
-      label,
-      `Revision ${item?.revision || "unknown"} · lifecycle ${item?.lifecycle || "unknown"}.`,
-    );
-    const body = dialog.querySelector("[data-body]");
-    const action = (text, handler) => {
-      const control = document.createElement("button");
-      control.type = "button";
-      control.className = "ghost-button";
-      control.textContent = text;
-      control.addEventListener("click", () => { dialog.close(); handler(); });
-      body.appendChild(control);
-    };
-    action("Edit", () => openEditor(kind, item, { onChanged }));
-    action("History", () => void openHistory(kind, item));
-    const current = String(item?.lifecycle || "active");
-    if (current === "archived" || current === "disabled") {
-      action("Restore", () => openLifecycle(kind, item, "restore", { usage, onChanged }));
-    } else {
-      action("Disable", () => openLifecycle(kind, item, "disable", { usage, onChanged }));
-      action("Archive", () => openLifecycle(kind, item, "archive", { usage, onChanged }));
-    }
-    dialog.showModal();
-  });
-  return button;
+  const group = document.createElement("div");
+  group.className = "collab-context-actions";
+  group.setAttribute("aria-label", `${kind === "profile" ? "Agent Profile" : "Team"} actions`);
+
+  const action = (text, handler, { destructive = false } = {}) => {
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = destructive ? "ghost-button collab-destructive-action" : "ghost-button";
+    control.textContent = text;
+    control.addEventListener("click", handler);
+    group.appendChild(control);
+    return control;
+  };
+
+  action("Edit", () => openEditor(kind, item, { onChanged }));
+  action("History", () => void openHistory(kind, item));
+
+  const current = String(item?.lifecycle || "active");
+  if (current === "archived" || current === "disabled") {
+    action("Restore", () => openLifecycle(kind, item, "restore", { usage, onChanged }));
+  } else {
+    action("Disable", () => openLifecycle(kind, item, "disable", { usage, onChanged }));
+    action("Archive", () => openLifecycle(kind, item, "archive", { usage, onChanged }), { destructive: true });
+  }
+  return group;
 }
