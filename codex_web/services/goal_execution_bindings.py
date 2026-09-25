@@ -5,6 +5,7 @@ import time
 from codex_web.goal_execution_bindings import (
     GoalExecutionBinding,
     GoalExecutionBindingCreate,
+    GoalExecutionBindingReconcile,
     GoalExecutionBindingEvent,
     GoalExecutionBindingState,
     GoalExecutionBindingStatus,
@@ -224,6 +225,60 @@ class GoalExecutionBindingService:
                     event_type=f"binding_{result.status.value}",
                     actor_id=actor_id,
                     reason=payload.reason,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        assert result is not None
+        return result
+
+    def reconcile_unknown(
+        self,
+        binding_id: str,
+        payload: GoalExecutionBindingReconcile,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+    ) -> GoalExecutionBinding:
+        result: GoalExecutionBinding | None = None
+        now = time.time()
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if current.status != GoalExecutionBindingStatus.UNKNOWN:
+                raise GoalExecutionBindingConflictError(
+                    "only UNKNOWN execution bindings can be reconciled"
+                )
+            result = current.model_copy(
+                update={
+                    "status": payload.outcome,
+                    "lease_owner_id": None,
+                    "lease_expires_at": None,
+                    "heartbeat_at": now,
+                    "retry_not_before_at": None,
+                    "stop_reason": payload.reason,
+                    "updated_by": actor_id,
+                    "change_reason": payload.reason,
+                    "updated_at": now,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            state.events.append(
+                GoalExecutionBindingEvent(
+                    binding_id=binding_id,
+                    goal_id=current.goal_id,
+                    event_type="binding_reconciled",
+                    actor_id=actor_id,
+                    reason=(
+                        f"{payload.reason}; reconciled provider outcome as "
+                        f"{payload.outcome.value}"
+                    ),
+                    occurred_at=now,
                 )
             )
             return state
