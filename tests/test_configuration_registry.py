@@ -234,6 +234,38 @@ class ConfigurationServiceTests(unittest.TestCase):
         history = self.service.list_records(key="runtime.retry_limit")
         self.assertEqual(len(history), 3)
 
+    def test_resolution_chain_explains_selected_override_and_fallbacks(self) -> None:
+        global_record = self._publish("runtime.retry_limit", 2)
+        project_record = self._publish(
+            "runtime.retry_limit",
+            5,
+            scope_type=ConfigurationScope.PROJECT,
+            scope_id="project-a",
+        )
+
+        effective = self.service.resolve(
+            "runtime.retry_limit",
+            ConfigurationContext(project_id="project-a"),
+        )
+
+        self.assertEqual(effective.record_id, project_record.id)
+        self.assertEqual(
+            [step.source for step in effective.resolution_chain],
+            ["published", "published", "default"],
+        )
+        self.assertEqual(
+            [step.record_id for step in effective.resolution_chain],
+            [project_record.id, global_record.id, None],
+        )
+        self.assertEqual(
+            [step.selected for step in effective.resolution_chain],
+            [True, False, False],
+        )
+        self.assertEqual(
+            [step.value for step in effective.resolution_chain],
+            [5, 2, 1],
+        )
+
     def test_reset_override_preserves_history_and_falls_back_to_inheritance(self) -> None:
         global_record = self._publish("runtime.retry_limit", 2)
         project_record = self._publish(
@@ -563,6 +595,14 @@ class ConfigurationApiTests(unittest.TestCase):
             resolved.json()["effective"]["record_id"],
             record_id,
         )
+        chain = resolved.json()["effective"]["resolution_chain"]
+        self.assertEqual(
+            [step["source"] for step in chain],
+            ["published", "published", "default"],
+        )
+        self.assertEqual(chain[0]["record_id"], record_id)
+        self.assertTrue(chain[0]["selected"])
+        self.assertFalse(chain[1]["selected"])
 
     def test_reset_endpoint_reverts_explicit_override_to_default(self) -> None:
         draft = self.client.post(
