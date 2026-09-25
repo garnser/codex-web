@@ -237,12 +237,18 @@ test('routed Threads page preserves visible sidebar space for the thread list', 
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
 
   const threads = page.locator('.threads-section');
-  const projectList = page.locator('.sidebar > section:not(.threads-section)');
+  const projectList = page.locator('[data-legacy-project-panel="true"]');
   await expect(page.locator('body')).toHaveClass(/product-chat-page/);
   await expect(threads).toBeVisible();
+  await expect(threads).toHaveAttribute('data-contextual-thread-navigation', 'true');
+  await expect(threads.locator('xpath=..')).toHaveClass(/main/);
   await expect(projectList).toBeHidden();
   const box = await threads.boundingBox();
   expect(box.height).toBeGreaterThanOrEqual(240);
+
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
+  await expect(threads).toBeHidden();
+  await expect(projectList).toBeHidden();
 });
 
 
