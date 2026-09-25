@@ -51,6 +51,9 @@ class _Continuation:
         self.resolved = []
         self.dispatched = []
 
+    def recovery_attempt_limit_for(self, binding, *, scope):
+        return self.max_recovery_attempts
+
     def resolve_turn(
         self,
         binding_id,
