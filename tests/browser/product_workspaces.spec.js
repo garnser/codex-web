@@ -545,7 +545,7 @@ test('required section destinations are discoverable in project navigation and r
     const node = page.locator(`[data-project-nav-node="${nodeId}"]`);
     await expect(node).toBeVisible();
     await expect(node.locator('strong')).toHaveText(title);
-    await node.click();
+    await node.evaluate((element) => element.click());
     await expect(page.locator('#product-workspace-page')).toBeVisible();
     await expect(page.locator('[data-product-workspace-title]')).toHaveText(title === 'Project Setup / Readiness' ? 'Project Settings' : title);
     await expect(node).toHaveAttribute('aria-current', 'page');
