@@ -58,5 +58,24 @@ class UiFieldDispositionParityTests(unittest.TestCase):
         )
 
 
+    def test_capability_matrix_documents_api_only_exceptions(self) -> None:
+        matrix = (
+            ROOT / "docs" / "administration" / "configuration-capability-matrix.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("## Declared API-only exceptions", matrix)
+        self.assertIn("Authentication policy and session-policy create/update", matrix)
+        self.assertIn("Provider/runtime versioned lifecycle and archive/restore", matrix)
+        self.assertIn("Entitlement/quota create, update and retirement", matrix)
+        self.assertIn(
+            "Recovery/operational policy create, update, archive and retirement",
+            matrix,
+        )
+        self.assertIn(
+            "Any new `API` cell added to the matrix must be accompanied by an entry here",
+            matrix,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
