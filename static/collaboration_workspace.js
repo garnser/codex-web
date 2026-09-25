@@ -151,7 +151,14 @@ function agentCard(profile, onChanged) {
   const article = el("article", "collab-card collab-agent-card");
   const head = el("div", "collab-card-head");
   const identity = agentIdentity(profile);
-  head.append(identity);
+  const teamRefs = state.teams.filter((team) => (
+    team.leader_profile_id === profile.profile_id
+    || (team.members || []).some((member) => member.profile_id === profile.profile_id)
+  ));
+  head.append(identity, managementActions("profile", profile, {
+    usage: teamRefs.length ? `Referenced by ${teamRefs.length} Team(s): ${teamRefs.map((team) => team.name || team.team_id).join(", ")}.` : "No Team references found.",
+    onChanged,
+  }));
   article.appendChild(head);
   if (profile.description) article.appendChild(el("p", "collab-description", profile.description));
   const manageSkills = el("a", "collab-manage-link", "Manage");
@@ -169,14 +176,6 @@ function agentCard(profile, onChanged) {
     { label: "Revision", value: profile.revision },
     { label: "Skills", node: skillManagement },
   ]));
-  const teamRefs = state.teams.filter((team) => (
-    team.leader_profile_id === profile.profile_id
-    || (team.members || []).some((member) => member.profile_id === profile.profile_id)
-  ));
-  article.appendChild(managementActions("profile", profile, {
-    usage: teamRefs.length ? `Referenced by ${teamRefs.length} Team(s): ${teamRefs.map((team) => team.name || team.team_id).join(", ")}.` : "No Team references found.",
-    onChanged,
-  }));
   const details = el("details", "collab-agent-context");
   const summary = el("summary", "", "Work, access and execution context");
   const body = el("div", "collab-agent-details");
@@ -191,11 +190,16 @@ function agentCard(profile, onChanged) {
 
 function teamCard(team, profilesById, onChanged) {
   const article = el("article", "collab-card collab-team-card");
-  article.appendChild(teamIdentity(team));
-  if (team.description) article.appendChild(el("p", "collab-description", team.description));
-
   const leader = profilesById.get(team.leader_profile_id);
   const members = team.members || [];
+  const head = el("div", "collab-card-head");
+  head.append(teamIdentity(team), managementActions("team", team, {
+    usage: `${members.length} member(s); leader ${team.leader_profile_id || "unset"}.`,
+    onChanged,
+  }));
+  article.appendChild(head);
+  if (team.description) article.appendChild(el("p", "collab-description", team.description));
+
   const roster = el("div", "collab-roster");
   const leaderRow = el("div", "collab-roster-row");
   leaderRow.append(el("span", "", "Leader"), leader ? agentIdentity(leader) : el("strong", "", team.leader_profile_id || "—"));
@@ -213,10 +217,6 @@ function teamCard(team, profilesById, onChanged) {
     roster.appendChild(row);
   }
   article.appendChild(roster);
-  article.appendChild(managementActions("team", team, {
-    usage: `${members.length} member(s); leader ${team.leader_profile_id || "unset"}.`,
-    onChanged,
-  }));
   article.appendChild(metadataGrid([
     { label: "Revision", value: team.revision },
     { label: "Max participants", value: team.budgets?.max_participants },
