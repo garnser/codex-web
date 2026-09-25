@@ -252,7 +252,7 @@ test('Goal workspace exposes canonical health, provenance, decomposition and com
   await expect(dialog).toContainText('action-intent-1');
   await expect(dialog).toContainText('provider outcome unknown');
   await expect(dialog).toContainText('Runtime: blocked');
-  await expect(dialog).toContainText('canonical Goal remains authoritative');
+  await expect(dialog).toContainText('Canonical Goal remains authoritative');
   await expect(dialog).toContainText('agent-session-7');
   await expect(dialog).toContainText('release-validator');
   await expect(dialog).toContainText('cursor-285');
