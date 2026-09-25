@@ -3,11 +3,36 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from codex_web.agent_runtime import AgentRuntimeResult
+from codex_web.agent_runtime import (
+    AgentRuntimeResult,
+    AgentSessionStatus,
+)
+from codex_web.agent_runtime_usage import RuntimeTerminalOutcome
+from codex_web.autonomy import AutonomyMode
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
 from codex_web.goals import GoalStatus
 from codex_web.identity import TenantScope
 from codex_web.services.goal_continuation import GoalContinuationService
+
+
+class _Autonomy:
+    def __init__(self, *, mode=AutonomyMode.ACTIVE, scope=True) -> None:
+        exclusive = (
+            SimpleNamespace(
+                goal_id="goal-a",
+                project_id="project-a",
+                root_work_item_refs=("root-a",),
+            )
+            if scope
+            else None
+        )
+        control = SimpleNamespace(
+            mode=mode,
+            exclusive_goal_scope=exclusive,
+        )
+        self.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(control=control)
+        )
 
 
 class _Bindings:
@@ -106,6 +131,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(),
             sessions,
             owner_id="worker-a",
+            autonomy=_Autonomy(),
             lease_seconds=90,
         )
 
@@ -135,6 +161,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(status=GoalStatus.PAUSED),
             sessions,
             owner_id="worker-a",
+        autonomy=_Autonomy(),
         )
 
         result = await service.dispatch_once(
@@ -155,6 +182,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(revision=5),
             sessions,
             owner_id="worker-a",
+        autonomy=_Autonomy(),
         )
 
         result = await service.dispatch_once(
@@ -179,6 +207,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(),
             sessions,
             owner_id="worker-a",
+            autonomy=_Autonomy(),
             max_recovery_attempts=4,
             retry_base_seconds=5,
         )
@@ -210,6 +239,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(),
             sessions,
             owner_id="worker-a",
+            autonomy=_Autonomy(),
             max_recovery_attempts=4,
             retry_base_seconds=5,
         )
@@ -226,6 +256,29 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(release["status"], GoalExecutionBindingStatus.BLOCKED)
         self.assertIsNone(release["retry_after_seconds"])
 
+    async def test_global_kill_and_missing_exclusive_scope_fail_closed(self) -> None:
+        for autonomy, expected in (
+            (_Autonomy(mode=AutonomyMode.KILLED), "autonomy_killed"),
+            (_Autonomy(scope=False), "exclusive_goal_scope_not_enabled"),
+        ):
+            bindings = _Bindings()
+            sessions = _AgentSessions()
+            service = GoalContinuationService(
+                bindings,
+                _Goals(),
+                sessions,
+                owner_id="worker-a",
+                autonomy=autonomy,
+            )
+            result = await service.dispatch_once(
+                "binding-a",
+                scope=self.scope,
+            )
+            self.assertEqual(result.outcome, "not_dispatched")
+            self.assertEqual(result.reason, expected)
+            self.assertFalse(bindings.claimed)
+            self.assertEqual(sessions.calls, [])
+
     async def test_existing_lease_or_backoff_prevents_duplicate_dispatch(self) -> None:
         bindings = _Bindings()
         bindings.claimed = True
@@ -235,6 +288,7 @@ class GoalContinuationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Goals(),
             sessions,
             owner_id="worker-b",
+        autonomy=_Autonomy(),
         )
 
         result = await service.dispatch_once(
