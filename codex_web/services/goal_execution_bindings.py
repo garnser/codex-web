@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from codex_web.autonomy_policy import AutonomyExclusiveGoalScope
 from codex_web.goal_execution_bindings import (
     GoalExecutionBinding,
     GoalExecutionBindingCreate,
@@ -54,6 +55,34 @@ class GoalExecutionBindingService:
         if binding is None or not self._visible(binding, scope):
             raise GoalExecutionBindingNotFoundError("goal execution binding not found")
         return binding
+
+    def exclusive_autonomy_scope(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+    ) -> AutonomyExclusiveGoalScope:
+        """Project one canonical Goal into an exact fail-closed autonomy allowlist."""
+        goal = self.goals.get(goal_id, scope=scope)
+        bound = self.goals.bound_refs(goal_id, scope=scope)
+        project_ids = tuple(
+            dict.fromkeys(
+                [
+                    *(item.project_id for item in goal.work_graph_bindings),
+                    *(project_id for project_id, _ref in bound),
+                ]
+            )
+        )
+        if not project_ids:
+            raise GoalExecutionBindingConflictError(
+                "exclusive Goal autonomy requires canonical Work Graph scope"
+            )
+        return AutonomyExclusiveGoalScope(
+            goal_id=goal.id,
+            goal_revision=goal.revision,
+            project_ids=project_ids,
+            work_item_refs=tuple(ref for _project_id, ref in bound),
+        )
 
     def create(
         self,
