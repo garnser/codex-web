@@ -7,6 +7,7 @@ from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
     AgentRuntimeListRequest,
+    AgentRuntimeObjectiveRequest,
     AgentRuntimeResult,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
@@ -30,6 +31,7 @@ class CodexAgentRuntimeAdapter:
         AgentProviderCapability.GIT_OPERATIONS,
         AgentProviderCapability.INTERACTIVE_APPROVALS,
         AgentProviderCapability.NATIVE_CONTEXT_COMPACTION,
+        AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
         AgentProviderCapability.MCP_TOOL_SERVERS,
         AgentProviderCapability.USAGE_PARTIAL,
     )
@@ -251,6 +253,50 @@ class CodexAgentRuntimeAdapter:
     ) -> AgentRuntimeResult:
         response = await self.transport.request(
             "thread/compact/start",
+            {"threadId": provider_native_session_id},
+        )
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload=response if isinstance(response, dict) else {},
+        )
+
+    async def read_objective(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        response = await self.transport.request(
+            "thread/goal/get",
+            {"threadId": provider_native_session_id},
+        )
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload=response if isinstance(response, dict) else {},
+        )
+
+    async def set_objective(
+        self,
+        provider_native_session_id: str,
+        request: AgentRuntimeObjectiveRequest,
+    ) -> AgentRuntimeResult:
+        params: dict[str, Any] = {"threadId": provider_native_session_id}
+        if request.objective is not None:
+            params["objective"] = request.objective
+        if request.status is not None:
+            params["status"] = request.status
+        if request.token_budget is not None:
+            params["tokenBudget"] = request.token_budget
+        response = await self.transport.request("thread/goal/set", params)
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload=response if isinstance(response, dict) else {},
+        )
+
+    async def clear_objective(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        response = await self.transport.request(
+            "thread/goal/clear",
             {"threadId": provider_native_session_id},
         )
         return AgentRuntimeResult(
