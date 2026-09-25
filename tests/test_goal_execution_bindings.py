@@ -6,6 +6,7 @@ from pathlib import Path
 
 from codex_web.goal_execution_bindings import (
     GoalExecutionBindingCreate,
+    GoalExecutionBindingReconcile,
     GoalExecutionBindingStatus,
     GoalExecutionBindingUpdate,
 )
@@ -342,6 +343,68 @@ class GoalExecutionBindingTests(unittest.TestCase):
                     owner_id="worker-a",
                     now=100.0,
                 )
+            )
+
+    def test_unknown_binding_requires_explicit_reconciliation(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        item = self.service.update(
+            item.id,
+            GoalExecutionBindingUpdate(
+                status=GoalExecutionBindingStatus.UNKNOWN,
+                lease_expires_at=99.0,
+                heartbeat_at=98.0,
+                reason="provider outcome unresolved",
+            ),
+            scope=self.scope,
+            actor_id="recovery",
+        )
+
+        reconciled = self.service.reconcile_unknown(
+            item.id,
+            GoalExecutionBindingReconcile(
+                outcome=GoalExecutionBindingStatus.IDLE,
+                reason="operator verified provider turn is no longer running",
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+
+        self.assertEqual(reconciled.status, GoalExecutionBindingStatus.IDLE)
+        self.assertIsNone(reconciled.lease_owner_id)
+        self.assertIsNone(reconciled.lease_expires_at)
+        self.assertIsNone(reconciled.retry_not_before_at)
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(events[-1].event_type, "binding_reconciled")
+        self.assertIn("as idle", events[-1].reason)
+
+    def test_reconciliation_rejects_non_unknown_binding(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        with self.assertRaises(GoalExecutionBindingConflictError):
+            self.service.reconcile_unknown(
+                item.id,
+                GoalExecutionBindingReconcile(
+                    outcome=GoalExecutionBindingStatus.IDLE,
+                    reason="not actually unknown",
+                ),
+                scope=self.scope,
+                actor_id="admin",
+            )
+
+    def test_reconciliation_cannot_assert_canonical_completion(self) -> None:
+        with self.assertRaises(ValueError):
+            GoalExecutionBindingReconcile(
+                outcome=GoalExecutionBindingStatus.COMPLETED,
+                reason="provider said complete",
             )
 
     def test_tenant_isolation_and_duplicate_active_session_binding(self) -> None:
