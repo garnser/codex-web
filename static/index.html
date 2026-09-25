@@ -1107,6 +1107,23 @@
                     <button id="load-diagnostics" type="button" class="ghost-button">Load diagnostics</button>
                     <div id="operations-diagnostics" class="comm-log"></div>
                   </details>
+                  <details id="recovery-management-panel">
+                    <summary>Recovery & backup policy</summary>
+                    <div id="recovery-admin-status" class="form-result" aria-live="polite">Open to load canonical recovery state.</div>
+                    <div class="form-result">Policy, backup creation and restore verification require admin + MFA or the recovery:admin service scope. Backup keys are referenced by ID only; key material is never displayed here.</div>
+                    <div id="recovery-health" class="comm-log"></div>
+                    <label>Canonical recovery policy
+                      <textarea id="recovery-policy-json" rows="18" spellcheck="false"></textarea>
+                    </label>
+                    <label class="checkbox-line"><input id="recovery-policy-confirm" type="checkbox"> I reviewed retention, schedule, key and RPO/RTO impact.</label>
+                    <div class="developer-toolbar">
+                      <button id="save-recovery-policy" type="button" class="ghost-button">Validate & apply policy</button>
+                      <button id="create-recovery-backup" type="button" class="ghost-button">Create backup now</button>
+                      <button id="refresh-recovery" type="button" class="ghost-button">Refresh recovery state</button>
+                    </div>
+                    <div class="section-title"><span>Backups & restore verification</span></div>
+                    <div id="recovery-backups" class="comm-log"></div>
+                  </details>
                 </div>
                 <div class="developer-card" id="structured-log-panel">
                   <div class="section-title">
@@ -1304,6 +1321,7 @@
     <script src="static/autonomy_control_center.js" type="module"></script>
     <script src="static/orchestration_ui.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
+    <script src="static/recovery_admin.js" type="module"></script>
     <script src="static/structured_log_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/authority_policy_explorer.js" type="module"></script>
