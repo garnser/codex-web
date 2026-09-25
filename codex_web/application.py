@@ -2155,6 +2155,7 @@ goal_continuation_service = GoalContinuationService(
 goal_continuation_recovery_service = GoalContinuationRecoveryService(
     goal_execution_binding_service,
     goal_continuation_service,
+    agent_session_service,
 )
 goal_continuation_event_service = GoalContinuationEventService(
     goal_execution_binding_service,
