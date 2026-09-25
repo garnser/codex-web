@@ -126,6 +126,25 @@ class GoalExecutionBindingTests(unittest.TestCase):
         self.assertEqual(events[-1].correlation_id, "corr-update")
         self.assertEqual(events[-1].causation_id, "cause-update")
 
+        with correlated(
+            correlation_id="corr-claim",
+            causation_id="cause-claim",
+        ):
+            claimed = self.service.claim_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-a",
+                now=100.0,
+            )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.updated_correlation_id, "corr-claim")
+        self.assertEqual(claimed.updated_causation_id, "cause-claim")
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(events[-1].event_type, "binding_continuation_claimed")
+        self.assertEqual(events[-1].correlation_id, "corr-claim")
+        self.assertEqual(events[-1].causation_id, "cause-claim")
+
     def test_binding_pins_canonical_revision_and_runtime_provenance(self) -> None:
         item = self.service.create(
             "goal-a",
