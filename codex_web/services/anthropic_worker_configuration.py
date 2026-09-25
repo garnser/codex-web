@@ -26,6 +26,7 @@ def install_anthropic_worker_configuration(
                 ConfigurationScope.WORKSPACE,
                 ConfigurationScope.PROJECT,
             ],
+            category="Model & Provider",
             description=(
                 "Secret reference used for assignment-bound Claude worker authentication. "
                 "Configuration selects only a reference and does not grant secret-use authority."

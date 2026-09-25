@@ -801,7 +801,10 @@
                     <div id="configuration-management-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="route-test">
-                    <input id="configuration-search" type="search" placeholder="Search key, scope, actor or value reference" />
+                    <input id="configuration-search" type="search" placeholder="Search key, description, category, scope, actor or value reference" />
+                    <select id="configuration-category-filter">
+                      <option value="">All categories</option>
+                    </select>
                     <select id="configuration-scope-filter">
                       <option value="">All scopes</option>
                       <option value="deployment">Deployment</option>

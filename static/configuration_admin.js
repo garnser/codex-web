@@ -6,7 +6,6 @@
   let records = [];
   let projects = [];
   let resources = [];
-
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -14,29 +13,19 @@
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
   }
-
   function timeText(value) {
     if (!value) return "none";
     const date = new Date(Number(value) * 1000);
     return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
   }
-
   function setStatus(message) {
     const host = document.getElementById("configuration-status");
-    if (host) {
-      host.hidden = false;
-      host.textContent = message;
-    }
+    if (host) { host.hidden = false; host.textContent = message; }
   }
-
   function listText(values) {
     return values?.length ? values.map(escapeHtml).join(", ") : "none";
   }
-
-  function specFor(key) {
-    return specs.find((item) => item.key === key) || null;
-  }
-
+  function specFor(key) { return specs.find((item) => item.key === key) || null; }
   function valueText(value, spec) {
     if (spec?.value_kind === "secret_ref") {
       return `Secret reference only: ${value?.secret_id || "missing"}`;
@@ -46,36 +35,65 @@
     }
     return JSON.stringify(value);
   }
-
   function scopeText(record) {
     return ["deployment", "global"].includes(record.scope_type)
       ? record.scope_type
       : `${record.scope_type}:${record.scope_id || "missing"}`;
   }
-
+  function matchesSpec(spec) {
+    const search = (document.getElementById("configuration-search")?.value || "").trim().toLowerCase();
+    const category = document.getElementById("configuration-category-filter")?.value || "";
+    if (category && spec.category !== category) return false;
+    if (!search) return true;
+    const haystack = [
+      spec.key,
+      spec.description,
+      spec.category,
+      spec.value_kind,
+      ...(spec.allowed_scopes || []),
+      ...(spec.allowed_values || []),
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(search);
+  }
   function renderSpecs() {
     const host = document.getElementById("configuration-spec-list");
     if (!host) return;
-    host.innerHTML = specs.map((spec) => `<details class="comm-entry">
-      <summary><strong>${escapeHtml(spec.key)} · ${escapeHtml(spec.value_kind)}${spec.feature_flag ? " · feature flag" : ""}</strong></summary>
+    const visible = specs.filter(matchesSpec);
+    host.innerHTML = visible.map((spec) => `<details class="comm-entry">
+      <summary><strong>${escapeHtml(spec.key)} · ${escapeHtml(spec.category || "Advanced")} · ${escapeHtml(spec.value_kind)}${spec.feature_flag ? " · feature flag" : ""}</strong></summary>
       ${spec.description ? `<small>${escapeHtml(spec.description)}</small>` : ""}
-      <small>Default: ${escapeHtml(valueText(spec.default, spec))} · Required: ${spec.required ? "yes" : "no"}</small>
+      <small>Default: ${escapeHtml(valueText(spec.default, spec))} · Required: ${spec.required ? "yes" : "no"} · Editable: ${spec.editable ? "yes" : "no"} · Sensitive: ${spec.sensitive ? "yes (reference metadata only)" : "no"}</small>
       <small>Allowed scopes: ${listText(spec.allowed_scopes)} · Hot reloadable: ${spec.hot_reloadable ? "yes" : "no"} · Startup only: ${spec.startup_only ? "yes" : "no"}</small>
+      <small>Allowed values: ${listText(spec.allowed_values)} · Minimum: ${escapeHtml(spec.minimum ?? "none")} · Maximum: ${escapeHtml(spec.maximum ?? "none")}</small>
       <small>Feature flag: ${spec.feature_flag ? "yes" : "no"} · Kill switch capable: ${spec.kill_switch_capable ? "yes" : "no"} · Grants authority: ${spec.grants_authority ? "yes" : "no"}</small>
-      <small>Configuration controls runtime/deployment values only; it does not grant RBAC, agent authority, policy approval, entitlement, or secret access.</small>
-    </details>`).join("") || '<div class="comm-entry"><strong>No configuration specs are currently registered.</strong><small>Runtime values cannot be created safely until code registers a typed spec.</small></div>';
+      <small>Runtime configuration does not grant RBAC, authority, approval, entitlement, or secret access.</small>
+    </details>`).join("") || '<div class="comm-entry"><strong>No specs match the filters.</strong></div>';
   }
-
+  function populateCategoryFilter() {
+    const filter = document.getElementById("configuration-category-filter");
+    if (!filter) return;
+    const previous = filter.value;
+    const categories = [...new Set(specs.map((spec) => spec.category || "Advanced"))].sort();
+    filter.innerHTML = '<option value="">All categories</option>' + categories.map((category) => (
+      `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`
+    )).join("");
+    if (categories.includes(previous)) filter.value = previous;
+  }
   function matches(record) {
     const search = (document.getElementById("configuration-search")?.value || "").trim().toLowerCase();
     const scope = document.getElementById("configuration-scope-filter")?.value || "";
     const state = document.getElementById("configuration-state-filter")?.value || "";
+    const category = document.getElementById("configuration-category-filter")?.value || "";
+    const spec = specFor(record.key);
     if (scope && record.scope_type !== scope) return false;
     if (state && record.state !== state) return false;
+    if (category && spec?.category !== category) return false;
     if (!search) return true;
-    const spec = specFor(record.key);
     const haystack = [
       record.key,
+      spec?.description,
+      spec?.category,
+      spec?.value_kind,
       record.id,
       record.scope_type,
       record.scope_id,
@@ -89,13 +107,11 @@
     ].filter(Boolean).join(" ").toLowerCase();
     return haystack.includes(search);
   }
-
   function targetingHtml(record) {
     const targeting = record.feature_targeting;
     if (!targeting) return "<small>Feature targeting: none.</small>";
     return `<small>Feature targeting: ${escapeHtml(targeting.percentage)}% · cohorts: ${listText(targeting.cohorts)} · owner: ${escapeHtml(targeting.owner || "none")} · expires: ${timeText(targeting.expires_at)}</small>`;
   }
-
   function renderRecord(record) {
     const spec = specFor(record.key);
     const links = [
@@ -116,16 +132,14 @@
       <div data-configuration-management-host="${escapeHtml(record.id)}"></div>
     </details>`;
   }
-
   function renderRecords() {
     const host = document.getElementById("configuration-record-list");
     if (!host) return;
     const visible = records.filter(matches);
     host.innerHTML = visible.map(renderRecord).join("")
-      || '<div class="comm-entry"><strong>No configuration records match the current filters.</strong></div>';
-    setStatus(`${visible.length} of ${records.length} visible revision(s) · ${specs.length} typed spec(s). Scope precedence: ${SCOPE_PRECEDENCE.join(" → ")}. Configuration remains separate from definitions, policy, secrets, entitlements and canonical runtime state.`);
+      || '<div class="comm-entry"><strong>No records match the filters.</strong></div>';
+    setStatus(`${visible.length} of ${records.length} revisions · ${specs.length} specs · ${SCOPE_PRECEDENCE.join(" → ")}.`);
   }
-
   function populateResolveControls() {
     const key = document.getElementById("configuration-resolve-key");
     if (key) {
@@ -152,7 +166,6 @@
       if (resources.some((item) => item.id === previous)) resource.value = previous;
     }
   }
-
   function renderEffective(effective) {
     const host = document.getElementById("configuration-resolve-result");
     if (!host) return;
@@ -165,7 +178,6 @@
       <small>Hot reloadable: ${effective.hot_reloadable ? "yes" : "no"} · Startup only: ${effective.startup_only ? "yes" : "no"} · Feature flag: ${effective.feature_flag ? "yes" : "no"}</small>
     </div>`;
   }
-
   async function resolveEffective() {
     const key = document.getElementById("configuration-resolve-key")?.value || "";
     if (!key) return setStatus("Choose a registered configuration key.");
@@ -192,7 +204,6 @@
       if (host) host.innerHTML = `<div class="comm-entry"><strong>Resolution failed</strong><small>${escapeHtml(error.message)}</small></div>`;
     }
   }
-
   async function loadImpact(button) {
     const recordId = button.dataset.configurationImpact;
     if (!recordId) return;
@@ -213,7 +224,6 @@
       button.disabled = false;
     }
   }
-
   async function refresh() {
     setStatus("Loading canonical typed configuration...");
     let projectError = null;
@@ -231,6 +241,7 @@
       ]);
       specs = specResponse.items || [];
       records = recordResponse.items || [];
+      populateCategoryFilter();
       renderSpecs();
       populateResolveControls();
       renderRecords();
@@ -248,12 +259,18 @@
       if (host) host.innerHTML = "";
     }
   }
-
   function bind() {
     const panel = document.getElementById("developer-panel");
     document.getElementById("refresh-configuration")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
-    document.getElementById("configuration-search")?.addEventListener("input", renderRecords);
+    document.getElementById("configuration-search")?.addEventListener("input", () => {
+      renderSpecs();
+      renderRecords();
+    });
+    document.getElementById("configuration-category-filter")?.addEventListener("change", () => {
+      renderSpecs();
+      renderRecords();
+    });
     document.getElementById("configuration-scope-filter")?.addEventListener("change", renderRecords);
     document.getElementById("configuration-state-filter")?.addEventListener("change", renderRecords);
     document.getElementById("resolve-configuration")?.addEventListener("click", () => resolveEffective().catch(console.error));
@@ -266,6 +283,5 @@
     });
     if (panel?.open) refresh().catch(console.error);
   }
-
   window.addEventListener("DOMContentLoaded", bind);
 })();

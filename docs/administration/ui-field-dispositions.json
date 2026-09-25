@@ -23,7 +23,13 @@
           "startup_only",
           "feature_flag",
           "kill_switch_capable",
-          "grants_authority"
+          "grants_authority",
+          "category",
+          "editable",
+          "sensitive",
+          "allowed_values",
+          "minimum",
+          "maximum"
         ]
       }
     },

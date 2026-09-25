@@ -116,6 +116,54 @@ class ConfigurationServiceTests(unittest.TestCase):
             ),
         )
 
+    def test_schema_metadata_drives_constraints_sensitivity_and_editability(self) -> None:
+        secret = self.service.specs.get("integration.credential")
+        self.assertTrue(secret.sensitive)
+        self.assertEqual(secret.category, "Advanced")
+
+        self.service.register_spec(
+            ConfigurationSpec(
+                key="runtime.mode",
+                value_kind=ConfigurationValueKind.STRING,
+                category="Execution",
+                allowed_values=("safe", "fast"),
+                default="safe",
+            )
+        )
+        self.service.register_spec(
+            ConfigurationSpec(
+                key="runtime.cost_limit",
+                value_kind=ConfigurationValueKind.NUMBER,
+                category="Execution",
+                minimum=0,
+                maximum=10,
+                default=1,
+            )
+        )
+        self.service.register_spec(
+            ConfigurationSpec(
+                key="runtime.external",
+                value_kind=ConfigurationValueKind.STRING,
+                category="Advanced",
+                editable=False,
+                default="provider-owned",
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            self.service.specs.get("runtime.mode").validate_value("invalid")
+        with self.assertRaisesRegex(ValueError, "at least 0"):
+            self.service.specs.get("runtime.cost_limit").validate_value(-1)
+        with self.assertRaisesRegex(ConfigurationError, "read-only"):
+            self.service.create_draft(
+                ConfigurationDraftCreate(
+                    key="runtime.external",
+                    scope_type=ConfigurationScope.GLOBAL,
+                    value="local-change",
+                    actor="operator",
+                )
+            )
+
     def test_scope_precedence_is_deterministic(self) -> None:
         global_record = self._publish("runtime.retry_limit", 2)
         project_record = self._publish(

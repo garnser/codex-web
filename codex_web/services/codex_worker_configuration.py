@@ -30,6 +30,7 @@ def install_codex_worker_configuration(
             required=True,
             default=CODEX_DEFAULT_AUTHENTICATION_MODE,
             allowed_scopes=scopes,
+            category="Model & Provider",
             description=(
                 "Explicit Codex execution authentication mode. Changing this value "
                 "changes authentication/billing semantics and never triggers fallback."
@@ -46,6 +47,7 @@ def install_codex_worker_configuration(
             required=False,
             default=None,
             allowed_scopes=scopes,
+            category="Model & Provider",
             description=(
                 "Secret reference used only when Codex execution authentication mode "
                 "is explicitly api_key."
@@ -62,6 +64,7 @@ def install_codex_worker_configuration(
             required=False,
             default=None,
             allowed_scopes=scopes,
+            category="Model & Provider",
             description=(
                 "Secret reference used only when Codex execution authentication mode "
                 "is delegated_worker_token. Configuration selects only a reference "
