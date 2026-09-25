@@ -5,8 +5,10 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
+from codex_web.autonomy import AutonomyExclusiveGoalScope
 from codex_web.goals import (
     GoalCompletionEvaluationRequest,
     GoalCreate,
@@ -16,6 +18,7 @@ from codex_web.goals import (
     GoalUpdate,
 )
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
+from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.goals import (
     GoalConflictError,
     GoalError,
@@ -24,6 +27,13 @@ from codex_web.services.goals import (
     GoalService,
 )
 from codex_web.services.identity import AuthorizationError, IdentityService
+
+
+class ExclusiveContinuationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -38,7 +48,10 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_goals_router(service: GoalService) -> APIRouter:
+def build_goals_router(
+    service: GoalService,
+    autonomy: AutonomyController | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/goals", tags=["goals"])
 
     def mutation_actor(request: Request):
@@ -140,6 +153,70 @@ def build_goals_router(service: GoalService) -> APIRouter:
         except (AuthorizationError, GoalError, ValueError) as exc:
             raise _error(exc) from exc
         return {"snapshot": snapshot.model_dump(mode="json")}
+
+    @router.put("/{goal_id}/exclusive-continuation")
+    async def set_exclusive_continuation(
+        goal_id: str,
+        payload: ExclusiveContinuationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = mutation_actor(request)
+        if autonomy is None:
+            raise HTTPException(
+                status_code=503,
+                detail="autonomy controller is unavailable",
+            )
+        try:
+            goal = service.get(goal_id, scope=actor.tenant)
+            binding = next(
+                (
+                    item
+                    for item in goal.work_graph_bindings
+                    if item.project_id == payload.project_id
+                ),
+                None,
+            )
+            if binding is None:
+                raise GoalScopeError(
+                    "exclusive continuation project is outside the canonical Goal Work Graph scope"
+                )
+            control = autonomy.set_exclusive_goal_scope(
+                AutonomyExclusiveGoalScope(
+                    goal_id=goal.id,
+                    project_id=payload.project_id,
+                    root_work_item_refs=binding.root_work_item_refs,
+                    reason=payload.reason,
+                ),
+                actor_id=actor.identity_id,
+            )
+        except (AuthorizationError, GoalError, ValueError) as exc:
+            raise _error(exc) from exc
+        return {
+            "control": control.model_dump(mode="json"),
+            "goal_revision": goal.revision,
+        }
+
+    @router.delete("/{goal_id}/exclusive-continuation")
+    async def clear_exclusive_continuation(
+        goal_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = mutation_actor(request)
+        if autonomy is None:
+            raise HTTPException(
+                status_code=503,
+                detail="autonomy controller is unavailable",
+            )
+        current = autonomy.store.load().control.exclusive_goal_scope
+        if current is None or current.goal_id != goal_id:
+            raise HTTPException(
+                status_code=404,
+                detail="exclusive Goal continuation scope not found",
+            )
+        control = autonomy.clear_exclusive_goal_scope(
+            actor_id=actor.identity_id,
+        )
+        return {"control": control.model_dump(mode="json")}
 
     @router.get("/{goal_id}")
     async def get_goal(goal_id: str, request: Request) -> dict[str, Any]:

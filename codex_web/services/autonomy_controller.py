@@ -13,6 +13,7 @@ from codex_web.autonomy import (
     AutonomyCycleOutcome,
     AutonomyCycleRecord,
     AutonomyDeadLetter,
+    AutonomyExclusiveGoalScope,
     AutonomyObservation,
     AutonomyPauseScope,
     AutonomyReasoningResult,
@@ -160,6 +161,57 @@ class AutonomyController:
                 return f"autonomy_scoped_pause:project:{item.scope_id}"
             if item.scope == AutonomyPauseScope.RESOURCE and item.scope_id in resources:
                 return f"autonomy_scoped_pause:resource:{item.scope_id}"
+        return None
+
+    def set_exclusive_goal_scope(
+        self,
+        scope: AutonomyExclusiveGoalScope,
+        *,
+        actor_id: str,
+    ) -> AutonomyControl:
+        current = self.store.load().control
+        control = current.model_copy(update={"exclusive_goal_scope": scope})
+        self.store.set_control(control, actor_id=actor_id)
+        return control
+
+    def clear_exclusive_goal_scope(
+        self,
+        *,
+        actor_id: str,
+    ) -> AutonomyControl:
+        current = self.store.load().control
+        control = current.model_copy(update={"exclusive_goal_scope": None})
+        self.store.set_control(control, actor_id=actor_id)
+        return control
+
+    @staticmethod
+    def _exclusive_goal_scope_reason(
+        control: AutonomyControl,
+        event: CanonicalEventEnvelope,
+    ) -> str | None:
+        scope = control.exclusive_goal_scope
+        if scope is None:
+            return None
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if payload.get("goal_id") != scope.goal_id:
+            return f"autonomy_exclusive_goal_scope:goal:{scope.goal_id}"
+        if payload.get("project_id") != scope.project_id:
+            return f"autonomy_exclusive_goal_scope:project:{scope.project_id}"
+        if not scope.root_work_item_refs:
+            return None
+        refs: list[str] = []
+        raw_refs = payload.get("work_item_refs")
+        if isinstance(raw_refs, (list, tuple)):
+            refs.extend(str(item) for item in raw_refs if item)
+        for key in ("work_item_ref", "ref"):
+            value = payload.get(key)
+            if value:
+                refs.append(str(value))
+        if not refs:
+            return f"autonomy_exclusive_goal_scope:work_graph:{scope.goal_id}"
+        allowed = set(scope.root_work_item_refs)
+        if any(ref not in allowed for ref in refs):
+            return f"autonomy_exclusive_goal_scope:work_graph:{scope.goal_id}"
         return None
 
     def pause(self, *, actor_id: str) -> AutonomyControl:
@@ -375,6 +427,23 @@ class AutonomyController:
                 depth=depth,
                 outcome=AutonomyCycleOutcome.SKIPPED,
                 reason=f"autonomy_{control.mode.value}",
+                started_at=started_at,
+            )
+            self._persist_cycle(cycle, event, actor)
+            return cycle
+
+        exclusive_scope_reason = self._exclusive_goal_scope_reason(
+            control,
+            event,
+        )
+        if exclusive_scope_reason is not None:
+            cycle = self._cycle(
+                event,
+                cycle_key=key,
+                observation=observation,
+                depth=depth,
+                outcome=AutonomyCycleOutcome.SKIPPED,
+                reason=exclusive_scope_reason,
                 started_at=started_at,
             )
             self._persist_cycle(cycle, event, actor)

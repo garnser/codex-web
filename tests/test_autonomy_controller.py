@@ -10,6 +10,7 @@ from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import (
     AutonomyControlUpdate,
     AutonomyCycleOutcome,
+    AutonomyExclusiveGoalScope,
     AutonomyObservation,
     AutonomyReasoningResult,
     AutonomyScopedPauseCreate,
@@ -232,6 +233,158 @@ class AutonomyControllerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(simulated.outcome, AutonomyCycleOutcome.SIMULATED)
         self.assertEqual(calls, 0)
+
+    async def test_exclusive_goal_scope_allows_only_matching_goal_project_and_roots(self) -> None:
+        self.controller.update_control(
+            AutonomyControlUpdate(cooldown_seconds=0),
+            actor_id="admin",
+        )
+        self.controller.set_exclusive_goal_scope(
+            AutonomyExclusiveGoalScope(
+                goal_id="goal-a",
+                project_id="project-a",
+                root_work_item_refs=("root-a",),
+                reason="continue only bounded release validation",
+            ),
+            actor_id="admin",
+        )
+        calls = 0
+
+        async def reasoner(*_args):
+            nonlocal calls
+            calls += 1
+            return AutonomyReasoningResult(summary="continued")
+
+        observation = AutonomyObservation(
+            deterministic_resolved=False,
+            reasoning_score=1.0,
+            reason="continuation required",
+        )
+
+        def scoped_event(event_id, **payload):
+            return CanonicalEventEnvelope(
+                event_id=event_id,
+                event_type="goal.continuation",
+                occurred_at=1.0,
+                source="test",
+                correlation_id="corr-1",
+                tenant_id="org-a",
+                workspace_id="ws-a",
+                payload=payload,
+            )
+
+        allowed = await self.controller.process(
+            scoped_event(
+                "allowed",
+                goal_id="goal-a",
+                project_id="project-a",
+                work_item_ref="root-a",
+            ),
+            observation,
+            reasoner=reasoner,
+        )
+        wrong_goal = await self.controller.process(
+            scoped_event(
+                "wrong-goal",
+                goal_id="goal-b",
+                project_id="project-a",
+                work_item_ref="root-a",
+            ),
+            observation,
+            reasoner=reasoner,
+        )
+        wrong_project = await self.controller.process(
+            scoped_event(
+                "wrong-project",
+                goal_id="goal-a",
+                project_id="project-b",
+                work_item_ref="root-a",
+            ),
+            observation,
+            reasoner=reasoner,
+        )
+        wrong_root = await self.controller.process(
+            scoped_event(
+                "wrong-root",
+                goal_id="goal-a",
+                project_id="project-a",
+                work_item_ref="root-b",
+            ),
+            observation,
+            reasoner=reasoner,
+        )
+
+        self.assertEqual(allowed.outcome, AutonomyCycleOutcome.COMPLETED)
+        self.assertEqual(wrong_goal.outcome, AutonomyCycleOutcome.SKIPPED)
+        self.assertEqual(
+            wrong_goal.reason,
+            "autonomy_exclusive_goal_scope:goal:goal-a",
+        )
+        self.assertEqual(
+            wrong_project.reason,
+            "autonomy_exclusive_goal_scope:project:project-a",
+        )
+        self.assertEqual(
+            wrong_root.reason,
+            "autonomy_exclusive_goal_scope:work_graph:goal-a",
+        )
+        self.assertEqual(calls, 1)
+
+    async def test_global_kill_precedes_exclusive_goal_scope(self) -> None:
+        self.controller.set_exclusive_goal_scope(
+            AutonomyExclusiveGoalScope(
+                goal_id="goal-a",
+                project_id="project-a",
+                reason="exclusive bounded continuation",
+            ),
+            actor_id="admin",
+        )
+        self.controller.kill(actor_id="admin")
+
+        cycle = await self.controller.process(
+            CanonicalEventEnvelope(
+                event_id="killed-exclusive",
+                event_type="goal.continuation",
+                occurred_at=1.0,
+                source="test",
+                tenant_id="org-a",
+                workspace_id="ws-a",
+                payload={
+                    "goal_id": "unrelated-goal",
+                    "project_id": "other-project",
+                },
+            ),
+            AutonomyObservation(
+                deterministic_resolved=False,
+                reasoning_score=1.0,
+                reason="would otherwise continue",
+            ),
+        )
+
+        self.assertEqual(cycle.outcome, AutonomyCycleOutcome.SKIPPED)
+        self.assertEqual(cycle.reason, "autonomy_killed")
+
+    async def test_exclusive_goal_scope_persists_and_can_be_cleared(self) -> None:
+        scope = AutonomyExclusiveGoalScope(
+            goal_id="goal-a",
+            project_id="project-a",
+            root_work_item_refs=("root-a", "root-a"),
+            reason="bounded continuation",
+        )
+        self.controller.set_exclusive_goal_scope(scope, actor_id="operator")
+
+        restarted = AutonomyController(
+            AutonomyStateStore(SQLiteStateStore(self.path))
+        )
+        stored = restarted.store.load().control.exclusive_goal_scope
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.goal_id, "goal-a")
+        self.assertEqual(stored.root_work_item_refs, ("root-a",))
+
+        restarted.clear_exclusive_goal_scope(actor_id="operator")
+        self.assertIsNone(
+            restarted.store.load().control.exclusive_goal_scope
+        )
 
     async def test_reasoning_retries_are_bounded_then_dead_lettered(self) -> None:
         self.controller.update_control(
