@@ -50,6 +50,14 @@ class _Goals:
         from codex_web.services.goals import GoalNotFoundError
         raise GoalNotFoundError("goal not found")
 
+    def bound_refs(self, goal_id, *, scope):
+        self.get(goal_id, scope=scope)
+        return (
+            ("project-a", "root-a"),
+            ("project-a", "child-a"),
+            ("project-a", "child-b"),
+        )
+
 
 class GoalExecutionBindingTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -122,6 +130,20 @@ class GoalExecutionBindingTests(unittest.TestCase):
             ["binding_created", "binding_active"],
         )
         self.assertEqual(events[-1].reason, "bounded continuation turn completed")
+
+    def test_exclusive_autonomy_scope_is_derived_from_canonical_goal_graph(self) -> None:
+        projected = self.service.exclusive_autonomy_scope(
+            "goal-a",
+            scope=self.scope,
+        )
+
+        self.assertEqual(projected.goal_id, "goal-a")
+        self.assertEqual(projected.goal_revision, 4)
+        self.assertEqual(projected.project_ids, ("project-a",))
+        self.assertEqual(
+            projected.work_item_refs,
+            ("root-a", "child-a", "child-b"),
+        )
 
     def test_stale_goal_revision_and_broader_scope_fail_closed(self) -> None:
         with self.assertRaises(GoalExecutionBindingConflictError):
