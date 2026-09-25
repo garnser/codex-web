@@ -130,6 +130,25 @@ class AgentSessionService:
             workspace_id=actor.workspace_id,
         )
 
+    def mark_status(
+        self,
+        session_id: str,
+        status: AgentSessionStatus,
+        *,
+        actor: AuthenticationActor,
+        failure_reason: str | None = None,
+    ) -> AgentSession:
+        session = self.get(session_id, actor)
+        updated = session.model_copy(
+            update={
+                "status": status,
+                "failure_reason": failure_reason,
+                "failure": None if status != AgentSessionStatus.FAILED else session.failure,
+                "updated_at": time.time(),
+            }
+        )
+        return self.store.upsert(updated)
+
     def find_by_native_id(
         self,
         provider_native_session_id: str,
