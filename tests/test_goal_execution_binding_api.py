@@ -20,6 +20,8 @@ from codex_web.identity import (
 class _Dumpable:
     def __init__(self, **payload):
         self.payload = payload
+        for key, value in payload.items():
+            setattr(self, key, value)
 
     def model_dump(self, mode="json"):
         return self.payload
