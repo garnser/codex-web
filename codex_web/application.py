@@ -60,6 +60,7 @@ from codex_web.api.goals import build_goals_router
 from codex_web.api.home import build_home_router
 from codex_web.api.metrics import build_metrics_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
+from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
 from codex_web.api.input_plugins import build_input_plugins_router
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.orchestration import build_orchestration_router
@@ -307,6 +308,7 @@ from codex_web.services.goal_decomposition_generation import (
     GoalDecompositionGenerationService,
 )
 from codex_web.services.goal_decompositions import GoalDecompositionService
+from codex_web.services.goal_execution_bindings import GoalExecutionBindingService
 from codex_web.services.input_plugin_definitions import install_input_plugin_definitions
 from codex_web.services.model_gateway import ModelGatewayService
 from codex_web.services.orchestration_inspector import OrchestrationInspectorService
@@ -438,6 +440,7 @@ from codex_web.storage.executive_activations import ExecutiveActivationStore
 from codex_web.storage.goals import GoalStore
 from codex_web.storage.metrics import MetricStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
+from codex_web.storage.goal_execution_bindings import GoalExecutionBindingStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
 from codex_web.storage.task_source_sync_jobs import GitLabSyncJobStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -2134,6 +2137,11 @@ app.state.decision_service = decision_service
 app.state.decision_deliberation_service = decision_deliberation_service
 goal_store = GoalStore(state_store)
 goal_service = GoalService(goal_store, project_service, work_graph_service)
+goal_execution_binding_store = GoalExecutionBindingStore(state_store)
+goal_execution_binding_service = GoalExecutionBindingService(
+    goal_execution_binding_store,
+    goal_service,
+)
 decision_service.goals = goal_service
 
 business_kpi_store = BusinessKPIStore(state_store)
@@ -2243,6 +2251,8 @@ goal_decomposition_commit_service = GoalDecompositionCommitService(
 )
 app.state.goal_store = goal_store
 app.state.goal_service = goal_service
+app.state.goal_execution_binding_store = goal_execution_binding_store
+app.state.goal_execution_binding_service = goal_execution_binding_service
 app.state.goal_decomposition_store = goal_decomposition_store
 app.state.goal_decomposition_service = goal_decomposition_service
 app.state.goal_decomposition_generation_service = (
@@ -2252,6 +2262,7 @@ app.state.goal_decomposition_commit_service = (
     goal_decomposition_commit_service
 )
 app.include_router(build_goals_router(goal_service))
+app.include_router(build_goal_execution_bindings_router(goal_execution_binding_service))
 app.include_router(
     build_goal_decompositions_router(
         goal_decomposition_service,
