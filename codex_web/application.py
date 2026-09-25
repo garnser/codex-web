@@ -2150,6 +2150,7 @@ goal_continuation_service = GoalContinuationService(
     goal_service,
     agent_session_service,
     owner_id=f"{instance_id}:goal-continuation",
+    autonomy=autonomy_controller,
 )
 goal_continuation_recovery_service = GoalContinuationRecoveryService(
     goal_execution_binding_service,
