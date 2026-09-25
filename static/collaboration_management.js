@@ -12,6 +12,12 @@ const EDITABLE_TEAM_FIELDS = [
   "escalation_target",
 ];
 
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
 function pick(item, fields) {
   return Object.fromEntries(fields
     .filter((key) => Object.prototype.hasOwnProperty.call(item || {}, key))
@@ -181,10 +187,10 @@ export async function openHistory(kind, item) {
     const items = result?.items || [];
     body.innerHTML = items.length ? items.slice().reverse().map((revision) => `
       <article class="comm-entry">
-        <strong>Revision ${revision.revision} · ${revision.lifecycle}</strong>
-        <small>Record: ${revision.record_id}</small>
-        <small>Changed by: ${revision.updated_by || revision.created_by || "unknown"} · ${revision.updated_at ? new Date(revision.updated_at * 1000).toISOString() : "unknown time"}</small>
-        <small>Reason: ${revision.change_reason || "none recorded"}</small>
+        <strong>Revision ${esc(revision.revision)} · ${esc(revision.lifecycle)}</strong>
+        <small>Record: ${esc(revision.record_id)}</small>
+        <small>Changed by: ${esc(revision.updated_by || revision.created_by || "unknown")} · ${esc(revision.updated_at ? new Date(revision.updated_at * 1000).toISOString() : "unknown time")}</small>
+        <small>Reason: ${esc(revision.change_reason || "none recorded")}</small>
       </article>`).join("") : "<small>No revision history returned.</small>";
   } catch (error) {
     status(dialog, error.message || "Revision history unavailable.", true);
