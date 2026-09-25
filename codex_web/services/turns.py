@@ -325,7 +325,10 @@ class TurnService:
             or remembered.repository_resource_id
         )
         effective_writable_repository_ids = tuple(
-            dict.fromkeys(payload.writable_repository_resource_ids)
+            dict.fromkeys(
+                payload.writable_repository_resource_ids
+                or remembered.writable_repository_resource_ids
+            )
         )
         effective_read_only_repository_ids = (
             payload.read_only_repository_resource_ids
@@ -366,6 +369,7 @@ class TurnService:
             reasoning_effort=effective_reasoning_effort,
             developer_instructions=remembered.developer_instructions,
             repository_resource_id=effective_repository_resource_id,
+            writable_repository_resource_ids=effective_writable_repository_ids,
             read_only_repository_resource_ids=effective_read_only_repository_ids,
             execution_profile_id=effective_execution_profile_id,
         )

@@ -97,10 +97,21 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
             approval_policy="never",
             model="gpt-test",
             reasoning_effort="high",
+            repository_resource_id="repo-app",
+            writable_repository_resource_ids=("repo-app", "repo-api", "repo-app"),
+            read_only_repository_resource_ids=("repo-docs",),
+            execution_profile_id="repository-write",
         )
 
         self.assertEqual(host.settings["t1"].model, "gpt-test")
         self.assertEqual(settings.reasoning_effort, "high")
+        self.assertEqual(settings.repository_resource_id, "repo-app")
+        self.assertEqual(
+            settings.writable_repository_resource_ids,
+            ("repo-app", "repo-api"),
+        )
+        self.assertEqual(settings.read_only_repository_resource_ids, ("repo-docs",))
+        self.assertEqual(settings.execution_profile_id, "repository-write")
         self.assertEqual(host.bindings[0].sandbox, "workspace-write")
         self.assertEqual(host.bindings[0].approval_policy, "never")
 

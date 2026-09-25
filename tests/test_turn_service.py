@@ -376,6 +376,24 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
             ("repo-app", "repo-api"),
         )
 
+    async def test_thread_writable_targets_apply_when_turn_omits_scope(self) -> None:
+        service, queue, execution, _events, settings = self._service()
+        queue.queued = []
+        execution.active = False
+        settings.get = lambda _thread_id: ThreadRunSettings(
+            writable_repository_resource_ids=("repo-app", "repo-api"),
+        )
+
+        await service.start(
+            "thread-1",
+            TurnCreate(message="use thread scope", project_id="home"),
+        )
+
+        self.assertEqual(
+            execution.start_calls[0][1]["writable_repository_resource_ids"],
+            ("repo-app", "repo-api"),
+        )
+
     async def test_coordinated_writable_targets_survive_queueing(self) -> None:
         service, queue, _execution, _events, _settings = self._service()
 

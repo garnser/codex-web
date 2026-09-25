@@ -50,6 +50,7 @@ class ThreadExecutionSettingsService:
         reasoning_effort: str | None = None,
         developer_instructions: str | None = None,
         repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] | None = None,
         read_only_repository_resource_ids: tuple[str, ...] | None = None,
         execution_profile_id: str | None = None,
     ) -> ThreadRunSettings:
@@ -74,6 +75,14 @@ class ThreadExecutionSettingsService:
             )
         if repository_resource_id is not None:
             current.repository_resource_id = repository_resource_id or None
+        if writable_repository_resource_ids is not None:
+            current.writable_repository_resource_ids = tuple(
+                dict.fromkeys(
+                    value.strip()
+                    for value in writable_repository_resource_ids
+                    if value and value.strip()
+                )
+            )
         if read_only_repository_resource_ids is not None:
             current.read_only_repository_resource_ids = tuple(
                 dict.fromkeys(

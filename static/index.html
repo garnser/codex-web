@@ -1143,41 +1143,74 @@
             </div>
           </details>
           <button id="theme-toggle" class="icon-button theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode" aria-pressed="false">◐</button>
-          <label class="repository-target-control" title="Execution environment and capability profile for the next thread">
-            <span>Profile</span>
-            <select id="execution-profile">
-              <option value="repository-write">Repository write</option>
-            </select>
-          </label>
-          <span id="execution-profile-summary" class="execution-profile-summary" role="status"></span>
-          <label class="repository-target-control" title="Repository scope for the next repository-mutating turn">
-            <span>Repository</span>
-            <select id="repository-target" aria-describedby="repository-target-status">
-              <option value="">Auto</option>
-            </select>
-          </label>
-          <span id="repository-target-status" class="repository-target-status" role="status" aria-live="polite"></span>
-          <label class="repository-target-control" title="Explicit writable repository set for a coordinated multi-repository turn">
-            <span>Writable set</span>
-            <select id="repository-write-targets" multiple aria-describedby="repository-target-status"></select>
-          </label>
-          <label class="repository-target-control" title="Optional read-only repository context for the next thread">
-            <span>Read context</span>
-            <select id="repository-read-context" multiple></select>
-          </label>
-          <select id="sandbox" aria-describedby="sandbox-danger-warning">
-            <option value="workspace-write">Workspace write</option>
-            <option value="read-only">Read only</option>
-            <option value="danger-full-access">Full access (high risk)</option>
-          </select>
-          <span id="sandbox-danger-warning" class="sandbox-danger-warning" role="status">⚠ Full access disables the Codex inner sandbox inside the assigned worker environment. Control-plane isolation still applies.</span>
-          <select id="approval-policy">
-            <option value="on-request">Ask on request</option>
-            <option value="untrusted">Ask untrusted</option>
-            <option value="never">Never ask</option>
-          </select>
-          <button id="rename-thread" class="ghost-button">Rename</button>
-          <button id="archive-thread" class="ghost-button">Archive</button>
+          <details id="thread-settings-menu" class="thread-control-menu thread-settings-menu">
+            <summary class="ghost-button">Thread settings</summary>
+            <div class="thread-control-popover thread-settings-popover">
+              <div class="thread-settings-grid">
+                <label>
+                  <span>Model</span>
+                  <select id="thread-model-setting">
+                    <option value="">Project/default model</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Reasoning</span>
+                  <select id="thread-reasoning-setting">
+                    <option value="">Default reasoning</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Execution profile</span>
+                  <select id="execution-profile">
+                    <option value="repository-write">Repository write</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Primary repository</span>
+                  <select id="repository-target" aria-describedby="repository-target-status">
+                    <option value="">Auto</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Writable repositories</span>
+                  <select id="repository-write-targets" multiple aria-describedby="repository-target-status"></select>
+                </label>
+                <label>
+                  <span>Read-only context</span>
+                  <select id="repository-read-context" multiple></select>
+                </label>
+                <label>
+                  <span>Privilege</span>
+                  <select id="sandbox" aria-describedby="sandbox-danger-warning">
+                    <option value="workspace-write">Workspace write</option>
+                    <option value="read-only">Read only</option>
+                    <option value="danger-full-access">Full access (high risk)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Approvals</span>
+                  <select id="approval-policy">
+                    <option value="on-request">Ask on request</option>
+                    <option value="untrusted">Ask untrusted</option>
+                    <option value="never">Never ask</option>
+                  </select>
+                </label>
+              </div>
+              <span id="repository-target-status" class="repository-target-status" role="status" aria-live="polite"></span>
+              <span id="sandbox-danger-warning" class="sandbox-danger-warning" role="status">⚠ Full access disables the Codex inner sandbox.</span>
+              <details class="thread-profile-details">
+                <summary>Profile details</summary>
+                <span id="execution-profile-summary" class="execution-profile-summary" role="status"></span>
+              </details>
+            </div>
+          </details>
+          <details id="thread-actions-menu" class="thread-control-menu thread-actions-menu">
+            <summary class="icon-button" title="More thread actions" aria-label="More thread actions">•••</summary>
+            <div class="thread-control-popover thread-actions-popover">
+              <button id="rename-thread" class="ghost-button" type="button">Rename thread</button>
+              <button id="archive-thread" class="ghost-button danger-button" type="button">Archive thread</button>
+            </div>
+          </details>
         </div>
       </header>
 

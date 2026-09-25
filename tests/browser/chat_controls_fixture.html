@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/design_tokens.css">
+  <link rel="stylesheet" href="/static/workspace_components.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/mobile_responsive.css">
+</head>
+<body>
+  <aside class="sidebar"></aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="thread-heading"><h1>Compact chat</h1><p id="thread-meta">Thread</p></div>
+      <div class="codex-status idle">Idle</div>
+      <div class="controls">
+        <details id="thread-settings-menu" class="thread-control-menu thread-settings-menu">
+          <summary class="ghost-button">Thread settings</summary>
+          <div class="thread-control-popover thread-settings-popover">
+            <div class="thread-settings-grid">
+              <label><span>Model</span><select id="thread-model-setting"><option value="">Default</option><option value="gpt-test">Test</option></select></label>
+              <label><span>Reasoning</span><select id="thread-reasoning-setting"><option value="">Default</option><option value="high">High</option></select></label>
+              <label><span>Execution profile</span><select id="execution-profile"><option value="repository-write">Repository write</option></select></label>
+              <label><span>Primary repository</span><select id="repository-target"><option value="repo-app">App</option></select></label>
+              <label><span>Writable repositories</span><select id="repository-write-targets" multiple><option value="repo-app">App</option><option value="repo-api">API</option></select></label>
+              <label><span>Read-only context</span><select id="repository-read-context" multiple><option value="repo-docs">Docs</option></select></label>
+              <label><span>Privilege</span><select id="sandbox"><option value="workspace-write">Workspace write</option><option value="danger-full-access">Full access</option></select></label>
+              <label><span>Approvals</span><select id="approval-policy"><option value="on-request">Ask</option><option value="never">Never</option></select></label>
+            </div>
+            <span id="repository-target-status" class="repository-target-status">App</span>
+            <span id="sandbox-danger-warning" class="sandbox-danger-warning">Full access disables the Codex inner sandbox.</span>
+            <details class="thread-profile-details"><summary>Profile details</summary><span id="execution-profile-summary"></span></details>
+          </div>
+        </details>
+        <details id="thread-actions-menu" class="thread-control-menu thread-actions-menu">
+          <summary class="icon-button">•••</summary>
+          <div class="thread-control-popover thread-actions-popover">
+            <button id="rename-thread">Rename thread</button>
+            <button id="archive-thread">Archive thread</button>
+          </div>
+        </details>
+      </div>
+    </header>
+    <section class="messages"></section>
+    <footer class="composer"><textarea></textarea><button id="send">Send</button></footer>
+  </main>
+  <script type="module">
+    import { install } from '/static/thread_settings_ui.js';
+    window.updates = [];
+    install({
+      byId: (id) => document.getElementById(id),
+      activeThreadId: () => 'thread-1',
+      updateThread: async (threadId, updates) => { window.updates.push({ threadId, updates }); },
+      persistDefaults: () => {},
+      defaultProfileId: () => 'repository-write',
+      renderProfile: () => {},
+      renderRepositories: () => {},
+    });
+  </script>
+</body>
+</html>

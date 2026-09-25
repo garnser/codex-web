@@ -309,9 +309,31 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn('id="sandbox-danger-warning"', html)
         self.assertIn("disables the Codex inner sandbox", html)
         self.assertIn(
-            '#sandbox:has(option[value="danger-full-access"]:checked) + .sandbox-danger-warning',
+            '.thread-settings-popover:has(#sandbox option[value="danger-full-access"]:checked) .sandbox-danger-warning',
             css,
         )
+
+    def test_chat_execution_controls_are_grouped_in_thread_settings(self) -> None:
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+        settings_start = html.index('id="thread-settings-menu"')
+        settings_end = html.index('id="thread-actions-menu"')
+        settings = html[settings_start:settings_end]
+        for control_id in (
+            "thread-model-setting",
+            "thread-reasoning-setting",
+            "execution-profile",
+            "repository-target",
+            "repository-write-targets",
+            "repository-read-context",
+            "sandbox",
+            "approval-policy",
+        ):
+            self.assertIn(f'id="{control_id}"', settings)
+
+        actions = html[settings_end:html.index('</div>', settings_end)]
+        self.assertIn('id="rename-thread"', actions)
+        self.assertIn('id="archive-thread"', actions)
 
     def test_execution_profile_controls_are_focused_and_explain_authority(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")

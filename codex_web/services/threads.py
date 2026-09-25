@@ -1116,7 +1116,9 @@ class ThreadService:
             reasoning_effort=payload.reasoning_effort,
             developer_instructions=payload.developer_instructions,
             repository_resource_id=payload.repository_resource_id,
+            writable_repository_resource_ids=payload.writable_repository_resource_ids,
             read_only_repository_resource_ids=payload.read_only_repository_resource_ids,
+            execution_profile_id=payload.execution_profile_id,
         )
         return {"ok": True, "threadId": thread_id, **settings.model_dump()}
 
