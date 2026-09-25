@@ -2179,7 +2179,7 @@ async def _recover_goal_continuations_on_startup() -> None:
         )
 
 
-app.add_event_handler("startup", _recover_goal_continuations_on_startup)
+app.router.add_event_handler("startup", _recover_goal_continuations_on_startup)
 
 
 def _subscribe_goal_continuation_events(
