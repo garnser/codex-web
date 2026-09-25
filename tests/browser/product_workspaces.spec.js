@@ -165,6 +165,7 @@ test('shell keeps canonical Project context visible and switches without reloadi
   await expect(switcher.locator('option')).toHaveCount(2);
   await expect(switcher).toHaveValue('home');
   await expect(page.locator('[data-project-indicator]')).toHaveCount(0);
+  await expect(page.locator('#projects')).toHaveCount(0);
 
   await switcher.selectOption('alpha');
   await expect.poll(() => page.evaluate(() => window.__selectedProject)).toBe('alpha');
@@ -225,7 +226,7 @@ test('converted section destinations keep coherent browser history and routed pa
   await expect(page.locator('[data-project-nav-node="goals"]')).toHaveAttribute('aria-current', 'page');
 });
 
-test('routed Threads page preserves visible sidebar space for the thread list', async ({ page }) => {
+test('Threads list appears only on the routed Threads page', async ({ page }) => {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
@@ -237,10 +238,14 @@ test('routed Threads page preserves visible sidebar space for the thread list', 
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
 
   const threads = page.locator('.threads-section');
-  const projectList = page.locator('.sidebar > section:not(.threads-section)');
   await expect(page.locator('body')).toHaveClass(/product-chat-page/);
   await expect(threads).toBeVisible();
-  await expect(projectList).toBeHidden();
+  await expect(page.locator('#projects')).toHaveCount(0);
+  await expect(page.locator('#product-project-switcher')).toBeVisible();
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
+  await expect(threads).toBeHidden();
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('threads'));
+  await expect(threads).toBeVisible();
   const box = await threads.boundingBox();
   expect(box.height).toBeGreaterThanOrEqual(240);
 });

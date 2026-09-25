@@ -484,40 +484,17 @@ function toggleItemExpanded(scope, id) {
 }
 
 function renderProjects() {
-  $("projects").innerHTML = "";
-  state.projects.forEach((project)=>{
-    const item = document.createElement("div");
-    const expanded=isItemExpanded("project",project.id);
-    item.className=`item ${project.id === state.projectId ? "active" : ""} ${expanded ? "expanded" : ""}`;
-    item.innerHTML = `
-      <div class="item-header">
-        <div class="item-main">
-          <strong>${escapeHtml(project.name)}</strong>
-          <span>${escapeHtml(project.path)}</span>
-        </div>
-        <button type="button" class="item-expand-button" data-action="expand" aria-expanded="${expanded}" title="${expanded ? "Hide actions" : "Show actions"}">Actions</button>
-      </div>
-      <div class="item-actions" aria-label="Project actions" ${expanded ? "" : "hidden"}>
-        <button type="button" class="item-action-button" data-action="bot">Bot Integration</button>
-      </div>
-    `;
-    item.querySelector(".item-main").addEventListener("click",()=>selectProject(project.id));
-    item.querySelector('[data-action="expand"]').addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleItemExpanded("project", project.id);
-      renderProjects();
-    });
-    item.querySelector('[data-action="bot"]').addEventListener("click", (event) => {
-      event.stopPropagation();
-      openBotIntegration({
-        scope: "project",
-        projectId: project.id,
-        title: project.name,
-      });
-    });
-    $("projects").appendChild(item);
-  });
   publishProjectsRendered(state.projects,state.projectId);
+}
+
+function openActiveProjectBotIntegration() {
+  const project = state.projects.find((item) => item.id === state.projectId);
+  if (!project) return;
+  openBotIntegration({
+    scope: "project",
+    projectId: project.id,
+    title: project.name,
+  });
 }
 
 function renderThreads() {
@@ -2312,7 +2289,15 @@ $("archive-thread").addEventListener("click", async () => {
   clearMessages();
   await refresh();
 });
-$("new-project").addEventListener("click", () => $("project-dialog").showModal());
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#new-project")) {
+    $("project-dialog").showModal();
+    return;
+  }
+  if (event.target.closest("[data-project-bot-integration]")) {
+    openActiveProjectBotIntegration();
+  }
+});
 $("save-project").addEventListener("click", async (event) => {
   event.preventDefault();
   const payload = {

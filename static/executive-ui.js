@@ -73,9 +73,8 @@ function button(label, className = 'ghost-button') {
 }
 
 function currentCodexProjectId(projects) {
-  const activeName = document.querySelector('#projects .item.active .item-main strong')?.textContent?.trim();
-  const active = projects.find((project) => project.name === activeName);
-  return active?.id || projects[0]?.id || 'home';
+  const activeProjectId = document.body.dataset.activeProject;
+  return projects.find((project) => project.id === activeProjectId)?.id || projects[0]?.id || 'home';
 }
 
 function collectExecutiveContext(drawer) {

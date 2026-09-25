@@ -24,6 +24,8 @@
 .product-global-nav{border-top:1px solid var(--line);padding-top:8px}
 .product-global-nav-label{padding:0 9px 3px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
 .product-global-nav-leaf{font-weight:700}
+.product-project-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+.product-project-actions button{min-width:0;justify-content:center;padding-inline:6px;font-size:11px}
 .product-all-workspaces{width:100%;justify-content:flex-start}
 .product-workspaces-launch{white-space:nowrap}
 
@@ -177,7 +179,7 @@ body.product-routed-project-page:not(.product-chat-page) > .main {
 body.product-routed-project-page.product-chat-page > .main {
   display: grid;
 }
-body.product-routed-project-page.product-chat-page .sidebar > section:not(.threads-section) {
+body.product-routed-project-page:not(.product-chat-page) .sidebar > .threads-section {
   display: none;
 }
 body.product-routed-project-page.product-chat-page .product-project-navigation {

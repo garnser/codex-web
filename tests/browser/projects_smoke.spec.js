@@ -61,6 +61,15 @@ test("renders API projects without page errors and refresh refetches projects", 
       return;
     }
 
+    if (path === "/api/bots/connections") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+      return;
+    }
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -70,8 +79,10 @@ test("renders API projects without page errors and refresh refetches projects", 
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
 
-  await expect(page.locator("#projects")).toContainText("Home");
-  await expect(page.locator("#projects")).toContainText("Veridataops");
+  const projectSwitcher = page.locator("#product-project-switcher");
+  await expect(projectSwitcher.locator("option")).toHaveCount(2);
+  await expect(projectSwitcher).toHaveValue("home");
+  await expect(page.locator("#projects")).toHaveCount(0);
   expect(projectRequests).toBeGreaterThan(0);
   const requestsBeforeRefresh = projectRequests;
   expect(pageErrors).toEqual([]);
@@ -83,7 +94,16 @@ test("renders API projects without page errors and refresh refetches projects", 
 
   await page.locator("#refresh").click();
 
-  await expect(page.locator("#projects")).toContainText("New Project");
+  await expect(projectSwitcher.locator("option")).toHaveCount(3);
+  await expect(projectSwitcher.locator("option").last()).toHaveText("New Project");
   expect(projectRequests).toBeGreaterThan(requestsBeforeRefresh);
+
+  await page.locator("#new-project").click();
+  await expect(page.locator("#project-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#project-dialog")).toBeHidden();
+
+  await page.locator("[data-project-bot-integration]").click();
+  await expect(page.locator("#bot-context")).toHaveText("Project: Home");
   expect(pageErrors).toEqual([]);
 });
