@@ -1009,6 +1009,23 @@ function buildSwitcherNav(container) {
   }
 }
 
+function relocateLegacySidebarNavigation() {
+  const projectList = document.getElementById("projects");
+  const projectSection = projectList?.closest("section");
+  if (projectSection) {
+    projectSection.dataset.legacyProjectPanel = "true";
+    projectSection.hidden = true;
+  }
+
+  const threadSection = document.querySelector(".threads-section");
+  const main = document.querySelector(":scope > .main") || document.querySelector(".main");
+  if (!threadSection || !main) return;
+  threadSection.classList.add("product-chat-thread-nav");
+  threadSection.dataset.contextualThreadNavigation = "true";
+  threadSection.removeAttribute("hidden");
+  main.insertBefore(threadSection, main.firstChild);
+}
+
 function buildShell() {
   if (document.getElementById("product-workspace-page")) return;
 
@@ -1040,6 +1057,8 @@ function buildShell() {
     buildProjectNavigation(navigation);
     projectContext.insertAdjacentElement("afterend", navigation);
   }
+
+  relocateLegacySidebarNavigation();
 
   const switcher = document.createElement("dialog");
   switcher.id = "product-workspace-switcher";
