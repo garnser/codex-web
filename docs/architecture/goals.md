@@ -174,6 +174,94 @@ Goal revision, while all evaluation records remain tenant-scoped durable
 provenance. This allows operators to reconstruct exactly why completion was
 accepted without replaying chat or invoking a model.
 
+## Runtime execution bindings and durable continuation
+
+Canonical Goals and provider-native execution objectives are deliberately separate.
+A provider-native objective is an execution aid; it is never lifecycle or completion
+authority for the canonical Goal.
+
+`GoalExecutionBinding` is the durable provider-neutral join between those
+domains. A binding is tenant/workspace scoped and pins:
+
+- the canonical Goal ID and revision;
+- project and optional Work Graph roots/Work Item refs;
+- provider, runtime, AgentSession, thread, and execution owner identities;
+- provider-native objective identity when the runtime advertises that capability;
+- requested/active/idle/blocked/failed/completed/cancelled/unknown execution status;
+- cursor/checkpoint, last turn/execution, lease/heartbeat, retry and recovery state;
+- actor/reason plus correlation/causation provenance and immutable binding events.
+
+A runtime objective can therefore be inspected beside a Goal without becoming a
+second Goal record. Runtimes without native-objective support still use the same
+binding and durable canonical cursor/session continuation; unsupported native
+operations fail visibly.
+
+### Continuation ownership and stop gates
+
+Continuation is lease-owned. Only one worker can hold an unexpired binding lease.
+Every bounded turn re-enters canonical policy before provider execution. Production
+dispatch requires:
+
+- the canonical Goal to remain active and on the pinned revision;
+- global autonomy to remain active;
+- the persisted exclusive Goal/Project/Work Graph scope to match the binding;
+- deterministic Goal/Work Graph state to remain runnable;
+- Goal retry budget and the stricter service recovery bound not to be exhausted.
+
+A current-revision passing completion evaluation terminates the binding as completed.
+Provider prose or a provider-native "completed" flag never completes the canonical
+Goal. Failed/cancelled bound work, deterministic Work Graph blocking, missing
+completion verification after all work is terminal, Goal pause/cancel, policy kill,
+and retry exhaustion stop continuation before a new provider turn is started.
+
+Successful terminal turn events release the current lease and schedule at most one
+next bounded turn. Failure events persist bounded retry/backoff. Interrupted turns
+release without automatic redispatch.
+
+### Restart and unknown provider outcomes
+
+Startup recovery scans only tenant/workspace scopes that have persisted bindings.
+Idle/failed/requested bindings and expired active leases with a known-terminal
+canonical AgentSession may re-enter the normal dispatcher.
+
+Lease expiry alone is **not** proof that the provider stopped running. If an expired
+ACTIVE lease still maps to a canonical RUNNING AgentSession—or the provider outcome
+cannot be established—the binding moves to explicit `unknown` state. UNKNOWN
+is non-runnable and excluded from automatic lease claims/recovery.
+
+An MFA-authorized operator must reconcile UNKNOWN explicitly as idle, failed,
+blocked, or cancelled. Reconciliation clears stale lease/backoff state and records a
+distinct immutable audit event. It cannot assert canonical Goal completion.
+
+### Goal workspace controls
+
+The Goal workspace projects runtime ownership, session/provider, cursor/checkpoint,
+last activity, attempts, lease state, and stop reason. Authorized controls use the
+same server-side policy boundaries:
+
+- Pause interrupts active runtime work and persists an operator-paused blocked binding;
+- Resume is accepted only for that explicit operator-paused state and re-enters all
+  continuation gates;
+- Cancel interrupts active runtime work and terminates the binding;
+- Reconcile is the only operator path out of UNKNOWN;
+- terminal sessions with a discoverable native objective may be explicitly attached
+  or rebound to a Goal whose Work Graph scope contains that project;
+- an unbound native objective may instead be promoted into a **draft** canonical Goal.
+
+Discovery is read-only and never creates canonical application state by itself.
+
+### Binding audit reconstruction
+
+Binding creation/update provenance and immutable events retain actor, reason,
+correlation and causation IDs. Lease claim/release, operator pause/resume/cancel,
+reconciliation and terminal state changes are recorded so audit history can answer:
+
+- who authorized the binding;
+- exactly which Goal revision / project / Work Graph scope could run;
+- which provider/runtime/session executed it;
+- which request or runtime event caused continuation;
+- why continuation stopped or entered UNKNOWN.
+
 ## Goal-domain handoff
 
 The Goal domain provides bounded decomposition, review, durable ActionIntent-backed
