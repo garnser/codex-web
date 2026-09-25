@@ -256,6 +256,24 @@ class ConfigurationContext(BaseModel):
         }
 
 
+class ConfigurationResolutionStep(BaseModel):
+    """One applicable value in effective configuration resolution order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["published", "default"]
+    value: Any
+    selected: bool = False
+    record_id: str | None = None
+    revision: int | None = None
+    scope_type: ConfigurationScope | None = None
+    scope_id: str | None = None
+    force_disabled: bool = False
+    published_by: str | None = None
+    published_at: float | None = None
+    publish_reason: str | None = None
+
+
 class EffectiveConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -274,6 +292,7 @@ class EffectiveConfiguration(BaseModel):
     published_by: str | None = None
     published_at: float | None = None
     publish_reason: str | None = None
+    resolution_chain: tuple[ConfigurationResolutionStep, ...] = ()
 
 
 class ConfigurationDraftCreate(BaseModel):
