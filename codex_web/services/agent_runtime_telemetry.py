@@ -7,7 +7,11 @@ from collections.abc import Callable
 from typing import Any
 
 from codex_web.agent_providers import AgentProviderCapability
-from codex_web.agent_runtime import AgentRuntimeEvent, AgentSession
+from codex_web.agent_runtime import (
+    AgentRuntimeEvent,
+    AgentSession,
+    AgentSessionStatus,
+)
 from codex_web.agent_runtime_usage import (
     AgentRuntimeUsage,
     RuntimeTelemetryCompleteness,
@@ -600,6 +604,21 @@ class AgentRuntimeTelemetryService:
             )
         record = self._emit_terminal_evidence(record)
         persisted = self.store.upsert(record)
+        if outcome != RuntimeTerminalOutcome.UNKNOWN:
+            terminal_status = {
+                RuntimeTerminalOutcome.SUCCEEDED: AgentSessionStatus.READY,
+                RuntimeTerminalOutcome.FAILED: AgentSessionStatus.FAILED,
+                RuntimeTerminalOutcome.INTERRUPTED: AgentSessionStatus.INTERRUPTED,
+            }.get(outcome)
+            if terminal_status is not None:
+                self.sessions.upsert(
+                    session.model_copy(
+                        update={
+                            "status": terminal_status,
+                            "updated_at": now,
+                        }
+                    )
+                )
         if self.observation_notifier is not None:
             try:
                 self.observation_notifier(persisted)
