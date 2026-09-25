@@ -467,14 +467,14 @@ body.product-administration-page [data-project-nav-node="administration"] {
   display: none;
 }
 
-body.product-chat-page > .main {
+body:is(.product-chat-page,[data-project-page="chat"]) > .main {
   display: grid;
   grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
 }
 
-body.product-chat-page > .main > .product-chat-thread-nav {
+body:is(.product-chat-page,[data-project-page="chat"]) > .main > .product-chat-thread-nav {
   display: flex;
   flex-direction: column;
   grid-column: 1;
@@ -486,23 +486,23 @@ body.product-chat-page > .main > .product-chat-thread-nav {
   overflow: hidden;
 }
 
-body.product-chat-page > .main > .product-chat-thread-nav .threads {
+body:is(.product-chat-page,[data-project-page="chat"]) > .main > .product-chat-thread-nav .threads {
   min-height: 0;
   overflow: auto;
 }
 
-body.product-chat-page > .main > :not(.product-chat-thread-nav) {
+body:is(.product-chat-page,[data-project-page="chat"]) > .main > :not(.product-chat-thread-nav) {
   grid-column: 2;
   min-width: 0;
 }
 
 @media (max-width: 900px) {
-  body.product-chat-page > .main {
+  body:is(.product-chat-page,[data-project-page="chat"]) > .main {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
-  body.product-chat-page > .main > .product-chat-thread-nav {
+  body:is(.product-chat-page,[data-project-page="chat"]) > .main > .product-chat-thread-nav {
     grid-column: 1;
     grid-row: auto;
     max-height: 36vh;
@@ -510,7 +510,7 @@ body.product-chat-page > .main > :not(.product-chat-thread-nav) {
     border-bottom: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.24));
   }
 
-  body.product-chat-page > .main > :not(.product-chat-thread-nav) {
+  body:is(.product-chat-page,[data-project-page="chat"]) > .main > :not(.product-chat-thread-nav) {
     grid-column: 1;
   }
 }
