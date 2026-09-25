@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.agent_providers import AgentProviderCapability
 from codex_web.api.identity import request_actor
 from codex_web.goal_execution_bindings import (
     GoalExecutionBindingCreate,
@@ -16,7 +18,15 @@ from codex_web.services.goal_execution_bindings import (
     GoalExecutionBindingNotFoundError,
     GoalExecutionBindingService,
 )
+from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.identity import AuthorizationError, IdentityService
+
+
+class RuntimeObjectiveAttachRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    work_item_refs: tuple[str, ...] = ()
+    reason: str = Field(min_length=1)
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -33,6 +43,7 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_goal_execution_bindings_router(
     service: GoalExecutionBindingService,
+    agent_sessions: AgentSessionService,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/goals", tags=["goals"])
 
@@ -45,6 +56,128 @@ def build_goal_execution_bindings_router(
         IdentityService.require_admin(actor)
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
+
+    @router.get("/runtime-objectives/unbound")
+    async def list_unbound_runtime_objectives(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        bound_session_ids = {
+            item.agent_session_id
+            for item in service.list_all(scope=actor.tenant)
+            if item.agent_session_id
+        }
+        items: list[dict[str, Any]] = []
+        for session in agent_sessions.list(actor):
+            if session.id in bound_session_ids:
+                continue
+            if (
+                AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES
+                not in set(session.capability_snapshot)
+            ):
+                continue
+            result = await agent_sessions.read_objective(session.id, actor=actor)
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            objective = payload.get("objective")
+            if objective is None and isinstance(payload.get("goal"), dict):
+                objective = payload["goal"].get("objective")
+            if not objective:
+                continue
+            items.append(
+                {
+                    "agent_session_id": session.id,
+                    "provider_id": session.provider_id,
+                    "runtime_id": session.runtime_id,
+                    "project_id": session.project_id,
+                    "provider_native_session_id": session.provider_native_session_id,
+                    "objective": objective,
+                    "status": payload.get("status")
+                    or (
+                        payload.get("goal", {}).get("status")
+                        if isinstance(payload.get("goal"), dict)
+                        else None
+                    ),
+                    "payload": payload,
+                }
+            )
+        return {"items": items, "count": len(items)}
+
+    @router.post("/runtime-objectives/{session_id}/attach/{goal_id}")
+    async def attach_runtime_objective(
+        session_id: str,
+        goal_id: str,
+        payload: RuntimeObjectiveAttachRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            if any(
+                item.agent_session_id == session_id
+                for item in service.list_all(scope=actor.tenant)
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "agent session already has a canonical Goal execution binding"
+                )
+            session = agent_sessions.get(session_id, actor)
+            if (
+                AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES
+                not in set(session.capability_snapshot)
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "agent session runtime does not support native execution objectives"
+                )
+            result = await agent_sessions.read_objective(session.id, actor=actor)
+            objective_payload = (
+                result.payload if isinstance(result.payload, dict) else {}
+            )
+            nested_goal = (
+                objective_payload.get("goal")
+                if isinstance(objective_payload.get("goal"), dict)
+                else {}
+            )
+            objective = objective_payload.get("objective") or nested_goal.get("objective")
+            if not objective:
+                raise GoalExecutionBindingNotFoundError(
+                    "runtime objective not found for agent session"
+                )
+            provider_native_objective_id = (
+                objective_payload.get("id")
+                or nested_goal.get("id")
+                or objective_payload.get("goalId")
+                or nested_goal.get("goalId")
+            )
+            item = service.create(
+                goal_id,
+                GoalExecutionBindingCreate(
+                    project_id=session.project_id,
+                    work_item_refs=payload.work_item_refs,
+                    provider_id=session.provider_id,
+                    runtime_id=session.runtime_id,
+                    agent_session_id=session.id,
+                    thread_id=session.provider_native_session_id,
+                    execution_owner_id=actor.identity_id,
+                    provider_native_objective_id=provider_native_objective_id,
+                    native_objective_supported=True,
+                    capability_snapshot=tuple(
+                        capability.value
+                        for capability in session.capability_snapshot
+                    ),
+                    reason=payload.reason,
+                ),
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+            )
+            return {
+                "item": item.model_dump(mode="json"),
+                "runtime_objective": {
+                    "objective": objective,
+                    "payload": objective_payload,
+                },
+            }
+        except (
+            AuthorizationError,
+            GoalExecutionBindingError,
+            ValueError,
+        ) as exc:
+            raise _error(exc) from exc
 
     @router.get("/{goal_id}/execution-bindings")
     async def list_bindings(goal_id: str, request: Request) -> dict[str, Any]:
