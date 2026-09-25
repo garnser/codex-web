@@ -719,6 +719,15 @@ class GoalService:
                 refs.update((binding.project_id, ref) for ref in descendants)
         return tuple(sorted(refs))
 
+    def bound_refs(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+    ) -> tuple[tuple[str, str], ...]:
+        """Return the exact canonical Work Graph subgraph authorized by a Goal."""
+        return self._bound_refs(self.get(goal_id, scope=scope), scope=scope)
+
     def goals_for_work_item(
         self,
         work_item_ref: str,
