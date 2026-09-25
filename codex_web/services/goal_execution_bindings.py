@@ -303,7 +303,12 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
-            if current.status.value in {"completed", "cancelled", "blocked"}:
+            if current.status.value in {
+                "completed",
+                "cancelled",
+                "blocked",
+                "unknown",
+            }:
                 return state
             if (
                 current.retry_not_before_at is not None
