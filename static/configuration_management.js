@@ -8,29 +8,24 @@
   let resources = [];
   let secrets = [];
   let definitions = [];
-
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   }
-
   function setStatus(message) {
     const host = document.getElementById("configuration-management-status");
     if (host) { host.hidden = false; host.textContent = message; }
   }
-
   function selectedSpec() {
     const key = document.getElementById("configuration-draft-key")?.value || "";
     return specs.find((item) => item.key === key) || null;
   }
-
   function elevatedHuman() {
     return actor?.principal_kind === "human"
       && ["mfa", "local_trusted"].includes(actor?.assurance)
       && (actor?.roles || []).some((role) => ["owner", "admin"].includes(role));
   }
-
   function canManage(scope) {
     if (!actor) return false;
     const platform = ["deployment", "global"].includes(scope);
@@ -41,24 +36,20 @@
     }
     return elevatedHuman() && (!platform || actor.assurance === "local_trusted");
   }
-
   function sameSlot(left, right) {
     return left.key === right.key
       && left.scope_type === right.scope_type
       && (left.scope_id || null) === (right.scope_id || null);
   }
-
   function activeFor(record) {
     return records.find((item) => sameSlot(item, record) && item.state === "published") || null;
   }
-
   function dateTimestamp(id) {
     const raw = document.getElementById(id)?.value || "";
     if (!raw) return null;
     const millis = new Date(raw).getTime();
     return Number.isNaN(millis) ? null : millis / 1000;
   }
-
   function renderAssurance() {
     const host = document.getElementById("configuration-management-assurance");
     if (!host || !actor) return;
@@ -66,7 +57,6 @@
     const platform = canManage("global") ? "allowed" : "blocked";
     host.textContent = `Current actor ${actor.identity_id} · ${actor.principal_kind} · assurance ${actor.assurance}. Tenant/project/resource mutation: ${tenant}; deployment/global mutation: ${platform}. Server authorization remains authoritative.`;
   }
-
   function renderKeyOptions() {
     const key = document.getElementById("configuration-draft-key");
     if (!key) return;
@@ -77,7 +67,6 @@
     if (specs.some((item) => item.key === previous)) key.value = previous;
     updateSpecControls();
   }
-
   function renderScopes(spec) {
     const scope = document.getElementById("configuration-draft-scope");
     if (!scope) return;
@@ -88,7 +77,6 @@
     if ((spec?.allowed_scopes || []).includes(previous)) scope.value = previous;
     updateScopeTargets();
   }
-
   function updateScopeTargets() {
     const scope = document.getElementById("configuration-draft-scope")?.value || "";
     const project = document.getElementById("configuration-draft-project");
@@ -108,11 +96,10 @@
     const button = document.getElementById("create-configuration-draft");
     if (button) button.disabled = !scope || !canManage(scope) || selectedSpec()?.editable === false;
   }
-
   function valueEditor(spec) {
-    if (!spec) return "<small>No registered configuration spec selected.</small>";
+    if (!spec) return "<small>Select a configuration spec.</small>";
     if (!spec.editable) {
-      return '<small>This setting is intentionally read-only in the product UI. Its schema metadata identifies it, but values must be changed through the owning external/canonical workflow.</small>';
+      return '<small>Read-only here; change it through its owning canonical workflow.</small>';
     }
     const kind = spec.value_kind;
     const min = spec.minimum ?? "";
@@ -152,7 +139,6 @@
     }
     return `<small>Unsupported value kind: ${escapeHtml(kind)}</small>`;
   }
-
   function updateSpecControls() {
     const spec = selectedSpec();
     renderScopes(spec);
@@ -169,10 +155,9 @@
       if (!spec?.kill_switch_capable) kill.checked = false;
     }
   }
-
   function draftValue(spec) {
     const input = document.getElementById("configuration-draft-value");
-    if (!input) throw new Error("No value editor is available for this configuration kind.");
+    if (!input) throw new Error("No value editor for this configuration kind.");
     if (spec.value_kind === "boolean") return Boolean(input.checked);
     if (spec.value_kind === "integer") {
       const value = Number(input.value);
@@ -203,7 +188,6 @@
     }
     throw new Error(`Unsupported configuration kind: ${spec.value_kind}`);
   }
-
   function scopeId(scope) {
     if (["deployment", "global"].includes(scope)) return null;
     if (scope === "organization") return actor?.organization_id || null;
@@ -212,7 +196,6 @@
     if (scope === "resource") return document.getElementById("configuration-draft-resource")?.value || null;
     return null;
   }
-
   function featureTargeting(spec, forceDisabled) {
     if (!spec.feature_flag || forceDisabled) return null;
     const percentage = Number(document.getElementById("configuration-target-percentage")?.value || 100);
@@ -223,15 +206,14 @@
     if (percentage === 100 && !cohorts.length && !owner && expiresAt === null) return null;
     return { percentage, cohorts, owner, expires_at: expiresAt };
   }
-
   async function createDraft() {
     const spec = selectedSpec();
-    if (!spec) return setStatus("Choose a registered configuration key.");
-    if (!spec.editable) return setStatus("The selected setting is read-only in the product UI.");
+    if (!spec) return setStatus("Choose a configuration key.");
+    if (!spec.editable) return setStatus("This setting is read-only.");
     const scope = document.getElementById("configuration-draft-scope")?.value || "";
     const target = scopeId(scope);
     if (!["deployment", "global"].includes(scope) && !target) {
-      return setStatus(`Choose the canonical target for ${scope} scope.`);
+      return setStatus(`Choose a ${scope} target.`);
     }
     const forceDisabled = Boolean(document.getElementById("configuration-force-disabled")?.checked);
     let value;
@@ -241,7 +223,7 @@
       return setStatus(error.message);
     }
     if (forceDisabled && !spec.kill_switch_capable) {
-      return setStatus("The selected spec is not kill-switch capable.");
+      return setStatus("This spec is not kill-switch capable.");
     }
     const targeting = featureTargeting(spec, forceDisabled);
     const reason = document.getElementById("configuration-draft-reason")?.value.trim() || null;
@@ -261,16 +243,15 @@
           force_disabled: forceDisabled,
         }),
       });
-      setStatus(`Created ${spec.key} draft r${response.record.revision}; it is inactive until published.`);
+      setStatus(`Created ${spec.key} draft r${response.record.revision}; publish to activate.`);
       document.getElementById("refresh-configuration")?.click();
     } catch (error) {
       setStatus(`Configuration draft failed: ${error.message}`);
     }
   }
-
   function actionButtons(record) {
     if (!canManage(record.scope_type)) {
-      return "<small>Mutation unavailable for current actor/assurance.</small>";
+      return "<small>Mutation unavailable for this actor/assurance.</small>";
     }
     const actions = [];
     if (record.state === "draft") {
@@ -282,9 +263,8 @@
     if (active && active.id !== record.id) actions.push(["rollback", `Rollback to r${record.revision}`]);
     return actions.length
       ? `<div class="developer-toolbar">${actions.map(([action, label]) => `<button type="button" class="ghost-button" data-configuration-action="${action}" data-record-id="${escapeHtml(record.id)}">${escapeHtml(label)}</button>`).join("")}</div>`
-      : "<small>No lifecycle mutations apply to this revision.</small>";
+      : "<small>No lifecycle actions for this revision.</small>";
   }
-
   function hydrateHosts() {
     for (const record of records) {
       const host = Array.from(document.querySelectorAll("[data-configuration-management-host]"))
@@ -292,16 +272,14 @@
       if (host) host.innerHTML = actionButtons(record);
     }
   }
-
   async function validateRecord(record) {
     try {
       const result = await apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/validate`, { method: "POST" });
-      setStatus(`Validated ${record.key} r${record.revision} against code-owned spec ${result.spec?.value_kind || "unknown"}.`);
+      setStatus(`Validated ${record.key} r${record.revision} as ${result.spec?.value_kind || "unknown"}.`);
     } catch (error) {
       setStatus(`Configuration validation failed: ${error.message}`);
     }
   }
-
   async function publishRecord(record) {
     const active = activeFor(record);
     let impact = null;
@@ -329,7 +307,6 @@
       setStatus(`Configuration publication failed: ${error.message}`);
     }
   }
-
   async function rollbackRecord(record) {
     const active = activeFor(record);
     if (!active || active.id === record.id) return;
@@ -356,7 +333,6 @@
       setStatus(`Configuration rollback failed: ${error.message}`);
     }
   }
-
   async function resetRecord(record) {
     const active = activeFor(record);
     if (!active || active.id !== record.id) return;
@@ -376,13 +352,12 @@
           expected_active_revision: active.revision,
         }),
       });
-      setStatus(`Reverted ${record.key} override with tombstone r${response.record.revision}; effective resolution now inherits from the next applicable scope/default.`);
+      setStatus(`Reverted ${record.key} with tombstone r${response.record.revision}; resolution now inherits.`);
       document.getElementById("refresh-configuration")?.click();
     } catch (error) {
       setStatus(`Configuration reset failed: ${error.message}`);
     }
   }
-
   async function mutate(button) {
     const record = records.find((item) => item.id === button.dataset.recordId);
     if (!record) return;
@@ -396,7 +371,6 @@
       if (document.contains(button)) button.disabled = false;
     }
   }
-
   async function loadDependencies() {
     const [me, secretResponse, definitionResponse] = await Promise.all([
       apiRequest("/api/identity/me"),
@@ -408,7 +382,6 @@
     definitions = definitionResponse.items || [];
     renderAssurance();
   }
-
   async function hydrate(detail) {
     specs = detail.specs || [];
     records = detail.records || [];
@@ -423,7 +396,6 @@
     renderKeyOptions();
     hydrateHosts();
   }
-
   function bind() {
     document.getElementById("configuration-draft-key")?.addEventListener("change", updateSpecControls);
     document.getElementById("configuration-draft-scope")?.addEventListener("change", updateScopeTargets);
@@ -434,7 +406,6 @@
       if (button) mutate(button).catch(console.error);
     });
   }
-
   window.addEventListener("codex:configuration-state-rendered", (event) => hydrate(event.detail || {}));
   window.addEventListener("DOMContentLoaded", bind);
 })();
