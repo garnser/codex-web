@@ -1026,7 +1026,7 @@
     },
     "agent-team-skill": {
       "width": 1440,
-      "height": 1409,
+      "height": 1510,
       "grid": 8,
       "luma": [
         242,
@@ -1045,7 +1045,7 @@
         255,
         255,
         255,
-        238,
+        239,
         255,
         255,
         255,
@@ -1053,7 +1053,7 @@
         255,
         255,
         255,
-        244,
+        242,
         255,
         255,
         255,
@@ -1061,7 +1061,7 @@
         255,
         255,
         255,
-        251,
+        250,
         255,
         255,
         255,
@@ -1069,7 +1069,7 @@
         255,
         255,
         255,
-        247,
+        249,
         255,
         255,
         255,
@@ -1077,7 +1077,7 @@
         255,
         255,
         255,
-        246,
+        245,
         255,
         255,
         255,
@@ -1095,9 +1095,9 @@
         255
       ],
       "provenance": {
-        "source": "documentation-screenshots workflow artifact",
-        "workflow_run_id": 35849190659,
-        "git_revision": "2973bda69d103828f9a0524fbc18a841025bb734"
+        "source": "browser CI full-page signature after Agent/Team management controls",
+        "workflow_run_id": 36089758032,
+        "git_revision": "9c9bd6c623d044f9c45752ac807eb23c03fce86a"
       }
     },
     "attention-inbox": {
