@@ -11,6 +11,7 @@ from codex_web.goal_execution_bindings import (
     GoalExecutionBindingCreate,
     GoalExecutionBindingUpdate,
 )
+from codex_web.goals import GoalCreate, GoalWorkGraphBinding
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.goal_execution_bindings import (
     GoalExecutionBindingConflictError,
@@ -19,12 +20,21 @@ from codex_web.services.goal_execution_bindings import (
     GoalExecutionBindingService,
 )
 from codex_web.services.agent_runtime import AgentSessionService
+from codex_web.services.goals import GoalError, GoalService
 from codex_web.services.identity import AuthorizationError, IdentityService
 
 
 class RuntimeObjectiveAttachRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    work_item_refs: tuple[str, ...] = ()
+    reason: str = Field(min_length=1)
+
+
+class RuntimeObjectivePromoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str | None = Field(default=None, min_length=1)
     work_item_refs: tuple[str, ...] = ()
     reason: str = Field(min_length=1)
 
@@ -36,7 +46,7 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, AuthorizationError):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, (GoalExecutionBindingError, ValueError)):
+    if isinstance(exc, (GoalExecutionBindingError, GoalError, ValueError)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -44,6 +54,7 @@ def _error(exc: Exception) -> HTTPException:
 def build_goal_execution_bindings_router(
     service: GoalExecutionBindingService,
     agent_sessions: AgentSessionService,
+    goals: GoalService,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/goals", tags=["goals"])
 
@@ -99,6 +110,90 @@ def build_goal_execution_bindings_router(
                 }
             )
         return {"items": items, "count": len(items)}
+
+    @router.post("/runtime-objectives/{session_id}/promote")
+    async def promote_runtime_objective(
+        session_id: str,
+        payload: RuntimeObjectivePromoteRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            if any(
+                item.agent_session_id == session_id
+                for item in service.list_all(scope=actor.tenant)
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "agent session already has a canonical Goal execution binding"
+                )
+            session = agent_sessions.get(session_id, actor)
+            if (
+                AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES
+                not in set(session.capability_snapshot)
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "agent session runtime does not support native execution objectives"
+                )
+            result = await agent_sessions.read_objective(session.id, actor=actor)
+            objective_payload = (
+                result.payload if isinstance(result.payload, dict) else {}
+            )
+            nested_goal = (
+                objective_payload.get("goal")
+                if isinstance(objective_payload.get("goal"), dict)
+                else {}
+            )
+            objective = objective_payload.get("objective") or nested_goal.get("objective")
+            if not objective:
+                raise GoalExecutionBindingNotFoundError(
+                    "runtime objective not found for agent session"
+                )
+            provider_native_objective_id = (
+                objective_payload.get("id")
+                or nested_goal.get("id")
+                or objective_payload.get("goalId")
+                or nested_goal.get("goalId")
+            )
+            title = payload.title or str(objective).strip().splitlines()[0][:120]
+            provenance_reason = (
+                f"{payload.reason}; promoted runtime objective from "
+                f"{session.provider_id}/{session.runtime_id} session {session.id}"
+            )
+            if provider_native_objective_id:
+                provenance_reason += (
+                    f" objective {provider_native_objective_id}"
+                )
+            goal = goals.create(
+                GoalCreate(
+                    title=title,
+                    description=str(objective),
+                    owner_identity_id=actor.identity_id,
+                    work_graph_bindings=(
+                        GoalWorkGraphBinding(
+                            project_id=session.project_id,
+                            root_work_item_refs=payload.work_item_refs,
+                        ),
+                    ),
+                ),
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+                reason=provenance_reason,
+            )
+            return {
+                "goal": goal.model_dump(mode="json"),
+                "runtime_objective": {
+                    "objective": objective,
+                    "provider_native_objective_id": provider_native_objective_id,
+                    "payload": objective_payload,
+                },
+            }
+        except (
+            AuthorizationError,
+            GoalExecutionBindingError,
+            GoalError,
+            ValueError,
+        ) as exc:
+            raise _error(exc) from exc
 
     @router.post("/runtime-objectives/{session_id}/attach/{goal_id}")
     async def attach_runtime_objective(
