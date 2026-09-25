@@ -45,8 +45,10 @@ const PROJECT_NAVIGATION_TREE = [
       { id: "work-items", label: "Work Items", workspace: "work", page: "work-items", description: "Canonical tasks, blockers and ownership." },
       { id: "runs", label: "Runs / Execution", workspace: "work", page: "runs", description: "What executed, where, and with what result." },
       { id: "chat", label: "Threads", workspace: "threads", page: "chat", description: "Interactive agent work in this Project." },
-      { id: "goals", label: "Goals", workspace: "goals" },
-      { id: "decisions", label: "Decisions", workspace: "decisions" },
+      { id: "goals", label: "Goals", workspace: "goals", page: "goals", description: "Outcome definitions and progress." },
+      { id: "decisions", label: "Decisions", workspace: "decisions", page: "decisions", description: "Canonical decisions and provenance." },
+      { id: "metrics", label: "Metrics / KPIs", workspace: "metrics", page: "metrics", description: "Versioned measurements, observations and snapshots." },
+      { id: "company", label: "Company Operations", workspace: "company", page: "company", description: "Governed business entities, facts and operating KPIs." },
     ],
   },
   {
@@ -76,8 +78,9 @@ const PROJECT_NAVIGATION_TREE = [
       { id: "incidents", label: "Incidents / Failures", workspace: "operations", page: "operations", description: "Operational failures and canonical remediation." },
     ],
   },
-  { id: "project-settings", label: "Project Settings", workspace: "setup", page: "project-settings", description: "Topology, readiness and execution defaults." },
+  { id: "project-settings", label: "Project Setup / Readiness", workspace: "setup", page: "project-settings", description: "Topology, readiness and execution defaults." },
   { id: "configuration", label: "Configuration", workspace: "settings", page: "configuration", description: "Typed configuration, feature rollout, entitlements and secret/key references." },
+  { id: "memory", label: "Memory", workspace: "memory", page: "memory", description: "Governed organizational memory and retrieval." },
 ];
 
 const GLOBAL_NAVIGATION = [
@@ -769,6 +772,10 @@ function installLegacyLauncherRouting() {
     const launcher = document.querySelector(item.selector);
     if (!launcher || launcher.dataset.productSectionRouting === "true") continue;
     launcher.dataset.productSectionRouting = "true";
+    launcher.dataset.productSectionInternalLauncher = "true";
+    launcher.hidden = true;
+    launcher.setAttribute("aria-hidden", "true");
+    launcher.tabIndex = -1;
     launcher.addEventListener("click", () => {
       if (launcher.dataset.productSectionInternalLaunch === "true") return;
       // Legacy listeners run first and may briefly open the dialog modally.

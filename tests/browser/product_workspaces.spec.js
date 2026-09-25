@@ -72,21 +72,29 @@ test('workspace navigation docks full application sections in main content while
   await expect(page.locator('#refresh-resources')).toHaveAttribute('data-clicked', '1');
 });
 
-test('legacy full-section buttons route into the same main-content page instead of staying modal', async ({ page }) => {
+test('legacy full-section launchers are hidden compatibility hooks while navigation owns section routing', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
 
-  await page.locator('#goals-button').click();
+  for (const selector of [
+    '#goals-button',
+    '#decisions-button',
+    '#metrics-button',
+    '#company-operations-button',
+    '#memory-button',
+    '#project-setup-launch',
+    '[data-attention-launch]',
+  ]) {
+    const launcher = page.locator(selector);
+    await expect(launcher).toBeHidden();
+    await expect(launcher).toHaveAttribute('data-product-section-internal-launcher', 'true');
+    await expect(launcher).toHaveAttribute('aria-hidden', 'true');
+  }
+
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('goals', { page: 'goals' }));
   await expect(page.locator('#product-workspace-page')).toBeVisible();
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Goals');
   await expect(page.locator('#goals-dialog')).toHaveAttribute('data-product-section', 'goals');
   expect(await page.locator('#goals-dialog').evaluate((node) => node.matches(':modal'))).toBe(false);
-  await expect(page).toHaveURL(/#workspace\/goals$/);
-
-  await page.locator('[data-attention-launch]').click();
-  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Attention');
-  await expect(page.locator('.attention-dialog')).toHaveAttribute('data-product-section', 'inbox');
-  expect(await page.locator('.attention-dialog').evaluate((node) => node.matches(':modal'))).toBe(false);
-  await expect(page).toHaveURL(/#workspace\/inbox$/);
 });
 
 test('dynamic cards are adopted and shared UI primitives expose distinct canonical concepts', async ({ page }) => {
@@ -510,4 +518,37 @@ test('Work Items navigation opens the canonical operator in the main workspace h
   });
   await expect(page.locator('#product-workspace-page')).toBeVisible();
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Work Items');
+});
+
+
+test('required section destinations are discoverable in project navigation and route into the main pane', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+  await page.route('**/codex/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.goto('http://127.0.0.1:18766/codex/projects/home/overview');
+
+  const destinations = [
+    ['goals', 'Goals', 'goals'],
+    ['decisions', 'Decisions', 'decisions'],
+    ['metrics', 'Metrics / KPIs', 'metrics'],
+    ['company', 'Company Operations', 'company'],
+    ['attention', 'Attention', 'attention'],
+    ['project-settings', 'Project Setup / Readiness', 'project-settings'],
+    ['memory', 'Memory', 'memory'],
+  ];
+
+  for (const [nodeId, title, pageName] of destinations) {
+    const node = page.locator(`[data-project-nav-node="${nodeId}"]`);
+    await expect(node).toBeVisible();
+    await expect(node.locator('strong')).toHaveText(title);
+    await node.evaluate((element) => element.click());
+    await expect(page.locator('#product-workspace-page')).toBeVisible();
+    await expect(page.locator('[data-product-workspace-title]')).toHaveText(title === 'Project Setup / Readiness' ? 'Project Settings' : title);
+    await expect(node).toHaveAttribute('aria-current', 'page');
+    await expect(page).toHaveURL(new RegExp(`/codex/projects/home/${pageName}$`));
+  }
 });
