@@ -13,6 +13,27 @@ class GitHubClient:
         self.transport = transport
         self.timeout = timeout
 
+    async def get_json(self, api_base: str, path: str, *, token: str | None,
+                       params: dict[str, Any] | None = None) -> Any:
+        """Compatibility read used by the code-host provider."""
+        url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as client:
+                response = await client.get(url, headers=headers, params=params)
+        except (httpx.TimeoutException, httpx.NetworkError):
+            raise
+        if response.status_code >= 400:
+            error = RuntimeError(f"GitHub API returned HTTP {response.status_code} for {path}")
+            setattr(error, "status_code", response.status_code)
+            raise error
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"GitHub API returned invalid JSON for {path}") from exc
+
     async def request_json(self, method: str, api_base: str, path: str, *, token: str,
                            params: dict[str, Any] | None = None,
                            json_body: dict[str, Any] | None = None) -> Any:
