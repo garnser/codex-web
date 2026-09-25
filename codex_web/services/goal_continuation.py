@@ -82,6 +82,15 @@ class GoalContinuationService:
             limit = min(limit, int(goal.budget.max_retries) + 1)
         return max(1, limit)
 
+    def recovery_attempt_limit_for(
+        self,
+        binding,
+        *,
+        scope: TenantScope,
+    ) -> int:
+        goal = self.goals.get(binding.goal_id, scope=scope)
+        return self.recovery_attempt_limit(goal)
+
     def _policy_stop_reason(self, binding) -> str | None:
         if self.autonomy is None:
             return None
