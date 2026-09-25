@@ -158,7 +158,11 @@ class MammouthCliJsonEventStream:
         if session_id:
             self.session_id = session_id
 
-        turn_id = (\n            payload.get("turnID")\n            or payload.get("turn_id")\n            or payload.get("messageID")\n        )
+        turn_id = (
+            payload.get("turnID")
+            or payload.get("turn_id")
+            or payload.get("messageID")
+        )
         return AgentRuntimeEvent(
             event_type=event_type,
             provider_native_session_id=self.session_id,
