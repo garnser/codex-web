@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from codex_web.agent_runtime import AgentRuntimeEvent
+from codex_web.agent_runtime import AgentRuntimeEvent, AgentSessionStatus
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
 from codex_web.identity import TenantScope
 from codex_web.services.goal_continuation import GoalContinuationDispatchResult
@@ -35,11 +35,25 @@ class _Bindings:
 class _Sessions:
     def __init__(self, session_id="session-a"):
         self.session_id = session_id
+        self.status_updates = []
 
     def find_by_native_id(self, native_id, actor, **kwargs):
         if native_id != "native-session-a":
             return None
         return SimpleNamespace(id=self.session_id)
+
+    def mark_status(
+        self,
+        session_id,
+        status,
+        *,
+        actor,
+        failure_reason=None,
+    ):
+        self.status_updates.append(
+            (session_id, status, failure_reason)
+        )
+        return SimpleNamespace(id=session_id, status=status)
 
 
 class _Continuation:
@@ -115,9 +129,10 @@ class GoalContinuationEventServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_turn_releases_and_dispatches_next_bounded_turn(self):
         bindings = _Bindings(_binding())
         continuation = _Continuation(bindings)
+        sessions = _Sessions()
         service = GoalContinuationEventService(
             bindings,
-            _Sessions(),
+            sessions,
             continuation,
         )
 
@@ -137,6 +152,10 @@ class GoalContinuationEventServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             continuation.dispatched,
             [("binding-a", self.scope, 100.0)],
+        )
+        self.assertEqual(
+            sessions.status_updates[-1][1],
+            AgentSessionStatus.READY,
         )
 
     async def test_failed_turn_releases_with_retry_backoff(self):

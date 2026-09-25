@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from codex_web.agent_runtime import AgentSessionStatus
 from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
 from codex_web.identity import TenantScope
 from codex_web.services.goal_continuation import GoalContinuationDispatchResult
@@ -15,10 +16,24 @@ class _Bindings:
     def __init__(self, rows):
         self.rows = tuple(rows)
         self.scopes = []
+        self.updated = []
 
     def list_all(self, *, scope):
         self.scopes.append(scope)
         return self.rows
+
+    def update(self, binding_id, payload, *, scope, actor_id):
+        self.updated.append((binding_id, payload, scope, actor_id))
+        return next(item for item in self.rows if item.id == binding_id)
+
+
+class _Sessions:
+    def __init__(self, statuses=None):
+        self.statuses = statuses or {}
+
+    def get(self, session_id, actor):
+        status = self.statuses.get(session_id, AgentSessionStatus.READY)
+        return SimpleNamespace(id=session_id, status=status)
 
 
 class _Continuation:
@@ -48,6 +63,7 @@ def _binding(
         lease_owner_id=lease_owner_id,
         lease_expires_at=lease_expires_at,
         retry_not_before_at=retry_not_before_at,
+        agent_session_id=f"session-{binding_id}",
     )
 
 
@@ -72,7 +88,11 @@ class GoalContinuationRecoveryServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         bindings = _Bindings(rows)
         continuation = _Continuation()
-        service = GoalContinuationRecoveryService(bindings, continuation)
+        service = GoalContinuationRecoveryService(
+            bindings,
+            continuation,
+            _Sessions(),
+        )
 
         result = await service.recover_scope(scope=self.scope, now=100.0)
 
@@ -102,7 +122,11 @@ class GoalContinuationRecoveryServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         continuation = _Continuation()
-        service = GoalContinuationRecoveryService(_Bindings(rows), continuation)
+        service = GoalContinuationRecoveryService(
+            _Bindings(rows),
+            continuation,
+            _Sessions(),
+        )
 
         result = await service.recover_scope(scope=self.scope, now=100.0)
 
@@ -110,6 +134,40 @@ class GoalContinuationRecoveryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.eligible, 0)
         self.assertEqual(result.dispatched, ())
         self.assertEqual(continuation.calls, [])
+
+    async def test_expired_active_running_session_becomes_unknown(self):
+        row = _binding(
+            "expired-running",
+            status=GoalExecutionBindingStatus.ACTIVE,
+            lease_owner_id="old-worker",
+            lease_expires_at=99.0,
+        )
+        bindings = _Bindings([row])
+        continuation = _Continuation()
+        service = GoalContinuationRecoveryService(
+            bindings,
+            continuation,
+            _Sessions(
+                {
+                    "session-expired-running": AgentSessionStatus.RUNNING,
+                }
+            ),
+        )
+
+        result = await service.recover_scope(scope=self.scope, now=100.0)
+
+        self.assertEqual(result.scanned, 1)
+        self.assertEqual(result.eligible, 0)
+        self.assertEqual(result.dispatched, ())
+        self.assertEqual(continuation.calls, [])
+        self.assertEqual(
+            bindings.updated[-1][1].status,
+            GoalExecutionBindingStatus.UNKNOWN,
+        )
+        self.assertIn(
+            "unresolved provider turn outcome",
+            bindings.updated[-1][1].stop_reason,
+        )
 
     async def test_recovery_treats_exact_retry_and_lease_expiry_as_eligible(self):
         rows = [
@@ -122,7 +180,11 @@ class GoalContinuationRecoveryServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         continuation = _Continuation()
-        service = GoalContinuationRecoveryService(_Bindings(rows), continuation)
+        service = GoalContinuationRecoveryService(
+            _Bindings(rows),
+            continuation,
+            _Sessions(),
+        )
 
         result = await service.recover_scope(scope=self.scope, now=100.0)
 
