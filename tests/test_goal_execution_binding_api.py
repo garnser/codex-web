@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
+from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -28,6 +29,9 @@ class _BindingServiceStub:
     def __init__(self) -> None:
         self.bindings = []
         self.created = []
+        self.updated = []
+        self.reconciled = []
+        self.current = None
 
     def list_all(self, *, scope):
         return tuple(self.bindings)
@@ -39,6 +43,32 @@ class _BindingServiceStub:
             goal_id=goal_id,
             agent_session_id=payload.agent_session_id,
             project_id=payload.project_id,
+        )
+
+    def get(self, binding_id, *, scope):
+        if self.current is None:
+            self.current = SimpleNamespace(
+                id=binding_id,
+                goal_id="goal-a",
+                status=GoalExecutionBindingStatus.IDLE,
+            )
+        return self.current
+
+    def update(self, binding_id, payload, *, scope, actor_id):
+        self.updated.append((binding_id, payload, scope, actor_id))
+        return _Dumpable(
+            id=binding_id,
+            goal_id="goal-a",
+            status=(payload.status or self.current.status).value,
+        )
+
+    def reconcile_unknown(self, binding_id, payload, *, scope, actor_id):
+        self.reconciled.append((binding_id, payload, scope, actor_id))
+        return _Dumpable(
+            id=binding_id,
+            goal_id="goal-a",
+            status=payload.outcome.value,
+            stop_reason=payload.reason,
         )
 
 
@@ -183,6 +213,77 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
         self.assertIn("native-goal-a", reason)
         self.assertEqual(scope.organization_id, "org-a")
         self.assertEqual(scope.workspace_id, "ws-a")
+
+    def test_unknown_binding_requires_mfa_admin_explicit_reconciliation(self) -> None:
+        self.bindings.current = SimpleNamespace(
+            id="binding-a",
+            goal_id="goal-a",
+            status=GoalExecutionBindingStatus.UNKNOWN,
+        )
+
+        denied = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/reconcile",
+            json={
+                "outcome": "idle",
+                "reason": "provider turn confirmed stopped",
+            },
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self.bindings.reconciled, [])
+
+        self.actor = self.actor.model_copy(
+            update={
+                "roles": (MembershipRole.ADMIN,),
+                "assurance": AuthenticationAssurance.MFA,
+            }
+        )
+        response = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/reconcile",
+            json={
+                "outcome": "idle",
+                "reason": "provider turn confirmed stopped",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["status"], "idle")
+        self.assertEqual(len(self.bindings.reconciled), 1)
+        _binding_id, payload, _scope, actor_id = self.bindings.reconciled[0]
+        self.assertEqual(payload.outcome, GoalExecutionBindingStatus.IDLE)
+        self.assertEqual(actor_id, "member")
+
+    def test_generic_patch_cannot_enter_or_exit_unknown(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={
+                "roles": (MembershipRole.ADMIN,),
+                "assurance": AuthenticationAssurance.MFA,
+            }
+        )
+
+        response = self.client.patch(
+            "/api/goals/goal-a/execution-bindings/binding-a",
+            json={
+                "status": "unknown",
+                "reason": "manual ambiguity",
+            },
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.bindings.updated, [])
+
+        self.bindings.current = SimpleNamespace(
+            id="binding-a",
+            goal_id="goal-a",
+            status=GoalExecutionBindingStatus.UNKNOWN,
+        )
+        response = self.client.patch(
+            "/api/goals/goal-a/execution-bindings/binding-a",
+            json={
+                "status": "idle",
+                "reason": "bypass reconciliation",
+            },
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.bindings.updated, [])
 
     def test_attach_requires_mfa_admin_and_uses_canonical_binding_service(self) -> None:
         denied = self.client.post(

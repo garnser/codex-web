@@ -9,6 +9,8 @@ from codex_web.agent_providers import AgentProviderCapability
 from codex_web.api.identity import request_actor
 from codex_web.goal_execution_bindings import (
     GoalExecutionBindingCreate,
+    GoalExecutionBindingReconcile,
+    GoalExecutionBindingStatus,
     GoalExecutionBindingUpdate,
 )
 from codex_web.goals import GoalCreate, GoalWorkGraphBinding
@@ -318,7 +320,39 @@ def build_goal_execution_bindings_router(
                 raise GoalExecutionBindingNotFoundError(
                     "goal execution binding not found"
                 )
+            if existing.status == GoalExecutionBindingStatus.UNKNOWN:
+                raise GoalExecutionBindingConflictError(
+                    "UNKNOWN execution binding must use explicit reconciliation"
+                )
+            if payload.status == GoalExecutionBindingStatus.UNKNOWN:
+                raise GoalExecutionBindingConflictError(
+                    "UNKNOWN execution binding status is system-managed"
+                )
             item = service.update(
+                binding_id,
+                payload,
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{goal_id}/execution-bindings/{binding_id}/reconcile")
+    async def reconcile_binding(
+        goal_id: str,
+        binding_id: str,
+        payload: GoalExecutionBindingReconcile,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            existing = service.get(binding_id, scope=actor.tenant)
+            if existing.goal_id != goal_id:
+                raise GoalExecutionBindingNotFoundError(
+                    "goal execution binding not found"
+                )
+            item = service.reconcile_unknown(
                 binding_id,
                 payload,
                 scope=actor.tenant,

@@ -60,6 +60,28 @@ class GoalExecutionBindingUpdate(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class GoalExecutionBindingReconcile(BaseModel):
+    """Explicit operator resolution for an UNKNOWN provider outcome."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    outcome: GoalExecutionBindingStatus
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "GoalExecutionBindingReconcile":
+        if self.outcome not in {
+            GoalExecutionBindingStatus.IDLE,
+            GoalExecutionBindingStatus.FAILED,
+            GoalExecutionBindingStatus.BLOCKED,
+            GoalExecutionBindingStatus.CANCELLED,
+        }:
+            raise ValueError(
+                "UNKNOWN binding reconciliation outcome must be idle, failed, blocked, or cancelled"
+            )
+        return self
+
+
 class GoalExecutionBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
