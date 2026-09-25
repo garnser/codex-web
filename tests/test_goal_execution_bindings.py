@@ -346,6 +346,101 @@ class GoalExecutionBindingTests(unittest.TestCase):
                 )
             )
 
+    def test_operator_pause_clears_lease_and_requires_explicit_resume(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        item = self.service.claim_continuation(
+            item.id,
+            scope=self.scope,
+            owner_id="worker-a",
+            now=100.0,
+        )
+        paused = self.service.operator_stop(
+            item.id,
+            scope=self.scope,
+            actor_id="admin",
+            cancelled=False,
+            reason="maintenance window",
+        )
+        self.assertEqual(paused.status, GoalExecutionBindingStatus.BLOCKED)
+        self.assertTrue(paused.stop_reason.startswith("operator paused:"))
+        self.assertIsNone(paused.lease_owner_id)
+        self.assertIsNone(paused.lease_expires_at)
+        self.assertIsNone(
+            self.service.claim_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-b",
+                now=101.0,
+            )
+        )
+
+        resumed = self.service.resume_operator_pause(
+            item.id,
+            scope=self.scope,
+            actor_id="admin",
+            reason="maintenance complete",
+        )
+        self.assertEqual(resumed.status, GoalExecutionBindingStatus.IDLE)
+        self.assertIsNone(resumed.stop_reason)
+        events = self.service.events("goal-a", scope=self.scope)
+        self.assertEqual(
+            [events[-2].event_type, events[-1].event_type],
+            ["binding_operator_paused", "binding_operator_resumed"],
+        )
+
+    def test_operator_cancel_is_terminal_and_unknown_requires_reconciliation_first(self) -> None:
+        item = self.service.create(
+            "goal-a",
+            self.payload(),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        cancelled = self.service.operator_stop(
+            item.id,
+            scope=self.scope,
+            actor_id="admin",
+            cancelled=True,
+            reason="execution no longer authorized",
+        )
+        self.assertEqual(cancelled.status, GoalExecutionBindingStatus.CANCELLED)
+        self.assertIsNone(
+            self.service.claim_continuation(
+                item.id,
+                scope=self.scope,
+                owner_id="worker-a",
+                now=100.0,
+            )
+        )
+
+        unknown = self.service.create(
+            "goal-a",
+            self.payload(agent_session_id="session-unknown"),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        unknown = self.service.update(
+            unknown.id,
+            GoalExecutionBindingUpdate(
+                status=GoalExecutionBindingStatus.UNKNOWN,
+                reason="provider outcome unresolved",
+            ),
+            scope=self.scope,
+            actor_id="recovery",
+        )
+        with self.assertRaises(GoalExecutionBindingConflictError):
+            self.service.operator_stop(
+                unknown.id,
+                scope=self.scope,
+                actor_id="admin",
+                cancelled=True,
+                reason="cannot bypass reconciliation",
+            )
+
     def test_unknown_binding_requires_explicit_reconciliation(self) -> None:
         item = self.service.create(
             "goal-a",

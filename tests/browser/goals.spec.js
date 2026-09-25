@@ -158,6 +158,10 @@ function completion(eligible = false) {
 async function mockGoalApis(page, posts) {
   let completionEligible = false;
 
+  await page.route('**/api/goals/runtime-objectives/unbound', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [], count: 0 }),
+  }));
   await page.route('**/api/goals/goal-a/execution-bindings', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({

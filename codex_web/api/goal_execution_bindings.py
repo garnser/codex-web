@@ -22,8 +22,15 @@ from codex_web.services.goal_execution_bindings import (
     GoalExecutionBindingService,
 )
 from codex_web.services.agent_runtime import AgentSessionService
+from codex_web.services.goal_continuation import GoalContinuationService
 from codex_web.services.goals import GoalError, GoalService
 from codex_web.services.identity import AuthorizationError, IdentityService
+
+
+class RuntimeBindingControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 class RuntimeObjectiveAttachRequest(BaseModel):
@@ -57,6 +64,7 @@ def build_goal_execution_bindings_router(
     service: GoalExecutionBindingService,
     agent_sessions: AgentSessionService,
     goals: GoalService,
+    continuation: GoalContinuationService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/goals", tags=["goals"])
 
@@ -77,6 +85,12 @@ def build_goal_execution_bindings_router(
             item.agent_session_id
             for item in service.list_all(scope=actor.tenant)
             if item.agent_session_id
+            and item.status
+            not in {
+                GoalExecutionBindingStatus.COMPLETED,
+                GoalExecutionBindingStatus.CANCELLED,
+                GoalExecutionBindingStatus.FAILED,
+            }
         }
         items: list[dict[str, Any]] = []
         for session in agent_sessions.list(actor):
@@ -336,6 +350,100 @@ def build_goal_execution_bindings_router(
             )
             return {"item": item.model_dump(mode="json")}
         except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{goal_id}/execution-bindings/{binding_id}/pause")
+    async def pause_binding(
+        goal_id: str,
+        binding_id: str,
+        payload: RuntimeBindingControlRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            existing = service.get(binding_id, scope=actor.tenant)
+            if existing.goal_id != goal_id:
+                raise GoalExecutionBindingNotFoundError(
+                    "goal execution binding not found"
+                )
+            if existing.status == GoalExecutionBindingStatus.ACTIVE:
+                await agent_sessions.interrupt(existing.agent_session_id, actor=actor)
+            item = service.operator_stop(
+                binding_id,
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+                cancelled=False,
+                reason=payload.reason,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{goal_id}/execution-bindings/{binding_id}/resume")
+    async def resume_binding(
+        goal_id: str,
+        binding_id: str,
+        payload: RuntimeBindingControlRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        if continuation is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Goal continuation service is unavailable",
+            )
+        try:
+            actor = mutation_actor(request)
+            existing = service.get(binding_id, scope=actor.tenant)
+            if existing.goal_id != goal_id:
+                raise GoalExecutionBindingNotFoundError(
+                    "goal execution binding not found"
+                )
+            item = service.resume_operator_pause(
+                binding_id,
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+                reason=payload.reason,
+            )
+            result = await continuation.dispatch_once(
+                item.id,
+                scope=actor.tenant,
+            )
+            return {
+                "item": service.get(item.id, scope=actor.tenant).model_dump(mode="json"),
+                "continuation": result.__dict__,
+            }
+        except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{goal_id}/execution-bindings/{binding_id}/cancel")
+    async def cancel_binding(
+        goal_id: str,
+        binding_id: str,
+        payload: RuntimeBindingControlRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            existing = service.get(binding_id, scope=actor.tenant)
+            if existing.goal_id != goal_id:
+                raise GoalExecutionBindingNotFoundError(
+                    "goal execution binding not found"
+                )
+            if existing.status == GoalExecutionBindingStatus.ACTIVE:
+                await agent_sessions.interrupt(existing.agent_session_id, actor=actor)
+            item = service.operator_stop(
+                binding_id,
+                scope=actor.tenant,
+                actor_id=actor.identity_id,
+                cancelled=True,
+                reason=payload.reason,
+            )
+            return {"item": item.model_dump(mode="json")}
+        except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+        except Exception as exc:
             raise _error(exc) from exc
 
     @router.post("/{goal_id}/execution-bindings/{binding_id}/reconcile")

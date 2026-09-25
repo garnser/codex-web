@@ -233,6 +233,132 @@ class GoalExecutionBindingService:
         assert result is not None
         return result
 
+    def operator_stop(
+        self,
+        binding_id: str,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        cancelled: bool,
+        reason: str,
+    ) -> GoalExecutionBinding:
+        result: GoalExecutionBinding | None = None
+        now = time.time()
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if current.status in {
+                GoalExecutionBindingStatus.COMPLETED,
+                GoalExecutionBindingStatus.CANCELLED,
+            }:
+                raise GoalExecutionBindingConflictError(
+                    "terminal execution binding cannot be paused or cancelled"
+                )
+            if current.status == GoalExecutionBindingStatus.UNKNOWN:
+                raise GoalExecutionBindingConflictError(
+                    "UNKNOWN execution binding must be reconciled before control actions"
+                )
+            status = (
+                GoalExecutionBindingStatus.CANCELLED
+                if cancelled
+                else GoalExecutionBindingStatus.BLOCKED
+            )
+            stop_reason = (
+                f"operator cancelled: {reason}"
+                if cancelled
+                else f"operator paused: {reason}"
+            )
+            result = current.model_copy(
+                update={
+                    "status": status,
+                    "lease_owner_id": None,
+                    "lease_expires_at": None,
+                    "heartbeat_at": now,
+                    "retry_not_before_at": None,
+                    "stop_reason": stop_reason,
+                    "updated_by": actor_id,
+                    "change_reason": reason,
+                    "updated_at": now,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            state.events.append(
+                GoalExecutionBindingEvent(
+                    binding_id=binding_id,
+                    goal_id=current.goal_id,
+                    event_type=(
+                        "binding_operator_cancelled"
+                        if cancelled
+                        else "binding_operator_paused"
+                    ),
+                    actor_id=actor_id,
+                    reason=reason,
+                    occurred_at=now,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        assert result is not None
+        return result
+
+    def resume_operator_pause(
+        self,
+        binding_id: str,
+        *,
+        scope: TenantScope,
+        actor_id: str,
+        reason: str,
+    ) -> GoalExecutionBinding:
+        result: GoalExecutionBinding | None = None
+        now = time.time()
+
+        def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
+            nonlocal result
+            current = self._binding(state, binding_id, scope)
+            if (
+                current.status != GoalExecutionBindingStatus.BLOCKED
+                or not (current.stop_reason or "").startswith("operator paused:")
+            ):
+                raise GoalExecutionBindingConflictError(
+                    "only an operator-paused execution binding can be resumed"
+                )
+            result = current.model_copy(
+                update={
+                    "status": GoalExecutionBindingStatus.IDLE,
+                    "lease_owner_id": None,
+                    "lease_expires_at": None,
+                    "retry_not_before_at": None,
+                    "stop_reason": None,
+                    "updated_by": actor_id,
+                    "change_reason": reason,
+                    "updated_at": now,
+                }
+            )
+            state.bindings = [
+                result if item.id == binding_id else item
+                for item in state.bindings
+            ]
+            state.events.append(
+                GoalExecutionBindingEvent(
+                    binding_id=binding_id,
+                    goal_id=current.goal_id,
+                    event_type="binding_operator_resumed",
+                    actor_id=actor_id,
+                    reason=reason,
+                    occurred_at=now,
+                )
+            )
+            return state
+
+        self.store.update(apply)
+        assert result is not None
+        return result
+
     def reconcile_unknown(
         self,
         binding_id: str,

@@ -10,6 +10,7 @@ const state = {
   decompositionEvents: [],
   completion: null,
   executionBindings: [],
+  unboundRuntimeObjectives: [],
 };
 
 const esc = (value) => String(value ?? '')
@@ -147,6 +148,7 @@ async function loadGoal(goalId) {
       decompositionEvents,
       completion,
       executionBindings,
+      unboundRuntimeObjectives,
     ] = await Promise.all([
       request(`/api/goals/${encoded}`),
       request(`/api/goals/${encoded}/revisions`),
@@ -155,6 +157,7 @@ async function loadGoal(goalId) {
       request(`/api/goals/${encoded}/decompositions/events`),
       request(`/api/goals/${encoded}/completion-evaluation`),
       request(`/api/goals/${encoded}/execution-bindings`),
+      request('/api/goals/runtime-objectives/unbound'),
     ]);
     state.detail = detailPayload?.snapshot || null;
     state.revisions = revisions?.items || [];
@@ -163,6 +166,7 @@ async function loadGoal(goalId) {
     state.decompositionEvents = decompositionEvents?.items || [];
     state.completion = completion?.item || null;
     state.executionBindings = executionBindings?.items || [];
+    state.unboundRuntimeObjectives = unboundRuntimeObjectives?.items || [];
     renderGoalDetail();
   } catch (error) {
     detail.innerHTML = `<div class="goal-error">${esc(error.message || 'Failed to load Goal')}</div>`;
@@ -357,17 +361,63 @@ function renderExecutionBindings() {
   if (!state.executionBindings.length) {
     return '<p class="goal-muted">No runtime execution is bound to this canonical Goal.</p>';
   }
-  return state.executionBindings.map((item) => `
-    <div class="goal-subcard goal-execution-binding" data-binding-id="${esc(item.id)}">
-      <strong>Runtime: ${esc(item.status || 'unknown')}</strong>
-      <span>Canonical Goal remains authoritative · revision ${esc(item.goal_revision)}</span>
-      <small>${esc(item.provider_id)}/${esc(item.runtime_id)} · session ${esc(item.agent_session_id)} · owner ${esc(item.execution_owner_id)}</small>
-      <small>native objective: ${esc(item.provider_native_objective_id || (item.native_objective_supported ? 'not assigned' : 'unsupported'))}</small>
-      <small>cursor: ${esc(item.cursor_ref || '—')} · checkpoint: ${esc(item.checkpoint_ref || '—')}</small>
-      <small>last turn: ${esc(item.last_turn_id || '—')} · last execution: ${esc(item.last_execution_id || '—')} · activity: ${esc(fmtTime(item.heartbeat_at || item.updated_at))}</small>
-      <small>stop/block reason: ${esc(item.stop_reason || '—')}</small>
-    </div>`
-  ).join('');
+  return state.executionBindings.map((item) => {
+    const status = item.status || 'unknown';
+    const actions = [];
+    if (status === 'active') {
+      actions.push('<button type="button" class="ghost-button goal-runtime-pause">Pause</button>');
+      actions.push('<button type="button" class="ghost-button goal-runtime-cancel">Cancel</button>');
+    } else if (
+      status === 'blocked'
+      && String(item.stop_reason || '').startsWith('operator paused:')
+    ) {
+      actions.push('<button type="button" class="primary-button goal-runtime-resume">Resume</button>');
+      actions.push('<button type="button" class="ghost-button goal-runtime-cancel">Cancel</button>');
+    } else if (status === 'unknown') {
+      actions.push('<button type="button" class="primary-button goal-runtime-reconcile">Reconcile</button>');
+    } else if (!['completed', 'cancelled'].includes(status)) {
+      actions.push('<button type="button" class="ghost-button goal-runtime-cancel">Cancel</button>');
+    }
+    return `
+      <div class="goal-subcard goal-execution-binding" data-binding-id="${esc(item.id)}">
+        <div class="goal-section-heading">
+          <div>
+            <strong>Runtime: ${esc(status)}</strong>
+            <span>Canonical Goal remains authoritative · revision ${esc(item.goal_revision)}</span>
+          </div>
+          <div class="goal-action-row">${actions.join('')}</div>
+        </div>
+        <small>${esc(item.provider_id)}/${esc(item.runtime_id)} · session ${esc(item.agent_session_id)} · owner ${esc(item.execution_owner_id)}</small>
+        <small>native objective: ${esc(item.provider_native_objective_id || (item.native_objective_supported ? 'not assigned' : 'unsupported'))}</small>
+        <small>cursor: ${esc(item.cursor_ref || '—')} · checkpoint: ${esc(item.checkpoint_ref || '—')}</small>
+        <small>last turn: ${esc(item.last_turn_id || '—')} · last execution: ${esc(item.last_execution_id || '—')} · activity: ${esc(fmtTime(item.heartbeat_at || item.updated_at))}</small>
+        <small>attempts: ${esc(item.recovery_attempts ?? 0)} · lease owner: ${esc(item.lease_owner_id || '—')} · lease expires: ${esc(fmtTime(item.lease_expires_at))}</small>
+        <small>stop/block reason: ${esc(item.stop_reason || '—')}</small>
+      </div>`;
+  }).join('');
+}
+
+function renderUnboundRuntimeObjectives(goal) {
+  if (!state.unboundRuntimeObjectives.length) {
+    return '<p class="goal-muted">No unbound runtime-native objectives discovered.</p>';
+  }
+  const graphByProject = Object.fromEntries(
+    (goal.work_graph_bindings || []).map((item) => [item.project_id, item]),
+  );
+  return state.unboundRuntimeObjectives.map((item) => {
+    const binding = graphByProject[item.project_id];
+    const attachDisabled = binding ? '' : 'disabled';
+    return `
+      <div class="goal-subcard goal-unbound-objective" data-session-id="${esc(item.agent_session_id)}" data-project-id="${esc(item.project_id)}">
+        <strong>${esc(item.objective)}</strong>
+        <small>${esc(item.provider_id)}/${esc(item.runtime_id)} · project ${esc(item.project_id)} · runtime status ${esc(item.status || 'unknown')}</small>
+        <small>${binding ? 'Within this Goal Work Graph scope.' : 'Outside this Goal Work Graph scope; attach is denied.'}</small>
+        <div class="goal-action-row">
+          <button type="button" class="primary-button goal-runtime-attach" ${attachDisabled}>Attach / rebind to this Goal</button>
+          <button type="button" class="ghost-button goal-runtime-promote">Promote to draft Goal</button>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 function renderGoalDetail() {
@@ -405,6 +455,7 @@ function renderGoalDetail() {
         ${goal.status === 'draft' ? '<button type="button" class="ghost-button goal-activate">Activate</button>' : ''}
         ${goal.status === 'active' ? '<button type="button" class="ghost-button goal-pause">Pause</button>' : ''}
         ${goal.status === 'paused' ? '<button type="button" class="ghost-button goal-activate">Resume</button>' : ''}
+        ${!['completed', 'cancelled'].includes(goal.status) ? '<button type="button" class="ghost-button goal-cancel">Cancel Goal</button>' : ''}
       </div>
     </section>
 
@@ -440,6 +491,13 @@ function renderGoalDetail() {
         <div><h3>Runtime execution</h3><small>Provider-neutral execution projection; canonical Goal lifecycle and completion remain authoritative.</small></div>
       </div>
       ${renderExecutionBindings()}
+    </section>
+
+    <section class="goal-card">
+      <div class="goal-section-heading">
+        <div><h3>Unbound runtime objectives</h3><small>Discovery is read-only. Attach/rebind or promote only through explicit operator action.</small></div>
+      </div>
+      ${renderUnboundRuntimeObjectives(goal)}
     </section>
 
     <div class="goal-summary-grid">
@@ -573,6 +631,84 @@ function wireGoalActions() {
     ));
   });
 
+  detail.querySelectorAll('.goal-execution-binding').forEach((node) => {
+    const bindingId = encodeURIComponent(node.dataset.bindingId);
+    node.querySelector('.goal-runtime-pause')?.addEventListener('click', async () => {
+      const reason = window.prompt('Pause reason', 'operator paused Goal runtime continuation');
+      if (!reason) return;
+      await mutate(
+        `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/pause`,
+        { reason },
+        'Pausing runtime continuation…',
+      );
+    });
+    node.querySelector('.goal-runtime-resume')?.addEventListener('click', async () => {
+      const reason = window.prompt('Resume reason', 'operator resumed Goal runtime continuation');
+      if (!reason) return;
+      await mutate(
+        `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/resume`,
+        { reason },
+        'Resuming bounded continuation…',
+      );
+    });
+    node.querySelector('.goal-runtime-cancel')?.addEventListener('click', async () => {
+      const reason = window.prompt('Cancellation reason', 'operator cancelled Goal runtime binding');
+      if (!reason) return;
+      await mutate(
+        `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/cancel`,
+        { reason },
+        'Cancelling runtime binding…',
+      );
+    });
+    node.querySelector('.goal-runtime-reconcile')?.addEventListener('click', async () => {
+      const outcome = String(window.prompt(
+        'Confirmed provider outcome: idle, failed, blocked, or cancelled',
+        'idle',
+      ) || '').trim().toLowerCase();
+      if (!['idle', 'failed', 'blocked', 'cancelled'].includes(outcome)) {
+        setStatus('Reconciliation outcome must be idle, failed, blocked, or cancelled', true);
+        return;
+      }
+      const reason = window.prompt(
+        'Reconciliation evidence/reason',
+        'operator verified provider turn outcome',
+      );
+      if (!reason) return;
+      await mutate(
+        `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/reconcile`,
+        { outcome, reason },
+        'Reconciling unknown runtime outcome…',
+      );
+    });
+  });
+
+  detail.querySelectorAll('.goal-unbound-objective').forEach((node) => {
+    const sessionId = encodeURIComponent(node.dataset.sessionId);
+    const projectId = node.dataset.projectId;
+    node.querySelector('.goal-runtime-attach')?.addEventListener('click', async () => {
+      const graph = (goal.work_graph_bindings || []).find((item) => item.project_id === projectId);
+      if (!graph) return;
+      await mutate(
+        `/api/goals/runtime-objectives/${sessionId}/attach/${encodedGoal}`,
+        {
+          work_item_refs: graph.root_work_item_refs || [],
+          reason: 'operator attached or rebound reviewed runtime objective',
+        },
+        'Attaching runtime objective…',
+      );
+    });
+    node.querySelector('.goal-runtime-promote')?.addEventListener('click', async () => {
+      await mutate(
+        `/api/goals/runtime-objectives/${sessionId}/promote`,
+        {
+          work_item_refs: [],
+          reason: 'operator promoted reviewed runtime objective',
+        },
+        'Promoting runtime objective to draft Goal…',
+      );
+    });
+  });
+
   detail.querySelector('.goal-evaluate-completion')?.addEventListener('click', async () => {
     const observations = [...detail.querySelectorAll('.goal-observation')].map((row) => {
       const kind = row.dataset.kind;
@@ -626,6 +762,15 @@ function wireGoalActions() {
     { status: 'paused', reason: 'operator paused Goal' },
     'Pausing Goal…',
   ));
+  detail.querySelector('.goal-cancel')?.addEventListener('click', async () => {
+    const reason = window.prompt('Goal cancellation reason', 'operator cancelled Goal');
+    if (!reason) return;
+    await mutate(
+      `/api/goals/${encodedGoal}/transition`,
+      { status: 'cancelled', reason },
+      'Cancelling Goal…',
+    );
+  });
 }
 
 window.addEventListener('codex:open-goal', async (event) => {

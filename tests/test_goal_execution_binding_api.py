@@ -20,6 +20,8 @@ from codex_web.identity import (
 class _Dumpable:
     def __init__(self, **payload):
         self.payload = payload
+        for key, value in payload.items():
+            setattr(self, key, value)
 
     def model_dump(self, mode="json"):
         return self.payload
@@ -31,6 +33,8 @@ class _BindingServiceStub:
         self.created = []
         self.updated = []
         self.reconciled = []
+        self.controls = []
+        self.resumes = []
         self.current = None
 
     def list_all(self, *, scope):
@@ -70,6 +74,59 @@ class _BindingServiceStub:
             status=payload.outcome.value,
             stop_reason=payload.reason,
         )
+
+    def operator_stop(
+        self,
+        binding_id,
+        *,
+        scope,
+        actor_id,
+        cancelled,
+        reason,
+    ):
+        self.controls.append(
+            (binding_id, cancelled, reason, scope, actor_id)
+        )
+        status = (
+            GoalExecutionBindingStatus.CANCELLED
+            if cancelled
+            else GoalExecutionBindingStatus.BLOCKED
+        )
+        self.current = SimpleNamespace(
+            id=binding_id,
+            goal_id="goal-a",
+            status=status,
+            stop_reason=(
+                f"operator cancelled: {reason}"
+                if cancelled
+                else f"operator paused: {reason}"
+            ),
+            agent_session_id="session-a",
+        )
+        return _Dumpable(
+            id=binding_id,
+            goal_id="goal-a",
+            status=status.value,
+            stop_reason=self.current.stop_reason,
+        )
+
+    def resume_operator_pause(
+        self,
+        binding_id,
+        *,
+        scope,
+        actor_id,
+        reason,
+    ):
+        self.resumes.append((binding_id, reason, scope, actor_id))
+        self.current = _Dumpable(
+            id=binding_id,
+            goal_id="goal-a",
+            status=GoalExecutionBindingStatus.IDLE.value,
+            stop_reason=None,
+            agent_session_id="session-a",
+        )
+        return self.current
 
 
 class _GoalsStub:
@@ -113,6 +170,7 @@ class _AgentSessionsStub:
                 capability_snapshot=(),
             ),
         ]
+        self.interrupted = []
         self.objectives = {
             "session-a": {
                 "id": "native-goal-a",
@@ -130,12 +188,31 @@ class _AgentSessionsStub:
     async def read_objective(self, session_id, *, actor):
         return SimpleNamespace(payload=self.objectives.get(session_id, {}))
 
+    async def interrupt(self, session_id, *, actor):
+        self.interrupted.append((session_id, actor.identity_id))
+        return _Dumpable(provider_native_session_id="thread-a")
+
+
+class _ContinuationStub:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def dispatch_once(self, binding_id, *, scope):
+        self.calls.append((binding_id, scope))
+        return SimpleNamespace(
+            binding_id=binding_id,
+            outcome="started",
+            turn_id="turn-next",
+            reason=None,
+        )
+
 
 class GoalExecutionBindingApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.bindings = _BindingServiceStub()
         self.sessions = _AgentSessionsStub()
         self.goals = _GoalsStub()
+        self.continuation = _ContinuationStub()
         self.actor = AuthenticationActor(
             identity_id="member",
             principal_kind=PrincipalKind.HUMAN,
@@ -156,6 +233,7 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
                 self.bindings,
                 self.sessions,
                 self.goals,
+                self.continuation,
             )
         )
         self.client = TestClient(app)
@@ -174,7 +252,10 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "active")
 
         self.bindings.bindings = [
-            SimpleNamespace(agent_session_id="session-a")
+            SimpleNamespace(
+                agent_session_id="session-a",
+                status=GoalExecutionBindingStatus.ACTIVE,
+            )
         ]
         response = self.client.get("/api/goals/runtime-objectives/unbound")
         self.assertEqual(response.status_code, 200)
@@ -284,6 +365,74 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.bindings.updated, [])
+
+    def test_runtime_pause_resume_cancel_require_mfa_admin_and_use_canonical_controls(self) -> None:
+        self.bindings.current = SimpleNamespace(
+            id="binding-a",
+            goal_id="goal-a",
+            status=GoalExecutionBindingStatus.ACTIVE,
+            agent_session_id="session-a",
+            stop_reason=None,
+        )
+        denied = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/pause",
+            json={"reason": "maintenance"},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self.bindings.controls, [])
+
+        self.actor = self.actor.model_copy(
+            update={
+                "roles": (MembershipRole.ADMIN,),
+                "assurance": AuthenticationAssurance.MFA,
+            }
+        )
+        paused = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/pause",
+            json={"reason": "maintenance"},
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["item"]["status"], "blocked")
+        self.assertEqual(self.sessions.interrupted[-1][0], "session-a")
+        self.assertFalse(self.bindings.controls[-1][1])
+
+        resumed = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/resume",
+            json={"reason": "maintenance complete"},
+        )
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual(resumed.json()["continuation"]["outcome"], "started")
+        self.assertEqual(self.continuation.calls[-1][0], "binding-a")
+
+        self.bindings.current = SimpleNamespace(
+            id="binding-a",
+            goal_id="goal-a",
+            status=GoalExecutionBindingStatus.ACTIVE,
+            agent_session_id="session-a",
+            stop_reason=None,
+        )
+        cancelled = self.client.post(
+            "/api/goals/goal-a/execution-bindings/binding-a/cancel",
+            json={"reason": "execution authorization revoked"},
+        )
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["item"]["status"], "cancelled")
+        self.assertTrue(self.bindings.controls[-1][1])
+
+    def test_terminal_binding_session_is_discoverable_for_explicit_rebind(self) -> None:
+        self.bindings.bindings = [
+            SimpleNamespace(
+                agent_session_id="session-a",
+                status=GoalExecutionBindingStatus.CANCELLED,
+            )
+        ]
+        response = self.client.get("/api/goals/runtime-objectives/unbound")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(
+            response.json()["items"][0]["agent_session_id"],
+            "session-a",
+        )
 
     def test_attach_requires_mfa_admin_and_uses_canonical_binding_service(self) -> None:
         denied = self.client.post(
