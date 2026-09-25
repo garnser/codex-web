@@ -158,6 +158,35 @@ function completion(eligible = false) {
 async function mockGoalApis(page, posts) {
   let completionEligible = false;
 
+  await page.route('**/api/goals/goal-a/execution-bindings', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      items: [{
+        id: 'goal-binding-a',
+        goal_id: 'goal-a',
+        goal_revision: 4,
+        project_id: 'project-a',
+        work_item_refs: ['team/project-a#42'],
+        provider_id: 'openai',
+        runtime_id: 'codex',
+        agent_session_id: 'agent-session-7',
+        thread_id: 'thread-7',
+        execution_owner_id: 'release-validator',
+        provider_native_objective_id: 'native-goal-9',
+        native_objective_supported: true,
+        capability_snapshot: ['persistent_sessions', 'native_execution_objectives'],
+        status: 'blocked',
+        cursor_ref: 'cursor-285',
+        checkpoint_ref: 'checkpoint-284',
+        last_turn_id: 'turn-285',
+        last_execution_id: 'execution-285',
+        stop_reason: 'approval required',
+        heartbeat_at: 1890000100,
+        updated_at: 1890000100,
+      }],
+      count: 1,
+    }),
+  }));
   await page.route('**/api/goals/goal-a/completion-evaluation', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ item: completion(completionEligible) }),
@@ -222,6 +251,13 @@ test('Goal workspace exposes canonical health, provenance, decomposition and com
   await expect(dialog).toContainText('model-invocation-7');
   await expect(dialog).toContainText('action-intent-1');
   await expect(dialog).toContainText('provider outcome unknown');
+  await expect(dialog).toContainText('Runtime: blocked');
+  await expect(dialog).toContainText('Canonical Goal remains authoritative');
+  await expect(dialog).toContainText('agent-session-7');
+  await expect(dialog).toContainText('release-validator');
+  await expect(dialog).toContainText('cursor-285');
+  await expect(dialog).toContainText('checkpoint-284');
+  await expect(dialog).toContainText('approval required');
   await expect(dialog.locator('[data-criterion-id="manual-review"] .goal-observation-source')).toHaveValue('approval:release-owner');
   await expect(dialog).toContainText('work_item:team/project-a#43');
   await expect(dialog).toContainText('Revision 4');

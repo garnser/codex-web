@@ -27,6 +27,7 @@ class AgentProviderCapability(StrEnum):
     GIT_OPERATIONS = "git_operations"
     INTERACTIVE_APPROVALS = "interactive_approvals"
     NATIVE_CONTEXT_COMPACTION = "native_context_compaction"
+    NATIVE_EXECUTION_OBJECTIVES = "native_execution_objectives"
     SUBAGENTS = "subagents"
     MCP_TOOL_SERVERS = "mcp_tool_servers"
     USAGE_EXACT = "usage_exact"

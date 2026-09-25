@@ -88,6 +88,14 @@ class AgentRuntimeListRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=1000)
 
 
+class AgentRuntimeObjectiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    objective: str | None = Field(default=None, min_length=1)
+    status: str | None = None
+    token_budget: int | None = Field(default=None, ge=1)
+
+
 class AgentRuntimeTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -222,6 +230,22 @@ class AgentRuntimeAdapter(Protocol):
     ) -> AgentRuntimeResult: ...
 
     async def compact_session(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult: ...
+
+    async def read_objective(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult: ...
+
+    async def set_objective(
+        self,
+        provider_native_session_id: str,
+        request: AgentRuntimeObjectiveRequest,
+    ) -> AgentRuntimeResult: ...
+
+    async def clear_objective(
         self,
         provider_native_session_id: str,
     ) -> AgentRuntimeResult: ...

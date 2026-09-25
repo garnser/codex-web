@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.agent_runtime import (
     AgentRuntimeHealth,
+    AgentRuntimeObjectiveRequest,
     AgentRuntimeResult,
     AgentRuntimeUnsupportedCapability,
     AgentRuntimeSessionRequest,
@@ -53,6 +54,7 @@ class _Runtime:
         AgentProviderCapability.PERSISTENT_SESSIONS,
         AgentProviderCapability.INTERRUPT_CANCEL,
         AgentProviderCapability.NATIVE_CONTEXT_COMPACTION,
+        AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
     )
 
     def __init__(self) -> None:
@@ -95,6 +97,27 @@ class _Runtime:
     async def compact_session(self, provider_native_session_id):
         self.calls.append(("compact", provider_native_session_id))
         return AgentRuntimeResult(provider_native_session_id=provider_native_session_id)
+
+    async def read_objective(self, provider_native_session_id):
+        self.calls.append(("objective-read", provider_native_session_id))
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload={"goal": {"objective": "bounded validation", "status": "active"}},
+        )
+
+    async def set_objective(self, provider_native_session_id, request):
+        self.calls.append(("objective-set", request))
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload={"goal": {"objective": request.objective, "status": request.status}},
+        )
+
+    async def clear_objective(self, provider_native_session_id):
+        self.calls.append(("objective-clear", provider_native_session_id))
+        return AgentRuntimeResult(
+            provider_native_session_id=provider_native_session_id,
+            payload={"goal": None},
+        )
 
 
 class AgentSessionServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -246,6 +269,42 @@ class AgentSessionServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AgentRuntimeUnsupportedCapability):
             await self.service.compact(created.id, actor=self.actor)
 
+    async def test_native_objective_operations_are_capability_gated(self) -> None:
+        created = await self.service.create(
+            provider_id="provider-a",
+            runtime_id="runtime-a",
+            request=AgentRuntimeSessionRequest(project_id="project-a"),
+            actor=self.actor,
+        )
+        request = AgentRuntimeObjectiveRequest(
+            objective="Continue only the canonical release validation scope",
+            status="active",
+            token_budget=8000,
+        )
+
+        set_result = await self.service.set_objective(
+            created.id,
+            request,
+            actor=self.actor,
+        )
+        read_result = await self.service.read_objective(created.id, actor=self.actor)
+        clear_result = await self.service.clear_objective(created.id, actor=self.actor)
+
+        self.assertEqual(
+            set_result.payload["goal"]["objective"],
+            "Continue only the canonical release validation scope",
+        )
+        self.assertEqual(read_result.payload["goal"]["status"], "active")
+        self.assertIsNone(clear_result.payload["goal"])
+
+        self.runtime.capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        with self.assertRaises(AgentRuntimeUnsupportedCapability) as caught:
+            await self.service.read_objective(created.id, actor=self.actor)
+        self.assertEqual(
+            caught.exception.capability,
+            AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
+        )
+
     async def test_turn_interrupt_and_close_use_provider_native_id(self) -> None:
         created = await self.service.create(
             provider_id="provider-a",
@@ -317,6 +376,41 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             transport.request.await_args_list[2].args,
             ("turn/interrupt", {"threadId": "codex-thread-1"}),
+        )
+
+    async def test_codex_native_objectives_use_supported_thread_goal_protocol(self) -> None:
+        transport = SimpleNamespace(
+            request=AsyncMock(
+                side_effect=[
+                    {"goal": {"threadId": "thread-1", "objective": "bounded", "status": "active"}},
+                    {"goal": {"threadId": "thread-1", "objective": "bounded", "status": "active"}},
+                    {"goal": None},
+                ]
+            )
+        )
+        adapter = CodexAgentRuntimeAdapter(transport)
+
+        read = await adapter.read_objective("thread-1")
+        set_result = await adapter.set_objective(
+            "thread-1",
+            AgentRuntimeObjectiveRequest(
+                objective="bounded",
+                status="active",
+                token_budget=5000,
+            ),
+        )
+        cleared = await adapter.clear_objective("thread-1")
+
+        self.assertEqual(read.payload["goal"]["objective"], "bounded")
+        self.assertEqual(set_result.payload["goal"]["status"], "active")
+        self.assertIsNone(cleared.payload["goal"])
+        self.assertEqual(
+            [call.args[0] for call in transport.request.await_args_list],
+            ["thread/goal/get", "thread/goal/set", "thread/goal/clear"],
+        )
+        self.assertEqual(
+            transport.request.await_args_list[1].args[1]["tokenBudget"],
+            5000,
         )
 
     async def test_compaction_approval_recovery_and_events_use_adapter_surface(self) -> None:
@@ -411,6 +505,10 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(
             AgentProviderCapability.NATIVE_CONTEXT_COMPACTION,
+            adapter.capabilities,
+        )
+        self.assertIn(
+            AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
             adapter.capabilities,
         )
         self.assertNotIn(

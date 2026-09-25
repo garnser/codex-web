@@ -8,6 +8,7 @@ from codex_web.agent_runtime import (
     AgentRuntimeEvent,
     AgentRuntimeHealth,
     AgentRuntimeListRequest,
+    AgentRuntimeObjectiveRequest,
     AgentRuntimeResult,
     AgentRuntimeSessionRequest,
     AgentRuntimeTurnRequest,
@@ -272,6 +273,28 @@ class ClaudeAgentRuntimeAdapter:
         raise RuntimeError(
             "Claude runtime does not support native context compaction"
         )
+
+    async def read_objective(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        del provider_native_session_id
+        raise RuntimeError("Claude runtime does not support native execution objectives")
+
+    async def set_objective(
+        self,
+        provider_native_session_id: str,
+        request: AgentRuntimeObjectiveRequest,
+    ) -> AgentRuntimeResult:
+        del provider_native_session_id, request
+        raise RuntimeError("Claude runtime does not support native execution objectives")
+
+    async def clear_objective(
+        self,
+        provider_native_session_id: str,
+    ) -> AgentRuntimeResult:
+        del provider_native_session_id
+        raise RuntimeError("Claude runtime does not support native execution objectives")
 
     async def respond_approval(
         self,
