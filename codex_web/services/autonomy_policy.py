@@ -147,6 +147,7 @@ class AutonomyPolicyService:
         required_qualification_gates = policy.required_qualification_gates
         qualifications = policy.qualifications
         multi_instance = policy.multi_instance
+        exclusive_goal_scope = policy.exclusive_goal_scope
         matched: list[str] = []
 
         candidates = [
@@ -222,6 +223,7 @@ class AutonomyPolicyService:
                 required_qualification_gates=required_qualification_gates,
                 qualifications=qualifications,
                 multi_instance=multi_instance,
+                exclusive_goal_scope=exclusive_goal_scope,
                 matched_override_ids=tuple(matched),
             ),
             role_ids,
@@ -519,6 +521,23 @@ class AutonomyPolicyService:
         if effective.require_preflight and not definition.capabilities.prepare:
             allowed = False
             reasons.append("required_preflight_capability_unavailable")
+
+        exclusive = effective.exclusive_goal_scope
+        if exclusive is not None:
+            if request.goal_id != exclusive.goal_id:
+                allowed = False
+                reasons.append("exclusive_goal_scope:goal_mismatch")
+            elif request.project_id not in set(exclusive.project_ids):
+                allowed = False
+                reasons.append("exclusive_goal_scope:project_mismatch")
+            elif (
+                exclusive.work_item_refs
+                and request.work_item_ref not in set(exclusive.work_item_refs)
+            ):
+                allowed = False
+                reasons.append("exclusive_goal_scope:work_item_mismatch")
+            else:
+                reasons.append(f"exclusive_goal_scope:matched:{exclusive.goal_id}")
 
         return AutonomyActionDecision(
             allowed=allowed,
