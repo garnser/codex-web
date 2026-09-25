@@ -85,6 +85,12 @@ def build_goal_execution_bindings_router(
             item.agent_session_id
             for item in service.list_all(scope=actor.tenant)
             if item.agent_session_id
+            and item.status
+            not in {
+                GoalExecutionBindingStatus.COMPLETED,
+                GoalExecutionBindingStatus.CANCELLED,
+                GoalExecutionBindingStatus.FAILED,
+            }
         }
         items: list[dict[str, Any]] = []
         for session in agent_sessions.list(actor):
