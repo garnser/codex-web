@@ -174,7 +174,8 @@ test('wide workspace uses available content width without wrapping compact contr
   const wrapped = await headerButtons.evaluateAll((buttons) => buttons.filter((button) => button.scrollHeight > button.clientHeight + 1).map((button) => button.textContent.trim()));
   expect(wrapped).toEqual([]);
 
-  const cards = page.locator('.product-overview-grid > *:visible');
-  expect(await cards.count()).toBeGreaterThan(1);
+  const header = page.locator('.product-workspace-header:visible');
+  const headerBox = await header.boundingBox();
+  expect(headerBox.width).toBeGreaterThan(900);
   await expectNoPageOverflow(page, 'wide workspace density');
 });
