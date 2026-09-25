@@ -588,6 +588,30 @@ class RuntimeSupervisor:
         )
         self._spawn("queue-recovery", self._queue_recovery_loop())
 
+        goal_continuation = getattr(
+            self.app.state,
+            "goal_continuation_service",
+            None,
+        )
+        if goal_continuation is not None:
+            self._spawn(
+                "goal-continuation-recovery",
+                self._cycle_loop(
+                    lambda: max(
+                        1.0,
+                        float(
+                            os.environ.get(
+                                "CODEX_WEB_GOAL_CONTINUATION_RECOVERY_SECONDS",
+                                "5",
+                            )
+                        ),
+                    ),
+                    goal_continuation.recover_due,
+                    failure_event="goal_continuation_recovery_failed",
+                    responsibility="goal-continuation",
+                ),
+            )
+
         scheduler = getattr(self.app.state, "scheduler_service", None)
         if scheduler is not None:
             self._spawn("scheduler", scheduler.run_forever())
