@@ -6,7 +6,10 @@ import unittest
 from pathlib import Path
 
 from codex_web.cli_runtime import CliRuntimeReadinessStatus
-from codex_web.mammouth_cli_runtime import (\n    MammouthCliAdapter,\n    MammouthCliJsonEventStream,\n)
+from codex_web.mammouth_cli_runtime import (
+    MammouthCliAdapter,
+    MammouthCliJsonEventStream,
+)
 
 
 class MammouthCliAdapterTests(unittest.TestCase):
