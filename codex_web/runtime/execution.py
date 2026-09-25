@@ -46,6 +46,25 @@ from codex_web.services.turn_execution_binding import (
 )
 
 
+def _turn_failure_text(message: dict[str, Any]) -> str | None:
+    """Extract a stable error string from Codex terminal-turn events."""
+
+    params = message.get("params") or {}
+    turn = params.get("turn") or {}
+    raw_error = params.get("error") or turn.get("error")
+    if raw_error is None:
+        return None
+    if isinstance(raw_error, str):
+        return raw_error.strip() or None
+    if isinstance(raw_error, dict):
+        for key in ("message", "detail", "error", "codexErrorInfo"):
+            value = raw_error.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return json.dumps(raw_error, sort_keys=True, default=str)
+    return str(raw_error).strip() or None
+
+
 class _ThreadRuntimeTransport:
     def __init__(self, service: "TurnExecutionService", thread_id: str) -> None:
         self.service = service
@@ -2498,7 +2517,7 @@ class TurnExecutionService:
         turn = params.get("turn") or {}
         thread_id = params.get("threadId") or turn.get("threadId")
         status = str(turn.get("status") or "").lower()
-        error = h._turn_failure_text(message)
+        error = _turn_failure_text(message)
         if not thread_id:
             return False
         if method != "turn/failed" and status != "failed" and not error:
