@@ -11,6 +11,13 @@ async function mirrorProductionStaticMount(page) {
   });
 }
 
+async function openThreadSettings(page) {
+  const settings = page.locator("#thread-settings-menu");
+  if (!(await settings.getAttribute("open"))) {
+    await settings.locator(":scope > summary").click();
+  }
+}
+
 test("explicit repository policy requires a target and submits canonical resource id", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error));
@@ -131,6 +138,7 @@ test("explicit repository policy requires a target and submits canonical resourc
   expect(turnPayloads).toHaveLength(0);
   await expect(page.locator("#repository-target-status")).toContainText("Repository target required per turn");
 
+  await openThreadSettings(page);
   await page.locator("#repository-target").selectOption("repo-app");
   await expect(page.locator("#repository-target-status")).toContainText("Application");
   await expect(page.locator("#repository-target-status")).toContainText("explicit selection");
@@ -144,7 +152,7 @@ test("explicit repository policy requires a target and submits canonical resourc
   expect(pageErrors).toEqual([]);
 });
 
-test("thread-bound repository stays visible and contradictory selection is blocked", async ({ page }) => {
+test("thread-bound repository stays visible and can be changed from thread settings", async ({ page }) => {
   await mirrorProductionStaticMount(page);
   const project = {
     id: "home",
@@ -153,6 +161,7 @@ test("thread-bound repository stays visible and contradictory selection is block
     repository_selection_policy: "explicit",
   };
   let turnCalls = 0;
+  let settingsUpdate = null;
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -228,6 +237,15 @@ test("thread-bound repository stays visible and contradictory selection is block
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ queueDepth: 0, active: false }) });
       return;
     }
+    if (path === "/api/threads/thread-1/settings" && request.method() === "POST") {
+      settingsUpdate = JSON.parse(request.postData() || "{}");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(settingsUpdate),
+      });
+      return;
+    }
     if (path === "/api/threads/thread-1/turns") {
       turnCalls += 1;
     }
@@ -245,12 +263,13 @@ test("thread-bound repository stays visible and contradictory selection is block
   await expect(page.locator("#repository-target-status")).toContainText("Application");
   await expect(page.locator("#repository-target-status")).toContainText("thread/profile binding");
 
+  await openThreadSettings(page);
   await page.locator("#repository-target").selectOption("repo-platform");
-  await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
-  await page.locator("#prompt").fill("Do not run in the wrong repository");
+  await expect.poll(() => settingsUpdate?.repository_resource_id).toBe("repo-platform");
+  await expect(page.locator("#repository-target-status")).toContainText("Platform");
+  await page.locator("#prompt").fill("Run in the updated repository");
   await page.locator("#prompt").press("Enter");
-  expect(turnCalls).toBe(0);
-  await expect(page.locator("#repository-target-status")).toContainText("Repository conflict");
+  await expect.poll(() => turnCalls).toBe(1);
 });
 
 
