@@ -160,13 +160,13 @@ def build_goals_router(
         payload: ExclusiveContinuationRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = mutation_actor(request)
         if autonomy is None:
             raise HTTPException(
                 status_code=503,
                 detail="autonomy controller is unavailable",
             )
         try:
+            actor = mutation_actor(request)
             goal = service.get(goal_id, scope=actor.tenant)
             binding = next(
                 (
@@ -201,12 +201,15 @@ def build_goals_router(
         goal_id: str,
         request: Request,
     ) -> dict[str, Any]:
-        actor = mutation_actor(request)
         if autonomy is None:
             raise HTTPException(
                 status_code=503,
                 detail="autonomy controller is unavailable",
             )
+        try:
+            actor = mutation_actor(request)
+        except AuthorizationError as exc:
+            raise _error(exc) from exc
         current = autonomy.store.load().control.exclusive_goal_scope
         if current is None or current.goal_id != goal_id:
             raise HTTPException(
