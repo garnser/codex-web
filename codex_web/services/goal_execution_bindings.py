@@ -12,6 +12,7 @@ from codex_web.goal_execution_bindings import (
     GoalExecutionBindingUpdate,
 )
 from codex_web.identity import TenantScope
+from codex_web.observability import current_correlation
 from codex_web.services.goals import GoalNotFoundError, GoalService
 from codex_web.storage.goal_execution_bindings import GoalExecutionBindingStore
 
@@ -38,6 +39,18 @@ class GoalExecutionBindingService:
     ) -> None:
         self.store = store
         self.goals = goals
+
+    @staticmethod
+    def _audit_context() -> dict[str, str | None]:
+        context = current_correlation()
+        return {
+            "correlation_id": (
+                context.correlation_id if context is not None else None
+            ),
+            "causation_id": (
+                context.causation_id if context is not None else None
+            ),
+        }
 
     @staticmethod
     def _visible(binding: GoalExecutionBinding, scope: TenantScope) -> bool:
@@ -99,6 +112,7 @@ class GoalExecutionBindingService:
             )
 
         now = time.time()
+        audit = self._audit_context()
         binding = GoalExecutionBinding(
             organization_id=scope.organization_id,
             workspace_id=scope.workspace_id,
@@ -119,6 +133,10 @@ class GoalExecutionBindingService:
             created_by=actor_id,
             updated_by=actor_id,
             change_reason=payload.reason,
+            created_correlation_id=audit["correlation_id"],
+            created_causation_id=audit["causation_id"],
+            updated_correlation_id=audit["correlation_id"],
+            updated_causation_id=audit["causation_id"],
             created_at=now,
             updated_at=now,
         )
@@ -142,6 +160,8 @@ class GoalExecutionBindingService:
                     event_type="binding_created",
                     actor_id=actor_id,
                     reason=payload.reason,
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=now,
                 )
             )
@@ -192,6 +212,7 @@ class GoalExecutionBindingService:
         scope: TenantScope,
         actor_id: str,
     ) -> GoalExecutionBinding:
+        audit = self._audit_context()
         result: GoalExecutionBinding | None = None
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
@@ -211,6 +232,8 @@ class GoalExecutionBindingService:
                     **changes,
                     "updated_by": actor_id,
                     "change_reason": payload.reason,
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": time.time(),
                 }
             )
@@ -225,6 +248,8 @@ class GoalExecutionBindingService:
                     event_type=f"binding_{result.status.value}",
                     actor_id=actor_id,
                     reason=payload.reason,
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                 )
             )
             return state
@@ -244,6 +269,7 @@ class GoalExecutionBindingService:
     ) -> GoalExecutionBinding:
         result: GoalExecutionBinding | None = None
         now = time.time()
+        audit = self._audit_context()
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
@@ -279,6 +305,8 @@ class GoalExecutionBindingService:
                     "stop_reason": stop_reason,
                     "updated_by": actor_id,
                     "change_reason": reason,
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": now,
                 }
             )
@@ -297,6 +325,8 @@ class GoalExecutionBindingService:
                     ),
                     actor_id=actor_id,
                     reason=reason,
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=now,
                 )
             )
@@ -316,6 +346,7 @@ class GoalExecutionBindingService:
     ) -> GoalExecutionBinding:
         result: GoalExecutionBinding | None = None
         now = time.time()
+        audit = self._audit_context()
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
@@ -336,6 +367,8 @@ class GoalExecutionBindingService:
                     "stop_reason": None,
                     "updated_by": actor_id,
                     "change_reason": reason,
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": now,
                 }
             )
@@ -350,6 +383,8 @@ class GoalExecutionBindingService:
                     event_type="binding_operator_resumed",
                     actor_id=actor_id,
                     reason=reason,
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=now,
                 )
             )
@@ -369,6 +404,7 @@ class GoalExecutionBindingService:
     ) -> GoalExecutionBinding:
         result: GoalExecutionBinding | None = None
         now = time.time()
+        audit = self._audit_context()
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
@@ -387,6 +423,8 @@ class GoalExecutionBindingService:
                     "stop_reason": payload.reason,
                     "updated_by": actor_id,
                     "change_reason": payload.reason,
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": now,
                 }
             )
@@ -404,6 +442,8 @@ class GoalExecutionBindingService:
                         f"{payload.reason}; reconciled provider outcome as "
                         f"{payload.outcome.value}"
                     ),
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=now,
                 )
             )
@@ -423,6 +463,7 @@ class GoalExecutionBindingService:
         now: float | None = None,
     ) -> GoalExecutionBinding | None:
         current_time = time.time() if now is None else float(now)
+        audit = self._audit_context()
         duration = max(1.0, float(lease_seconds))
         result: GoalExecutionBinding | None = None
 
@@ -457,6 +498,8 @@ class GoalExecutionBindingService:
                     "retry_not_before_at": None,
                     "updated_by": owner_id,
                     "change_reason": "continuation lease claimed",
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": current_time,
                 }
             )
@@ -471,6 +514,8 @@ class GoalExecutionBindingService:
                     event_type="binding_continuation_claimed",
                     actor_id=owner_id,
                     reason="continuation lease claimed",
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=current_time,
                 )
             )
@@ -489,6 +534,7 @@ class GoalExecutionBindingService:
         now: float | None = None,
     ) -> GoalExecutionBinding:
         current_time = time.time() if now is None else float(now)
+        audit = self._audit_context()
         duration = max(1.0, float(lease_seconds))
         result: GoalExecutionBinding | None = None
 
@@ -512,6 +558,8 @@ class GoalExecutionBindingService:
                     "heartbeat_at": current_time,
                     "updated_by": owner_id,
                     "change_reason": "continuation lease heartbeat",
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": current_time,
                 }
             )
@@ -538,6 +586,7 @@ class GoalExecutionBindingService:
         now: float | None = None,
     ) -> GoalExecutionBinding:
         current_time = time.time() if now is None else float(now)
+        audit = self._audit_context()
         result: GoalExecutionBinding | None = None
 
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
@@ -567,6 +616,8 @@ class GoalExecutionBindingService:
                     ),
                     "updated_by": owner_id,
                     "change_reason": reason,
+                    "updated_correlation_id": audit["correlation_id"],
+                    "updated_causation_id": audit["causation_id"],
                     "updated_at": current_time,
                 }
             )
@@ -581,6 +632,8 @@ class GoalExecutionBindingService:
                     event_type=f"binding_{result.status.value}",
                     actor_id=owner_id,
                     reason=reason,
+                    correlation_id=audit["correlation_id"],
+                    causation_id=audit["causation_id"],
                     occurred_at=current_time,
                 )
             )
