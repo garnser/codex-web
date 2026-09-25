@@ -373,6 +373,58 @@ class AgentSessionService:
             raise AgentRuntimeError("agent session has no provider-native session id")
         return await adapter.compact_session(native_id)
 
+    async def read_objective(
+        self,
+        session_id: str,
+        *,
+        actor: AuthenticationActor,
+    ):
+        session = self.get(session_id, actor)
+        adapter = self.registry.get(session.provider_id, session.runtime_id)
+        self._require_capability(
+            adapter,
+            AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
+        )
+        native_id = session.provider_native_session_id
+        if not native_id:
+            raise AgentRuntimeError("agent session has no provider-native session id")
+        return await adapter.read_objective(native_id)
+
+    async def set_objective(
+        self,
+        session_id: str,
+        request: AgentRuntimeObjectiveRequest,
+        *,
+        actor: AuthenticationActor,
+    ):
+        session = self.get(session_id, actor)
+        adapter = self.registry.get(session.provider_id, session.runtime_id)
+        self._require_capability(
+            adapter,
+            AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
+        )
+        native_id = session.provider_native_session_id
+        if not native_id:
+            raise AgentRuntimeError("agent session has no provider-native session id")
+        return await adapter.set_objective(native_id, request)
+
+    async def clear_objective(
+        self,
+        session_id: str,
+        *,
+        actor: AuthenticationActor,
+    ):
+        session = self.get(session_id, actor)
+        adapter = self.registry.get(session.provider_id, session.runtime_id)
+        self._require_capability(
+            adapter,
+            AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
+        )
+        native_id = session.provider_native_session_id
+        if not native_id:
+            raise AgentRuntimeError("agent session has no provider-native session id")
+        return await adapter.clear_objective(native_id)
+
     async def close(
         self,
         session_id: str,
