@@ -213,6 +213,10 @@ class WorkItemOperatorService:
                     "state_write",
                 ],
             },
+            "github": {
+                "source_instance": "https://api.github.com",
+                "capabilities": ["comments", "create", "discovery", "events", "owner_write", "read", "state_write"],
+            },
         }
         for source_type, descriptor in builtin_catalog.items():
             if source_type in seen_types:
