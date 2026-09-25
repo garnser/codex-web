@@ -64,6 +64,7 @@
         <small>Canonical decision: ${decision.allowed ? "allowed" : "denied"} · reason: ${escapeHtml(decision.reason || "unknown")} · mode: ${escapeHtml(decision.mode || mode)}</small>
         <small>Source: ${escapeHtml(item.source)} · Starts: ${timeText(item.starts_at)} · Expires: ${timeText(item.expires_at)}</small>
         <small>Updated by: ${escapeHtml(item.updated_by)} · ${timeText(item.updated_at)} · ID: ${escapeHtml(item.id)}</small>
+        <button type="button" class="ghost-button" data-manage-entitlement-capability="${escapeHtml(item.capability)}">Manage</button>
       </div>`;
     }).join("") || `<div class="comm-entry">
       <strong>No explicit capability entitlement records.</strong>
@@ -81,6 +82,7 @@
       <small>Behavior: ${escapeHtml(item.behavior)} · warning threshold: ${escapeHtml(Math.round(Number(item.warning_fraction || 0) * 100))}% · source: ${escapeHtml(item.source)}</small>
       <small>Updated by: ${escapeHtml(item.updated_by)} · ${timeText(item.updated_at)} · ID: ${escapeHtml(item.id)}</small>
       <small>Quota status is evaluated canonically for a selected capability in the preview below; entitlement and authorization remain separate concerns.</small>
+      <button type="button" class="ghost-button" data-manage-entitlement-quota="${escapeHtml(item.metric)}">Manage</button>
     </div>`).join("") || '<div class="comm-entry"><strong>No quota policies configured.</strong></div>';
   }
 
