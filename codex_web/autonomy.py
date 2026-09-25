@@ -57,6 +57,32 @@ class AutonomyScopedPauseCreate(BaseModel):
     expires_at: float | None = None
 
 
+class AutonomyExclusiveGoalScope(BaseModel):
+    """Exclusive autonomous continuation allowlist for one canonical Goal scope."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    goal_id: str = Field(min_length=1, max_length=500)
+    project_id: str = Field(min_length=1, max_length=500)
+    root_work_item_refs: tuple[str, ...] = ()
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def normalize(self) -> "AutonomyExclusiveGoalScope":
+        object.__setattr__(
+            self,
+            "root_work_item_refs",
+            tuple(
+                dict.fromkeys(
+                    item.strip()
+                    for item in self.root_work_item_refs
+                    if item.strip()
+                )
+            ),
+        )
+        return self
+
+
 class AutonomyCycleOutcome(StrEnum):
     DETERMINISTIC = "deterministic"
     SKIPPED = "skipped"
@@ -83,6 +109,7 @@ class AutonomyControl(BaseModel):
     max_actions_per_cycle: int = Field(default=4, ge=0, le=32)
     trigger_event_types: tuple[str, ...] = ()
     scoped_pauses: tuple[AutonomyScopedPause, ...] = ()
+    exclusive_goal_scope: AutonomyExclusiveGoalScope | None = None
     policy: AutonomyPolicy = Field(default_factory=AutonomyPolicy)
 
     @model_validator(mode="after")
