@@ -198,6 +198,7 @@ test('Team lifecycle archive requires impact confirmation and a reason', async (
   await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
 
   const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
+  await team.locator('.collab-context-more > summary').click();
   await team.getByRole('button', { name: 'Archive', exact: true }).click();
   const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Archive Team' });
   await expect(dialog).toContainText('Impact: 1 member(s); leader maya');
@@ -247,6 +248,7 @@ test('Team create and archived-team restore use canonical lifecycle endpoints', 
   expect(created.leader_profile_id).toBe('maya');
 
   const legacy = page.locator('.collab-team-card').filter({ hasText: 'Legacy Team' });
+  await legacy.locator('.collab-context-more > summary').click();
   await legacy.getByRole('button', { name: 'Restore', exact: true }).click();
   const restoreDialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Restore Team' });
   await restoreDialog.locator('[data-reason]').fill('Restore for new work');
@@ -271,6 +273,7 @@ test('Agent Profile history exposes immutable revision provenance', async ({ pag
   await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await maya.locator('.collab-context-more > summary').click();
   await maya.getByRole('button', { name: 'History', exact: true }).click();
   const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Agent Profile revision history' });
   await expect(dialog).toContainText('Revision 4');
@@ -359,12 +362,15 @@ test('contextual actions are visible directly on Agent and Team cards', async ({
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await expect(maya.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await expect(maya.locator('.collab-context-more > summary')).toBeVisible();
+  await maya.locator('.collab-context-more > summary').click();
   await expect(maya.getByRole('button', { name: 'History', exact: true })).toBeVisible();
   await expect(maya.getByRole('button', { name: 'Disable', exact: true })).toBeVisible();
   await expect(maya.getByRole('button', { name: 'Archive', exact: true })).toBeVisible();
 
   const legacy = page.locator('.collab-team-card').filter({ hasText: 'Legacy Team' });
   await expect(legacy.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await legacy.locator('.collab-context-more > summary').click();
   await expect(legacy.getByRole('button', { name: 'History', exact: true })).toBeVisible();
   await expect(legacy.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
 });
