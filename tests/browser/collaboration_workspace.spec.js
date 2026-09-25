@@ -127,9 +127,9 @@ test('Agent, Team and Skill surfaces use stable canonical identities and lifecyc
   await expect(maya.locator('[data-identity-id="maya"]')).toBeVisible();
   await expect(maya).not.toContainText('openai');
   const manageSkills = maya.locator('[data-manage-agent-skills="maya"]');
-  await expect(manageSkills).toHaveText('Manage');
-  await expect(manageSkills).toHaveAttribute('href', '/projects/home/skills');
-  await expect(manageSkills).toHaveAttribute('aria-label', 'Manage Skills for Maya');
+  await expect(manageSkills).toHaveText('Edit skills');
+  await expect(manageSkills).toHaveAttribute('aria-label', 'Edit Skills for Maya');
+  await expect(maya.getByRole('link', { name: 'Browse registry' })).toHaveAttribute('href', '/projects/home/skills');
 
   const nora = card.locator('.collab-agent-card').filter({ hasText: 'Nora' });
   await expect(nora.locator('[data-status="disabled"]')).toBeVisible();
@@ -367,4 +367,36 @@ test('contextual actions are visible directly on Agent and Team cards', async ({
   await expect(legacy.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   await expect(legacy.getByRole('button', { name: 'History', exact: true })).toBeVisible();
   await expect(legacy.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
+});
+
+
+test('Agent Skill assignments can be attached and detached without leaving the Agent card', async ({ page }) => {
+  await mockApis(page);
+  let saved = null;
+  await page.route('**/api/agent-profiles/maya', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      saved = route.request().postDataJSON();
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: { ...profiles[0], ...saved, revision: 5 } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await maya.getByRole('button', { name: 'Edit Skills for Maya' }).click();
+  const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Skills · Maya' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: /Python Review/ })).toBeChecked();
+
+  await dialog.getByRole('checkbox', { name: /Python Review/ }).uncheck();
+  await dialog.locator('[data-reason]').fill('Detach obsolete review procedure');
+  await dialog.getByRole('button', { name: 'Save Skill assignments' }).click();
+
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.skill_refs).toEqual([]);
+  expect(saved.reason).toBe('Detach obsolete review procedure');
 });
