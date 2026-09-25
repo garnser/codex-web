@@ -178,6 +178,26 @@ class GoalServiceTests(unittest.TestCase):
         payload.update(overrides)
         return GoalCreate(**payload)
 
+    def test_goal_creation_reason_is_preserved_in_revision_and_event_provenance(self) -> None:
+        goal = self.service.create(
+            self._payload(),
+            scope=self.scope,
+            actor_id="admin",
+            reason=(
+                "operator reviewed native objective; promoted runtime objective "
+                "from openai/codex session session-a objective native-goal-a"
+            ),
+        )
+
+        revisions = self.service.revisions(goal.id, scope=self.scope)
+        events = self.service.events(scope=self.scope, goal_id=goal.id)
+
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(len(events), 1)
+        self.assertIn("session session-a", revisions[0].reason)
+        self.assertIn("native-goal-a", revisions[0].reason)
+        self.assertEqual(events[0].reason, revisions[0].reason)
+
     def test_multi_project_goal_progress_health_and_machine_readable_budget(self) -> None:
         goal = self.service.create(
             self._payload(),

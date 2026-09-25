@@ -167,6 +167,7 @@ class GoalService:
         actor_id: str,
         originating_executive_activation_id: str | None = None,
         originating_executive_proposal_id: str | None = None,
+        reason: str = "goal created",
     ) -> GoalRecord:
         self._validate_bindings(payload.work_graph_bindings, scope)
         now = time.time()
@@ -198,7 +199,7 @@ class GoalService:
                 self._revision(
                     goal,
                     actor_id=actor_id,
-                    reason="goal created",
+                    reason=reason,
                     revised_at=now,
                 )
             )
@@ -207,7 +208,7 @@ class GoalService:
                     goal,
                     event_type="goal_created",
                     actor_id=actor_id,
-                    reason="goal created",
+                    reason=reason,
                     occurred_at=now,
                 )
             )

@@ -2266,6 +2266,7 @@ app.include_router(
     build_goal_execution_bindings_router(
         goal_execution_binding_service,
         agent_session_service,
+        goal_service,
     )
 )
 app.include_router(

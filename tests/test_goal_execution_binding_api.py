@@ -42,6 +42,25 @@ class _BindingServiceStub:
         )
 
 
+class _GoalsStub:
+    def __init__(self) -> None:
+        self.created = []
+
+    def create(self, payload, *, scope, actor_id, reason="goal created", **kwargs):
+        self.created.append((payload, scope, actor_id, reason))
+        return _Dumpable(
+            id="goal-promoted",
+            title=payload.title,
+            description=payload.description,
+            owner_identity_id=payload.owner_identity_id,
+            status="draft",
+            work_graph_bindings=[
+                item.model_dump(mode="json")
+                for item in payload.work_graph_bindings
+            ],
+        )
+
+
 class _AgentSessionsStub:
     def __init__(self) -> None:
         self.sessions = [
@@ -86,6 +105,7 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.bindings = _BindingServiceStub()
         self.sessions = _AgentSessionsStub()
+        self.goals = _GoalsStub()
         self.actor = AuthenticationActor(
             identity_id="member",
             principal_kind=PrincipalKind.HUMAN,
@@ -105,6 +125,7 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
             build_goal_execution_bindings_router(
                 self.bindings,
                 self.sessions,
+                self.goals,
             )
         )
         self.client = TestClient(app)
@@ -128,6 +149,40 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
         response = self.client.get("/api/goals/runtime-objectives/unbound")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"items": [], "count": 0})
+
+    def test_promote_creates_draft_goal_with_runtime_provenance(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={
+                "roles": (MembershipRole.ADMIN,),
+                "assurance": AuthenticationAssurance.MFA,
+            }
+        )
+        response = self.client.post(
+            "/api/goals/runtime-objectives/session-a/promote",
+            json={
+                "title": "Release validation objective",
+                "work_item_refs": ["root-a"],
+                "reason": "operator reviewed native objective",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["goal"]["status"], "draft")
+        self.assertEqual(response.json()["goal"]["title"], "Release validation objective")
+        self.assertEqual(len(self.goals.created), 1)
+        payload, scope, actor_id, reason = self.goals.created[0]
+        self.assertEqual(payload.description, "Validate the bounded release")
+        self.assertEqual(payload.owner_identity_id, "member")
+        self.assertEqual(payload.work_graph_bindings[0].project_id, "project-a")
+        self.assertEqual(
+            payload.work_graph_bindings[0].root_work_item_refs,
+            ("root-a",),
+        )
+        self.assertEqual(actor_id, "member")
+        self.assertIn("session session-a", reason)
+        self.assertIn("native-goal-a", reason)
+        self.assertEqual(scope.organization_id, "org-a")
+        self.assertEqual(scope.workspace_id, "ws-a")
 
     def test_attach_requires_mfa_admin_and_uses_canonical_binding_service(self) -> None:
         denied = self.client.post(
