@@ -1,4 +1,5 @@
 import { request as apiRequest } from "./api_client.js";
+import { journeyId, trackUx } from "./ux_telemetry.js";
 import {
   identityChip,
   statePanel,
