@@ -1,4 +1,5 @@
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
+import { coarseRoute, trackUx } from "./ux_telemetry.js";
 import { renderHomeOverview } from "./home_overview.js";
 import { renderAdministrationUsers } from "./administration_users.js";
 import { renderAdministrationAccess } from "./administration_access.js";
@@ -699,6 +700,11 @@ function setActiveInternal(id, { updateLocation = true, page = null } = {}) {
     detail: { workspace: id, page: activePage },
   }));
   if (updateLocation) setWorkspaceLocation(id, activePage);
+  void trackUx("route_transition", {
+    workflow: "navigation",
+    step: "route",
+    routeGroup: coarseRoute(),
+  });
 }
 
 function renderWorkspaceActions(id) {
