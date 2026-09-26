@@ -4,13 +4,19 @@ This guide follows the current Codex Web workspace shell. Keep the active **Proj
 
 The UI is a view over canonical state. A button, badge, or panel does not grant authority, and provider-owned state remains authoritative in the provider that owns it.
 
+## Project setup: become ready and start work
+
+Start with the active Project shown in the shared switcher. If setup is blocked, open **Project Setup**, review the canonical readiness blockers, and use the linked remediation or deterministic bootstrap plan. Authority-sensitive changes remain subject to their existing review gates. Once execution readiness is current, open **Threads** to start interactive work or **Work Items** to continue a canonical task. Explicit repository targeting remains required when Project policy says so.
+
+A ready Project indicates technical prerequisites, not that a user has completed a meaningful outcome. Confirm results in canonical Run/Work Item state and Evidence rather than counting a navigation click or newly created Thread as success.
+
 ## Work: inspect and operate on a Work Item
 
 Open **Work** when you need to understand what is happening with a task or execution.
 
 1. Open the Work workspace.
-2. Use **Work Items** to open the canonical Work Item operator.
-3. Select the relevant Project and Work Item.
+2. Confirm the active Project in the shared Project switcher; the routed Work Item operator inherits this canonical scope.
+3. Use **Work Items** to open the canonical Work Item operator and select the Work Item. Change Project in the shared switcher before selecting an item from another Project; do not create a separate per-page scope.
 4. Read the summary first: current state, owner, priority, next action, blocker, and routing lanes.
 5. Inspect the **Run timeline** for execution state, repository attribution, usage, Evidence, verification, retries, and external actions.
 6. Use **Retry** or **Reconcile** only when the canonical action is enabled and its remediation applies.
@@ -18,6 +24,10 @@ Open **Work** when you need to understand what is happening with a task or execu
 A blocked or partial Run is not success. Repository tests, provider receipts, and canonical Evidence are stronger proof than an agent message saying the task is complete.
 
 Screenshot fixture: **work-items-and-handoffs**.
+
+## Threads: start scoped interactive work
+
+Open **Threads** inside the active Project. Select an existing thread or create one, confirm the repository target when Project policy requires it, and check the execution policy before sending work. The routed Chat URL identifies the selected Thread within the Project; Back/Forward restores prior selections. A different Project never reuses the previous Project's Thread.
 
 ## Team: understand Agents, Teams, and Skills
 
@@ -72,7 +82,7 @@ Screenshot fixture: **runtime-operations**.
 
 ## Home: orient before drilling down
 
-**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, and automation without replacing the detailed canonical surfaces.
+**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, automation, and canonical Project readiness without replacing the detailed canonical surfaces. Readiness is Project progress, not a user-specific activation record; opening a suggested destination does not count as completing work.
 
 Use Home to decide where to go next:
 
