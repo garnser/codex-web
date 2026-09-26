@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 import time
+import contextlib
 
 from codex_web.execution_subjects import normalize_execution_subject
 from codex_web.execution_workers import (
@@ -33,7 +34,10 @@ from codex_web.failures import (
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.services.identity import AuthorizationError, IdentityService
-from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceRelease,
+    ExecutionWorkspaceService,
+)
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 
 
@@ -1463,6 +1467,19 @@ class ExecutionWorkerService:
                     }
                 )
                 lost.append(assignment.id)
+                if (
+                    self.workspaces is not None
+                    and assignment.execution_workspace_id
+                ):
+                    with contextlib.suppress(Exception):
+                        self.workspaces.release(
+                            assignment.execution_workspace_id,
+                            ExecutionWorkspaceRelease(
+                                discard=True,
+                                reason="worker lease expired",
+                            ),
+                            actor=actor,
+                        )
                 self._event(
                     state,
                     actor=actor,
