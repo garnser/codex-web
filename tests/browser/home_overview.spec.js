@@ -57,7 +57,7 @@ test('empty Home intentionally renders empty states without inventing actions', 
   payload.sections.project_readiness = current([{ id: 'project-a', title: 'Project A', semantic_ready: true, execution_ready: true, status: 'ready', checks: [] }]);
   await routeHome(page, payload);
   await expect(page.getByText('Nothing here right now')).toHaveCount(Object.keys(payload.sections).length - 1);
-  await expect(page.locator('[data-home-overview] a.ghost-button')).toHaveCount(1);
+  await expect(page.locator('.home-overview-grid a.ghost-button')).toHaveCount(1);
   await expect(page.locator('[data-home-section="project_readiness"]')).toContainText('does not itself mean that useful work has completed');
 });
 
