@@ -871,24 +871,14 @@ class TurnExecutionService:
             return None
         try:
             manager, session = self._session_for_assignment(assignment_id)
-        except HTTPException as exc:
-            codex_compatibility_only = not any(
-                key != ("openai", "codex")
-                for key in self.session_managers
-            )
-            if codex_compatibility_only:
-                detail = (
-                    "thread bootstrap binding has no live Codex session"
-                    if bootstrap is not None
-                    else "active thread assignment has no live Codex session"
-                )
-            else:
-                detail = (
-                    "thread bootstrap binding has no live agent runtime session"
-                    if bootstrap is not None
-                    else "active thread assignment has no live agent runtime session"
-                )
-            raise HTTPException(status_code=503, detail=detail) from exc
+        except HTTPException:
+            # No live session (restart, supersede, or recovery): reads
+            # degrade to a notLoaded view instead of failing the request;
+            # the next turn re-acquires or supersedes the binding. The
+            # ambient runtime must never be used for a bound thread.
+            return ("degraded", None, None)
+        assignment = session.validate_current()
+        return manager, session, assignment
         assignment = session.validate_current()
         return manager, session, assignment
 
@@ -902,6 +892,30 @@ class TurnExecutionService:
         if resolved is None:
             return await self.host.codex.request(method, params)
         _manager, session, assignment = resolved
+        if _manager == "degraded":
+            if method != "thread/read":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "thread bootstrap binding has no live agent runtime "
+                        "session"
+                    ),
+                )
+            return {
+                "ok": False,
+                "timedOut": True,
+                "threadId": thread_id,
+                "error": (
+                    "agent runtime session is not live; send a message to "
+                    "re-acquire it"
+                ),
+                "thread": {
+                    "id": thread_id,
+                    "turns": [],
+                    "status": {"type": "notLoaded"},
+                    "readTimedOut": True,
+                },
+            }
         binding = getattr(assignment, "runtime_binding", None)
         if binding is None or (
             binding.provider_id == "openai" and binding.runtime_id == "codex"

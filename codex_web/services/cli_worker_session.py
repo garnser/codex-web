@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from codex_web.execution_workspaces import ExecutionWorkspaceStatus
 from codex_web.execution_workers import (
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
@@ -273,6 +274,15 @@ class AssignmentBoundCliSession:
         if assignment.status != AssignmentStatus.RUNNING:
             raise AssignmentBoundCliSessionStaleError(
                 f"CLI assignment is {assignment.status.value}"
+            )
+        workspace = self.local_worker._workspace(assignment)
+        if workspace is None or getattr(
+            workspace,
+            "status",
+            None,
+        ) != ExecutionWorkspaceStatus.ACTIVE:
+            raise AssignmentBoundCliSessionStaleError(
+                "CLI assignment execution workspace is no longer active"
             )
         if (
             assignment.deadline_at is not None
