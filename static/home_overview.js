@@ -21,6 +21,135 @@ const SECTION_LABELS = {
 
 let controller = null;
 let generation = 0;
+const ONBOARDING_KEY = "codex-web-onboarding-v1";
+
+function onboardingPreferences() {
+  try {
+    const value = JSON.parse(localStorage.getItem(ONBOARDING_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function onboardingDismissed(id) {
+  return Boolean(onboardingPreferences()[id]?.dismissed);
+}
+
+function setOnboardingDismissed(id, dismissed) {
+  const preferences = onboardingPreferences();
+  preferences[id] = { ...(preferences[id] || {}), dismissed: Boolean(dismissed) };
+  localStorage.setItem(ONBOARDING_KEY, JSON.stringify(preferences));
+}
+
+function onboardingProgress(payload) {
+  const readiness = payload.sections?.project_readiness;
+  const readinessItem = readiness?.status === "current" ? readiness.items?.[0] : null;
+  const ready = Boolean(readinessItem?.execution_ready);
+  const activeCount = payload.sections?.active_work?.status === "current"
+    ? payload.sections.active_work.items?.length || 0 : 0;
+  const blockedCount = payload.sections?.blocked_work?.status === "current"
+    ? payload.sections.blocked_work.items?.length || 0 : 0;
+  const completedCount = payload.sections?.recently_completed?.status === "current"
+    ? payload.sections.recently_completed.items?.length || 0 : 0;
+  return {
+    ready,
+    started: activeCount + blockedCount + completedCount > 0,
+    completed: completedCount > 0,
+  };
+}
+
+function onboardingAction(label, href, primary = false) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.className = primary ? "primary-button" : "ghost-button";
+  link.textContent = label;
+  return link;
+}
+
+function renderOnboarding(payload) {
+  const progress = onboardingProgress(payload);
+  if (!progress.ready || progress.completed) return null;
+
+  const project = payload.project?.id || projectId();
+  const wrapper = document.createElement("section");
+  wrapper.className = "home-onboarding";
+  wrapper.dataset.homeOnboarding = "true";
+
+  if (onboardingDismissed(project)) {
+    wrapper.classList.add("home-onboarding-collapsed");
+    const text = document.createElement("p");
+    text.textContent = "Getting started is hidden. Your Project progress is still derived from canonical state.";
+    const reopen = document.createElement("button");
+    reopen.type = "button";
+    reopen.className = "ghost-button";
+    reopen.dataset.onboardingReopen = "true";
+    reopen.textContent = "Show getting started";
+    wrapper.append(text, reopen);
+    return wrapper;
+  }
+
+  const header = document.createElement("header");
+  const heading = document.createElement("div");
+  const eyebrow = document.createElement("small");
+  eyebrow.textContent = "Getting started";
+  const title = document.createElement("h3");
+  title.textContent = progress.started ? "Continue to your first useful outcome" : "Reach your first useful outcome";
+  const detail = document.createElement("p");
+  detail.textContent = progress.started
+    ? "A first workflow exists. Continue it until canonical work records a completed outcome."
+    : "Your Project is ready. Start one bounded workflow and let the product introduce more capabilities only when they become relevant.";
+  heading.append(eyebrow, title, detail);
+  const skip = document.createElement("button");
+  skip.type = "button";
+  skip.className = "ghost-button";
+  skip.dataset.onboardingSkip = "true";
+  skip.textContent = "Skip for now";
+  header.append(heading, skip);
+
+  const checklist = document.createElement("ol");
+  checklist.className = "home-onboarding-checklist";
+  [
+    ["Project execution ready", progress.ready],
+    ["First workflow started", progress.started],
+    ["First useful outcome completed", progress.completed],
+  ].forEach(([label, done]) => {
+    const item = document.createElement("li");
+    item.dataset.complete = String(done);
+    item.textContent = label;
+    checklist.appendChild(item);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "home-onboarding-actions";
+  actions.appendChild(onboardingAction(
+    progress.started ? "Continue current work" : "Start first task",
+    progress.started ? "#workspace/work" : "#workspace/threads",
+    true,
+  ));
+  if (payload.sections?.agents?.status === "current") {
+    actions.appendChild(onboardingAction("Configure Agent / Team", "#workspace/agents"));
+  }
+  if (payload.sections?.automations?.status === "current") {
+    actions.appendChild(onboardingAction("Create Automation", "#workspace/autonomy"));
+  }
+  actions.appendChild(onboardingAction("Review Project setup", "#workspace/setup"));
+
+  wrapper.append(header, checklist, actions);
+  return wrapper;
+}
+
+function wireOnboarding(host, payload) {
+  const id = payload.project?.id || projectId();
+  host.querySelector("[data-onboarding-skip]")?.addEventListener("click", () => {
+    setOnboardingDismissed(id, true);
+    renderPayload(host, payload);
+  });
+  host.querySelector("[data-onboarding-reopen]")?.addEventListener("click", () => {
+    setOnboardingDismissed(id, false);
+    renderPayload(host, payload);
+  });
+}
 
 function projectId() {
   return document.getElementById("product-project-switcher")?.value
@@ -183,6 +312,9 @@ function renderPayload(host, payload) {
   header.append(titleBox, statusBadge(payload.status));
   host.appendChild(header);
 
+  const onboarding = renderOnboarding(payload);
+  if (onboarding) host.appendChild(onboarding);
+
   if (payload.status === "partial") {
     host.appendChild(statePanel({
       kind: "degraded",
@@ -208,6 +340,7 @@ function renderPayload(host, payload) {
     if (payload.sections[name]) grid.appendChild(renderSection(name, payload.sections[name]));
   }
   host.appendChild(grid);
+  wireOnboarding(host, payload);
 }
 
 export async function renderHomeOverview(host, selectedProjectId = projectId()) {
