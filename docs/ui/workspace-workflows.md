@@ -4,18 +4,46 @@ This guide follows the current Codex Web workspace shell. Keep the active **Proj
 
 The UI is a view over canonical state. A button, badge, or panel does not grant authority, and provider-owned state remains authoritative in the provider that owns it.
 
-## Work: inspect and operate on a Work Item
+## Project setup: become ready and start useful work
 
-Open **Work** when you need to understand what is happening with a task or execution.
+1. Confirm the active Project in the shared Project switcher. Routed pages inherit this scope; changing it is the deliberate way to move work between Projects.
+2. Start at **Home** for current work and the Project readiness next step. If readiness is blocked, open **Project Setup**, inspect canonical checks, and use the offered remediation or deterministic plan.
+3. Review any authority-sensitive changes and required approvals before applying a plan. A successful setup operation is not a substitute for refreshed readiness.
+4. Once execution-ready, open **Threads** to begin interactive work or **Work Items** to continue a canonical task. Explicit repository targeting remains a required safety step when Project policy requires it.
+5. Confirm the useful outcome from the resulting Work Item/Run and its Evidence. A Thread creation, UI click, or “ready” Project alone is not a completed outcome.
 
-1. Open the Work workspace.
-2. Use **Work Items** to open the canonical Work Item operator.
-3. Select the relevant Project and Work Item.
-4. Read the summary first: current state, owner, priority, next action, blocker, and routing lanes.
-5. Inspect the **Run timeline** for execution state, repository attribution, usage, Evidence, verification, retries, and external actions.
-6. Use **Retry** or **Reconcile** only when the canonical action is enabled and its remediation applies.
+## Work Items: create or continue a canonical task
 
-A blocked or partial Run is not success. Repository tests, provider receipts, and canonical Evidence are stronger proof than an agent message saying the task is complete.
+1. Open **Work Items** from the active Project's Work navigation. The routed operator inherits the shell Project; do not select the same scope again inside the page.
+2. Search or select a Work Item, or use its canonical task-source flow to create/ingest work.
+3. Read canonical state, owner, priority, next action, blockers, external-source state, and policy before execution.
+4. Execute or continue only through the enabled canonical action. Readiness, authorization, repository targeting, approvals, and execution contracts are required governance steps, not removable UX friction.
+5. Reconcile external-source state when it differs from canonical Work Item state; neither projection should be misrepresented as the other.
+
+## Threads: start scoped interactive work
+
+1. Open **Threads** inside the active Project. Create a Thread or select one from that Project's list.
+2. Confirm the repository target when required and review the effective execution policy before sending work.
+3. The routed Chat URL identifies the selected Thread within the Project. Back/Forward restores prior selections; switching Project never reuses another Project's Thread.
+4. Confirm outcomes through the canonical Run/Work Item and Evidence rather than relying on a transcript assertion.
+
+A missing Thread deep link, lost Project scope, repeated Project choice, or inability to tell which repository will be modified is accidental friction. Explicit target selection required by policy is intentional governance.
+
+## Runs: understand status and choose the next action
+
+1. Open **Runs / Execution** from the active Project or follow a Run link from its Work Item.
+2. Confirm the Run's terminal/current status, owning Work Item, runtime/worker, repository scope, and attempt history.
+3. Inspect bounded events, provider/action receipts, artifacts, verification, and Evidence as needed; do not infer success from an agent message or a running state.
+4. Use the canonical retry, reconcile, approval, or remediation action shown for that outcome. Unknown external outcomes require reconciliation rather than blind replay.
+
+## Configuration: change and verify effective state
+
+1. Open **Configuration** for typed Project configuration or the relevant resource surface for contextual settings.
+2. Inspect scope, source/inheritance, effective value, version, and policy before editing.
+3. Use Edit, Attach/Detach, Reset, or lifecycle actions only where the canonical resource supports them; authorization remains server-owned.
+4. Reopen or refresh the canonical view and verify the effective state and provenance after mutation. Secret/key material remains behind its protected boundary; inspect references/status, never raw values.
+
+The number of scope re-selections and page transitions is a useful baseline for workflow review, but approvals, explicit repository choice, and verification are not accidental clicks to optimize away. A context loss, unclear next action, or repeated entry of already-known values is a candidate for remediation.
 
 Screenshot fixture: **work-items-and-handoffs**.
 
@@ -72,7 +100,7 @@ Screenshot fixture: **runtime-operations**.
 
 ## Home: orient before drilling down
 
-**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, and automation without replacing the detailed canonical surfaces.
+**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, automation, and canonical Project readiness without replacing the detailed canonical surfaces. Readiness is Project progress, not a user-specific activation record; opening a suggested destination does not count as completing work.
 
 Use Home to decide where to go next:
 

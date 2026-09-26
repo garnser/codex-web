@@ -10,6 +10,7 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.services.home_overview import HomeOverviewService
+from codex_web.services.project_readiness import ReadinessCheckStatus
 
 
 class _Projects:
@@ -57,6 +58,29 @@ class _EmptyList:
         return []
 
 
+class _Readiness:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def evaluate(self, project_id, *, actor, record=False):
+        self.calls.append((project_id, record))
+        check = SimpleNamespace(
+            id="worker",
+            domain="execution_worker",
+            status=ReadinessCheckStatus.BLOCKED,
+            code="worker_missing",
+            message="A qualified worker is required.",
+            remediation="Enroll a qualified worker.",
+            remediation_route="#workspace/operations",
+        )
+        return SimpleNamespace(
+            semantic_ready=False,
+            execution_ready=False,
+            status=ReadinessCheckStatus.BLOCKED,
+            checks=[check],
+        )
+
+
 class _EmptyGoals:
     def list(self, *, scope):
         return []
@@ -68,6 +92,7 @@ class _EmptyGoals:
 class HomeOverviewPerformanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_large_source_state_stays_bounded_and_requests_small_pages(self) -> None:
         work_items = _WorkItems()
+        readiness = _Readiness()
         actor = AuthenticationActor(
             identity_id="human-a",
             principal_kind=PrincipalKind.HUMAN,
@@ -85,6 +110,7 @@ class HomeOverviewPerformanceTests(unittest.IsolatedAsyncioTestCase):
             agent_sessions=_EmptyList(),
             goals=_EmptyGoals(),
             schedules=None,
+            readiness=readiness,
             clock=lambda: 123.0,
             section_limit=5,
         )
@@ -98,6 +124,8 @@ class HomeOverviewPerformanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["sections"]["active_work"]["count"], 1300)
         self.assertEqual(payload["sections"]["blocked_work"]["count"], 650)
         self.assertEqual(payload["sections"]["recently_completed"]["count"], 500)
+        self.assertEqual(readiness.calls, [("project-large", False)])
+        self.assertEqual(payload["sections"]["project_readiness"]["items"][0]["checks"][0]["message"], "A qualified worker is required.")
 
     def test_section_limit_has_a_hard_upper_bound(self) -> None:
         service = HomeOverviewService(

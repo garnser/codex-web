@@ -1,3 +1,5 @@
+import { actionFeedback } from "./workspace_components.js";
+
 const state = {
   projectId: "",
   automations: [],
@@ -7,6 +9,8 @@ const state = {
   error: "",
   editing: false,
   creating: false,
+  runPendingId: "",
+  actionFeedback: null,
 };
 
 function esc(value) {
@@ -282,13 +286,14 @@ function detailMarkup(item) {
           <dt>Cost budget</dt><dd>${budget.max_cost_usd == null ? "Not bounded here" : `$${esc(budget.max_cost_usd)}`}</dd>
         </dl>
       </details>
-      <div class="automation-actions">
-        <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" ? "disabled" : ""}>Run now</button>
+       <div class="automation-actions">
+         <button type="button" class="primary-button" data-automation-run-now ${definition.lifecycle !== "enabled" || state.runPendingId === item.id ? "disabled" : ""}>${state.runPendingId === item.id ? "Starting…" : "Run now"}</button>
         <button type="button" class="ghost-button" data-automation-edit>Edit</button>
         <button type="button" class="ghost-button" data-automation-refresh>Refresh</button>
-      </div>
-      <section>
-        <h4>Recent runs</h4>
+       </div>
+       ${state.actionFeedback ? '<div data-automation-action-feedback></div>' : ""}
+       <section>
+         <h4>Recent runs</h4>
         <div class="automation-run-list">
           ${state.runs.length ? state.runs.slice(0, 20).map(runRow).join("") : '<div class="workspace-state workspace-state-empty">No runs recorded.</div>'}
         </div>
@@ -329,6 +334,8 @@ function render() {
       <div class="automation-detail-host">${editorMarkup(selected()) || detailMarkup(selected())}</div>
     </div>`;
 
+  const feedback = card.querySelector("[data-automation-action-feedback]");
+  if (feedback && state.actionFeedback) feedback.replaceChildren(actionFeedback(state.actionFeedback));
   card.querySelectorAll("[data-automation-id]").forEach((button) => {
     button.addEventListener("click", () => selectAutomation(button.dataset.automationId));
   });
@@ -444,8 +451,10 @@ async function saveEditor(event) {
 
 async function runNow() {
   const item = selected();
-  if (!item) return;
+  if (!item || state.runPendingId) return;
   state.error = "";
+  state.runPendingId = item.id;
+  state.actionFeedback = { state: "acknowledged", title: "Run request received", detail: "Checking canonical admission for this Automation." };
   render();
   try {
     const key = `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -454,6 +463,8 @@ async function runNow() {
       body: JSON.stringify({ idempotency_key: key, project_id: state.projectId || null }),
     });
     if (admitted.launchAllowed) {
+      state.actionFeedback = { state: "in_progress", title: "Run admitted", detail: "Launching the canonical Automation run." };
+      render();
       await api(`/api/automation-runs/${encodeURIComponent(admitted.run.id)}/launch`, {
         method: "POST",
         body: JSON.stringify({
@@ -462,12 +473,23 @@ async function runNow() {
           read_only_repository_resource_ids: [],
         }),
       });
+    } else {
+      state.actionFeedback = { state: "needs_attention", title: "Run requires attention", detail: admitted.reason || admitted.message || "Canonical policy did not allow launch." };
     }
     await loadRuns(item.id);
+    if (admitted.launchAllowed) {
+      const run = state.runs.find((entry) => entry.id === admitted.run.id);
+      state.actionFeedback = run && ["failed", "cancelled"].includes(run.status)
+        ? { state: "failed", title: "Automation run failed", detail: `Canonical run status: ${run.status}.` }
+        : { state: "succeeded", title: "Automation run started", detail: run ? `Canonical run status: ${run.status}.` : "Launch was accepted; run status is not yet available." };
+    }
   } catch (error) {
     state.error = error.message;
+    state.actionFeedback = { state: "failed", title: "Automation run failed", detail: error.message };
+  } finally {
+    state.runPendingId = "";
+    render();
   }
-  render();
 }
 
 function install() {

@@ -93,6 +93,7 @@ test("Automation workspace renders canonical definitions, provenance and run his
   expect(manualRuns[0].project_id).toBe("home");
   await expect.poll(() => launches.length).toBe(1);
   expect(launches[0].path).toBe("/api/automation-runs/automation-run-new/launch");
+  await expect(card.locator('[data-action-state="succeeded"]')).toContainText("Automation run started");
 });
 
 
