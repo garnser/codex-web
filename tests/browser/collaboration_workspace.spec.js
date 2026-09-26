@@ -406,3 +406,48 @@ test('Agent Skill assignments can be attached and detached without leaving the A
   expect(saved.skill_refs).toEqual([]);
   expect(saved.reason).toBe('Detach obsolete review procedure');
 });
+
+
+test('Team membership can be managed directly from the Team card', async ({ page }) => {
+  await mockApis(page);
+  let saved = null;
+  await page.route('**/api/agent-teams/delivery', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      saved = route.request().postDataJSON();
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: { ...teams[0], ...saved, revision: 4 } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
+  await team.getByRole('button', { name: 'Add or remove members for Delivery Team' }).click();
+  const dialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Members · Delivery Team' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: /Maya.*leader/ })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: /Maya.*leader/ })).toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: /Nora/ })).toBeChecked();
+
+  await dialog.getByRole('checkbox', { name: /Nora/ }).uncheck();
+  await dialog.locator('[data-reason]').fill('Remove validator from bounded delegation team');
+  await dialog.getByRole('button', { name: 'Save members' }).click();
+
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.members).toEqual([{ profile_id: 'maya' }]);
+  expect(saved.reason).toBe('Remove validator from bounded delegation team');
+});
+
+
+test('empty Agent and Team collections expose contextual create actions', async ({ page }) => {
+  await mockApis(page, { empty: true });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+
+  const agentEmpty = page.locator('[data-collab-agents]');
+  const teamEmpty = page.locator('[data-collab-teams]');
+  await expect(agentEmpty.getByRole('button', { name: '+ Create Agent Profile' })).toBeVisible();
+  await expect(teamEmpty.getByRole('button', { name: '+ Create Team' })).toBeVisible();
+});
