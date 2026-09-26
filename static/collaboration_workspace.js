@@ -135,6 +135,93 @@ function openAgentSkillEditor(profile, onChanged) {
   dialog.showModal();
 }
 
+
+function openTeamMembersEditor(team, onChanged) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "product-section-dialog";
+  const existingMembers = new Map((team.members || []).map((member) => [member.profile_id, member]));
+  const selected = new Set(existingMembers.keys());
+  if (team.leader_profile_id) selected.add(team.leader_profile_id);
+  dialog.innerHTML = `
+    <div class="product-section-dialog-shell">
+      <header>
+        <div>
+          <h2>Members · ${team.name || team.team_id}</h2>
+          <p>Add or remove Team members in context. The leader remains selected and changes create a new immutable Team revision.</p>
+        </div>
+        <button type="button" class="icon-button" data-close aria-label="Close">×</button>
+      </header>
+      <div class="route-test" data-member-options></div>
+      <label>Change reason <textarea data-reason rows="3" maxlength="1000" placeholder="Why is Team membership changing?"></textarea></label>
+      <div class="form-result" data-status hidden aria-live="polite"></div>
+      <button type="button" class="primary-button" data-save>Save members</button>
+    </div>`;
+  const options = dialog.querySelector("[data-member-options]");
+  for (const profile of state.profiles) {
+    const label = document.createElement("label");
+    label.className = "checkbox-line";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.profileId = profile.profile_id;
+    input.checked = selected.has(profile.profile_id);
+    if (profile.profile_id === team.leader_profile_id) {
+      input.disabled = true;
+      input.title = "The Team leader cannot be removed from this membership editor.";
+    }
+    label.append(
+      input,
+      document.createTextNode(` ${profile.name || profile.profile_id}${profile.profile_id === team.leader_profile_id ? " · leader" : ""}`),
+    );
+    options.appendChild(label);
+  }
+  if (!state.profiles.length) {
+    options.appendChild(statePanel({
+      kind: "empty",
+      title: "No Agent Profiles available",
+      detail: "Create an Agent Profile before adding Team members.",
+    }));
+  }
+
+  dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+  dialog.querySelector("[data-save]").addEventListener("click", async (event) => {
+    const reason = dialog.querySelector("[data-reason]").value.trim();
+    const status = dialog.querySelector("[data-status]");
+    if (!reason) {
+      status.hidden = false;
+      status.textContent = "A change reason is required.";
+      status.classList.add("workspace-state-error");
+      return;
+    }
+    const button = event.currentTarget;
+    button.disabled = true;
+    const checked = new Set(Array.from(
+      options.querySelectorAll("input:checked"),
+      (input) => input.dataset.profileId,
+    ));
+    if (team.leader_profile_id) checked.add(team.leader_profile_id);
+    const members = Array.from(checked, (profileId) => {
+      const current = existingMembers.get(profileId);
+      return current ? { ...current } : { profile_id: profileId };
+    });
+    try {
+      const result = await request(`/api/agent-teams/${encodeURIComponent(team.team_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ members, reason }),
+      });
+      await onChanged?.(result?.item);
+      dialog.close();
+    } catch (error) {
+      status.hidden = false;
+      status.textContent = error.message || "Team membership change rejected.";
+      status.classList.add("workspace-state-error");
+      button.disabled = false;
+    }
+  });
+  document.body.appendChild(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.showModal();
+}
+
 function skillConsumers() {
   const consumers = new Map();
   for (const profile of state.profiles) {
@@ -304,6 +391,16 @@ function teamCard(team, profilesById, onChanged) {
   article.appendChild(head);
   if (team.description) article.appendChild(el("p", "collab-description", team.description));
 
+  const rosterHeader = el("div", "section-title");
+  rosterHeader.appendChild(el("h4", "", "Members"));
+  const manageMembers = el("button", "ghost-button", "+ Add / manage members");
+  manageMembers.type = "button";
+  manageMembers.dataset.manageTeamMembers = team.team_id;
+  manageMembers.setAttribute("aria-label", `Add or remove members for ${team.name || team.team_id}`);
+  manageMembers.addEventListener("click", () => openTeamMembersEditor(team, onChanged));
+  rosterHeader.appendChild(manageMembers);
+  article.appendChild(rosterHeader);
+
   const roster = el("div", "collab-roster");
   const leaderRow = el("div", "collab-roster-row");
   leaderRow.append(el("span", "", "Leader"), leader ? agentIdentity(leader) : el("strong", "", team.leader_profile_id || "—"));
@@ -369,14 +466,24 @@ function render(card) {
   skills.replaceChildren();
 
   if (!state.profiles.length) {
-    agents.appendChild(statePanel({ kind: "empty", title: "No Agent Profiles", detail: "No visible canonical Agent Profiles exist in this workspace." }));
+    const empty = statePanel({ kind: "empty", title: "No Agent Profiles", detail: "No visible canonical Agent Profiles exist in this workspace." });
+    const create = el("button", "primary-button", "+ Create Agent Profile");
+    create.type = "button";
+    create.addEventListener("click", () => openEditor("profile", null, { onChanged: () => refresh(card) }));
+    empty.appendChild(create);
+    agents.appendChild(empty);
   } else {
     state.profiles.forEach((profile) => agents.appendChild(agentCard(profile, () => refresh(card))));
   }
 
   const profilesById = new Map(state.profiles.map((profile) => [profile.profile_id, profile]));
   if (!state.teams.length) {
-    teams.appendChild(statePanel({ kind: "empty", title: "No Teams", detail: "No visible canonical Agent Teams exist in this workspace." }));
+    const empty = statePanel({ kind: "empty", title: "No Teams", detail: "No visible canonical Agent Teams exist in this workspace." });
+    const create = el("button", "primary-button", "+ Create Team");
+    create.type = "button";
+    create.addEventListener("click", () => openEditor("team", null, { onChanged: () => refresh(card) }));
+    empty.appendChild(create);
+    teams.appendChild(empty);
   } else {
     state.teams.forEach((team) => teams.appendChild(teamCard(team, profilesById, () => refresh(card))));
   }
