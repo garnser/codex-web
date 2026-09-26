@@ -59,6 +59,7 @@ from codex_web.api.legacy_project_migration import build_legacy_project_migratio
 from codex_web.api.goals import build_goals_router
 from codex_web.api.home import build_home_router
 from codex_web.api.metrics import build_metrics_router
+from codex_web.api.ux_telemetry import build_ux_telemetry_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
 from codex_web.api.input_plugins import build_input_plugins_router
@@ -302,6 +303,8 @@ from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.metrics import MetricService
+from codex_web.services.ux_telemetry import UxTelemetryService
+from codex_web.services.ux_telemetry_configuration import install_ux_telemetry_configuration
 from codex_web.services.goal_decomposition_commit import (
     GoalDecompositionCommitService,
 )
@@ -443,6 +446,7 @@ from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.executive_activations import ExecutiveActivationStore
 from codex_web.storage.goals import GoalStore
 from codex_web.storage.metrics import MetricStore
+from codex_web.storage.ux_telemetry import UxTelemetryStore
 from codex_web.storage.goal_decompositions import GoalDecompositionStore
 from codex_web.storage.goal_execution_bindings import GoalExecutionBindingStore
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
@@ -701,6 +705,9 @@ anthropic_worker_configuration_spec = install_anthropic_worker_configuration(
 mammouth_worker_configuration_spec = install_mammouth_worker_configuration(
     configuration_service
 )
+ux_telemetry_configuration_specs = install_ux_telemetry_configuration(
+    configuration_service
+)
 agent_routing_configuration_specs = install_agent_routing_configuration(
     configuration_service
 )
@@ -709,6 +716,7 @@ app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
 app.state.artifact_content_configuration_spec = artifact_content_configuration_spec
 app.state.anthropic_worker_configuration_spec = anthropic_worker_configuration_spec
 app.state.mammouth_worker_configuration_spec = mammouth_worker_configuration_spec
+app.state.ux_telemetry_configuration_specs = ux_telemetry_configuration_specs
 app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
@@ -2127,6 +2135,14 @@ metric_service = MetricService(metric_store)
 app.state.metric_store = metric_store
 app.state.metric_service = metric_service
 app.include_router(build_metrics_router(metric_service))
+ux_telemetry_store = UxTelemetryStore(state_store)
+ux_telemetry_service = UxTelemetryService(
+    ux_telemetry_store,
+    configuration_service,
+)
+app.state.ux_telemetry_store = ux_telemetry_store
+app.state.ux_telemetry_service = ux_telemetry_service
+app.include_router(build_ux_telemetry_router(ux_telemetry_service))
 
 decision_store = DecisionStore(state_store)
 decision_service = DecisionService(

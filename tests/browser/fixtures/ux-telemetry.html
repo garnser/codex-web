@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>UX telemetry fixture</title>
+<script type="module">
+  import {
+    coarseRoute,
+    journeyId,
+    resetUxTelemetryPolicyCache,
+    trackUx,
+  } from "/static/ux_telemetry.js";
+
+  window.uxTelemetryFixture = {
+    coarseRoute,
+    journeyId,
+    resetUxTelemetryPolicyCache,
+    trackUx,
+  };
+  window.uxTelemetryReady = true;
+</script>

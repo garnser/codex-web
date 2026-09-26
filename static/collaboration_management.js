@@ -1,4 +1,5 @@
 import { request } from "./api_client.js";
+import { trackUx } from "./ux_telemetry.js";
 
 const EDITABLE_PROFILE_FIELDS = [
   "name", "avatar_ref", "description", "owner_identity_id", "role_id",
@@ -112,6 +113,9 @@ export function openEditor(kind, item, { onChanged } = {}) {
   area.value = JSON.stringify(editorPayload(kind, item), null, 2);
   body.querySelector("[data-save]").addEventListener("click", async (event) => {
     const button = event.currentTarget;
+    const step = `${creating ? "create" : "edit"}_${kind === "profile" ? "profile" : "team"}`;
+    const telemetryStartedAt = performance.now();
+    void trackUx("workflow_started", { workflow: "agent_management", step });
     try {
       const payload = parsePayload(area.value, kind, creating);
       button.disabled = true;
@@ -121,9 +125,20 @@ export function openEditor(kind, item, { onChanged } = {}) {
         body: JSON.stringify(payload),
       });
       status(dialog, `Saved revision ${result?.item?.revision || "successfully"}.`);
+      void trackUx("workflow_completed", {
+        workflow: "agent_management",
+        step,
+        durationMs: performance.now() - telemetryStartedAt,
+      });
       await onChanged?.(result?.item);
       dialog.close();
     } catch (error) {
+      const validationFailure = /JSON is invalid|required|Payload must/i.test(error.message || "");
+      void trackUx(validationFailure ? "validation_error_shown" : "action_failed", {
+        workflow: "agent_management",
+        step,
+        durationMs: performance.now() - telemetryStartedAt,
+      });
       status(dialog, error.message || "Change rejected.", true);
       button.disabled = false;
     }
