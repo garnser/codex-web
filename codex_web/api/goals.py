@@ -65,6 +65,8 @@ def build_goals_router(
         return actor
 
     def require_project_goal(goal_id: str, project_id: str | None, actor):
+        if project_id is None:
+            return service.get(goal_id, scope=actor.tenant)
         return service.get(
             goal_id,
             scope=actor.tenant,
