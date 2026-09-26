@@ -1,4 +1,5 @@
 import { actionFeedback } from "./workspace_components.js";
+import { trackUx } from "./ux_telemetry.js";
 
 const state = {
   projectId: "",
@@ -452,6 +453,8 @@ async function saveEditor(event) {
 async function runNow() {
   const item = selected();
   if (!item || state.runPendingId) return;
+  const telemetryStartedAt = performance.now();
+  void trackUx("workflow_started", { workflow: "automation", step: "run_now" });
   state.error = "";
   state.runPendingId = item.id;
   state.actionFeedback = { state: "acknowledged", title: "Run request received", detail: "Checking canonical admission for this Automation." };
@@ -479,13 +482,30 @@ async function runNow() {
     await loadRuns(item.id);
     if (admitted.launchAllowed) {
       const run = state.runs.find((entry) => entry.id === admitted.run.id);
-      state.actionFeedback = run && ["failed", "cancelled"].includes(run.status)
+      const failed = run && ["failed", "cancelled"].includes(run.status);
+      state.actionFeedback = failed
         ? { state: "failed", title: "Automation run failed", detail: `Canonical run status: ${run.status}.` }
         : { state: "succeeded", title: "Automation run started", detail: run ? `Canonical run status: ${run.status}.` : "Launch was accepted; run status is not yet available." };
+      void trackUx(failed ? "action_failed" : "workflow_completed", {
+        workflow: "automation",
+        step: "run_now",
+        durationMs: performance.now() - telemetryStartedAt,
+      });
+    } else {
+      void trackUx("action_failed", {
+        workflow: "automation",
+        step: "run_now",
+        durationMs: performance.now() - telemetryStartedAt,
+      });
     }
   } catch (error) {
     state.error = error.message;
     state.actionFeedback = { state: "failed", title: "Automation run failed", detail: error.message };
+    void trackUx("action_failed", {
+      workflow: "automation",
+      step: "run_now",
+      durationMs: performance.now() - telemetryStartedAt,
+    });
   } finally {
     state.runPendingId = "";
     render();
