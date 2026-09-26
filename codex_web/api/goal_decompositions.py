@@ -68,6 +68,8 @@ def build_goal_decompositions_router(
         return actor
 
     def require_project_goal(goal_id: str, project_id: str | None, actor) -> None:
+        if project_id is None:
+            return
         try:
             service.goals.get(
                 goal_id,
