@@ -25,6 +25,18 @@ test('loading empty degraded error and offline states retain explicit semantics'
   await expect(page.locator('.cw-skeleton')).toHaveAttribute('aria-busy', 'true');
 });
 
+test('action feedback exposes accessible lifecycle states without inventing progress', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/workspace_components_fixture.html');
+
+  await expect(page.locator('[data-action-state="acknowledged"]')).toHaveAttribute('role', 'status');
+  await expect(page.locator('[data-action-state="in_progress"]')).toContainText('Applying reviewed plan');
+  await expect(page.locator('[data-action-state="succeeded"]')).toContainText('Plan applied');
+  await expect(page.locator('[data-action-state="failed"]')).toHaveAttribute('role', 'alert');
+  await expect(page.locator('[data-action-state="needs_attention"]')).toContainText('Approval required');
+  await expect(page.locator('[role="progressbar"]')).toHaveCount(0);
+});
+
+
 test('interactive shared primitives remain keyboard focusable', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/workspace_components_fixture.html');
 

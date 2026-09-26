@@ -21,6 +21,7 @@
       ready: new URLSearchParams(location.search).get("explicit") === "1",
       explicit: new URLSearchParams(location.search).get("explicit") === "1",
       calls: [],
+      applyCalls: 0,
       openedWorkspace: null,
       readiness() {
         return {
@@ -56,6 +57,10 @@
       } else if (path.endsWith("/bootstrap/plan")) {
         payload = { blocked: false, counts: { ready: 2 }, plan: { id: "bootstrap-plan-1", operations: [{ id: "repository", domain: "repository", disposition: "ready", reason_code: "repository_ready", message: "Repository ready." }] } };
       } else if (path.endsWith("/bootstrap/apply")) {
+        window.fixture.applyCalls += 1;
+        if (new URLSearchParams(location.search).get("failApply") === "1") {
+          return new Response(JSON.stringify({ detail: "worker stopped during apply" }), { status: 503, headers: { "Content-Type": "application/json" } });
+        }
         window.fixture.ready = true;
         payload = { execution: { id: "bootstrap-execution-1", status: "applied" } };
       } else if (path.endsWith("/fresh-bootstrap")) {

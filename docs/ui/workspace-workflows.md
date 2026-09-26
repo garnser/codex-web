@@ -100,7 +100,7 @@ Screenshot fixture: **runtime-operations**.
 
 ## Home: orient before drilling down
 
-**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, and automation without replacing the detailed canonical surfaces.
+**Home** is the bounded orientation view for the active Project. It summarizes current work, Attention, agent activity, Goals, automation, and canonical Project readiness without replacing the detailed canonical surfaces. Readiness is Project progress, not a user-specific activation record; opening a suggested destination does not count as completing work.
 
 Use Home to decide where to go next:
 

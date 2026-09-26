@@ -277,6 +277,30 @@ test('project navigation is hierarchical, keeps active state, and separates Admi
   await expect(tree.locator('[data-project-nav-node="administration"]')).toHaveCount(0);
 });
 
+test('primary workflow preference prioritizes navigation without hiding destinations or changing routes', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+
+  const mode = page.locator('#product-workspace-mode');
+  await expect(mode).toHaveValue('work');
+  await expect(page.locator('[data-project-nav-node="administration"]')).toHaveCount(1);
+  await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveCount(1);
+  await expect(page.locator('[data-project-nav-node="runtime"]')).toHaveCount(1);
+
+  await mode.selectOption('operate');
+  await expect(page.locator('[data-project-nav-group="operations-group"]')).toHaveAttribute('open', '');
+  await expect(page.locator('[data-project-nav-group="work-group"]')).not.toHaveAttribute('open', '');
+  await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveCount(1);
+  await expect(page.locator('[data-project-nav-node="administration"]')).toHaveCount(1);
+
+  await page.locator('.product-workspace-mode-reset').click();
+  await expect(mode).toHaveValue('work');
+  await expect(page.locator('[data-project-nav-group="work-group"]')).toHaveAttribute('open', '');
+  await page.reload();
+  await expect(mode).toHaveValue('work');
+  await expect(page.locator('[data-project-nav-node="chat"]')).toHaveCount(1);
+});
+
+
 test('hierarchical navigation remains usable at phone width', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');

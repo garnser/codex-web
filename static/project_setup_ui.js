@@ -1,5 +1,7 @@
+import { actionFeedback } from "./workspace_components.js";
+
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null };
+const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null, actionState: null, applying: false };
 
 function esc(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
@@ -117,14 +119,18 @@ function render() {
     '</strong></div><div><span>Execution</span><strong>' + (state.readiness?.execution_ready ? "Ready" : "Blocked") +
     '</strong></div><div><span>Repository policy</span><strong>' + esc(repositoryPolicy === "explicit" ? "Explicit per turn" : repositoryPolicy === "coordinated" ? "Coordinated Project set" : "Deterministic") +
     '</strong></div><div><span>Blockers</span><strong>' + blockers.length + '</strong></div></div>' +
-    (state.error ? '<div class="project-setup-error" role="alert">' + esc(state.error) + '</div>' : "") +
-    (blocked() ? '<button type="button" class="ghost-button" data-setup-fresh>Retry safe Project setup</button>' : "") + '</section>' +
+     (state.error ? '<div class="project-setup-error" role="alert">' + esc(state.error) + '</div>' : "") +
+     (state.actionState ? '<div data-setup-action-feedback></div>' : "") +
+     (blocked() ? '<button type="button" class="ghost-button" data-setup-fresh>Retry safe Project setup</button>' : "") + '</section>' +
     '<nav class="project-setup-tabs"><button type="button" class="active" data-setup-tab="readiness">Readiness</button><button type="button" data-setup-tab="bootstrap">Bootstrap history</button><button type="button" data-setup-tab="plan">Plan / apply</button></nav>' +
     '<section data-setup-panel="readiness"><div class="project-setup-checks">' + (checks.length ? checks.map(checkHtml).join("") : '<div class="project-setup-empty">Readiness checks unavailable.</div>') + '</div></section>' +
     '<section data-setup-panel="bootstrap" hidden>' + (latest ? '<div class="project-setup-bootstrap-meta"><div><span>Execution</span><code>' + esc(latest.id) + '</code></div><div><span>Plan</span><code>' + esc(latest.plan_id || latest.plan?.id || "") + '</code></div><div><span>Status</span>' + badge(latest.status) + '</div></div><div class="project-setup-operations">' + latestOps.map(operationHtml).join("") + '</div>' : '<div class="project-setup-empty">No durable ProjectBootstrap execution is recorded.</div>') + '</section>' +
-    '<section data-setup-panel="plan" hidden><div class="project-setup-toolbar"><button type="button" class="ghost-button" data-setup-preflight>Run preflight</button><button type="button" class="ghost-button" data-setup-plan>Build plan</button><label><input type="checkbox" data-setup-approve> Approve material authority changes</label><button type="button" class="primary-button" data-setup-apply ' + (!plan || state.plan?.blocked ? "disabled" : "") + '>Apply reviewed plan</button></div>' +
+    '<section data-setup-panel="plan" hidden><div class="project-setup-toolbar"><button type="button" class="ghost-button" data-setup-preflight>Run preflight</button><button type="button" class="ghost-button" data-setup-plan>Build plan</button><label><input type="checkbox" data-setup-approve> Approve material authority changes</label><button type="button" class="primary-button" data-setup-apply ' + (!plan || state.plan?.blocked || state.applying ? "disabled" : "") + '>' + (state.applying ? "Applying…" : "Apply reviewed plan") + '</button></div>' +
     (plan ? '<div class="project-setup-plan-summary"><code>' + esc(plan.id) + '</code></div><div class="project-setup-operations">' + planOps.map(operationHtml).join("") + '</div>' : '<div class="project-setup-empty">Build a deterministic plan before applying changes.</div>') +
     '<details class="project-setup-manifest-panel"><summary>Advanced: normalized desired state</summary><p>References only. Never place raw credentials here.</p><textarea data-project-setup-manifest rows="16" spellcheck="false"></textarea><button type="button" class="ghost-button" data-setup-reset>Reset from Project</button></details></section>';
+  if (state.actionState) {
+    body.querySelector("[data-setup-action-feedback]").replaceChildren(actionFeedback(state.actionState));
+  }
   const textarea = body.querySelector("[data-project-setup-manifest]");
   if (textarea && inferredManifest()) textarea.value = JSON.stringify(inferredManifest(), null, 2);
   wire(body);
@@ -146,14 +152,31 @@ async function planning(kind) {
 }
 async function applyPlan() {
   const plan = state.plan?.plan;
-  if (!plan?.id) return;
+  if (!plan?.id || state.applying) return;
+  state.applying = true;
+  state.actionState = { state: "acknowledged", title: "Request received", detail: "Applying the reviewed Project setup plan." };
+  render();
   try {
-    state.error = null;
+    state.actionState = { state: "in_progress", title: "Applying reviewed plan", detail: "Waiting for the canonical bootstrap result." };
+    render();
     await api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/apply", { method: "POST", body: JSON.stringify({ manifest: manifestInput(), migrate_legacy: true, expected_plan_id: plan.id, approve_authority_changes: Boolean(document.querySelector("[data-setup-approve]")?.checked) }) });
     state.plan = null;
     await refresh();
-    setPanel("readiness");
-  } catch (error) { state.error = error.message; render(); setPanel("plan"); }
+    if (!state.error && state.readiness?.execution_ready) {
+      state.actionState = { state: "succeeded", title: "Project setup completed", detail: "Canonical readiness now reports execution ready." };
+      setPanel("readiness");
+    } else {
+      state.actionState = { state: "needs_attention", title: "Project setup needs attention", detail: "Review the refreshed readiness checks before continuing." };
+      setPanel("readiness");
+    }
+  } catch (error) {
+    state.error = error.message;
+    state.actionState = { state: "failed", title: "Project setup failed", detail: error.message };
+    render(); setPanel("plan");
+  } finally {
+    state.applying = false;
+    render();
+  }
 }
 function wire(body) {
   body.querySelectorAll("[data-setup-tab]").forEach((button) => button.addEventListener("click", () => setPanel(button.dataset.setupTab)));

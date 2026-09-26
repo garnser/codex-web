@@ -7,6 +7,7 @@ import {
 } from "./workspace_components.js";
 
 const SECTION_LABELS = {
+  project_readiness: "Project readiness",
   attention: "Needs attention",
   approvals: "Pending approvals",
   active_work: "Active work",
@@ -71,7 +72,54 @@ function itemFooter(item, enabled) {
   return footer;
 }
 
+function renderReadinessSection(section) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "home-overview-section home-overview-readiness";
+  wrapper.dataset.homeSection = "project_readiness";
+  const heading = document.createElement("header");
+  const title = document.createElement("h3");
+  title.textContent = SECTION_LABELS.project_readiness;
+  heading.append(title, statusBadge(section.status, section.status));
+  wrapper.appendChild(heading);
+  if (section.status !== "current") {
+    wrapper.appendChild(statePanel({
+      kind: section.status === "denied" ? "empty" : "degraded",
+      title: section.status === "denied" ? "Readiness not available to this identity" : "Project readiness unavailable",
+      detail: section.detail || "No next action is shown until canonical readiness can be verified.",
+    }));
+    return wrapper;
+  }
+  const readiness = section.items?.[0];
+  if (!readiness) {
+    wrapper.appendChild(statePanel({ kind: "degraded", title: "Project readiness unavailable", detail: "Canonical readiness returned no Project state." }));
+    return wrapper;
+  }
+  if (readiness.execution_ready) {
+    const detail = document.createElement("p");
+    detail.textContent = "The Project is execution ready. Start a first task or Thread; readiness does not itself mean that useful work has completed.";
+    const link = document.createElement("a");
+    link.className = "ghost-button";
+    link.href = "#workspace/threads";
+    link.textContent = "Start a first task";
+    wrapper.append(detail, link);
+    return wrapper;
+  }
+  const blockers = (readiness.checks || []).filter((check) => check.status === "blocked");
+  wrapper.appendChild(statePanel({
+    kind: "degraded",
+    title: "Project setup needs attention",
+    detail: blockers.map((check) => check.message).filter(Boolean).join(" ") || "Execution remains gated until required readiness checks pass.",
+  }));
+  const link = document.createElement("a");
+  link.className = "ghost-button";
+  link.href = "#workspace/setup";
+  link.textContent = "Review Project setup";
+  wrapper.appendChild(link);
+  return wrapper;
+}
+
 function renderSection(name, section) {
+  if (name === "project_readiness") return renderReadinessSection(section);
   const wrapper = document.createElement("section");
   wrapper.className = "home-overview-section";
   wrapper.dataset.homeSection = name;
@@ -146,6 +194,7 @@ function renderPayload(host, payload) {
   const grid = document.createElement("div");
   grid.className = "home-overview-grid";
   for (const name of [
+    "project_readiness",
     "attention",
     "approvals",
     "active_work",
