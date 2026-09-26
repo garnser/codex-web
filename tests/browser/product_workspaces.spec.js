@@ -496,7 +496,7 @@ test('denied Administration access also removes the Administer workflow preferen
   await expect(mode).toHaveValue('work');
   const option = mode.locator('option[value="administer"]');
   await expect(option).toBeDisabled();
-  await expect(option).toBeHidden();
+  await expect(option).toHaveAttribute('hidden', '');
   await expect(page.locator('[data-project-nav-group="work-group"]')).toHaveAttribute('open', '');
 });
 
@@ -537,7 +537,7 @@ test('administrator can select Administer without changing the canonical Project
   const mode = page.locator('#product-workspace-mode');
   const option = mode.locator('option[value="administer"]');
   await expect(option).toBeEnabled();
-  await expect(option).toBeVisible();
+  await expect(option).not.toHaveAttribute('hidden', '');
   await mode.selectOption('administer');
   await expect(mode).toHaveValue('administer');
   await expect(page).toHaveURL(/\/projects\/home\/overview$/);
