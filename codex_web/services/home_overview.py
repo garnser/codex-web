@@ -14,6 +14,7 @@ from codex_web.services.attention import AttentionService
 from codex_web.services.goals import GoalService
 from codex_web.services.incidents import IncidentService
 from codex_web.services.projects import ProjectService
+from codex_web.services.project_readiness import ProjectReadinessService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.services.work_items import WorkItemService
 
@@ -32,6 +33,7 @@ class HomeOverviewService:
         agent_sessions: AgentSessionService,
         goals: GoalService,
         schedules: SchedulerService | None = None,
+        readiness: ProjectReadinessService | None = None,
         clock: Callable[[], float] = time.time,
         section_limit: int = 5,
     ) -> None:
@@ -43,6 +45,7 @@ class HomeOverviewService:
         self.agent_sessions = agent_sessions
         self.goals = goals
         self.schedules = schedules
+        self.readiness = readiness
         self.clock = clock
         self.section_limit = max(1, min(int(section_limit), 10))
 
@@ -93,6 +96,34 @@ class HomeOverviewService:
         scope = actor.tenant
         project = self.projects.get(project_id, scope)
         sections: dict[str, Any] = {}
+
+        if self.readiness is not None:
+            try:
+                snapshot = self.readiness.evaluate(project.id, actor=actor, record=False)
+                checks = [
+                    {
+                        "id": check.id,
+                        "domain": check.domain,
+                        "status": check.status.value,
+                        "code": check.code,
+                        "message": check.message,
+                        "remediation": check.remediation,
+                        "remediation_route": check.remediation_route,
+                    }
+                    for check in snapshot.checks
+                ]
+                sections["project_readiness"] = self._section(
+                    [{
+                        "id": project.id,
+                        "title": project.name,
+                        "semantic_ready": snapshot.semantic_ready,
+                        "execution_ready": snapshot.execution_ready,
+                        "status": snapshot.status.value,
+                        "checks": checks,
+                    }],
+                )
+            except Exception as exc:
+                sections["project_readiness"] = self._failed_section(exc)
 
         try:
             active_page = await self.work_items.list(
