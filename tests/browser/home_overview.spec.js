@@ -14,6 +14,7 @@ const populated = {
   status: 'current',
   degraded_sections: [],
   sections: {
+    project_readiness: current([{ id: 'project-a', title: 'Project A', semantic_ready: true, execution_ready: true, status: 'ready', checks: [] }]),
     attention: current([{ id: 'attention-1', title: 'Human review needed', status: 'open', severity: 'high', owner: 'human-1', updated_at: 1800000000, href: '#workspace/inbox' }]),
     approvals: current([{ id: 'approval-1', title: 'Approve deployment', status: 'pending', owner: 'human-2', updated_at: 1800000000, href: '#approvals' }]),
     active_work: current([{ id: 'work-1', title: 'Ship release', status: 'implementation', stage: 'implementation', owner: 'agent-1', next_action: 'Run release checks', updated_at: 1800000000, href: '#workspace/work' }]),
@@ -43,6 +44,8 @@ test('populated Home identifies Project, current work, owners, next actions and 
   await expect(home).toContainText('API degradation');
   await expect(home).toContainText('Release safely');
   await expect(home).toContainText('Nightly verification');
+  await expect(home.locator('[data-home-section="project_readiness"]')).toContainText('Start a first task');
+  await expect(home.locator('[data-home-section="project_readiness"] a')).toHaveAttribute('href', '#workspace/threads');
 
   const work = page.locator('[data-home-section="active_work"]');
   await expect(work.getByRole('link', { name: 'Open' })).toHaveAttribute('href', '#workspace/work');
@@ -51,9 +54,11 @@ test('populated Home identifies Project, current work, owners, next actions and 
 test('empty Home intentionally renders empty states without inventing actions', async ({ page }) => {
   const payload = structuredClone(populated);
   for (const key of Object.keys(payload.sections)) payload.sections[key] = current([]);
+  payload.sections.project_readiness = current([{ id: 'project-a', title: 'Project A', semantic_ready: true, execution_ready: true, status: 'ready', checks: [] }]);
   await routeHome(page, payload);
-  await expect(page.getByText('Nothing here right now')).toHaveCount(Object.keys(payload.sections).length);
-  await expect(page.locator('[data-home-overview] a.ghost-button')).toHaveCount(0);
+  await expect(page.getByText('Nothing here right now')).toHaveCount(Object.keys(payload.sections).length - 1);
+  await expect(page.locator('[data-home-overview] a.ghost-button')).toHaveCount(1);
+  await expect(page.locator('[data-home-section="project_readiness"]')).toContainText('does not itself mean that useful work has completed');
 });
 
 test('degraded source is explicit and suppresses stale actions while current sections stay usable', async ({ page }) => {
@@ -81,6 +86,37 @@ test('Home uses a single-column section layout on mobile', async ({ page }) => {
   await routeHome(page, populated);
   const columns = await page.locator('.home-overview-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns);
   expect(columns.split(' ').length).toBe(1);
+});
+
+test('blocked Project readiness links to setup without treating a click as progress', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.project_readiness = current([{
+    id: 'project-a',
+    title: 'Project A',
+    semantic_ready: false,
+    execution_ready: false,
+    status: 'blocked',
+    checks: [{ id: 'worker', status: 'blocked', message: 'A qualified worker is required.' }],
+  }]);
+  await routeHome(page, payload);
+  const readiness = page.locator('[data-home-section="project_readiness"]');
+  await expect(readiness).toContainText('Project setup needs attention');
+  await expect(readiness).toContainText('A qualified worker is required.');
+  await readiness.getByRole('link', { name: 'Review Project setup' }).click();
+  await expect(page).toHaveURL(/#workspace\/setup$/);
+  await expect(readiness).toContainText('Project setup needs attention');
+});
+
+test('unavailable readiness suppresses next actions', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.project_readiness = {
+    status: 'degraded', fresh_at: 1800000000, items: [], count: 0,
+    detail: 'Readiness source unavailable.',
+  };
+  await routeHome(page, payload);
+  const readiness = page.locator('[data-home-section="project_readiness"]');
+  await expect(readiness).toContainText('Project readiness unavailable');
+  await expect(readiness.getByRole('link')).toHaveCount(0);
 });
 
 test('permission-limited Home section is explicit without degrading current data', async ({ page }) => {

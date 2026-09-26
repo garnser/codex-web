@@ -13,6 +13,7 @@ The stylesheet consumes the `--cw-*` design tokens documented in [design-tokens.
 | `objectHeader(viewModel)` | Page/object heading with description, identity, status, and caller-supplied actions. |
 | `metadataGrid(entries)` | Responsive definition-list metadata for provider/model/runtime, Work Item, Run, evidence, and similar facts. |
 | `statePanel(viewModel)` | Shared loading, empty, degraded, error, and offline state surface. |
+| `actionFeedback(viewModel)` | Accessible acknowledged, in-progress, succeeded, failed, and needs-attention action result. |
 | `skeleton(options?)` | `aria-busy` loading placeholder that does not expose decorative rows to assistive technology. |
 | `timeline(entries)` | Ordered activity/history sequence. |
 | `provenanceDisclosure(viewModel)` | Keyboard-native `details/summary` disclosure containing a shared timeline. |
@@ -28,7 +29,7 @@ Identity input supports `id`, `label`/`name`/`display_name`, `kind`/`type`, and 
 
 ## Accessibility and responsive behavior
 
-Status meaning is not encoded only by color: status badges retain text and a symbol. Error/offline state panels use `role="alert"`; normal state panels use `role="status"`; loading/skeleton surfaces use `aria-busy`. Native buttons and `details/summary` preserve keyboard semantics, and shared interactive surfaces use the design-token focus ring.
+Status meaning is not encoded only by color: status badges retain text and a symbol. Failed action feedback uses an assertive alert; other action feedback uses a polite status announcement. Error/offline state panels use `role="alert"`; normal state panels use `role="status"`; loading/skeleton surfaces use `aria-busy`. Native buttons and `details/summary` preserve keyboard semantics, and shared interactive surfaces use the design-token focus ring.
 
 At the documented 640px phone breakpoint, headers/cards stack, metadata grids collapse to one column, and actions remain visible rather than being silently removed.
 

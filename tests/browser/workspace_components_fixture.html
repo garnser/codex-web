@@ -21,6 +21,7 @@
       timeline,
       provenanceDisclosure,
       surfaceCard,
+      actionFeedback,
     } from '/static/workspace_components.js';
 
     const root = document.querySelector('#fixture-root');
@@ -66,6 +67,11 @@
       statePanel({ kind: 'degraded', title: 'Provider degraded', detail: 'Canonical health reports partial availability.' }),
       statePanel({ kind: 'error', title: 'Load failed', detail: 'Canonical state could not be loaded.', action: retry }),
       statePanel({ kind: 'offline', title: 'Offline', detail: 'The provider is unavailable.' }),
+      actionFeedback({ state: 'acknowledged', title: 'Request received' }),
+      actionFeedback({ state: 'in_progress', title: 'Applying reviewed plan' }),
+      actionFeedback({ state: 'succeeded', title: 'Plan applied' }),
+      actionFeedback({ state: 'failed', title: 'Plan failed' }),
+      actionFeedback({ state: 'needs_attention', title: 'Approval required' }),
       skeleton({ rows: 4 }),
     );
 

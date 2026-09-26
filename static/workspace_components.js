@@ -97,6 +97,27 @@ export function metadataGrid(entries = [], options = {}) {
   return dl;
 }
 
+export function actionFeedback({ state = "acknowledged", title = "", detail = "", action = null } = {}) {
+  const normalized = ["acknowledged", "in_progress", "succeeded", "failed", "needs_attention"].includes(state)
+    ? state
+    : "acknowledged";
+  const section = document.createElement("section");
+  section.className = `cw-action-feedback cw-action-feedback-${normalized}`;
+  section.dataset.actionState = normalized;
+  section.setAttribute("role", normalized === "failed" ? "alert" : "status");
+  section.setAttribute("aria-live", normalized === "failed" ? "assertive" : "polite");
+  const heading = document.createElement("strong");
+  heading.textContent = title || normalized.replaceAll("_", " ");
+  section.appendChild(heading);
+  if (detail) {
+    const description = document.createElement("p");
+    description.textContent = detail;
+    section.appendChild(description);
+  }
+  if (action instanceof Node) section.appendChild(action);
+  return section;
+}
+
 export function statePanel({ kind = "empty", title = "", detail = "", action = null, busy = false } = {}) {
   const section = document.createElement("section");
   section.className = `cw-state-panel cw-state-${kind}`;

@@ -199,6 +199,15 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   memory: "memory",
 });
 
+const WORKSPACE_MODE_KEY = "codex-web-workspace-mode";
+const WORKSPACE_MODE_GROUPS = Object.freeze({
+  work: ["work-group"],
+  build: ["agents-group"],
+  automate: ["automation-group"],
+  operate: ["operations-group"],
+  administer: [],
+});
+
 const WORKSPACE_DEFAULT_PAGE = Object.freeze({
   overview: "overview",
   work: "work-items",
@@ -941,6 +950,22 @@ function navigationLeaf(item) {
   return button;
 }
 
+function workspaceMode() {
+  const mode = localStorage.getItem(WORKSPACE_MODE_KEY) || "work";
+  return Object.hasOwn(WORKSPACE_MODE_GROUPS, mode) ? mode : "work";
+}
+
+function applyWorkspaceMode(mode = workspaceMode()) {
+  const normalized = Object.hasOwn(WORKSPACE_MODE_GROUPS, mode) ? mode : "work";
+  localStorage.setItem(WORKSPACE_MODE_KEY, normalized);
+  const selectedGroups = new Set(WORKSPACE_MODE_GROUPS[normalized]);
+  document.querySelectorAll("details[data-project-nav-group]").forEach((group) => {
+    group.open = selectedGroups.has(group.dataset.projectNavGroup);
+  });
+  const selector = document.getElementById("product-workspace-mode");
+  if (selector) selector.value = normalized;
+}
+
 function buildProjectNavigation(container) {
   container.innerHTML = "";
   const projectTree = document.createElement("nav");
@@ -955,7 +980,7 @@ function buildProjectNavigation(container) {
     const group = document.createElement("details");
     group.dataset.projectNavGroup = item.id;
     group.className = "product-project-nav-group";
-    group.open = ["work-group", "agents-group"].includes(item.id);
+    group.open = false;
     const summary = document.createElement("summary");
     summary.textContent = item.label;
     summary.setAttribute("aria-label", item.label);
@@ -1033,7 +1058,16 @@ function buildShell() {
         <button type="button" class="ghost-button" data-project-bot-integration>Project bot integration</button>
       </div>
       <button type="button" class="ghost-button product-all-workspaces" data-workspace-switcher-launch="true">All workspaces</button>
-      <small class="product-field-help">Sets the Project scope for navigation, work, repository targets and new executions.</small>
+      <label class="product-workspace-mode-label" for="product-workspace-mode">Primary workflow</label>
+      <select id="product-workspace-mode" aria-label="Primary workflow">
+        <option value="work">Work</option>
+        <option value="build">Build agents</option>
+        <option value="automate">Automate</option>
+        <option value="operate">Operate</option>
+        <option value="administer">Administer</option>
+      </select>
+      <button type="button" class="ghost-button product-workspace-mode-reset">Reset default</button>
+      <small class="product-field-help">Sets the Project scope for navigation, work, repository targets and new executions. Primary workflow only prioritizes navigation; all destinations remain available and this does not grant access.</small>
       <div class="product-project-context-state" data-project-context-state role="status" hidden></div>
     `;
     brand.insertAdjacentElement("afterend", projectContext);
@@ -1042,6 +1076,11 @@ function buildShell() {
     navigation.className = "product-project-navigation";
     buildProjectNavigation(navigation);
     projectContext.insertAdjacentElement("afterend", navigation);
+    const modeSelector = projectContext.querySelector("#product-workspace-mode");
+    modeSelector.value = workspaceMode();
+    modeSelector.addEventListener("change", () => applyWorkspaceMode(modeSelector.value));
+    projectContext.querySelector(".product-workspace-mode-reset").addEventListener("click", () => applyWorkspaceMode("work"));
+    applyWorkspaceMode(modeSelector.value);
   }
 
   const switcher = document.createElement("dialog");
