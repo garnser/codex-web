@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict
 
 from codex_web.configuration import (
     ConfigurationContext,
+)
+from codex_web.configuration import (
     SecretReference as ConfigurationSecretReference,
 )
 from codex_web.execution_workers import (
@@ -23,11 +25,14 @@ from codex_web.services.codex_worker_configuration import (
     CODEX_WORKER_ACCESS_TOKEN_CONFIG,
     CODEX_WORKER_API_KEY_CONFIG,
 )
-
+from codex_web.services.mammouth_worker_configuration import (
+    MAMMOUTH_WORKER_API_KEY_CONFIG,
+)
 
 DEFAULT_RUNTIME_CREDENTIAL_CONFIGS: dict[tuple[str, str], str] = {
     ("openai", "codex"): CODEX_WORKER_ACCESS_TOKEN_CONFIG,
     ("anthropic", "claude-code"): ANTHROPIC_WORKER_API_KEY_CONFIG,
+    ("mammouth-ai", "mammouth-cli"): MAMMOUTH_WORKER_API_KEY_CONFIG,
 }
 
 
@@ -421,4 +426,3 @@ def runtime_authentication_preflight(
         message=f"Runtime credential reference {config_key} is active and authorized.",
         secret_reference_id=secret_id,
     )
-

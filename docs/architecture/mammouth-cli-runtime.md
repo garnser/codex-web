@@ -17,7 +17,9 @@ Tracking: #844. Generic CLI execution architecture: #651.
 
 The adapter does not read Mammouth configuration files and does not copy API keys into codex-web state. The generic CLI probe only executes Mammouth's supported CLI command and returns a bounded readiness state without exposing provider stdout/stderr.
 
-Headless workers may inject credentials only through the generic CLI runner's explicit environment allowlist/secret-reference mechanism. The browser must never receive Mammouth credentials.
+Headless worker authentication is configured through the reference-only `mammouth.worker.api_key_secret` setting. The selected secret must use provider `mammouth-ai` (or `mammouth`) and purpose `mammouth_api_key`, explicitly allow the execution-worker identity, and expire within the assignment's bounded delegation window.
+
+`MammouthAuthDelegationService` resolves that secret only inside `SecretBroker.use()`. It injects only `HOME` and `MAMMOUTH_API_KEY` into the future sandbox launch, binds the metadata-only grant to the canonical assignment/worker/fence, and fails closed when the lease, fence, secret rotation, expiry, tenant, or worker authority changes. Public status contains the secret reference identifier but never credential material. The browser must never receive Mammouth credentials.
 
 ## Sandbox and integration status
 
@@ -25,7 +27,7 @@ The adapter intentionally is not registered as an execution-ready application ru
 
 Before enabling end-to-end routing, #844 still requires:
 
-1. launching Mammouth inside the assignment's canonical worker/sandbox rather than as an unrestricted host subprocess;
+1. connecting the implemented fenced credential delegation to a Mammouth process launched inside the assignment's canonical worker/sandbox rather than as an unrestricted host subprocess;
 2. wiring runtime/provider registration and Agent Profile selection;
 3. exposing readiness/version/diagnostics in the existing Operations UI;
 4. mapping non-zero exits into the canonical failure taxonomy;

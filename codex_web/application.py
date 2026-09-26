@@ -238,6 +238,7 @@ from codex_web.services.codex_cli_agent_runtime import CodexCliAgentRuntimeAdapt
 from codex_web.services.claude_agent_runtime import ClaudeAgentRuntimeAdapter
 from codex_web.services.codex_worker_configuration import CODEX_WORKER_ACCESS_TOKEN_CONFIG, install_codex_worker_configuration
 from codex_web.services.anthropic_worker_configuration import ANTHROPIC_WORKER_API_KEY_CONFIG, install_anthropic_worker_configuration
+from codex_web.services.mammouth_worker_configuration import install_mammouth_worker_configuration
 from codex_web.services.agent_model_egress import (
     AgentRuntimeModelEgressEndpoint,
     model_egress_endpoints_from_base_urls,
@@ -697,6 +698,9 @@ artifact_content_configuration_spec = install_artifact_content_configuration(
 anthropic_worker_configuration_spec = install_anthropic_worker_configuration(
     configuration_service
 )
+mammouth_worker_configuration_spec = install_mammouth_worker_configuration(
+    configuration_service
+)
 agent_routing_configuration_specs = install_agent_routing_configuration(
     configuration_service
 )
@@ -704,6 +708,7 @@ app.state.configuration_service = configuration_service
 app.state.codex_worker_configuration_spec = codex_worker_configuration_spec
 app.state.artifact_content_configuration_spec = artifact_content_configuration_spec
 app.state.anthropic_worker_configuration_spec = anthropic_worker_configuration_spec
+app.state.mammouth_worker_configuration_spec = mammouth_worker_configuration_spec
 app.state.agent_routing_configuration_specs = agent_routing_configuration_specs
 
 def _definition_change_notifier(event: dict[str, object]) -> None:
