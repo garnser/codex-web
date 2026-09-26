@@ -58,6 +58,83 @@ function refId(ref) {
   return ref?.definition_id || ref?.definitionId || ref?.record_id || ref?.recordId || "";
 }
 
+function skillReference(skill) {
+  const definitionId = skill?.skillId || skill?.definition_id || skill?.definitionId || "";
+  const reference = { definition_id: definitionId };
+  const recordId = skill?.record_id || skill?.recordId;
+  if (recordId) reference.record_id = recordId;
+  if (skill?.revision != null) reference.revision = skill.revision;
+  return reference;
+}
+
+function openAgentSkillEditor(profile, onChanged) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "product-section-dialog";
+  const selected = new Set((profile.skill_refs || profile.skillRefs || []).map(refId).filter(Boolean));
+  dialog.innerHTML = `
+    <div class="product-section-dialog-shell">
+      <header>
+        <div>
+          <h2>Skills · ${profile.name || profile.profile_id}</h2>
+          <p>Attach or detach Skills from this Agent Profile. Saving creates a new immutable Agent Profile revision.</p>
+        </div>
+        <button type="button" class="icon-button" data-close aria-label="Close">×</button>
+      </header>
+      <div class="route-test" data-skill-options></div>
+      <label>Change reason <textarea data-reason rows="3" maxlength="1000" placeholder="Why are these Skill assignments changing?"></textarea></label>
+      <div class="form-result" data-status hidden aria-live="polite"></div>
+      <button type="button" class="primary-button" data-save>Save Skill assignments</button>
+    </div>`;
+  const options = dialog.querySelector("[data-skill-options]");
+  for (const skill of state.skills) {
+    const id = refId(skill) || skill.skillId;
+    const label = document.createElement("label");
+    label.className = "checkbox-line";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = id;
+    input.checked = selected.has(id);
+    input.dataset.skillId = id;
+    label.append(input, document.createTextNode(` ${skill.name || id} · revision ${skill.revision ?? "current"}`));
+    options.appendChild(label);
+  }
+  if (!state.skills.length) {
+    options.appendChild(statePanel({ kind: "empty", title: "No Skills available", detail: "Create a Skill before attaching it to this Agent Profile." }));
+  }
+  const close = () => dialog.close();
+  dialog.querySelector("[data-close]").addEventListener("click", close);
+  dialog.querySelector("[data-save]").addEventListener("click", async (event) => {
+    const reason = dialog.querySelector("[data-reason]").value.trim();
+    const status = dialog.querySelector("[data-status]");
+    if (!reason) {
+      status.hidden = false;
+      status.textContent = "A change reason is required.";
+      status.classList.add("workspace-state-error");
+      return;
+    }
+    const button = event.currentTarget;
+    button.disabled = true;
+    const checked = new Set(Array.from(options.querySelectorAll("input:checked"), (input) => input.dataset.skillId));
+    const refs = state.skills.filter((skill) => checked.has(refId(skill) || skill.skillId)).map(skillReference);
+    try {
+      const result = await request(`/api/agent-profiles/${encodeURIComponent(profile.profile_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ skill_refs: refs, reason }),
+      });
+      await onChanged?.(result?.item);
+      dialog.close();
+    } catch (error) {
+      status.hidden = false;
+      status.textContent = error.message || "Skill assignment change rejected.";
+      status.classList.add("workspace-state-error");
+      button.disabled = false;
+    }
+  });
+  document.body.appendChild(dialog);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.showModal();
+}
+
 function skillConsumers() {
   const consumers = new Map();
   for (const profile of state.profiles) {
@@ -184,14 +261,18 @@ function agentCard(profile, onChanged) {
   }));
   article.appendChild(head);
   if (profile.description) article.appendChild(el("p", "collab-description", profile.description));
-  const manageSkills = el("a", "collab-manage-link", "Manage");
-  manageSkills.href = projectPageHref("skills");
-  manageSkills.dataset.manageAgentSkills = profile.profile_id;
-  manageSkills.setAttribute("aria-label", `Manage Skills for ${profile.name || profile.profile_id}`);
+  const editSkills = el("button", "ghost-button collab-manage-skills", "Edit skills");
+  editSkills.type = "button";
+  editSkills.dataset.manageAgentSkills = profile.profile_id;
+  editSkills.setAttribute("aria-label", `Edit Skills for ${profile.name || profile.profile_id}`);
+  editSkills.addEventListener("click", () => openAgentSkillEditor(profile, onChanged));
+  const browseSkills = el("a", "collab-manage-link", "Browse registry");
+  browseSkills.href = projectPageHref("skills");
   const skillManagement = el("span", "collab-skill-management");
   skillManagement.append(
     document.createTextNode((profile.skill_refs || profile.skillRefs || []).map(refId).filter(Boolean).join(", ") || "None"),
-    manageSkills,
+    editSkills,
+    browseSkills,
   );
   article.appendChild(metadataGrid([
     { label: "Role", value: profile.role_id },

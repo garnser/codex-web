@@ -199,35 +199,60 @@ export async function openHistory(kind, item) {
 }
 
 export function managementActions(kind, item, { usage = "", onChanged } = {}) {
-  const label = kind === "profile" ? "Manage profile" : "Manage team";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost-button";
-  button.textContent = label;
-  button.addEventListener("click", () => {
-    const dialog = dialogShell(
-      label,
-      `Revision ${item?.revision || "unknown"} · lifecycle ${item?.lifecycle || "unknown"}.`,
+  const noun = kind === "profile" ? "Agent Profile" : "Team";
+  const group = document.createElement("div");
+  group.className = "collab-context-actions";
+  group.setAttribute("aria-label", `${noun} actions`);
+
+  const button = (text, handler, { destructive = false, target = group } = {}) => {
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = destructive
+      ? "ghost-button collab-destructive-action"
+      : "ghost-button";
+    control.textContent = text;
+    control.addEventListener("click", handler);
+    target.appendChild(control);
+    return control;
+  };
+
+  button("Edit", () => openEditor(kind, item, { onChanged }));
+
+  const more = document.createElement("details");
+  more.className = "collab-context-more";
+  const summary = document.createElement("summary");
+  summary.className = "ghost-button";
+  summary.textContent = "More";
+  summary.setAttribute("aria-label", `More ${noun} actions`);
+  const menu = document.createElement("div");
+  menu.className = "collab-context-menu";
+  more.append(summary, menu);
+  group.appendChild(more);
+
+  const closeThen = (handler) => () => {
+    more.removeAttribute("open");
+    handler();
+  };
+  button("History", closeThen(() => void openHistory(kind, item)), { target: menu });
+
+  const current = String(item?.lifecycle || "active");
+  if (current === "archived" || current === "disabled") {
+    button(
+      "Restore",
+      closeThen(() => openLifecycle(kind, item, "restore", { usage, onChanged })),
+      { target: menu },
     );
-    const body = dialog.querySelector("[data-body]");
-    const action = (text, handler) => {
-      const control = document.createElement("button");
-      control.type = "button";
-      control.className = "ghost-button";
-      control.textContent = text;
-      control.addEventListener("click", () => { dialog.close(); handler(); });
-      body.appendChild(control);
-    };
-    action("Edit", () => openEditor(kind, item, { onChanged }));
-    action("History", () => void openHistory(kind, item));
-    const current = String(item?.lifecycle || "active");
-    if (current === "archived" || current === "disabled") {
-      action("Restore", () => openLifecycle(kind, item, "restore", { usage, onChanged }));
-    } else {
-      action("Disable", () => openLifecycle(kind, item, "disable", { usage, onChanged }));
-      action("Archive", () => openLifecycle(kind, item, "archive", { usage, onChanged }));
-    }
-    dialog.showModal();
-  });
-  return button;
+  } else {
+    button(
+      "Disable",
+      closeThen(() => openLifecycle(kind, item, "disable", { usage, onChanged })),
+      { target: menu },
+    );
+    button(
+      "Archive",
+      closeThen(() => openLifecycle(kind, item, "archive", { usage, onChanged })),
+      { destructive: true, target: menu },
+    );
+  }
+  return group;
 }
