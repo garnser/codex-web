@@ -158,6 +158,24 @@ class UxTelemetryServiceTests(UxTelemetryFixture):
             1,
         )
 
+        for index, route in enumerate(
+            ("project_overview", "project_agents", "project_overview")
+        ):
+            self.service.ingest(
+                UxTelemetryEventCreate(
+                    event_name="route_transition",
+                    workflow="navigation",
+                    step="route",
+                    route_group=route,
+                    journey_id="journey_nav1",
+                ),
+                scope=self.scope,
+                now=1100 + index,
+            )
+        navigation = self.service.summary(scope=self.scope, now=1103)["navigation"]
+        self.assertEqual(navigation["transitions"], 3)
+        self.assertEqual(navigation["backtracks"], 1)
+
     def test_unknown_steps_and_sensitive_extra_fields_are_rejected_by_schema(self) -> None:
         with self.assertRaises(ValueError):
             UxTelemetryEventCreate(
