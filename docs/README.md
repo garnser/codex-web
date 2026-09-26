@@ -19,6 +19,7 @@ This is the user/operator documentation entry point. Architecture documents desc
 - [Workspace navigation](ui/workspace-navigation.md) — current Home/Work/Team/Automation/Operations shell, Project switching and Run inspection.
 - [Workspace workflows](ui/workspace-workflows.md) — practical Work Item/Run, Agent/Team/Skill, Automation, Attention and Operations walkthroughs.
 - [Workspace interaction feedback](ui/interaction-feedback.md) — standard action acknowledgement, pending, success, failure and recovery semantics.
+- [UX telemetry and friction metrics](architecture/ux-telemetry.md) — privacy-bounded product interaction taxonomy, retention, export and stable UX metric definitions.
 
 ## Choose a path
 
