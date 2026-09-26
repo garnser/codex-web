@@ -84,10 +84,34 @@ class GoalService:
             and goal.workspace_id == scope.workspace_id
         )
 
-    def _goal(self, state: GoalState, goal_id: str, scope: TenantScope) -> GoalRecord:
+    @staticmethod
+    def _project_visible(goal: GoalRecord, project_id: str) -> bool:
+        return any(
+            binding.project_id == project_id
+            for binding in goal.work_graph_bindings
+        )
+
+    def _require_project(self, project_id: str, scope: TenantScope) -> None:
+        try:
+            self.projects.get(project_id, scope)
+        except ProjectNotFoundError as exc:
+            raise GoalNotFoundError("goal project not found") from exc
+
+    def _goal(
+        self,
+        state: GoalState,
+        goal_id: str,
+        scope: TenantScope,
+        *,
+        project_id: str | None = None,
+    ) -> GoalRecord:
         goal = next((item for item in state.goals if item.id == goal_id), None)
         if goal is None or not self._visible(goal, scope):
             raise GoalNotFoundError("goal not found")
+        if project_id is not None:
+            self._require_project(project_id, scope)
+            if not self._project_visible(goal, project_id):
+                raise GoalNotFoundError("goal not found")
         return goal
 
     def _validate_bindings(
@@ -217,8 +241,19 @@ class GoalService:
         self.store.update(apply)
         return goal
 
-    def get(self, goal_id: str, *, scope: TenantScope) -> GoalRecord:
-        return self._goal(self.store.load(), goal_id, scope)
+    def get(
+        self,
+        goal_id: str,
+        *,
+        scope: TenantScope,
+        project_id: str | None = None,
+    ) -> GoalRecord:
+        return self._goal(
+            self.store.load(),
+            goal_id,
+            scope,
+            project_id=project_id,
+        )
 
     def list(
         self,
@@ -227,9 +262,18 @@ class GoalService:
         status: GoalStatus | None = None,
         owner_identity_id: str | None = None,
         priority: GoalPriority | None = None,
+        project_id: str | None = None,
     ) -> tuple[GoalRecord, ...]:
+        if project_id is not None:
+            self._require_project(project_id, scope)
         rows = [
-            item for item in self.store.load().goals if self._visible(item, scope)
+            item
+            for item in self.store.load().goals
+            if self._visible(item, scope)
+            and (
+                project_id is None
+                or self._project_visible(item, project_id)
+            )
         ]
         if status is not None:
             rows = [item for item in rows if item.status == status]
