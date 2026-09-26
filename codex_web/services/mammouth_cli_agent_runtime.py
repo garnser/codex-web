@@ -155,9 +155,10 @@ class MammouthCliAgentRuntimeAdapter:
         if not session_id:
             raise ValueError("Mammouth Code resume requires a session id")
         actual = self._session_aliases.get(session_id, session_id)
+        self._provider_sessions.add(actual)
         return AgentRuntimeResult(
             provider_native_session_id=actual,
-            payload={"resumed": actual in self._provider_sessions},
+            payload={"resumed": True},
         )
 
     async def read_session(
