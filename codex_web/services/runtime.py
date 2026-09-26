@@ -562,10 +562,15 @@ class RuntimeService:
         seen: set[str] = set()
         for item in merged:
             if isinstance(item, dict):
-                value = str(item.get("model") or item.get("id") or "")
-                if value:
-                    seen.add(value)
-                item["displayName"] = f"Codex · {item.get('displayName') or value}"
+                bare = str(item.get("model") or item.get("id") or "")
+                if not bare:
+                    continue
+                # Namespace codex models so both catalogs stay
+                # distinguishable; the codex boundary strips the prefix.
+                item["model"] = f"codex/{bare}"
+                item["id"] = f"codex/{bare}"
+                seen.add(item["model"])
+                item["displayName"] = f"Codex · {item.get('displayName') or bare}"
         for source in self.extra_model_sources:
             try:
                 entries = await asyncio.to_thread(source)

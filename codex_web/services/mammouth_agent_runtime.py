@@ -239,10 +239,16 @@ class MammouthCliAgentRuntimeAdapter:
         if native_id in self._session_requests:
             canonical_id = native_id
             native_id = self._session_aliases.get(canonical_id)
-        else:
-            canonical_id = self._canonical_sessions.get(native_id, native_id)
+        elif native_id in self._canonical_sessions:
+            canonical_id = self._canonical_sessions[native_id]
             self._session_aliases[canonical_id] = native_id
-            self._canonical_sessions[native_id] = canonical_id
+        else:
+            # External/canonical identity (for example a canonical thread id
+            # after a runtime switch or restart): keep the canonical session
+            # but start a fresh provider-native session instead of resuming
+            # an unrelated or missing Mammouth session.
+            canonical_id = native_id
+            native_id = None
         self._session_requests[canonical_id] = request
         return AgentRuntimeResult(
             provider_native_session_id=canonical_id,

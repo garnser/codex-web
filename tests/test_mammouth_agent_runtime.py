@@ -218,6 +218,20 @@ class MammouthCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             probe=_Probe(),
             run_command=executor,
         )
+        events = []
+        adapter.subscribe_events(events.append)
+        created = await adapter.create_session(
+            AgentRuntimeSessionRequest(project_id="project-a")
+        )
+        await adapter.start_turn(
+            created.provider_native_session_id,
+            AgentRuntimeTurnRequest(
+                message="Seed",
+                workspace_cwd="/worker/project",
+            ),
+        )
+        await _pump_until_terminal(events)
+
         resumed = await adapter.resume_session(
             "native-existing",
             AgentRuntimeSessionRequest(
@@ -236,12 +250,47 @@ class MammouthCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         await asyncio.sleep(0)
 
-        argv = executor.calls[0][0].argv
+        argv = executor.calls[-1][0].argv
         self.assertIn("--session", argv)
         self.assertEqual(argv[argv.index("--session") + 1], "native-existing")
         self.assertNotIn("--continue", argv)
         self.assertEqual(argv[-1], "Continue")
-        self.assertEqual(executor.calls[0][1].assignment_id, "assignment-b")
+        self.assertEqual(executor.calls[-1][1].assignment_id, "assignment-b")
+
+    async def test_resume_of_unknown_session_starts_fresh(self) -> None:
+        executor = _Executor(
+            [
+                '{"type":"step_start","sessionID":"native-fresh",'
+                '"part":{"messageID":"message-3"}}',
+                '{"type":"step_finish","part":{"messageID":"message-3"}}',
+            ]
+        )
+        adapter = MammouthCliAgentRuntimeAdapter(
+            probe=_Probe(),
+            run_command=executor,
+        )
+        resumed = await adapter.resume_session(
+            "canonical-thread-id",
+            AgentRuntimeSessionRequest(
+                project_id="project-a",
+                assignment_id="assignment-c",
+                workspace_cwd="/worker/project",
+            ),
+        )
+        self.assertEqual(resumed.payload["provider_native_session_id"], None)
+
+        await adapter.start_turn(
+            resumed.provider_native_session_id,
+            AgentRuntimeTurnRequest(
+                message="Start over",
+                workspace_cwd="/worker/project",
+            ),
+        )
+        await asyncio.sleep(0)
+
+        argv = executor.calls[0][0].argv
+        self.assertNotIn("--session", argv)
+        self.assertEqual(argv[-1], "Start over")
 
     async def test_unready_runtime_does_not_invoke_executor(self) -> None:
         executor = _Executor()

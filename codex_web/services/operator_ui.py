@@ -44,7 +44,33 @@ class OperatorUiService:
             normalized_base = "/" + str(base_href).strip("/") if str(base_href).strip("/") else ""
             html = html.replace(
                 "<head>",
-                f'<head>\n    <base href="{escape(normalized_base + "/", quote=True)}" />',
+                (
+                    f'<head>\n    <base href="{escape(normalized_base + "/", quote=True)}" />'
+                    + (
+                        "\n    <script>"
+                        "(() => {"
+                        "const prefix = "
+                        f"{normalized_base!r};"
+                        "if (!prefix || window.__codexFetchPrefixed) return;"
+                        "const nativeFetch = window.fetch.bind(window);"
+                        "window.fetch = (input, init) => {"
+                        "if (typeof input === 'string' && input.startsWith('/api/')) "
+                        "input = prefix + input;"
+                        "else if (input instanceof URL && input.pathname.startsWith('/api/')) "
+                        "input = prefix + input.pathname + input.search;"
+                        "return nativeFetch(input, init);"
+                        "};"
+                        "document.addEventListener('click', (event) => {"
+                        "const link = event.target.closest('a[href^=\"/api/\"]');"
+                        "if (link) link.href = prefix + link.getAttribute('href');"
+                        "});"
+                        "window.__codexFetchPrefixed = true;"
+                        "})();"
+                        "</script>"
+                        if normalized_base
+                        else ""
+                    )
+                ),
                 1,
             )
         html = html.replace(
