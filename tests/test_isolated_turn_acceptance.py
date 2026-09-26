@@ -175,18 +175,20 @@ class IsolatedTurnAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                 control_actor=actor,
             )
 
-            with self.assertRaises(HTTPException) as caught:
-                await restarted_service.request_for_thread(
-                    "thread-isolated",
-                    "thread/read",
-                    {
-                        "threadId": "thread-isolated",
-                        "includeTurns": True,
-                    },
-                )
+            response = await restarted_service.request_for_thread(
+                "thread-isolated",
+                "thread/read",
+                {
+                    "threadId": "thread-isolated",
+                    "includeTurns": True,
+                },
+            )
 
-            self.assertEqual(caught.exception.status_code, 503)
-            self.assertIn("no live Codex session", caught.exception.detail)
+            self.assertFalse(response["ok"])
+            self.assertEqual(
+                response["thread"]["status"]["type"],
+                "notLoaded",
+            )
             host.codex.request.assert_not_awaited()
 
 

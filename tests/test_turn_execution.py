@@ -1002,12 +1002,32 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as caught:
             await service.request_for_thread(
                 "t1",
-                "thread/read",
+                "turn/interrupt",
                 {"threadId": "t1"},
             )
 
         self.assertEqual(caught.exception.status_code, 503)
         self.assertIn("bootstrap binding", caught.exception.detail)
+        host.codex.request.assert_not_awaited()
+
+    async def test_bootstrap_binding_read_degrades_without_global_fallback(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = None
+
+        response = await service.request_for_thread(
+            "t1",
+            "thread/read",
+            {"threadId": "t1"},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(
+            response["thread"]["status"]["type"],
+            "notLoaded",
+        )
+        self.assertTrue(response["thread"]["readTimedOut"])
         host.codex.request.assert_not_awaited()
 
     async def test_turn_on_bootstrap_thread_reuses_original_assignment_and_session(self) -> None:
@@ -1250,7 +1270,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             assignment_id="assignment-missing",
         )
 
-        with self.assertRaisesRegex(HTTPException, "no live Codex session"):
+        with self.assertRaisesRegex(HTTPException, "no live agent runtime session"):
             await service.request_for_thread(
                 "t1",
                 "turn/interrupt",
