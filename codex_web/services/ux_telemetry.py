@@ -190,6 +190,29 @@ class UxTelemetryService:
         activation_started = names[UxEventName.ONBOARDING_STARTED.value]
         activation_completed = names[UxEventName.ONBOARDING_COMPLETED.value]
 
+        navigation_rows = [
+            item
+            for item in rows
+            if item.event_name == UxEventName.ROUTE_TRANSITION
+            and item.route_group is not None
+            and item.journey_id is not None
+        ]
+        journeys: dict[str, list[UxTelemetryEvent]] = defaultdict(list)
+        for item in navigation_rows:
+            journeys[item.journey_id].append(item)
+        backtracks = 0
+        for journey_rows in journeys.values():
+            ordered = sorted(journey_rows, key=lambda item: item.recorded_at)
+            routes = [item.route_group.value for item in ordered if item.route_group]
+            backtracks += sum(
+                1
+                for index in range(2, len(routes))
+                if routes[index] == routes[index - 2] and routes[index] != routes[index - 1]
+            )
+        route_counts = Counter(
+            item.route_group.value for item in navigation_rows if item.route_group
+        )
+
         return {
             "schema_version": UX_TELEMETRY_TAXONOMY_VERSION,
             "start_at": start_at,
@@ -209,6 +232,11 @@ class UxTelemetryService:
                 ),
             },
             "workflows": workflows,
+            "navigation": {
+                "transitions": len(navigation_rows),
+                "backtracks": backtracks,
+                "route_counts": dict(sorted(route_counts.items())),
+            },
             "highest_friction_step": (
                 {
                     "workflow": top[0][0][0],
