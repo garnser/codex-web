@@ -16,6 +16,7 @@ const state={
   projectId: initialProjectId(),
   threads: [],
   threadId: null,
+  threadLoadGeneration: 0,
   activeAgentMessage: null,
   approvals: new Map(),
   activeTurnsByThread: new Map(),
@@ -144,6 +145,22 @@ function threadHistoryController() {
   return window.codexThreadHistory || null;
 }
 
+function threadIdFromLocation() {
+  return new URLSearchParams(window.location.search).get("thread") || "";
+}
+
+function updateThreadLocation(threadId, { historyMode = "push" } = {}) {
+  if (!window.location.pathname.includes("/projects/")) return;
+  const url = new URL(window.location.href);
+  if (threadId) url.searchParams.set("thread", threadId);
+  else url.searchParams.delete("thread");
+  if (historyMode === "push") {
+    history.pushState({ ...history.state, projectId: state.projectId, threadId: threadId || null }, "", url);
+  } else if (historyMode === "replace") {
+    history.replaceState({ ...history.state, projectId: state.projectId, threadId: threadId || null }, "", url);
+  }
+}
+
 function scrollMessagesToBottom() {
   const messages = $("messages");
   if (!messages) return;
@@ -182,7 +199,7 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
   state.activeAgentMessage = null;
   setWaiting(false);
   await refresh();
-  await loadThread(newThreadId);
+  await loadThread(newThreadId, { historyMode: "replace" });
 }
 
 function activeProject(){return state.projects.find(project=>project.id===state.projectId)||state.projects[0]}
@@ -581,7 +598,7 @@ function renderThreads() {
       </div>
       ${actionMarkup}
     `;
-    item.querySelector(".item-main").addEventListener("click",()=>loadThread(thread.id));
+    item.querySelector(".item-main").addEventListener("click",()=>loadThread(thread.id, { historyMode: "push" }));
     item.querySelector('[data-action="expand"]').addEventListener("click",(event)=>{
       event.stopPropagation();
       toggleItemExpanded("thread",thread.id);
@@ -1012,6 +1029,7 @@ async function refresh({ reloadProjects = false } = {}) {
   const controller=new AbortController();
   state.refreshController=controller;
   const projectId=state.projectId;
+  const threadIdBeforeRefresh=state.threadId;
   const search=$("thread-search").value.trim();
   const startedAt=performance.now();
 
@@ -1055,6 +1073,7 @@ async function refresh({ reloadProjects = false } = {}) {
     hydrateThreadListActivity(threads);
     renderProjects();
     renderThreads();
+    if (threadIdFromLocation() || threadIdBeforeRefresh !== state.threadId) await restoreThreadFromLocation();
     markMilestone("project-useful",startedAt);
   })();
 
@@ -1258,28 +1277,82 @@ async function saveBotIntegration(event) {
   $("bot-dialog").close();
 }
 
-async function loadThread(threadId) {
-  state.threadId = threadId;
+async function loadThread(threadId, { historyMode = "none" } = {}) {
+  if (!threadId) return clearSelectedThread({ historyMode });
+  const normalizedId = String(threadId);
+  if (state.threadId === normalizedId && threadIdFromLocation() === normalizedId) return;
+  const projectId = state.projectId;
+  const navigationGeneration = state.threadLoadGeneration;
+  const projectThreads = state.threads?.data || state.threads?.threads || state.threads || [];
+  let listedThread = projectThreads.find((thread) => String(thread.id) === normalizedId);
+  if (!listedThread) {
+    const query = new URLSearchParams({ project_id: projectId, search: normalizedId, limit: "100" });
+    const result = await api(`/api/threads?${query}`);
+    if (projectId !== state.projectId || navigationGeneration !== state.threadLoadGeneration) return;
+    const matches = result.data || result.threads || [];
+    listedThread = matches.find((thread) => String(thread.id) === normalizedId);
+  }
+  if (!listedThread || (listedThread.projectId && listedThread.projectId !== projectId)) {
+    throw new Error("This Thread is unavailable in the active Project.");
+  }
+  if (historyMode !== "none") updateThreadLocation(normalizedId, { historyMode });
+  state.threadId = normalizedId;
+  const generation = ++state.threadLoadGeneration;
   applyRunSettings();
   renderRepositoryTargets();
   updateWaitingFromState();
   renderTokenUsage();
   const history = threadHistoryController();
   const readQs = new URLSearchParams();
-  const messageLimit = history?.messageLimit?.(threadId);
+  const messageLimit = history?.messageLimit?.(normalizedId);
   if (messageLimit) readQs.set("message_limit", String(messageLimit));
   const query = readQs.toString();
-  const [data]=await Promise.all([api(`/api/threads/${threadId}${query?`?${query}`:""}`),pfUi.load(threadId)]);
+  const [data]=await Promise.all([api(`/api/threads/${encodeURIComponent(normalizedId)}${query?`?${query}`:""}`),pfUi.load(normalizedId)]);
+  if (generation !== state.threadLoadGeneration || state.threadId !== normalizedId) return;
   const thread = data.thread || data;
-  history?.recordThread?.(threadId, thread);
+  if (thread.projectId && thread.projectId !== state.projectId) {
+    clearSelectedThread({ historyMode: "replace" });
+    addMessage("Thread unavailable", "This Thread belongs to a different Project.", "tool", new Date());
+    return;
+  }
+  history?.recordThread?.(normalizedId, thread);
   hydrateThreadActivity(thread);
-  await refreshQueueStatus(threadId);
+  await refreshQueueStatus(normalizedId);
+  if (generation !== state.threadLoadGeneration || state.threadId !== normalizedId) return;
   renderThread(thread);
-  history?.afterThreadRendered?.(threadId, $("messages"));
+  history?.afterThreadRendered?.(normalizedId, $("messages"));
   renderThreads();
   renderTokenUsage();
   renderRepositoryTargetStatus();
   updateWaitingFromState();
+}
+
+function clearSelectedThread({ historyMode = "none" } = {}) {
+  state.threadLoadGeneration += 1;
+  state.threadId = null;
+  state.activeAgentMessage = null;
+  if (historyMode === "replace") updateThreadLocation(null, { historyMode });
+  clearMessages();
+  $("thread-title").textContent = "Select a thread";
+  $("thread-meta").textContent = "";
+  renderThreads();
+  renderTokenUsage();
+  renderRepositoryTargetStatus();
+}
+
+async function restoreThreadFromLocation() {
+  const threadId = threadIdFromLocation();
+  if (!threadId) {
+    if (state.threadId) clearSelectedThread();
+    return;
+  }
+  if (state.threadId === threadId) return;
+  try {
+    await loadThread(threadId, { historyMode: "none" });
+  } catch (error) {
+    clearSelectedThread({ historyMode: "replace" });
+    addMessage("Thread unavailable", error.message, "tool", new Date());
+  }
 }
 
 threadHistoryController()?.configure?.({ reloadThread: loadThread });
@@ -1300,6 +1373,8 @@ async function newThread() {
   const data = await api(`/api/threads?${qs}`, { method: "POST" });
   const thread = data.thread || data;
   state.threadId = thread.id;
+  state.threadLoadGeneration += 1;
+  updateThreadLocation(thread.id, { historyMode: "push" });
   setWaiting(false);
   renderNewThreadShell(thread);
   renderTokenUsage();
@@ -2229,7 +2304,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-const selectProject=createProjectNavigator(state,{refresh,applyRunSettings,onError:(error)=>addMessage("Error",error.message,"tool",new Date())});
+const selectProject=createProjectNavigator(state,{refresh,applyRunSettings,onThreadCleared:()=>clearSelectedThread(),onLocationChanged:restoreThreadFromLocation,onError:(error)=>addMessage("Error",error.message,"tool",new Date())});
 
 $("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
@@ -2285,8 +2360,7 @@ $("archive-thread").addEventListener("click", async () => {
   $("thread-actions-menu").open=false;
   if (!state.threadId) return;
   await api(`/api/threads/${state.threadId}/archive`, { method: "POST" });
-  state.threadId = null;
-  clearMessages();
+  clearSelectedThread({ historyMode: "replace" });
   await refresh();
 });
 document.addEventListener("click", (event) => {

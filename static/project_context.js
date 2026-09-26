@@ -22,6 +22,7 @@ export function initialProjectId() {
 export function activateProject(state, projectId, { historyMode = "replace" } = {}) {
   const normalized = String(projectId || "").trim();
   if (!normalized) return "";
+  const projectChanged = state.projectId !== normalized;
   state.projectId = normalized;
   sessionStorage.setItem(ACTIVE_PROJECT_KEY, normalized);
   if (document.body) document.body.dataset.projectId = normalized;
@@ -33,6 +34,7 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
   } else {
     url.searchParams.set("project", normalized);
   }
+  if (projectChanged && historyMode !== "none") url.searchParams.delete("thread");
   if (historyMode === "push") {
     history.pushState({ ...history.state, projectId: normalized }, "", url);
   } else if (historyMode !== "none") {
@@ -59,6 +61,8 @@ export function publishProjectsRendered(projects, projectId) {
 export function createProjectNavigator(state, {
   refresh,
   applyRunSettings,
+  onThreadCleared,
+  onLocationChanged,
   onError = console.error,
 } = {}) {
   const selectProject = async (projectId, { historyMode = "push" } = {}) => {
@@ -67,6 +71,7 @@ export function createProjectNavigator(state, {
     activateProject(state, normalized, { historyMode });
     state.threadId = null;
     state.activeAgentMessage = null;
+    onThreadCleared?.();
     applyRunSettings?.();
     await refresh?.();
   };
@@ -82,8 +87,12 @@ export function createProjectNavigator(state, {
       || new URLSearchParams(window.location.search).get("project")
     );
     if (projectId && projectId !== state.projectId) {
-      run(projectId, { historyMode: "none" });
+      selectProject(projectId, { historyMode: "none" })
+        .then(() => onLocationChanged?.())
+        .catch(onError);
+      return;
     }
+    onLocationChanged?.();
   });
   return selectProject;
 }

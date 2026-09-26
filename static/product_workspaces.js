@@ -518,6 +518,7 @@ function setWorkspaceLocation(id, page = null, { replace = false } = {}) {
   const url = new URL(window.location.href);
   url.pathname = `${prefix}/projects/${encodeURIComponent(projectId)}/${routePage}`;
   url.searchParams.delete("project");
+  if (routePage !== "chat") url.searchParams.delete("thread");
   url.hash = "";
   const state = { ...history.state, projectId, projectPage: routePage };
   if (replace) history.replaceState(state, "", url);
