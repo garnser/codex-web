@@ -134,3 +134,67 @@ test('permission-limited Home section is explicit without degrading current data
   await expect(automations).toContainText('administrator role');
   await expect(page.getByText('Home is partially degraded')).toHaveCount(0);
 });
+
+
+test('ready first-use Home guides the user to a first useful outcome', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.active_work = current([]);
+  payload.sections.blocked_work = current([]);
+  payload.sections.recently_completed = current([]);
+  await routeHome(page, payload);
+
+  const onboarding = page.locator('[data-home-onboarding]');
+  await expect(onboarding).toContainText('Reach your first useful outcome');
+  await expect(onboarding).toContainText('Project execution ready');
+  await expect(onboarding).toContainText('First workflow started');
+  await expect(onboarding.getByRole('link', { name: 'Start first task' })).toHaveAttribute('href', '#workspace/threads');
+});
+
+test('partially activated Home derives progress from canonical work and offers continuation', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.recently_completed = current([]);
+  await routeHome(page, payload);
+
+  const onboarding = page.locator('[data-home-onboarding]');
+  await expect(onboarding).toContainText('Continue to your first useful outcome');
+  await expect(onboarding.locator('li[data-complete="true"]')).toHaveCount(2);
+  await expect(onboarding.getByRole('link', { name: 'Continue current work' })).toHaveAttribute('href', '#workspace/work');
+});
+
+test('completed canonical work transitions out of first-use onboarding', async ({ page }) => {
+  await routeHome(page, populated);
+  await expect(page.locator('[data-home-onboarding]')).toHaveCount(0);
+});
+
+test('onboarding can be skipped and reopened without changing canonical progress', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.active_work = current([]);
+  payload.sections.blocked_work = current([]);
+  payload.sections.recently_completed = current([]);
+  await routeHome(page, payload);
+
+  const onboarding = page.locator('[data-home-onboarding]');
+  await onboarding.getByRole('button', { name: 'Skip for now' }).click();
+  await expect(page.locator('[data-home-onboarding]')).toContainText('Getting started is hidden');
+  await page.getByRole('button', { name: 'Show getting started' }).click();
+  await expect(page.locator('[data-home-onboarding]')).toContainText('Reach your first useful outcome');
+});
+
+test('permission-limited onboarding does not promote unavailable Automation actions', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.sections.active_work = current([]);
+  payload.sections.blocked_work = current([]);
+  payload.sections.recently_completed = current([]);
+  payload.sections.automations = {
+    status: 'denied',
+    fresh_at: 1800000000,
+    items: [],
+    count: 0,
+    detail: 'Scheduler visibility requires an administrator role.',
+  };
+  await routeHome(page, payload);
+
+  const onboarding = page.locator('[data-home-onboarding]');
+  await expect(onboarding.getByRole('link', { name: 'Create Automation' })).toHaveCount(0);
+  await expect(onboarding.getByRole('link', { name: 'Start first task' })).toBeVisible();
+});
